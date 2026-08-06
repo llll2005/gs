@@ -17,6 +17,17 @@ Constants are kernel-specific; tau is (mostly) geometry-specific. Workflow:
 tau_growth (default 1.65) corrects init-tau -> trained-tau drift, calibrated on
 b12 (init tau_MAX 73 -> ~120 observed in the K2 freeze test, 2026-07-13).
 
+⚠ STALE FOR MCMC CONFIGS SINCE 2026-08-06. `gamma_trim` and `vos_trim` were measured while
+`gaussian_splatting.py` still ran the SPLIT backward with `retain_graph=True` on every densify
+step, so the autograd graph stayed alive across two backwards. MCMC never read the viewspace
+gradient that split existed to produce, and it is now skipped
+(`_split_backward_needed`), which frees the graph after a single backward and lowers the peak.
+
+The constants are therefore CONSERVATIVE for MCMC: `block_caps.csv` under-estimates N_max and we
+have been capping below what the card can hold. Re-running `probe-trim` on the current code should
+raise the ceiling -- which is the thing "b12@2M hits a ~1.5M wall" has been stuck on.
+Until that is redone, treat the caps as a lower bound.
+
 Usage:
   python tools/calibrate_block_caps.py taus --blocks 0-24
   python tools/calibrate_block_caps.py probe-trim --block 12 [--sb]
