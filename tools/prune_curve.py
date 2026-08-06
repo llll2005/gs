@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_official_test import load_test_cameras
 from internal.utils.gaussian_model_loader import GaussianModelLoader
-from internal.utils.topk_contribution import topk_mean_accumulator
+from internal.utils.topk_contribution import contribution_accumulator
 
 GRAD = lambda t: float((t[:, 1:, :] - t[:, :-1, :]).abs().mean()
                        + (t[:, :, 1:] - t[:, :, :-1]).abs().mean())
@@ -32,6 +32,8 @@ def main():
     ap.add_argument("--block_dim", type=int, nargs=2, default=[5, 5])
     ap.add_argument("--rank_views", type=int, default=24, help="用幾個視角算貢獻度排序")
     ap.add_argument("--score_views", type=int, default=8, help="建築組取幾張評分")
+    ap.add_argument("--reduce", default="topk_mean", choices=["topk_mean", "max", "legacy"],
+                    help="which contribution statistic to rank by")
     ap.add_argument("--targets", type=int, nargs="+",
                     default=[80_000, 160_000, 320_000, 640_000])
     a = ap.parse_args()
@@ -70,13 +72,14 @@ def main():
     # filled all K slots. Both call sites now share `topk_mean_accumulator`; the old renderer
     # version is reproduced below only to measure how much the fix moves the ranking.
     K = 5
-    push, gather = topk_mean_accumulator(K)
+    push, gather = contribution_accumulator(K, "topk_mean")
+    push_max, gather_max = contribution_accumulator(K, "max")
     legacy = [None] * K
     with torch.no_grad():
         for j, i in enumerate(rank_views):
             o = rend(cams[i].to_device(dev), model, bg_color=bg, record_transmittance=True)
             t = (o if torch.is_tensor(o) else o["transmittance"]).float()
-            push(t)
+            push(t); push_max(t)
             if legacy[0] is not None:                 # verbatim transcription of the old loop
                 m = t > legacy[0]
                 if m.any():
@@ -87,12 +90,16 @@ def main():
                 legacy = [t.clone() for _ in range(K)]
             if (j + 1) % 12 == 0:
                 print(f"  ...排序 {j + 1}/{len(rank_views)}")
+    contrib_max = gather_max()
     contrib = gather()
     contrib_legacy = torch.stack(legacy, dim=-1).mean(-1)
-    order = torch.argsort(contrib, descending=True)
+    order_topk = torch.argsort(contrib, descending=True)
+    order_max = torch.argsort(contrib_max, descending=True)
     order_legacy = torch.argsort(contrib_legacy, descending=True)
+    order = {"topk_mean": order_topk, "max": order_max, "legacy": order_legacy}[a.reduce]
 
-    print(f"\n[排序差異] 修正前後的 contribution 相關係數 "
+    print(f"\n[排序] 本次用 reduce={a.reduce}")
+    print(f"[排序差異] topk_mean vs legacy 的 contribution 相關係數 "
           f"{float(torch.corrcoef(torch.stack([contrib, contrib_legacy]))[0,1]):.4f}")
     for frac in (0.1, 0.3, 0.5):
         k = int(n0 * frac)

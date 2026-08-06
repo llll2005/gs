@@ -16,7 +16,7 @@ See 紀錄/主線_Gaussian效率.md. Used to measure how much redundancy remains
 """
 
 import torch
-from internal.utils.topk_contribution import topk_mean_accumulator
+from internal.utils.topk_contribution import contribution_accumulator
 
 from internal.density_controllers.density_controller import Utils
 
@@ -37,7 +37,7 @@ def native_2dgs_importance_prune(module, prune_percent: float, v_pow: float = 0.
     # correctly (unlike the renderer's copy, which also overwrote slot 0 mid-shift), but it was
     # still not the mean of the K largest. See `tests/topk_contribution_test.py`.
     bg = module._fixed_background_color().to(device)
-    push, gather = topk_mean_accumulator(K)
+    push, gather = contribution_accumulator(K)
     for i in range(len(cameras)):
         camera = cameras[i].to_device(device)
         push(renderer(camera, model, bg_color=bg, record_transmittance=True))  # [N]

@@ -2,7 +2,7 @@ from typing import Dict, Tuple, Union, Callable, Optional, List
 
 import lightning
 import torch
-from internal.utils.topk_contribution import topk_mean_accumulator
+from internal.utils.topk_contribution import contribution_accumulator
 import math
 from .renderer import *
 
@@ -261,7 +261,7 @@ class VanillaTrimRenderer(VanillaRenderer):
             return
         cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
         device =  module.gaussian_model.get_xyz.device
-        push, gather = topk_mean_accumulator(self.K)
+        push, gather = contribution_accumulator(self.K)
         with torch.no_grad():
             print("Trimming...")
             for i in range(len(cameras)):
@@ -294,7 +294,7 @@ class VanillaTrimRenderer(VanillaRenderer):
         
         device =  module.gaussian_model.get_xyz.device
 
-        push, gather = topk_mean_accumulator(self.K)
+        push, gather = contribution_accumulator(self.K)
         with torch.no_grad():
             print("Trimming...")
             for i in range(len(cameras)):
