@@ -99,7 +99,20 @@ for i in tqdm(checkpoint_files, desc="Loading checkpoints"):
             param_list_key_by_name.setdefault(key, []).append(value[mask_preserved])
             property_names.append(key[len(gaussian_property_dict_key_prefix):])
         elif key.startswith(density_controller_state_dict_key_prefix):
-            param_list_key_by_name.setdefault(key, []).append(value)
+            # Density-controller buffers that are PER-PRIMITIVE must take the same block mask as
+            # the gaussian properties. `VanillaDensityController` (and `CityGSV2DensityController`
+            # through it) registers `max_radii2D`, `xyz_gradient_accum` and `denom` with
+            # persistent=True, so they land here at full block length while the gaussians are
+            # already cropped -- concatenating both gives two different totals and the merged
+            # checkpoint is silently inconsistent.
+            #
+            # MCMC has no persistent per-primitive buffer (`binoms` is persistent=False), so our
+            # own merges never hit this. The self-run CityGSV2 baseline for the 25-block north
+            # star does.
+            if isinstance(value, torch.Tensor) and value.shape[:1] == mask_preserved.shape[:1]:
+                param_list_key_by_name.setdefault(key, []).append(value[mask_preserved])
+            else:
+                param_list_key_by_name.setdefault(key, []).append(value)
 
     # extract optimizer states, assume meet gaussian optimizers first
     for optimizer_idx, optimizer in enumerate(ckpt["optimizer_states"]):
