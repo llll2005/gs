@@ -172,6 +172,18 @@ class TrainConsole(ProgressBar):
         return lines
 
     def setup(self, trainer, pl_module, stage):
+        # Capture the run identity once. Without this every ledger line reads "CityGaussian" and
+        # only START is attributable (it happens to carry `out=<path>` in its detail); DONE and
+        # DIED carry only a step/VRAM snapshot, so pairing them with a run relies on ordering and
+        # breaks as soon as two runs interleave.
+        try:
+            parts = [q for q in str(pl_module.hparams["output_path"]).rstrip("/").split(os.sep) if q]
+            if len(parts) >= 3 and parts[-2] == "blocks":
+                self._ledger_name = f"{parts[-3]}/{parts[-1]}"   # <run>/block_N
+            elif parts:
+                self._ledger_name = parts[-1]
+        except Exception:
+            pass
         super().setup(trainer, pl_module, stage)
         if stage != "fit":
             return
@@ -257,7 +269,18 @@ class TrainConsole(ProgressBar):
             pass                                   # a ledger must never take the run down
 
     def _run_name(self) -> str:
-        return getattr(self._state, "run_name", None) or "run"
+        """Identify the run in the ledger.
+
+        `self._state.run_name` is never populated, so every line used to read "CityGaussian" and
+        only START could be attributed at all -- it happens to carry `out=<path>` in its detail.
+        DONE and DIED carry only a step/VRAM snapshot, so pairing them with a run relied on
+        ordering, which breaks the moment two runs interleave.
+
+        `output_path` is `outputs/<name>/blocks/block_<id>`, so the two trailing components give
+        `<name>/block_N` -- unique per arm and short enough for the column.
+        """
+        return (getattr(self._state, "run_name", None)
+                or getattr(self, "_ledger_name", None) or "run")
 
     def _progress_snapshot(self) -> str:
         """step/N/speed/VRAM straight from the live footer — no parsing of anything."""
