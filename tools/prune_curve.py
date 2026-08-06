@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from eval_official_test import load_test_cameras
 from internal.utils.gaussian_model_loader import GaussianModelLoader
+from internal.utils.topk_contribution import topk_mean_accumulator
 
 GRAD = lambda t: float((t[:, 1:, :] - t[:, :-1, :]).abs().mean()
                        + (t[:, :, 1:] - t[:, :, :-1]).abs().mean())
@@ -64,24 +65,43 @@ def main():
     bg = torch.zeros(3, device=dev)
     print(f"[模型] {a.name or os.path.basename(a.ckpt)}  N={n0:,}")
 
-    # contribution = mean of the top-K transmittances over views (same statistic as the trim)
+    # contribution = mean of the top-K transmittances over views (same statistic as the trim).
+    # This used to hand-roll the accumulator and got it wrong in its own way -- a single value
+    # filled all K slots. Both call sites now share `topk_mean_accumulator`; the old renderer
+    # version is reproduced below only to measure how much the fix moves the ranking.
     K = 5
-    top = [torch.zeros(n0, device=dev) for _ in range(K)]
+    push, gather = topk_mean_accumulator(K)
+    legacy = [None] * K
     with torch.no_grad():
         for j, i in enumerate(rank_views):
             o = rend(cams[i].to_device(dev), model, bg_color=bg, record_transmittance=True)
             t = (o if torch.is_tensor(o) else o["transmittance"]).float()
-            for k in range(K):                       # keep the K largest per primitive
-                bigger = t > top[k]
-                if not bigger.any():
-                    break
-                for m in range(K - 1, k, -1):
-                    top[m][bigger] = top[m - 1][bigger]
-                top[k][bigger] = t[bigger]
+            push(t)
+            if legacy[0] is not None:                 # verbatim transcription of the old loop
+                m = t > legacy[0]
+                if m.any():
+                    for q in range(K - 1):
+                        legacy[K - 1 - q][m] = legacy[K - 2 - q][m]
+                        legacy[0][m] = t[m]
+            else:
+                legacy = [t.clone() for _ in range(K)]
             if (j + 1) % 12 == 0:
                 print(f"  ...排序 {j + 1}/{len(rank_views)}")
-    contrib = torch.stack(top).mean(0)
+    contrib = gather()
+    contrib_legacy = torch.stack(legacy, dim=-1).mean(-1)
     order = torch.argsort(contrib, descending=True)
+    order_legacy = torch.argsort(contrib_legacy, descending=True)
+
+    print(f"\n[排序差異] 修正前後的 contribution 相關係數 "
+          f"{float(torch.corrcoef(torch.stack([contrib, contrib_legacy]))[0,1]):.4f}")
+    for frac in (0.1, 0.3, 0.5):
+        k = int(n0 * frac)
+        # NB: do not name these `a`/`b` -- `a` is the argparse namespace and shadowing it here
+        # made `a.targets` fail three lines later. Same class of mistake as the `i` shadowing
+        # found in the trim renderer this afternoon.
+        new_set, old_set = set(order[:k].tolist()), set(order_legacy[:k].tolist())
+        print(f"  保留前 {100*frac:.0f}% 時，兩者選出的集合重疊 "
+              f"{100*len(new_set & old_set)/max(k,1):5.1f}%")
 
     saved = {k: v.detach().clone() for k, v in model.gaussians.items()}
 
