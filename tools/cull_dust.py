@@ -1,8 +1,23 @@
 # -*- coding: utf-8 -*-
 """Deployment dust-cull: strip the zombie points (o<0.05 AND sub-pixel scale)
 from a trained ckpt. Verified lossless on b12 (render_dust_ablation: removing
-86.5% of points changed the render by -0.000 dB, images bit-identical — the
-rasterizer never draws them).
+86.5% of points changed the render by -0.000 dB, images bit-identical).
+
+⚠ THE MECHANISM IN THE OLD DOCSTRING ("the rasterizer never draws them") IS WRONG, measured
+2026-08-06 on oreg_0p002_b12. The default `--px 0.00155` is calibrated for a viewing distance of
+~3.0, but each point's nearest training camera sits at p50 1.80 and p1 0.29 -- up to 10x closer.
+Of the 93,074 points the default culls, their projected radius at their OWN nearest camera is
+
+    p50 0.208 px    p90 1.435 px    max 35.3 px
+    16.8% exceed 1 px,  31.7% exceed half a pixel
+
+so a sixth of them are NOT sub-pixel and the rasterizer does draw them: opacity below 0.05 is
+still above the 1/255 alpha cutoff. The losslessness is real but comes from somewhere else --
+`T*alpha < 0.05` rounds away in the 8-BIT OUTPUT. That is a much thinner margin than "never drawn",
+and it degrades as a viewer moves closer than the training cameras did.
+
+Use `--min_view_dist` for anything that will be viewed from closer than training, and `--audit` to
+print the projected-size distribution of what a given threshold would remove before trusting it.
 
 Writes <out>.ckpt (loadable via --model.initialize_from, e.g. for merge /
 consolidation / further finetune) and optionally a summary of the size cut.
@@ -29,6 +44,10 @@ def main():
                     help="conservative mode: tighten the px threshold so culled points stay "
                          "sub-pixel even at this closest viewer distance (default calibration "
                          "assumes ~3.0 units); e.g. 0.3 tightens the threshold 10x")
+    ap.add_argument("--audit", action="store_true",
+                    help="report the projected radius (at each point's OWN nearest training "
+                         "camera) of everything the threshold would cull, and refuse to claim "
+                         "losslessness silently. Costs one KD-tree query; run it once per scene.")
     ap.add_argument("--ply", default=None, help="also export the culled model as a .ply (for eyeballing in a viewer)")
     args = ap.parse_args()
 
