@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nvidia-smi)",
+      "Bash(lscpu)",
+      "Bash(nvcc --version)",
+      "Bash(python3 -c \"from simple_knn._C import distCUDA2; print\\('simple_knn OK'\\)\")",
+      "Bash(python3 -c \"import torch; print\\(torch.__version__\\)\")",
+      "Bash(python3 -c \"import lightning; print\\(lightning.__version__\\)\")",
+      "Bash(python3 -c \"import sys; print\\(sys.prefix\\)\")",
+      "Bash(python3 -c \"import simple_knn; print\\('ok'\\)\")",
+      "Bash(python3 -c \"from diff_trim_surfel_rasterization import GaussianRasterizer; print\\('rasterizer ok'\\)\")",
+      "Bash(python3 -c \"import add_pypath; from internal.gaussian_splatting import GaussianSplatting; print\\('core import ok'\\)\")",
+      "Bash(python3 -c \"import py3nvml; help\\(py3nvml.get_free_gpus\\)\")",
+      "Bash(python3 *)",
+      "Bash(conda run *)",
+      "Read(//home/LnoArch/Projects/專題/CityGaussianbc/submodules/**)",
+      "Read(//home/LnoArch/Projects/專題/CityGaussianbc/**)",
+      "Read(//home/LnoArch/miniconda3/envs/gspl/**)",
+      "Bash(ln -sf /home/LnoArch/miniconda3/pkgs/cuda-nvcc-11.8.89-0/bin/nvcc /home/LnoArch/miniconda3/envs/gspl/bin/nvcc)",
+      "Bash(ln -sf /home/LnoArch/miniconda3/pkgs/cuda-nvcc-11.8.89-0/nvvm /home/LnoArch/miniconda3/envs/gspl/nvvm)",
+      "Bash(rm /home/LnoArch/miniconda3/envs/gspl/bin/nvcc)",
+      "Bash(rm /home/LnoArch/miniconda3/envs/gspl/nvvm/nvvm)",
+      "Bash(python utils/get_depth_scales.py data/matrix_city/aerial/train/block_all)",
+      "Bash(python *)"
+    ]
+  }
+}

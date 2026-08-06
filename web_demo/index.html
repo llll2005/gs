@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>CityGaussian Web Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; color: #eee; font-family: sans-serif; overflow: hidden; }
+    canvas { display: block; }
+
+    /* ── top progress bar ─────────────────────────────────────── */
+    #prog-track {
+      position: fixed; top: 0; left: 0; right: 0; height: 3px;
+      z-index: 200; overflow: hidden; opacity: 0;
+      transition: opacity 0.3s;
+    }
+    #prog-track.visible { opacity: 1; }
+    #prog-bar {
+      height: 100%; width: 0%;
+      background: #4af;
+      transition: width 0.25s ease, background 0.3s;
+    }
+    #prog-bar.indeterminate {
+      width: 35% !important;
+      animation: slide 1.4s ease-in-out infinite;
+    }
+    @keyframes slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(320%); }
+    }
+    #prog-bar.done  { background: #4c8; }
+    #prog-bar.error { background: #e44; width: 100% !important; animation: none; }
+
+    /* ── stage label under progress bar ──────────────────────── */
+    #prog-label {
+      position: fixed; top: 6px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px; color: #aaa;
+      background: rgba(0,0,0,0.6); padding: 2px 10px; border-radius: 10px;
+      z-index: 200; opacity: 0; transition: opacity 0.3s;
+      white-space: nowrap;
+    }
+    #prog-label.visible { opacity: 1; }
+
+    /* ── side panel ───────────────────────────────────────────── */
+    #ui {
+      position: fixed; top: 24px; left: 16px; z-index: 10;
+      background: rgba(0,0,0,0.6); border-radius: 8px; padding: 12px 16px;
+      font-size: 13px; line-height: 1.8; min-width: 280px;
+    }
+    #ui h2 { font-size: 15px; margin-bottom: 4px; }
+    #ui select {
+      width: 100%; margin-top: 4px;
+      background: #222; color: #eee; border: 1px solid #555;
+      padding: 4px 6px; border-radius: 4px; font-size: 12px;
+    }
+    .btn {
+      display: inline-block; cursor: pointer;
+      background: #2a6; color: #fff;
+      padding: 4px 10px; border-radius: 4px; font-size: 12px;
+      margin-top: 6px;
+    }
+    #hint { color: #555; font-size: 11px; margin-top: 4px; }
+
+    /* ── drop overlay ─────────────────────────────────────────── */
+    #drop-overlay {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(30,100,200,0.18);
+      border: 3px dashed #4af;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px; color: #4af;
+      pointer-events: none; opacity: 0;
+      transition: opacity 0.15s;
+    }
+    #drop-overlay.active { opacity: 1; }
+
+    /* ── status bar ───────────────────────────────────────────── */
+    #status {
+      position: fixed; bottom: 16px; left: 16px;
+      font-size: 12px; color: #888;
+      background: rgba(0,0,0,0.5); padding: 4px 10px; border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- progress bar -->
+<div id="prog-track"><div id="prog-bar"></div></div>
+<div id="prog-label"></div>
+
+<!-- drop overlay -->
+<div id="drop-overlay">放開以載入</div>
+
+<!-- side panel -->
+<div id="ui">
+  <h2>CityGaussian Demo</h2>
+  <div style="color:#aaa;font-size:11px">MatrixCity aerial · 2DGS · RTG-SLAM init</div>
+  <div style="margin-top:8px">
+    <select id="sel" onchange="loadByName(this.value)">
+      <option disabled selected>— 尚無 .ply 檔案 —</option>
+    </select>
+  </div>
+  <label class="btn">
+    開啟 .ply / .ckpt
+    <input id="filePicker" type="file" accept=".ply,.ckpt" style="display:none"
+           onchange="handleFileInput(this)">
+  </label>
+  <div id="hint">拖曳 .ply 或 .ckpt 到視窗任意位置</div>
+</div>
+
+<div id="status">就緒</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@sparkjsdev/spark": "https://sparkjs.dev/releases/spark/2.1.0/spark.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+
+// ── Scene ─────────────────────────────────────────────────────────────────
+const scene    = new THREE.Scene();
+const camera   = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 5000);
+camera.position.set(0, -30, 80);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+const spark    = new SparkRenderer({ renderer });
+scene.add(spark);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const sel          = document.getElementById("sel");
+const statusEl     = document.getElementById("status");
+const progTrack    = document.getElementById("prog-track");
+const progBar      = document.getElementById("prog-bar");
+const progLabel    = document.getElementById("prog-label");
+const dropOverlay  = document.getElementById("drop-overlay");
+
+// ── Progress bar ──────────────────────────────────────────────────────────
+let hideTimer = null;
+
+function setProgress(pct, label, state = "normal") {
+  // state: "normal" | "indeterminate" | "done" | "error"
+  clearTimeout(hideTimer);
+  progTrack.classList.add("visible");
+  progLabel.classList.add("visible");
+  progLabel.textContent = label;
+
+  progBar.classList.remove("indeterminate", "done", "error");
+  if (state === "indeterminate") {
+    progBar.classList.add("indeterminate");
+  } else {
+    progBar.style.width = pct + "%";
+    if (state === "done")  progBar.classList.add("done");
+    if (state === "error") progBar.classList.add("error");
+  }
+
+  statusEl.textContent = label;
+
+  if (state === "done" || state === "error") {
+    hideTimer = setTimeout(() => {
+      progTrack.classList.remove("visible");
+      progLabel.classList.remove("visible");
+      progBar.style.width = "0%";
+      progBar.classList.remove("done", "error");
+    }, state === "done" ? 1500 : 4000);
+  }
+}
+
+// ── Splat state ───────────────────────────────────────────────────────────
+let currentSplat = null;
+let currentFile  = null;
+let lastTs       = 0;
+
+async function loadSplat(url, label) {
+  setProgress(null, `載入中：${label}`, "indeterminate");
+  if (currentSplat) { scene.remove(currentSplat); currentSplat = null; }
+
+  try {
+    const splat = new SplatMesh({ url });
+    scene.add(splat);
+    currentSplat = splat;
+    await splat.waitUntilReady?.();
+    setProgress(100, label, "done");
+  } catch (e) {
+    setProgress(100, `錯誤：${e.message}`, "error");
+    throw e;
+  }
+}
+
+// ── Load from server-side filename ────────────────────────────────────────
+window.loadByName = async function(filename) {
+  if (filename === currentFile) return;
+  currentFile = filename;
+  await loadSplat(filename, filename);
+};
+
+// ── Upload file to server then load from server URL ───────────────────────
+async function uploadToServer(file, endpoint, plyName, stageLabel) {
+  const sizeMB = (file.size / 1e6).toFixed(1);
+
+  // cache check
+  const cached = await fetch("/files.json").then(r => r.json()).catch(() => []);
+  if (cached.includes(plyName)) {
+    setProgress(100, `已有快取：${plyName}`, "done");
+    await refreshFileList();
+    sel.value = plyName;
+    currentFile = null;
+    await loadSplat(plyName, plyName);
+    return;
+  }
+
+  await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) {
+        const pct = Math.round(e.loaded / e.total * 100);
+        setProgress(pct, `${stageLabel}：${file.name}  ${pct}%  (${sizeMB} MB)`);
+      }
+    };
+    xhr.onload = async () => {
+      if (xhr.status !== 200) {
+        setProgress(100, `伺服器錯誤 ${xhr.status}`, "error");
+        return reject(new Error(`HTTP ${xhr.status}`));
+      }
+      const res = JSON.parse(xhr.responseText);
+      if (!res.ok) {
+        setProgress(100, `失敗：${res.error}`, "error");
+        return reject(new Error(res.error));
+      }
+      await refreshFileList();
+      sel.value = res.file;
+      currentFile = null;
+      await loadSplat(res.file, res.file).then(resolve).catch(reject);
+    };
+    xhr.onerror = () => {
+      setProgress(100, "連線失敗 — serve.py 是否正在執行？", "error");
+      reject(new Error("upload failed"));
+    };
+    setProgress(0, `準備上傳：${file.name}  (${sizeMB} MB)`);
+    xhr.open("POST", endpoint);
+    xhr.setRequestHeader("X-Filename", plyName);
+    xhr.send(file);
+  });
+}
+
+// ── Upload .ply → server stores → load from server URL ───────────────────
+async function uploadPly(file) {
+  const mb = Math.round(file.size / 1e6);
+  const plyName = file.name.replace(/\.ply$/, "") + `_${mb}mb.ply`;
+  await uploadToServer(file, "/upload", plyName, "上傳");
+}
+
+// ── Upload .ckpt → server converts → load PLY ────────────────────────────
+async function uploadAndConvert(file) {
+  const mb = Math.round(file.size / 1e6);
+  const plyName = file.name.replace(/\.ckpt$/, "") + `_${mb}mb.ply`;
+  await uploadToServer(file, "/convert", plyName, "上傳");
+}
+
+// wait for converting stage after upload completes
+const _origLoadSplat = loadSplat;
+// patch: show "converting" between upload finish and splat load
+async function loadSplatWithConvertStage(url, label) {
+  if (!url.endsWith(".ply") || url.startsWith("blob:")) {
+    return _origLoadSplat(url, label);
+  }
+  setProgress(null, `轉換中，請稍候…`, "indeterminate");
+  return _origLoadSplat(url, label);
+}
+
+// ── File input handler ────────────────────────────────────────────────────
+async function handleFile(file) {
+  if (!file) return;
+
+  // read first 4 bytes to detect actual format regardless of extension
+  const magic = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  const isPly  = magic[0] === 0x70 && magic[1] === 0x6C && magic[2] === 0x79; // 'ply'
+  const isCkpt = magic[0] === 0x50 && magic[1] === 0x4B;                      // 'PK' (zip)
+
+  if (isPly)       uploadPly(file);
+  else if (isCkpt) uploadAndConvert(file);
+  else setProgress(100, `無法識別格式（${file.name}）`, "error");
+}
+
+window.handleFileInput = (input) => { handleFile(input.files[0]); input.value = ""; };
+
+// ── Drag & drop ───────────────────────────────────────────────────────────
+let dragCount = 0;
+document.addEventListener("dragenter", e => {
+  if ([...e.dataTransfer.items].some(i => i.kind === "file")) {
+    dragCount++;
+    dropOverlay.classList.add("active");
+  }
+});
+document.addEventListener("dragleave", () => {
+  if (--dragCount <= 0) { dragCount = 0; dropOverlay.classList.remove("active"); }
+});
+document.addEventListener("dragover",  e => e.preventDefault());
+document.addEventListener("drop", e => {
+  e.preventDefault();
+  dragCount = 0;
+  dropOverlay.classList.remove("active");
+  handleFile(e.dataTransfer.files[0]);
+});
+
+// ── Server file list ──────────────────────────────────────────────────────
+async function refreshFileList() {
+  const files = await fetch("/files.json").then(r => r.json()).catch(() => []);
+  const prev  = [...sel.options].map(o => o.value);
+  const added = files.filter(f => !prev.includes(f));
+  for (const f of added) {
+    const opt = document.createElement("option");
+    opt.value = opt.textContent = f;
+    sel.appendChild(opt);
+  }
+  if (files.length > 0 && sel.options[0]?.disabled) sel.remove(0);
+}
+
+async function pollCurrent() {
+  try {
+    const data = await fetch("/current.json").then(r => r.json());
+    if (data.ts > lastTs && data.file) {
+      lastTs = data.ts;
+      await refreshFileList();
+      sel.value = data.file;
+      currentFile = null;
+      await loadSplat(data.file, data.file);
+    }
+  } catch (_) {}
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+await refreshFileList();
+if (sel.options.length && !sel.options[0].disabled) {
+  await loadByName(sel.options[0].value);
+} else {
+  statusEl.textContent = "拖曳 .ply 或 .ckpt 進來開始";
+}
+
+setInterval(pollCurrent,     1500);
+setInterval(refreshFileList, 5000);
+
+// ── Resize ────────────────────────────────────────────────────────────────
+window.addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>

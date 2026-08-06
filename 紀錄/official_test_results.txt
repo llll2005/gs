@@ -1,0 +1,38 @@
+===== 官方 held-out test 評測  2026-08-01 13:41:59 =====
+說明：單塊模型只在「該塊訓練相機 AABB 內的測試視角」上評分，是下界
+（官方協定評的是合併後的 25 塊模型，這裡的塊邊界外內容根本不存在）
+
+---------- b12_cap2m_reg000_exact (block 12) ----------
+  __import__("pkg_resources").declare_namespace(__name__)
+[選視角] block 12: 訓練相機 284 台 → AABB x[-1.53,2.01] y[-1.58,1.17]  落在其中的測試視角 30/741 幀
+[模型] N=1,799,999
+
+=== 官方 held-out test（30 幀）===
+PSNR  15.020   (min 13.09 / max 17.30)
+SSIM  0.3454
+LPIPS 0.6791
+
+          來源區塊     幀    PSNR    SSIM   LPIPS
+  block_9_test    16  14.831  0.3438  0.7169
+  block_8_test    14  15.235  0.3473  0.6359
+[圖] outputs/b12_cap2m_reg000_exact/official_test_vis（左=GT 右=渲染）
+
+---------- oreg_0p0_b12 (block 12) ----------
+  __import__("pkg_resources").declare_namespace(__name__)
+[選視角] block 12: 訓練相機 284 台 → AABB x[-1.53,2.01] y[-1.58,1.17]  落在其中的測試視角 30/741 幀
+[模型] N=900,000
+
+=== 官方 held-out test（30 幀）===
+PSNR  14.997   (min 12.92 / max 17.40)
+SSIM  0.3558
+LPIPS 0.6992
+
+          來源區塊     幀    PSNR    SSIM   LPIPS
+  block_9_test    16  14.810  0.3544  0.7441
+  block_8_test    14  15.211  0.3575  0.6479
+[圖] outputs/oreg_0p0_b12/official_test_vis（左=GT 右=渲染）
+
+---------- oreg_0p007_b12 (block 12) ----------
+  __import__("pkg_resources").declare_namespace(__name__)
+終止                     python tools/eval_official_test.py --ckpt outputs/oreg_0p007_b12/blocks/block_12/checkpoints/epoch=212-step=60000.ckpt --block 12 --save_dir outputs/oreg_0p007_b12/official_test_vis
+ERROR conda.cli.main_run:execute(142): `conda run python tools/eval_official_test.py --ckpt outputs/oreg_0p007_b12/blocks/block_12/checkpoints/epoch=212-step=60000.ckpt --block 12 --save_dir outputs/oreg_0p007_b12/official_test_vis` failed. (See above for error)

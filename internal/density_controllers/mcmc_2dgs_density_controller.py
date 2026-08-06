@@ -1,0 +1,726 @@
+"""
+3DGS-MCMC adapted for 2D Gaussian Surfels (2DGS).
+
+Base: `MCMCDensityController` (internal/density_controllers/mcmc_density_controller.py),
+which is written for 3DGS (3D scale). This subclass makes three minimal, code-level
+adaptations so MCMC's relocation + noise work on Gaussian2D (2D surfel scale). See
+`紀錄/MCMC整合分析.md` and `紀錄/主線_Gaussian效率.md` §3 for the rationale.
+
+Why these three (verified against source, 2026-06-07):
+  1. relocation scale dim — gsplat `compute_relocation` requires scales [N, 3] (CUDA loops
+     i<3). But the relocation coefficient comes ONLY from opacity (CUDA `cuda_rasterizer/
+     utils.cu`: opacity_new = 1-(1-o)^(1/N); coeff = o/denom(o); scale_new = coeff*scale_old),
+     so it is scale-dimension-agnostic. We pad the 2D scale with a zero 3rd component, call
+     gsplat, then truncate back to 2D — exact for the two real components.
+  2. noise geometry — the parent shapes xyz noise by the 3D covariance. For a 2D surfel the
+     normal-direction scale is implicitly 0; building a real 3D covariance would push new
+     points OFF the surfel plane along the normal, destroying the geometry 2DGS fits. We pad
+     the 2D scale with a zero normal component before `compute_cov_3d`, so the covariance has
+     zero normal variance and the noise stays in the tangent plane.
+  3. setup — the parent only registers the noise hook when `initialize_from is None`, and it
+     clobbers opacities/scales (would destroy our alpha=0.99 depth-init prior). We register
+     the hook unconditionally and skip the clobber whenever we initialize from a prior.
+"""
+
+from dataclasses import dataclass
+import math
+import time
+from typing import Dict, Tuple
+
+import torch
+from lightning import LightningModule
+from gsplat.relocation import compute_relocation
+
+from internal.utils.gaussian_projection import compute_cov_3d
+from .density_controller import DensityControllerImpl, Utils
+from .mcmc_density_controller import MCMCDensityController, MCMCDensityControllerImpl
+
+
+@dataclass
+class MCMC2DGSDensityController(MCMCDensityController):
+    """MCMC density controller for 2D Gaussian surfels. Same config as the 3DGS MCMC
+    controller (cap_max, noise_lr, densify_*, min_opacity, N_max); only the impl differs."""
+
+    screen_size_prune_px: int = -1
+    """>0 enables screen-size recycling: at each densify event, Gaussians whose max screen
+    radius over the last interval exceeds this many pixels are added to the dead mask and
+    recycled by relocation. MCMC has no counterpart of vanilla ADC's max_screen_size prune,
+    so mid-opacity near-camera monsters (radius ∝ scale/depth, single splat can cover the
+    whole frame) survive both relocation (opacity > min_opacity) and contribution trimming
+    (transmittance > 0) while their rasterizer buffers (∝ intersections) blow up 6GB VRAM.
+    Measured on MC-aerial block_12: cameras fly z 1.5-5.0 through content airspace, nearest
+    point-camera distance 0.017, 106k point-camera pairs within 1.0 → deterministic OOM at
+    step ~3-4k. -1 keeps the stock MCMC behavior."""
+
+    densify_grad_scaler: float = 0.0
+    """gaussian_splatting.py:433 reads this when the metric emits an `extra_loss` (CityGSV2
+    hard-depth reg) to rebalance the viewspace-grad used for *gradient-based* densification.
+    MCMC densifies via relocate/add_new (not viewspace grad), so this is irrelevant here.
+    0.0 makes `max(scaler * ratio, 1.0) == 1.0` → the viewspace grad is left unchanged (no-op);
+    both backward passes still accumulate into the real parameter grads."""
+
+    min_opacity_final: float = -1.
+    """Zombie-recycling fix (2026-07-19): if > 0, exponentially anneal the relocation
+    death line from `min_opacity` up to this value between densify_from_iter and
+    min_opacity_anneal_end_iter. Root cause being fixed: the opacity-L1 equilibrium
+    parks crushed points at o~0.01-0.05, ABOVE the 0.005 death line — they never die,
+    never relocate, never render (sub-pixel dust), yet occupy cap and model VRAM
+    (measured b12: 96.6% of points carry 0.1% of render mass). Raising the line past
+    the parking band converts zombies back into relocation supply. The exponential
+    curriculum (Gemini round-5 endorsed) avoids a one-shot relocation storm."""
+
+    min_opacity_anneal_end_iter: int = 15_000
+    """step at which the annealed death line reaches min_opacity_final"""
+
+    min_opacity_anneal_start_iter: int = -1
+    """step at which the death-line annealing starts; -1 = densify_from_iter.
+    Gemini round-6 'condensation forcing' recipe sets this to the densify TAIL
+    (e.g. 30k -> 42k): losers are pushed over the death line while relocation is
+    still on, so they are recycled into probes instead of piling up as zombies
+    when relocation shuts off."""
+
+    harvest_dust_trim_interval: int = -1
+    """>0 enables periodic dust trimming DURING the harvest phase (after
+    densify_until_iter): every this many steps, prune points that are both
+    near-transparent (opacity < harvest_dust_opacity) and sub-pixel
+    (max tangent scale < harvest_dust_px). Rationale (2026-07-19 audits): dust
+    forms progressively during harvest (0.3% at 42k -> 86.5% at 60k) as the
+    L1s crush condensation losers, and with relocation off nothing removes the
+    corpses — they render nothing (verified -0.000 dB / bit-identical on b12)
+    while paying O(N) projection + optimizer + model-VRAM tax for 18k steps.
+    -1 keeps stock behavior."""
+
+    harvest_dust_opacity: float = 0.05
+
+    harvest_dust_px: float = 0.00155
+    """scene-units size of one pixel at typical view distance (b12-calibrated);
+    scale this with your scene if reusing elsewhere"""
+
+    err_guided_densify: float = 0.0
+    """>0 steers add_new_gs toward unexplained error; 0.0 = DIAGNOSTIC ONLY (measure, change
+    nothing). MCMC picks split sites with `probs = get_opacities()` -- there is no error term at
+    all, so it densifies wherever mass already is, not where the render is wrong. Every other
+    densifier we read uses an error-ish signal (FastGS counts high-error pixels in the footprint,
+    Taming weights 8 signals, Mini-Splatting uses max-contribution area). Ours is the least
+    informed of them, and the working-set audit says 89% of primitives carry 5% of render mass.
+
+    Signal (FastGS's, approximated at tile resolution so no CUDA change is needed): per step,
+    |render - gt| pooled to the 16px tile grid, gathered at each primitive's projected centre and
+    accumulated until the next densify event. The buffer self-heals on any N change, which is what
+    we want -- an event consumes exactly the error accumulated since the previous one.
+
+    When >0: `probs = opacity * (1 + err_guided_densify * normalised_err)`. Multiplicative, not a
+    replacement: MCMC's split formula o_new = 1-(1-o)^(1/N) divides a parent's opacity among its
+    children, so sampling a low-opacity parent just makes fainter children. Keeping opacity as
+    the base preserves that, and only steers where the mass goes. Taming's score is a weighted
+    product for the same reason."""
+
+    dar_lambda: float = 0.0
+    """>0 enables DAR-style decoupled, COST-AWARE opacity regularization — the unified
+    framework in `紀錄/現行方案與公式.md` §1. Set the metric's opacity_reg
+    to 0 when using this (the point is to take the regularizer OUT of the loss).
+
+    Derivation: the VRAM budget is a constraint, not a loss term. Relax the discrete
+    "does primitive i exist" by its opacity and the Lagrangian gives
+
+        min ℓ(θ)  s.t. Σ_i c_i·o_i ≤ B   ⇒   ∂L/∂o_i = ∂ℓ/∂o_i + λ·c_i
+
+    so the regularization gradient IS the shadow price times the primitive's cost.
+    MCMC's plain opacity L1 is the c_i ≡ 1 special case — the formal statement of this
+    project's thesis that COUNT IS THE WRONG UNIT OF ACCOUNT. AdamW-GS (ICLR 2026,
+    arXiv 2601.16736) fixes HOW the penalty is applied (decouple it from Adam's moments,
+    precondition by 1/√v̂) but keeps c_i ≡ 1; we supply the c_i.
+
+    Applied post-optimizer-step, so Adam's moments track only the photometric gradient:
+
+        o_logit_i −= lr_o · min( λ · ĉ_i · u_i , dar_clip ),   u_i = √ε/√(v̂_i+ε) ∈ (0,1]
+        ĉ_i = dar_cost_storage + log1p(min(r_i², H²+W²) / median(r²))
+
+    ĉ_i is capped at the screen diagonal² (a splat cannot cost more than the frame), then
+    log-compressed and median-normalised: raw radii² was measured to span 5.8e11× on b12
+    because the projection Jacobian is singular as z→0. The constant term is the per-point
+    model-state tax (F·4·M bytes, independent of screen footprint) — it keeps dust decaying
+    slowly instead of accumulating without bound.
+
+    Predictions (CPU-verified on b12@30k using that run's own Adam state, λ=0.05/C_t=0.25:
+    dust dies in 3621 steps vs 64-106 under stock L1+Adam = 34-57x slower, fog in 1614,
+    large-footprint in 519, normal geometry in 7051; cost ratio 6.98x, 0% clipped):
+    sub-pixel dust gets LESS pressure than plain L1 (its c_i is tiny) so the 63% relocation
+    treadmill shrinks; near-camera monsters get far MORE (their c_i explodes) so they die fast — which DAR alone cannot do, since a monster
+    covers many pixels and therefore has photometric gradient that protects it.
+    Also continuous (every step) rather than event-based, closing the 150-step gap in
+    which monsters grow. 0.0 = off."""
+
+    dar_cost_storage: float = 0.1
+    """constant term in ĉ_i = the per-point model-state tax (人頭稅); keeps invisible dust
+    under slow decay pressure so it cannot accumulate unbounded (the reg=0 failure mode)"""
+
+    dar_eps: float = 1e-8
+    """ε inside √(v̂+ε) (AdamW-GS Eq.8). Also the normaliser: u = √ε/√(v̂+ε) ∈ (0,1].
+    Measured b12@30k: opacity gradients are so small (v̂ median 1.2e-17 ≪ ε) that u ≈ 1 for
+    99% of points — i.e. **the DAR preconditioner is inert in this regime** and ĉ does all
+    the work. Keep the term anyway: it costs nothing and engages wherever v̂ ≳ ε (early
+    training, other scenes). Note (per review): v̂ is a squared-gradient EMA, so it measures
+    the photometric loss's ABSOLUTE SENSITIVITY to the primitive, not a signed utility —
+    "wants to be opaque" and "wants to vanish" both give large √v̂."""
+
+    dar_clip: float = 0.25
+    """C_t in AdamW-GS Eq.8. Not just numerical safety: it is a rate limit, so it sets a
+    GUARANTEED MINIMUM SURVIVAL TIME for any primitive —
+
+        t_death ≥ Δlogit / (lr_o · C_t),   Δlogit = 5.29 for o: 0.5 → 0.005 (min_opacity)
+
+    C_t must sit ABOVE the most expensive group's stride or the clip binds and flattens ĉ's
+    spread — the failure this mechanism exists to avoid. Measured b12@30k with λ=0.05:
+    strides run 0.015 (normal) / 0.029 (dust) / 0.204 (large footprint), so C_t=0.25 leaves
+    0% saturated and preserves the full 6.98x cost ratio, with a floor of 423 steps of life.
+    C_t=0.1 clips 30% of points and collapses the ratio to 3.42x."""
+
+    max_relocate_frac: float = 0.0
+    """>0 caps how much of the population may be relocated in one densify event — a gate
+    MCMC does not have (verified 2026-07-28: `relocate_gs` samples hosts by opacity with no
+    volume limit and no gradient gate; Gemini's claim that MCMC-GS gates on positional
+    gradient is a misattribution of vanilla ADC's split/clone criterion).
+
+    Why it is needed (問題與應對總表 B0, the death treadmill): on b12 at 30k, 63.4% of points
+    sit below the death line and ALL of them are relocated every 150 steps (616k points onto
+    355k hosts). The mechanism is forced, not incidental: relocation hands a point back at
+    o≈0.11 (measured), the opacity L1 walks its logit down ~lr=0.05 per step, so it crosses
+    0.005 again in ~64 steps — well inside the 150-step event gap. The population never
+    settles; this is why b12 is slow, why it sits near OOM, and why any mechanism that ADDS
+    condemnation (condensation annealing, v/c) OOMs on top of it.
+
+    Which dead points get the budget: the most EXPENSIVE ones first (largest screen footprint
+    from the max-radii window), because recycling those is what actually reduces the binning
+    load — a cost-aware relocation gate. Falls back to lowest-opacity-first when no radii
+    window is available. The rest simply stay put this event (they are dust: they keep paying
+    model-state VRAM but stop paying the relocation/churn cost).
+    0.0 = off (stock MCMC: relocate everything)."""
+
+    vpc_prune_frac: float = 0.0
+    """>0 enables the value-per-cost recycling channel (2026-07-25). Each densify event,
+    recycle the bottom `vpc_prune_frac` of Gaussians ranked by
+
+        v_i / c_i  =  [multi-view Σ(T·α) / covered_pixels]  /  [screen tile footprint]
+
+    i.e. render-grounded VALUE over render-grounded COST — the natural completion of the
+    cost-aware thesis (we补了成本 but left value at opacity, an intrinsic property).
+    Why it matters: the near-camera monster has opacity 0.028 (escapes the opacity death
+    line) but a frame-filling footprint, so only a value/cost ratio catches it; the same
+    criterion also kills fog (measured 82% of b12's binning intersections). Value comes
+    free from the trim rasterizer's `record_transmittance` path (T·α accumulation, no CUDA
+    change); cost reuses the max-radii window. 0.0 = off."""
+
+    vpc_interval: int = 1500
+    """how often (steps) to refresh the multi-view contribution estimate — it costs one
+    transmittance-only render pass over the training cameras, so keep it infrequent"""
+
+    screen_prune_emergency_px: int = -1
+    """>0 enables per-STEP emergency monster recycling (decoupled from the
+    densify event). After each step, if the largest screen radius seen exceeds
+    this many pixels, immediately recycle the offending Gaussians instead of
+    waiting up to densification_interval steps. Rationale (2026-07-20 CPU
+    prediction on the b12 2M near-OOM ckpt): the binning load is SPREAD over the
+    top ~5-8% largest points (not a few killable giants — top 0.1% carry only
+    3.4%), which the existing screen_size_prune already targets; the failure mode
+    is purely TEMPORAL — monsters grow past the OOM threshold within the 150-step
+    event gap. Closing that gap to 1 step is the predicted fix, pure-Python, and
+    only pays cost when a monster is actually present. Set this ABOVE the normal
+    screen_size_prune_px (e.g. prune=300, emergency=600) so routine recycling
+    stays on the event schedule and only true runaways trigger the per-step path.
+    Requires screen_size_prune_px > 0 (shares its max-radii buffer). -1 = off."""
+
+    freeze_opacity_after_densify: bool = False
+    """RTG-style harvest-phase opacity freeze: once global_step >= densify_until_iter,
+    zero out opacity grads every step (Adam skips None-grad params entirely). Rationale:
+    after densification stops, relocation is off so MCMC no longer needs the opacity
+    death-channel, yet the metric's opacity L1 keeps shrinking opacities (arm A lost
+    100k points to the end trim, 1.0M -> 0.90M). This tests whether that pressure is
+    pure attrition or a needed regularizer during the harvest/settle phase."""
+
+    def instantiate(self, *args, **kwargs) -> DensityControllerImpl:
+        assert self.cap_max > 0, "cap_max must > 0"
+        return MCMC2DGSDensityControllerImpl(self)
+
+
+class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
+    config: MCMC2DGSDensityController
+
+    def setup(self, stage: str, pl_module: LightningModule) -> None:
+        # Call the grandparent directly to bypass MCMCDensityControllerImpl.setup, which
+        # (a) only registers the noise hook for from-scratch init and (b) clobbers
+        # opacities/scales (destroying the alpha=0.99 depth-init prior).
+        DensityControllerImpl.setup(self, stage, pl_module)
+        # Keep a NON-tracked handle for the value-per-cost multi-view pass. A plain
+        # attribute would make nn.Module register pl_module as a child of this
+        # controller (which is itself pl_module's child) -> infinite recursion in
+        # module.apply (RecursionError at .to(device), hit 2026-07-25). object.__setattr__
+        # bypasses nn.Module.__setattr__, and a weakref avoids the reference cycle.
+        import weakref
+        object.__setattr__(self, "_pl_ref", weakref.ref(pl_module))
+
+        N_max = self.config.N_max
+        binoms = torch.zeros((N_max, N_max), dtype=torch.float, device=pl_module.device)
+        for n in range(N_max):
+            for k in range(n + 1):
+                binoms[n, k] = math.comb(n, k)
+        self.register_buffer("binoms", binoms, persistent=False)
+
+        if stage == "fit":
+            # Only do MCMC's opacity/scale reset when there is NO prior to preserve.
+            if pl_module.hparams["initialize_from"] is None:
+                self._opacities_and_scales_initialization(pl_module.gaussian_model)
+            # Register the xyz-noise hook regardless of initialize_from.
+            pl_module.on_train_batch_end_hooks.append(self._add_xyz_noise)
+            if self.config.dar_lambda > 0:
+                # runs after optimizer.step() -> Adam moments stay photometric-only
+                pl_module.on_train_batch_end_hooks.append(self._dar_cost_decay)
+
+    def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
+        # Same event gating as the parent, plus optional screen-size recycling (see the
+        # config docstring). The max-radii buffer is a plain tensor that self-heals on any
+        # topology change (trim/relocate/add all shift N), like the gg controller's grad buffer.
+        if self.config.screen_size_prune_px > 0 or self.config.dar_lambda > 0 \
+                or self.config.max_relocate_frac > 0 or self.config.vpc_prune_frac > 0:
+            self._update_max_radii(outputs, gaussian_model)   # cost signal for DAR / gate / v-p-c
+        self._accumulate_error_score(outputs, batch, gaussian_model)
+
+        # Option-4 emergency path: per-step monster recycle, decoupled from the
+        # densify-event schedule (closes the temporal gap that OOM'd b12@2M K=2).
+        # LATENT BUG FIXED 2026-07-28 (never ran, so no past result is affected): this path is
+        # PER-STEP, but `_max_radii2D` is a window that gets cleared at every densify event, so
+        # for ~150 steps after each event most points read 0 and the emergency prune would
+        # silently under-detect exactly when a monster is most likely to be forming. Every
+        # other consumer of the window runs AT densify events (where it holds a full interval),
+        # which is why only this path and DAR were affected. Use the analytic projection.
+        if self.config.screen_prune_emergency_px > 0:
+            from internal.utils.strip_cameras import projected_radius
+            self._max_radii2D = projected_radius(gaussian_model.get_xyz.detach(),
+                                                 gaussian_model.get_scales().detach(), batch[0])
+            hot = self._max_radii2D > self.config.screen_prune_emergency_px
+            n_hot = int(hot.sum())
+            if n_hot > 0:
+                print(f"[screen-prune EMERGENCY] step {global_step}: recycling {n_hot} runaway "
+                      f"Gaussians (radius > {self.config.screen_prune_emergency_px}px, "
+                      f"max {int(self._max_radii2D.max())}px)")
+                with torch.no_grad():
+                    if global_step < self.config.densify_until_iter:
+                        self.relocate_gs(gaussian_model, optimizers, hot)  # recycle into supply
+                    else:
+                        self._prune_points(hot, gaussian_model, optimizers)  # harvest: just remove
+                self._max_radii2D = None
+
+        if self.config.freeze_opacity_after_densify and global_step >= self.config.densify_until_iter:
+            gaussian_model.gaussians["opacities"].grad = None
+
+        if global_step >= self.config.densify_until_iter:
+            if self.config.harvest_dust_trim_interval > 0 \
+                    and global_step % self.config.harvest_dust_trim_interval == 0:
+                with torch.no_grad():
+                    o = gaussian_model.get_opacities().squeeze(-1)
+                    sc = gaussian_model.get_scales()
+                    dust = (o < self.config.harvest_dust_opacity) \
+                        & (sc.max(dim=-1).values < self.config.harvest_dust_px)
+                    n_dust = int(dust.sum())
+                    if n_dust > 0:
+                        self._prune_points(dust, gaussian_model, optimizers)
+                        print(f"[harvest-dust] step {global_step}: pruned {n_dust} dust points -> N={gaussian_model.n_gaussians}")
+            return
+        if global_step <= self.config.densify_from_iter:
+            return
+        if global_step % self.config.densification_interval != 0:
+            return
+
+        with torch.no_grad():
+            death_line = self._current_min_opacity(global_step)
+            dead_mask = (gaussian_model.get_opacities() <= death_line).squeeze(-1)
+            if self.config.min_opacity_final > 0 and global_step % 1500 == 0:
+                print(f"[death-line] step {global_step}: min_opacity {death_line:.4f}, dead {int(dead_mask.sum())}")
+            # value-per-cost channel: render-grounded value (multi-view alpha-blending
+            # contribution) over render-grounded cost (screen tile footprint). Catches
+            # what the opacity death-line cannot: the near-camera monster has o=0.028
+            # (not low enough to die) but a frame-filling footprint -> v/c collapses.
+            # ORDER MATTERS: this must run BEFORE screen_size_prune clears _max_radii2D,
+            # since both read the same radii window (see the 2026-07-27 review — the old
+            # code snapshotted the window instead, and the snapshot went stale on every
+            # add_new_gs, so v/c silently never fired).
+            vpc_mask = self._value_per_cost_mask(gaussian_model, global_step)
+            if vpc_mask is not None:
+                n_vpc = int((vpc_mask & ~dead_mask).sum())
+                dead_mask = dead_mask | vpc_mask
+                if n_vpc > 0:
+                    print(f"[value-per-cost] step {global_step}: +{n_vpc} recycled (v/c bottom {self.config.vpc_prune_frac:.1%})")
+            if self.config.screen_size_prune_px > 0 and self._max_radii2D is not None \
+                    and self._max_radii2D.shape[0] == dead_mask.shape[0]:
+                big_mask = self._max_radii2D > self.config.screen_size_prune_px
+                n_big = int(big_mask.sum())
+                if n_big > 0:
+                    dead_mask = dead_mask | big_mask
+                    print(f"[screen-size prune] step {global_step}: recycling {n_big} Gaussians with radius > {self.config.screen_size_prune_px}px (max {int(self._max_radii2D.max())}px)")
+                self._max_radii2D = None  # restart the window after each event
+            # Observability: relocate_gs has no cap, and uncapped condemnation costs a churn
+            # tax (gsplat-probe experience). Report the BREAKDOWN, not just the total —
+            # measured 2026-07-27 that a 44% total is ~38% stock opacity deaths (normal in
+            # early densify, A' had the same) + 5% v/c + <1% radius, so a bare total would
+            # cry wolf. Only the non-stock channels are ours to tune.
+            # Relocation gate: bound the churn volume, spending the budget on the most
+            # expensive dead points first (see max_relocate_frac docstring).
+            if self.config.max_relocate_frac > 0:
+                n_pts = dead_mask.shape[0]
+                budget = int(n_pts * self.config.max_relocate_frac)
+                n_dead = int(dead_mask.sum())
+                if n_dead > budget > 0:
+                    dead_idx = dead_mask.nonzero(as_tuple=True)[0]
+                    if self._max_radii2D is not None and self._max_radii2D.shape[0] == n_pts:
+                        priority = self._max_radii2D[dead_idx].float()       # cost-first
+                    else:
+                        priority = -gaussian_model.get_opacities().squeeze(-1)[dead_idx]
+                    keep = dead_idx[torch.topk(priority, budget).indices]
+                    dead_mask = torch.zeros_like(dead_mask)
+                    dead_mask[keep] = True
+                    if global_step % 1500 == 0:
+                        print(f"[reloc-gate] step {global_step}: {n_dead} dead -> relocating {budget} "
+                              f"({self.config.max_relocate_frac:.0%} cap, most-expensive first)")
+            if global_step % 1500 == 0:
+                op_frac = float((gaussian_model.get_opacities().squeeze(-1) <= death_line).float().mean())
+                print(f"[dead-mask] step {global_step}: total {float(dead_mask.float().mean()):.1%} "
+                      f"= opacity {op_frac:.1%} (stock, pre-gate) + our channels")
+            self._report_densify_blindness(gaussian_model, global_step)
+            self.relocate_gs(gaussian_model, optimizers, dead_mask)
+            self.add_new_gs(gaussian_model, optimizers)
+            self._err_score = None                 # window restarts with the next interval
+
+    _max_radii2D: torch.Tensor = None
+    _vpc_contrib: torch.Tensor = None   # cached multi-view contribution (value)
+    _vpc_step: int = -1
+
+    def _dar_report(self, global_step: int) -> None:
+        """so a silent no-op is distinguishable from a mechanism that never ran: the 1700-step
+        smoke printed nothing because %1500==0 landed on a densify-event step, where
+        screen-size pruning has just cleared the radii window."""
+        if global_step % 500 == 1:
+            st = self._dar_stats
+            print(f"[DAR-cost] step {global_step}: SKIPPED this step "
+                  f"applied={st['applied']} skip(radii/v/lr)={st['no_radii']}/{st['no_v']}/{st['no_lr']}")
+
+
+    _err_score: torch.Tensor = None
+
+    @torch.no_grad()
+    def _accumulate_error_score(self, outputs, batch, gaussian_model) -> None:
+        """Per-primitive tally of unexplained error at its screen position; see the
+        err_guided_densify docstring. Cheap: one avg_pool over the frame plus an O(N) gather."""
+        try:
+            render = outputs.get("render", None)
+            camera, image_info, _ = batch
+            gt = image_info[1]
+            if render is None or gt is None:
+                return
+            err = (render.detach() - gt).abs().mean(0, keepdim=True)[None]      # [1,1,H,W]
+            tile = torch.nn.functional.avg_pool2d(err, 16, ceil_mode=True)[0, 0]  # [gy,gx]
+            gy, gx = tile.shape
+            means = gaussian_model.get_xyz.detach()
+            pc = means @ camera.R.T + camera.T
+            z = pc[:, 2].clamp_min(0.2)
+            W, H = int(camera.width), int(camera.height)
+            u = (float(camera.fx) * pc[:, 0] / z + W / 2).div(16).long().clamp(0, gx - 1)
+            v = (float(camera.fy) * pc[:, 1] / z + H / 2).div(16).long().clamp(0, gy - 1)
+            e = tile[v, u]
+            e = torch.where(pc[:, 2] > 0.2, e, torch.zeros_like(e))             # behind camera: no claim
+            n = gaussian_model.n_gaussians
+            if self._err_score is None or self._err_score.shape[0] != n or self._err_score.device != e.device:
+                self._err_score = torch.zeros_like(e)                           # self-heal on topology change
+            self._err_score += e
+        except Exception:
+            pass                                    # a diagnostic must never take the run down
+
+    @torch.no_grad()
+    def _report_densify_blindness(self, gaussian_model, global_step: int) -> None:
+        """How much does opacity-sampling already correlate with where the error is?
+
+        add_new_gs draws parents with probability proportional to opacity, so the error density a
+        sampled parent sees is E[e] = sum(o*e)/sum(o). Compare against the plain population mean.
+        ~1.0 means opacity is blind to error and steering has something to gain; >1 means opacity
+        is already a decent proxy and the expected win is small. Computing the expectation in
+        closed form avoids having to intercept the sampler.
+        """
+        e = self._err_score
+        if e is None or e.numel() == 0 or float(e.sum()) <= 0:
+            return
+        o = gaussian_model.get_opacities().detach().squeeze(-1)
+        if o.shape[0] != e.shape[0]:
+            return
+        base = float(e.mean())
+        if base <= 0:
+            return
+        opa_w = float((o * e).sum() / o.sum().clamp_min(1e-12))
+        top = e.topk(max(1, e.numel() // 20)).values.mean()                     # what a perfect sampler would see
+        print(f"[densify-blind] step {global_step}: err@opacity-sampled/mean = {opa_w / base:.3f} "
+              f"(1.00 = blind)  ceiling(top5%)/mean = {float(top) / base:.2f}  "
+              f"err[mean/max]={base:.4f}/{float(e.max()):.4f}")
+
+    @torch.no_grad()
+    def _dar_cost_decay(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
+        """DAR-style decoupled cost-aware opacity regularization; see dar_lambda docstring
+        and `紀錄/現行方案與公式.md` §1. Runs on the on_train_batch_end hook,
+        i.e. AFTER optimizer.step(), so Adam's moments stay photometric-only (the decoupling).
+        """
+        cfg = self.config
+        if cfg.dar_lambda <= 0:
+            return
+        n = gaussian_model.n_gaussians
+        self._dar_stats = getattr(self, "_dar_stats", {"applied": 0, "no_radii": 0, "no_v": 0, "no_lr": 0})
+        # Cost from ANALYTIC projection, not the rasterizer's radii window. The window is a
+        # running max that is reset at every densify event, so for the ~150 steps after an
+        # event most points read 0 and ĉ collapses to the storage floor — measured on the
+        # first DAR smoke: ĉ median 0.10 (= floor) at steps 1001/1501 vs 0.79 mid-window,
+        # i.e. a 150-step sawtooth in the pressure. Our own §1 defines c_i = Σ_v c_iv, and
+        # a per-view analytic footprint is both closer to that and free of the window's
+        # topology fragility. Shares projected_radius() with the dynamic-K load estimator.
+        from internal.utils.strip_cameras import projected_radius
+        opa = gaussian_model.gaussians["opacities"]
+
+        # 1/√v̂ from Adam's second moment for the opacity parameter = inverse marginal
+        # utility (how much the photometric loss cares about this primitive).
+        v_hat = None
+        for opt in pl_module.gaussian_optimizers:
+            st = opt.state.get(opa, None)
+            if st is not None and "exp_avg_sq" in st:
+                v_hat = st["exp_avg_sq"]
+                break
+        if v_hat is None:
+            self._dar_stats["no_v"] += 1
+            self._dar_report(global_step)
+            return                                   # first step: no moments yet
+        v = v_hat.squeeze(-1)
+        st = opt.state.get(opa, {})
+        beta2 = 0.999
+        for g in opt.param_groups:
+            if g.get("name") == "opacities" and "betas" in g:
+                beta2 = g["betas"][1]
+        t = float(st.get("step", 0) or 0)
+        if t > 0:                                    # Adam bias correction
+            v = v / (1.0 - beta2 ** t)
+        # u_i ∈ (0,1]: 1/√(v̂+ε) normalised BY ITS OWN BOUND 1/√ε, so λ has a readable scale
+        # and the term degrades gracefully. ε sits INSIDE the sqrt as in AdamW-GS Eq.8 — with
+        # it outside, 1/√v̂ reached 1e8 here and λ·ĉ·(1/√v̂) saturated dar_clip for 100% of
+        # points at every λ down to 5e-4, flattening ĉ's 7x spread to 1.00x (i.e. degenerating
+        # into exactly the uniform decay this mechanism replaces). Measured b12@30k.
+        eps = max(cfg.dar_eps, 1e-30)
+        u = (eps ** 0.5) / (v + eps).sqrt()
+
+        # cost term. detach()-by-construction: radii is a plain buffer, so the resource cost is
+        # an externally given constant for this step. Two compressions, both measured on
+        # b12@30k (1M pts):
+        #  (a) physical cap. A splat cannot cost more than the whole frame — rasterizer work is
+        #      bounded by the tile/pixel count — so clamp r² at the screen diagonal². Needed
+        #      because the projection Jacobian is singular as z->0: a surfel at z~0.02 reports
+        #      r²~1e16, an artefact rather than a cost. Raw r² spans 5.8e11x; clamped, 52x.
+        #      19.4% of points saturate, and the large/normal cost ratio still reads 19.9x.
+        #  (b) log1p + median normalisation, so ĉ is O(1) and dar_lambda is scene-independent.
+        #
+        # NOT used: the min(s)/max(s) "flatness discount" (a 3DGS-oriented idea resting on
+        # 2DGS's finding that real surfaces flatten to discs). Our surfels carry scales [N,2] —
+        # the third axis is identically zero, so flatness is not a degree of freedom here and
+        # min/max only measures in-plane elongation. Measured on b12: r>2000px 0.852 vs
+        # o>0.7 real surface 0.786 — no separation, and inverted, so the discount would tax
+        # real surfaces harder than monsters.
+        # from the camera, NOT outputs: on_train_batch_end receives Lightning's STEP_OUTPUT
+        # (the loss dict), which has no "render" key — verified by a 1-minute smoke that
+        # died on KeyError before any GPU time was spent.
+        camera = batch[0]
+        H, W = int(camera.height), int(camera.width)
+        # same accessors as the dynamic-K caller: get_xyz is a property, get_scales() is
+        # already activated (gaussian.py:147 scale_activation(self.scales))
+        radii = projected_radius(gaussian_model.get_xyz.detach(),
+                                 gaussian_model.get_scales().detach(), camera)
+        area = (radii.float() ** 2).clamp(max=float(H * H + W * W))
+        med = torch.median(area[area > 0]) if bool((area > 0).any()) else area.new_tensor(1.0)
+        c_hat = cfg.dar_cost_storage + torch.log1p(area / med.clamp_min(1e-12))
+
+        lr_o = None
+        for opt in pl_module.gaussian_optimizers:
+            for g in opt.param_groups:
+                if g.get("name") == "opacities":
+                    lr_o = g["lr"]
+        if lr_o is None:
+            self._dar_stats["no_lr"] += 1
+            self._dar_report(global_step)
+            return
+
+        stride = (cfg.dar_lambda * c_hat * u).clamp(max=cfg.dar_clip)
+        opa.sub_((lr_o * stride).unsqueeze(-1))       # opacities are logits: subtract = decay
+        self._dar_stats["applied"] += 1
+        if global_step % 500 == 1:                    # +1 offset: never a densify-event step
+            o_now = torch.sigmoid(opa.detach().squeeze(-1))
+            sat = float((cfg.dar_lambda * c_hat * u >= cfg.dar_clip).float().mean())
+            print(f"[DAR-cost] step {global_step}: applied={self._dar_stats['applied']} "
+                  f"skip(radii/v/lr)={self._dar_stats['no_radii']}/{self._dar_stats['no_v']}/{self._dar_stats['no_lr']} "
+                  f"c_hat[min/med/max]={float(c_hat.min()):.2f}/{float(c_hat.median()):.2f}/{float(c_hat.max()):.2f} "
+                  f"u[med]={float(u.median()):.3f} "
+                  f"stride[med/max]={float(stride.median()):.4f}/{float(stride.max()):.4f} "
+                  f"clipped={100*sat:.1f}% | o<0.005={100*float((o_now<0.005).float().mean()):.1f}% "
+                  f"o<0.05={100*float((o_now<0.05).float().mean()):.1f}%")
+
+    def _value_per_cost_mask(self, gaussian_model, global_step: int):
+        """Bottom-`vpc_prune_frac` mask by v/c, or None when disabled/unavailable.
+
+        value  = multi-view mean alpha-blending contribution Σ(T·α)/covered_px, refreshed
+                 every `vpc_interval` steps via the rasterizer's record_transmittance path
+                 (same signal the contribution-trim already uses, so no CUDA change).
+        cost   = max screen radius^2 over the interval (∝ tile footprint ∝ binning bytes),
+                 reusing the max-radii window kept for screen_size_prune.
+        """
+        cfg = self.config
+        if cfg.vpc_prune_frac <= 0:
+            return None
+        n = gaussian_model.n_gaussians
+        # CHEAP GUARD FIRST: cost comes from the live radii window (this runs before
+        # screen_size_prune clears it). No snapshot — a snapshot goes stale the moment
+        # add_new_gs appends points.
+        radii = self._max_radii2D
+        if radii is None or radii.shape[0] != n:
+            return None
+        # Value estimate: expensive (one transmittance pass over sampled views), so refresh
+        # only on `vpc_interval`. Between refreshes, keep the cached value valid across
+        # topology changes instead of forcing a re-measure: add_new_gs APPENDS (existing
+        # indices stable) and relocate_gs moves dead points in place, so we pad new points
+        # with the median (neutral -> a fresh point isn't condemned before it's measured).
+        # The old `shape != n -> re-measure` guard fired at EVERY densify event (N grows 5%
+        # each time), which made vpc_interval a no-op and dominated step time.
+        need_refresh = self._vpc_contrib is None or (global_step - self._vpc_step) >= cfg.vpc_interval
+        if not need_refresh and self._vpc_contrib.shape[0] != n:
+            cur = self._vpc_contrib
+            if cur.shape[0] < n:                       # padded for appended points
+                pad = cur.median().expand(n - cur.shape[0])
+                self._vpc_contrib = torch.cat([cur, pad])
+            else:                                       # pruned elsewhere -> must re-measure
+                need_refresh = True
+        if need_refresh:
+            t0 = time.time()
+            contrib = self._measure_multiview_contribution(gaussian_model)
+            if contrib is None:
+                return None
+            self._vpc_contrib, self._vpc_step = contrib, global_step
+            print(f"[value-per-cost] step {global_step}: value refreshed in {time.time()-t0:.1f}s")
+        cost = radii.float().clamp_min(1.0) ** 2          # ∝ tile footprint
+        vpc = self._vpc_contrib / cost
+        k = int(n * cfg.vpc_prune_frac)
+        if k <= 0:
+            return None
+        thresh = torch.kthvalue(vpc, k).values
+        return vpc <= thresh
+
+    def _measure_multiview_contribution(self, gaussian_model):
+        """One transmittance-only pass over the training cameras -> per-Gaussian value."""
+        ref = getattr(self, "_pl_ref", None)
+        pl = ref() if ref is not None else None
+        if pl is None:
+            return None
+        renderer = pl.renderer
+        if not hasattr(renderer, "forward"):
+            return None
+        cameras = pl.trainer.datamodule.dataparser_outputs.train_set.cameras
+        device = gaussian_model.get_xyz.device
+        bg = pl._fixed_background_color().to(device)
+        acc = torch.zeros(gaussian_model.n_gaussians, device=device)
+        stride = max(1, len(cameras) // 24)               # subsample views for speed
+        used = 0
+        with torch.no_grad():
+            for i in range(0, len(cameras), stride):
+                trans = renderer(cameras[i].to_device(device), gaussian_model,
+                                 bg_color=bg, record_transmittance=True)
+                if not torch.is_tensor(trans) or trans.shape[0] != acc.shape[0]:
+                    return None
+                acc += trans
+                used += 1
+        return acc / max(used, 1)
+
+    def _current_min_opacity(self, step: int) -> float:
+        cfg = self.config
+        if cfg.min_opacity_final <= 0:
+            return cfg.min_opacity
+        t0 = cfg.min_opacity_anneal_start_iter if cfg.min_opacity_anneal_start_iter >= 0 else cfg.densify_from_iter
+        t1 = cfg.min_opacity_anneal_end_iter
+        frac = min(max((step - t0) / max(t1 - t0, 1), 0.0), 1.0)
+        return cfg.min_opacity * (cfg.min_opacity_final / cfg.min_opacity) ** frac
+
+    def _update_max_radii(self, outputs: dict, gaussian_model) -> None:
+        radii = outputs.get("radii", None)
+        if radii is None:
+            return
+        n = gaussian_model.n_gaussians
+        if radii.shape[0] != n:
+            return
+        if self._max_radii2D is None or self._max_radii2D.shape[0] != n or self._max_radii2D.device != radii.device:
+            self._max_radii2D = torch.zeros_like(radii)
+        self._max_radii2D = torch.maximum(self._max_radii2D, radii)
+
+    def _prune_points(self, mask, gaussian_model, optimizers) -> None:
+        # The Trim2DGS renderer (sep_depth_trim_2dgs_renderer.py) trims surfels mid-training
+        # and calls this to remove them. MCMC keeps no per-Gaussian state buffers (only the
+        # binoms table), so unlike Vanilla/RTGStable we just prune the model properties.
+        # `mask`: True = prune.
+        valid = ~mask
+        gaussian_model.properties = Utils.prune_properties(valid, gaussian_model, optimizers)
+
+    def compute_relocation(self, opacity_old, scale_old, N) -> Tuple[torch.Tensor, torch.Tensor]:
+        # gsplat compute_relocation requires scales [N, 3]; pad 2D surfel scale with a zero
+        # 3rd component and truncate the result. coeff depends only on opacity, so this is
+        # exact for the real components.
+        d = scale_old.shape[-1]
+        if d < 3:
+            pad = torch.zeros((scale_old.shape[0], 3 - d), dtype=scale_old.dtype, device=scale_old.device)
+            scale_old = torch.cat([scale_old, pad], dim=-1)
+        new_opacity, new_scaling = compute_relocation(opacity_old, scale_old, N, self.binoms)
+        return new_opacity, new_scaling[:, :d]
+
+    def _get_new_params(self, gaussian_model, idxs, ratio) -> Dict[str, torch.Tensor]:
+        # Same as the parent but `new_scaling` is already the surfel's scale dim (2), so we
+        # drop the parent's `.reshape(-1, 3)`.
+        new_opacity, new_scaling = self.compute_relocation(
+            opacity_old=gaussian_model.get_opacities()[idxs, 0],
+            scale_old=gaussian_model.get_scales()[idxs],
+            N=ratio[idxs, 0] + 1,
+        )
+        new_opacity = torch.clamp(new_opacity.unsqueeze(-1), max=1.0 - torch.finfo(torch.float32).eps, min=0.005)
+        new_opacity = gaussian_model.opacity_inverse_activation(new_opacity)
+        new_scaling = gaussian_model.scale_inverse_activation(new_scaling)
+
+        new_params = {"opacities": new_opacity, "scales": new_scaling}
+        for attr_name, value in gaussian_model.properties.items():
+            if attr_name not in new_params:
+                new_params[attr_name] = value[idxs]
+        return new_params
+
+    def _add_xyz_noise(self, outputs: dict, batch, gaussian_model, global_step: int, pl_module: LightningModule) -> None:
+        if getattr(pl_module, "is_final_step", False) is True:
+            return
+
+        with torch.no_grad():
+            # Pad the 2D surfel scale with a zero normal component so the 3D covariance has
+            # zero normal variance -> noise stays in the tangent plane (no off-surface drift).
+            scales = gaussian_model.get_scales()
+            d = scales.shape[-1]
+            if d < 3:
+                pad = torch.zeros((scales.shape[0], 3 - d), dtype=scales.dtype, device=scales.device)
+                scales = torch.cat([scales, pad], dim=-1)
+
+            cov_3d = compute_cov_3d(
+                scales=scales,
+                scale_modifier=1.,
+                quaternions=gaussian_model.get_rotations(),
+            )
+
+            xyz_lr = -1
+            for opt in pl_module.gaussian_optimizers:
+                for param_group in opt.param_groups:
+                    if param_group["name"] == "means":
+                        xyz_lr = param_group["lr"]
+                if xyz_lr >= 0:
+                    break
+            assert xyz_lr >= 0
+
+            noise = torch.randn_like(gaussian_model.means) * (self.op_sigmoid(1 - gaussian_model.get_opacities())) * self.config.noise_lr * xyz_lr
+            noise = torch.bmm(cov_3d, noise.unsqueeze(-1)).squeeze(-1)
+            gaussian_model.means.add_(noise)

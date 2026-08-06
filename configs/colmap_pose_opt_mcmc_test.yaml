@@ -1,0 +1,41 @@
+logger: wandb
+model:
+  overwrite_config: False
+  gaussian:  # stop updating GS
+    init_args:
+      optimization:
+        means_lr_init: 0
+        means_lr_scheduler:
+          lr_final: 0
+        shs_dc_lr: 0
+        shs_rest_lr: 0
+        opacities_lr: 0
+        scales_lr: 0
+        rotations_lr: 0
+  renderer: 
+    class_path: internal.renderers.gsplat_camera_opt.GSplatCameraOptRenderer
+    init_args:
+      optimization:
+        max_steps: 5000
+        embeds_lr: 1e-4
+        embeds_lr_final_factor: 0.1
+  metric: internal.metrics.mcmc_metrics.MCMCMetrics
+  density: 
+    class_path: internal.density_controllers.mcmc_density_controller.MCMCDensityController
+    init_args:  # stop densification
+      densify_from_iter: 0
+      densify_until_iter: 0
+      cap_max: 3_442_000  # default number comes from average on MipNeRF360
+      noise_lr: 0
+trainer:
+  check_val_every_n_epoch: 10
+  max_steps: 5000
+data:
+  parser:
+    class_path: Colmap
+    init_args:
+      split_mode: "experiment"
+      same_camera: true
+      train_on_test: true
+save_iterations:
+- 5000

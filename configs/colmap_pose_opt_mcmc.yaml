@@ -1,0 +1,23 @@
+logger: wandb
+model:
+  renderer: 
+    class_path: internal.renderers.gsplat_camera_opt.GSplatCameraOptRenderer
+    init_args:
+      optimization:
+        embeds_lr: 1e-4
+        embeds_lr_final_factor: 0.1
+  metric: internal.metrics.mcmc_metrics.MCMCMetrics
+  density: 
+    class_path: internal.density_controllers.mcmc_density_controller.MCMCDensityController
+    init_args:
+      cap_max: 3_442_000  # default number comes from average on MipNeRF360
+trainer:
+  check_val_every_n_epoch: 20
+data:
+  parser:
+    class_path: Colmap
+    init_args:
+      split_mode: "experiment"
+      same_camera: true  # use shared camera parameters
+save_iterations:
+- 30000

@@ -1,0 +1,53 @@
+model:
+  initialize_from: outputs/citygsv2_mc_aerial_coarse_sh2/checkpoints/epoch=0-step=30000.ckpt  # UPDATE_PATH: replace with actual coarse checkpoint filename after coarse training
+  overwrite_config: True
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 24_000  # 確保學習率與最終步數對齊
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 24_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densification_interval: 300      # 放緩生長頻率，保護 VRAM
+      opacity_reset_interval: 2100     # 增加清理頻率，回收 VRAM
+      densify_from_iter: 1200
+      densify_until_iter: 12_000
+trainer:
+  check_val_every_n_epoch: 15
+  max_steps: 24000                     # 【修正】對齊 save_iterations，避免白跑
+data:
+  path: /home/LnoArch/Projects/專題/CityGaussian/data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8                       # 【新增】解放 i7-13700HX 效能，加速資料吞吐
+save_iterations:
+- 12000
+- 18000
+- 24000

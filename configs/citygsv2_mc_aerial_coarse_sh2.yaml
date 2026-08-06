@@ -1,0 +1,36 @@
+model:
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 0
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.005
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      diable_trimming: true
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densify_grad_threshold: 0.00005  # 原本可能是 0.0002。直接砍到四分之一，強迫大球分裂！
+      densify_until_iter: 15000        # 確保生長期有 15000 步
+      opacity_reset_interval: 3000     # 定期重置透明度，清除垃圾球
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+  train_max_num_images_to_cache: 512
+  num_workers: 8

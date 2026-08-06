@@ -1,0 +1,14 @@
+open3d==0.18.0
+scikit-image==0.24.0
+trimesh==4.4.3
+imageio==2.36.0
+imageio-ffmpeg==0.5.1
+py3nvml
+torch_scatter
+git+https://github.com/DekuLiuTesla/diff-surfel-rasterization.git@9eefc03858a30bb3e5f98eccc56f077420ee2aaf
+git+https://github.com/DekuLiuTesla/diff-gaussian-rasterization.git@82c31d7ad780f7ef74c4f9485985895e9da2c93a# NOTE 2026-07-19: the pinned 9eefc03 above is OUTDATED vs what was actually
+# installed in March (repo HEAD 4c6c576: +screen-bounds cull "limited valid
+# projected points" + NEAR_PLANE fix — worth ~0.4-1.5dB and b12 monster
+# robustness). Current env uses submodules/diff-surfel-rasterization-trim-pp
+# = 4c6c576 + pp_shifty principal-shift patch (submodules/pp_shifty.patch),
+# built via: CUDA_HOME=$CONDA_PREFIX pip install --no-build-isolation ./submodules/diff-surfel-rasterization-trim-pp

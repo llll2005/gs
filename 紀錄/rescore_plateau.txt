@@ -1,0 +1,27 @@
+[視角] block 12 分區清單 284 張，可用 284
+[分組] 水面組 GT 梯度 0.0049~0.0131   建築組 0.0508~0.0605
+  mcmc_sb_ns_b12_cap1m_K1            step= 60000 N=  900,000  建築 PSNR=17.83 LPIPS=0.917 紋理比=0.090
+  sb_harvest_noreg                   step= 60000 N=  900,000  建築 PSNR=18.00 LPIPS=0.879 紋理比=0.099
+  sb_harvest_freeze                  step= 60000 N=  900,000  建築 PSNR=17.74 LPIPS=0.929 紋理比=0.069
+  sb_harvest_cprime                  step= 60000 N=  900,000  建築 PSNR=17.76 LPIPS=0.923 紋理比=0.076
+  mcmc_sb_b12_cap1m_harvestdust      step= 60000 N=   73,637  建築 PSNR=17.83 LPIPS=0.908 紋理比=0.094
+  mcmc_60k_sh3_aggr17_b12            step= 60000 N=  900,000  建築 PSNR=18.33 LPIPS=0.916 紋理比=0.087
+  mcmc_sb_60k_aggr17_b12_cap1m       step= 60000 N=  900,000  建築 PSNR=17.85 LPIPS=0.926 紋理比=0.077
+  oreg_0p0_b12                       step= 60000 N=  900,000  建築 PSNR=19.43 LPIPS=0.604 紋理比=0.338
+  oreg_0p002_b12                     step= 60000 N=  900,000  建築 PSNR=20.04 LPIPS=0.580 紋理比=0.372
+  oreg_0p007_b12                     step= 60000 N=  834,807  建築 PSNR=19.65 LPIPS=0.648 紋理比=0.315
+  b12_cap2m_reg000_exact             step= 60000 N=1,799,999  建築 PSNR=19.69 LPIPS=0.566 紋理比=0.393
+  mcmc_sb_b12_cap1m_condense         step= 29999 N=  971,741  建築 PSNR=16.58 LPIPS=0.927 紋理比=0.011   ← 已知壞
+  mcmc_sb_b12_cap1m_vpc              step= 29999 N=  991,421  建築 PSNR=16.62 LPIPS=0.920 紋理比=0.012   ← 已知壞
+  mcmc_sb_ns_b12_cap2m_K2            step= 29999 N=1,245,418  建築 PSNR=16.53 LPIPS=0.925 紋理比=0.011   ← 已知壞
+
+=== 尺的鑑別力（已知好 vs 已知壞的分離度）===
+指標                         已知好       已知壞        差距       組內標準差      判定
+建築_psnr                18.5596   16.5782   +1.9814      0.8872      可用
+建築_ssim                 0.4669    0.3985   +0.0685      0.0469      可用
+建築_lpips                0.7996    0.9243   -0.1247      0.1529    無鑑別力
+建築_texratio             0.1826    0.0113   +0.1712      0.1312      可用
+水面_psnr                34.0403   30.5479   +3.4925      0.4447      可用
+水面_texratio             0.1364    0.0298   +0.1065      0.0778      可用
+
+[out] 紀錄/rescore_by_content.csv

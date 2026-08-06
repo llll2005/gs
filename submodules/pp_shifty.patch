@@ -1,0 +1,250 @@
+diff --git a/cuda_rasterizer/backward.cu b/cuda_rasterizer/backward.cu
+index 4076755..58c32e1 100644
+--- a/cuda_rasterizer/backward.cu
++++ b/cuda_rasterizer/backward.cu
+@@ -547,6 +547,7 @@ __global__ void preprocessCUDA(
+ 	const float focal_y,
+ 	const float tan_fovx,
+ 	const float tan_fovy,
++	const float pp_shifty,
+ 	const glm::vec3* campos, 
+ 	// grad input
+ 	const float* dL_dtransMats,
+@@ -567,7 +568,7 @@ __global__ void preprocessCUDA(
+ 	const float* dL_dnormal3D = &(dL_dnormal3Ds[3 * idx]);
+ 
+ 	glm::vec3 p_world = glm::vec3(means3D[idx].x, means3D[idx].y, means3D[idx].z);
+-	float4 intrins = {focal_x, focal_y, focal_x * tan_fovx, focal_y * tan_fovy};
++	float4 intrins = {focal_x, focal_y, focal_x * tan_fovx, focal_y * tan_fovy + pp_shifty};
+ 
+ 	glm::vec3 dL_dmean3D;
+ 	glm::vec2 dL_dscale;
+@@ -662,7 +663,7 @@ void BACKWARD::preprocess(
+ 	const float* viewmatrix,
+ 	const float* projmatrix,
+ 	const float focal_x, const float focal_y,
+-	const float tan_fovx, const float tan_fovy,
++	const float tan_fovx, const float tan_fovy, const float pp_shifty,
+ 	const glm::vec3* campos, 
+ 	float3* dL_dmean2Ds,
+ 	const float* dL_dnormal3Ds,
+@@ -707,6 +708,7 @@ void BACKWARD::preprocess(
+ 		focal_y,
+ 		tan_fovx,
+ 		tan_fovy,
++		pp_shifty,
+ 		campos,	
+ 		dL_dtransMats,
+ 		dL_dnormal3Ds,
+diff --git a/cuda_rasterizer/backward.h b/cuda_rasterizer/backward.h
+index 6ed2847..bf705f1 100644
+--- a/cuda_rasterizer/backward.h
++++ b/cuda_rasterizer/backward.h
+@@ -55,7 +55,7 @@ namespace BACKWARD
+ 		const float* view,
+ 		const float* proj,
+ 		const float focal_x, const float focal_y,
+-		const float tan_fovx, const float tan_fovy,
++		const float tan_fovx, const float tan_fovy, const float pp_shifty,
+ 		const glm::vec3* campos,
+ 		float3* dL_dmean2D,
+ 		const float* dL_dnormal3D,
+diff --git a/cuda_rasterizer/forward.cu b/cuda_rasterizer/forward.cu
+index 3bcf396..a62585e 100644
+--- a/cuda_rasterizer/forward.cu
++++ b/cuda_rasterizer/forward.cu
+@@ -181,7 +181,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
+ 	const float* projmatrix,
+ 	const glm::vec3* cam_pos,
+ 	const int W, int H,
+-	const float tan_fovx, const float tan_fovy,
++	const float tan_fovx, const float tan_fovy, const float pp_shifty,
+ 	const float focal_x, const float focal_y,
+ 	int* radii,
+ 	float2* points_xy_image,
+@@ -208,7 +208,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
+ 	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
+ 		return;
+ 
+-	float4 intrins = {focal_x, focal_y, float(W)/2.0, float(H)/2.0};
++	float4 intrins = {focal_x, focal_y, float(W)/2.0, float(H)/2.0 + pp_shifty};
+ 	glm::vec2 scale = scales[idx];
+ 	glm::vec4 quat = rotations[idx];
+ 
+@@ -527,7 +527,7 @@ void FORWARD::preprocess(int P, int D, int M,
+ 	const glm::vec3* cam_pos,
+ 	const int W, const int H,
+ 	const float focal_x, const float focal_y,
+-	const float tan_fovx, const float tan_fovy,
++	const float tan_fovx, const float tan_fovy, const float pp_shifty,
+ 	int* radii,
+ 	float2* means2D,
+ 	float* depths,
+@@ -553,7 +553,7 @@ void FORWARD::preprocess(int P, int D, int M,
+ 		projmatrix,
+ 		cam_pos,
+ 		W, H,
+-		tan_fovx, tan_fovy,
++		tan_fovx, tan_fovy, pp_shifty,
+ 		focal_x, focal_y,
+ 		radii,
+ 		means2D,
+diff --git a/cuda_rasterizer/forward.h b/cuda_rasterizer/forward.h
+index 99b87c1..af113e6 100644
+--- a/cuda_rasterizer/forward.h
++++ b/cuda_rasterizer/forward.h
+@@ -36,7 +36,7 @@ namespace FORWARD
+ 		const glm::vec3* cam_pos,
+ 		const int W, int H,
+ 		const float focal_x, float focal_y,
+-		const float tan_fovx, float tan_fovy,
++		const float tan_fovx, float tan_fovy, float pp_shifty,
+ 		int* radii,
+ 		float2* points_xy_image,
+ 		float* depths,
+diff --git a/cuda_rasterizer/rasterizer.h b/cuda_rasterizer/rasterizer.h
+index 9423d02..9e4e32d 100644
+--- a/cuda_rasterizer/rasterizer.h
++++ b/cuda_rasterizer/rasterizer.h
+@@ -46,7 +46,7 @@ namespace CudaRasterizer
+ 			const float* viewmatrix,
+ 			const float* projmatrix,
+ 			const float* cam_pos,
+-			const float tan_fovx, float tan_fovy,
++			const float tan_fovx, float tan_fovy, float pp_shifty,
+ 			const bool prefiltered,
+ 			float* out_color,
+ 			float* out_others,
+@@ -70,7 +70,7 @@ namespace CudaRasterizer
+ 			const float* viewmatrix,
+ 			const float* projmatrix,
+ 			const float* campos,
+-			const float tan_fovx, float tan_fovy,
++			const float tan_fovx, float tan_fovy, float pp_shifty,
+ 			const int* radii,
+ 			char* geom_buffer,
+ 			char* binning_buffer,
+diff --git a/cuda_rasterizer/rasterizer_impl.cu b/cuda_rasterizer/rasterizer_impl.cu
+index 5a38925..b573abc 100644
+--- a/cuda_rasterizer/rasterizer_impl.cu
++++ b/cuda_rasterizer/rasterizer_impl.cu
+@@ -213,7 +213,7 @@ int CudaRasterizer::Rasterizer::forward(
+ 	const float* viewmatrix,
+ 	const float* projmatrix,
+ 	const float* cam_pos,
+-	const float tan_fovx, float tan_fovy,
++	const float tan_fovx, float tan_fovy, float pp_shifty,
+ 	const bool prefiltered,
+ 	float* out_color,
+ 	float* out_others,
+@@ -264,7 +264,7 @@ int CudaRasterizer::Rasterizer::forward(
+ 		(glm::vec3*)cam_pos,
+ 		width, height,
+ 		focal_x, focal_y,
+-		tan_fovx, tan_fovy,
++		tan_fovx, tan_fovy, pp_shifty,
+ 		radii,
+ 		geomState.means2D,
+ 		geomState.depths,
+@@ -363,7 +363,7 @@ void CudaRasterizer::Rasterizer::backward(
+ 	const float* viewmatrix,
+ 	const float* projmatrix,
+ 	const float* campos,
+-	const float tan_fovx, float tan_fovy,
++	const float tan_fovx, float tan_fovy, float pp_shifty,
+ 	const int* radii,
+ 	char* geom_buffer,
+ 	char* binning_buffer,
+@@ -441,7 +441,7 @@ void CudaRasterizer::Rasterizer::backward(
+ 		viewmatrix,
+ 		projmatrix,
+ 		focal_x, focal_y,
+-		tan_fovx, tan_fovy,
++		tan_fovx, tan_fovy, pp_shifty,
+ 		(glm::vec3*)campos,
+ 		(float3*)dL_dmean2D, // gradient inputs
+ 		dL_dnormal,		     // gradient inputs
+diff --git a/diff_trim_surfel_rasterization/__init__.py b/diff_trim_surfel_rasterization/__init__.py
+index 706cff5..c30a791 100644
+--- a/diff_trim_surfel_rasterization/__init__.py
++++ b/diff_trim_surfel_rasterization/__init__.py
+@@ -70,6 +70,7 @@ class _RasterizeGaussians(torch.autograd.Function):
+             raster_settings.projmatrix,
+             raster_settings.tanfovx,
+             raster_settings.tanfovy,
++            raster_settings.pp_shifty,
+             raster_settings.image_height,
+             raster_settings.image_width,
+             sh,
+@@ -123,6 +124,7 @@ class _RasterizeGaussians(torch.autograd.Function):
+                 raster_settings.projmatrix,
+                 raster_settings.tanfovx,
+                 raster_settings.tanfovy,
++                raster_settings.pp_shifty,
+                 grad_out_color,
+                 grad_depth,
+                 sh,
+@@ -174,6 +176,7 @@ class GaussianRasterizationSettings(NamedTuple):
+     prefiltered : bool
+     record_transmittance: bool
+     debug : bool
++    pp_shifty : float = 0.0
+ 
+ class GaussianRasterizer(nn.Module):
+     def __init__(self, raster_settings):
+diff --git a/rasterize_points.cu b/rasterize_points.cu
+index 5c77fcf..fe1e401 100644
+--- a/rasterize_points.cu
++++ b/rasterize_points.cu
+@@ -50,6 +50,7 @@ RasterizeGaussiansCUDA(
+ 	const torch::Tensor& projmatrix,
+ 	const float tan_fovx,
+ 	const float tan_fovy,
++	const float pp_shifty,
+ 	const int image_height,
+ 	const int image_width,
+ 	const torch::Tensor& sh,
+@@ -135,6 +136,7 @@ RasterizeGaussiansCUDA(
+ 		campos.contiguous().data<float>(),
+ 		tan_fovx,
+ 		tan_fovy,
++		pp_shifty,
+ 		prefiltered,
+ 		out_color.contiguous().data<float>(),
+ 		out_others.contiguous().data<float>(),
+@@ -161,6 +163,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
+ 	const torch::Tensor& projmatrix,
+ 	const float tan_fovx,
+ 	const float tan_fovy,
++	const float pp_shifty,
+ 	const torch::Tensor& dL_dout_color,
+ 	const torch::Tensor& dL_dout_others,
+ 	const torch::Tensor& sh,
+@@ -225,6 +228,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
+ 	  campos.contiguous().data<float>(),
+ 	  tan_fovx,
+ 	  tan_fovy,
++	  pp_shifty,
+ 	  radii.contiguous().data<int>(),
+ 	  reinterpret_cast<char*>(geomBuffer.contiguous().data_ptr()),
+ 	  reinterpret_cast<char*>(binningBuffer.contiguous().data_ptr()),
+diff --git a/rasterize_points.h b/rasterize_points.h
+index ee5d327..1ecdc90 100644
+--- a/rasterize_points.h
++++ b/rasterize_points.h
+@@ -29,6 +29,7 @@ RasterizeGaussiansCUDA(
+ 	const torch::Tensor& projmatrix,
+ 	const float tan_fovx,
+ 	const float tan_fovy,
++	const float pp_shifty,
+ 	const int image_height,
+ 	const int image_width,
+ 	const torch::Tensor& sh,
+@@ -52,6 +53,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
+ 	const torch::Tensor& projmatrix,
+ 	const float tan_fovx,
+ 	const float tan_fovy,
++	const float pp_shifty,
+ 	const torch::Tensor& dL_dout_color,
+ 	const torch::Tensor& dL_dout_others,
+ 	const torch::Tensor& sh,
