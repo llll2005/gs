@@ -33,11 +33,45 @@ def contribution_accumulator(K: int, reduce: str = "max"):
     ⚠ Measured on post-hoc pruning of a finished model. During training the trim fires repeatedly
     and the dynamics differ; that has not been separated.
     """
-    if reduce not in ("topk_mean", "max", "frustum_topk"):
+    if reduce not in ("topk_mean", "max", "frustum_topk", "sum", "count"):
         raise ValueError(f"unknown reduce: {reduce}")
+    if reduce in ("sum", "count"):
+        return _size_aware_accumulator(reduce)
     if reduce == "frustum_topk":
         return _frustum_topk_accumulator(K)
     return _topk_mean_accumulator(1 if reduce == "max" else K)
+
+
+def _size_aware_accumulator(mode: str):
+    """Size-AWARE contribution, in the spirit of MVGSR (arXiv 2503.08093) Sec.4.2 Eq.5:
+
+        C_MV(p) = sum over views, sum over pixels of  [ T*alpha > delta ]
+
+    Ours is the opposite by default: the renderer divides by `num_covered_pixels`
+    (`sep_depth_trim_2dgs_renderer.py:132`), so a large primitive and a small one with the same
+    per-pixel weight score the same. MVGSR counts pixels, so area counts.
+
+    Eq.5 needs the PER-PIXEL values, which our CUDA does not return -- only their mean and the
+    pixel count. Rebuilding the kernel for one experiment is not worth the risk (see the rebuild
+    pitfalls in CLAUDE.md), so the two limits that ARE computable stand in:
+
+        "count"  sum of covered pixels over views          -- the delta -> 0 limit of Eq.5
+        "sum"    sum of (per-pixel mean * covered pixels)   -- total T*alpha, a weighted version
+
+    Neither is Eq.5 exactly. Both capture the part that differs from ours: area matters.
+
+    `push` takes (transmittance, num_covered_pixels).
+    """
+    state = {"acc": None}
+
+    def push(trans, covered):
+        v = covered.to(trans.dtype) if mode == "count" else trans * covered.to(trans.dtype)
+        state["acc"] = v.clone() if state["acc"] is None else state["acc"] + v
+
+    def result():
+        return state["acc"]
+
+    return push, result
 
 
 def _frustum_topk_accumulator(K: int):

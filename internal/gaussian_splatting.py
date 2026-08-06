@@ -603,10 +603,25 @@ class GaussianSplatting(LightningModule):
                 agg_vis = vis if agg_vis is None else (agg_vis | vis)
             last_outputs = outputs
         outputs = dict(last_outputs)
+        # `outputs` is the LAST strip's dict; only the two fields that have a meaningful
+        # cross-strip reduction are replaced. `radii` takes the max (a primitive's screen radius
+        # does not depend on which strip saw it) and `visibility_filter` the OR.
+        #
+        # ⚠ Everything else in `outputs` -- `render`, `surf_depth`, `viewspace_points` and its
+        # gradient -- still describes ONE strip. MCMC never reads them (its controllers touch no
+        # `outputs[...]` field at all, verified 2026-08-06), so the mainline is unaffected. But a
+        # GRADIENT-BASED density controller under K-strip would densify on the last strip's
+        # viewspace gradient and silently ignore the rest of the frame. That combination is not
+        # used and not supported; assert rather than let it run wrong.
         if agg_radii is not None:
             outputs["radii"] = agg_radii
         if agg_vis is not None:
             outputs["visibility_filter"] = agg_vis
+        assert not getattr(self.density_controller, "READS_VIEWSPACE_GRAD", True), (
+            "K-strip training with a viewspace-gradient density controller: `outputs` after the "
+            "strip loop holds only the last strip, so densification would see a fraction of the "
+            "frame. Use K=1 or an MCMC controller."
+        )
         return outputs, agg_metrics, prog_bar
 
     def _finish_training_step(self, optimizers, schedulers, outputs, batch, global_step):

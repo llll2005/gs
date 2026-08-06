@@ -38,7 +38,7 @@ def main():
                          "sees); only the judge changes. This separates 'which primitives does "
                          "reconstruction need' from 'which ones generalise'.")
     ap.add_argument("--test_dir", default="data/matrix_city/aerial/test/block_all_test")
-    ap.add_argument("--reduce", default="topk_mean", choices=["topk_mean", "max", "legacy", "frustum_topk"],
+    ap.add_argument("--reduce", default="topk_mean", choices=["topk_mean", "max", "legacy", "frustum_topk", "sum", "count"],
                     help="which contribution statistic to rank by")
     ap.add_argument("--targets", type=int, nargs="+",
                     default=[80_000, 160_000, 320_000, 640_000])
@@ -111,6 +111,7 @@ def main():
     push, gather = contribution_accumulator(K, "topk_mean")
     push_max, gather_max = contribution_accumulator(K, "max")
     push_fr, gather_fr = contribution_accumulator(K, "frustum_topk")
+    push_sz, gather_sz = contribution_accumulator(K, a.reduce if a.reduce in ("sum", "count") else "sum")
     legacy = [None] * K
     with torch.no_grad():
         for j, i in enumerate(rank_views):
@@ -120,7 +121,7 @@ def main():
             t = t.float()
             push(t); push_max(t)
             if cov is not None:
-                push_fr(t, cov.float())
+                push_fr(t, cov.float()); push_sz(t, cov.float())
             if legacy[0] is not None:                 # verbatim transcription of the old loop
                 m = t > legacy[0]
                 if m.any():
@@ -133,6 +134,7 @@ def main():
                 print(f"  ...排序 {j + 1}/{len(rank_views)}")
     contrib_max = gather_max()
     contrib_fr = gather_fr() if a.reduce == "frustum_topk" else None
+    contrib_sz = gather_sz() if a.reduce in ("sum", "count") else None
     contrib = gather()
     contrib_legacy = torch.stack(legacy, dim=-1).mean(-1)
     order_topk = torch.argsort(contrib, descending=True)
@@ -140,7 +142,10 @@ def main():
     order_legacy = torch.argsort(contrib_legacy, descending=True)
     order = {"topk_mean": order_topk, "max": order_max, "legacy": order_legacy,
              "frustum_topk": torch.argsort(contrib_fr, descending=True)
-             if contrib_fr is not None else order_max}[a.reduce]
+             if contrib_fr is not None else order_max,
+             "sum": torch.argsort(contrib_sz, descending=True) if contrib_sz is not None else order_max,
+             "count": torch.argsort(contrib_sz, descending=True) if contrib_sz is not None else order_max,
+             }[a.reduce]
 
     print(f"\n[排序] 本次用 reduce={a.reduce}")
     print(f"[排序差異] topk_mean vs legacy 的 contribution 相關係數 "
