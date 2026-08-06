@@ -152,6 +152,17 @@ def estimate_render_load(means: torch.Tensor, scales: torch.Tensor, camera, near
 # gave A_RENDER~427, B_RENDER~1493 B/pt.
 A_RENDER = 500.0   # per-point render cost NOT cut by K (rounded up from 427 for margin)
 B_RENDER = 1550.0  # per-point backward activation, cut by K (rounded up from 1493)
+# ⚠ STALE FOR MCMC SINCE 2026-08-06. Both were calibrated while every densify step ran the SPLIT
+# backward with `retain_graph=True`, so the autograd graph stayed alive across two backwards and
+# the second allocated its workspace on top. MCMC never read the viewspace gradient that split
+# produced and now skips it (`gaussian_splatting._split_backward_needed`), freeing the graph after
+# one backward.
+#
+# B_RENDER is the dominant splittable term -- 1550 B/pt at N=2M is 3.1 GB -- so if it is even 30%
+# over-stated for the single-backward path that is ~1 GB of headroom the predictor is not using.
+# Consequence: `predict_num_strips` picks a LARGER K than needed (K x preprocess cost for nothing)
+# and `calibrate_block_caps` caps below what the card holds. "b12@2M hits a ~1.5M wall" may be
+# largely this. Re-measure peak at fixed N with the split on/off before trusting these for MCMC.
 
 
 def predict_num_strips(load_isect: float, n_points: int, floats_per_point: int,
