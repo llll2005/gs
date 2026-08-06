@@ -67,6 +67,11 @@ def native_2dgs_importance_prune(module, prune_percent: float, v_pow: float = 0.
         return
     threshold = torch.kthvalue(v_imp, k).values
     keep_mask = v_imp > threshold  # True = keep
+    # NB strictly-greater with ties: if MORE than k points share the threshold value -- which
+    # happens when many have importance exactly 0, i.e. invisible in every view -- this removes
+    # all of them, not k. Asking for 20% can remove considerably more. Left as is: those points
+    # are worthless by construction and keeping them to honour a percentage would be worse. The
+    # print below reports the ACTUAL count next to the requested percent, so the gap is visible.
     print(f"[2DGS-imp-prune] N={n:,} prune={int((~keep_mask).sum()):,} ({prune_percent:.0%}) "
           f"v_pow={v_pow} area_p90={float(area_p90):.3e} clipped={100*float((area>=area_p90).float().mean()):.1f}%")
 
