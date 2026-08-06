@@ -17,16 +17,10 @@ Constants are kernel-specific; tau is (mostly) geometry-specific. Workflow:
 tau_growth (default 1.65) corrects init-tau -> trained-tau drift, calibrated on
 b12 (init tau_MAX 73 -> ~120 observed in the K2 freeze test, 2026-07-13).
 
-⚠ STALE FOR MCMC CONFIGS SINCE 2026-08-06. `gamma_trim` and `vos_trim` were measured while
-`gaussian_splatting.py` still ran the SPLIT backward with `retain_graph=True` on every densify
-step, so the autograd graph stayed alive across two backwards. MCMC never read the viewspace
-gradient that split existed to produce, and it is now skipped
-(`_split_backward_needed`), which frees the graph after a single backward and lowers the peak.
-
-The constants are therefore CONSERVATIVE for MCMC: `block_caps.csv` under-estimates N_max and we
-have been capping below what the card can hold. Re-running `probe-trim` on the current code should
-raise the ceiling -- which is the thing "b12@2M hits a ~1.5M wall" has been stuck on.
-Until that is redone, treat the caps as a lower bound.
+2026-08-06: the "the split backward inflated gamma/vos" hypothesis was MEASURED and REJECTED.
+`tools/probe_backward_peak.py` found merging the backward is 7.9% WORSE on peak, not better
+(883 vs 953 B/pt slope) -- two sequential backwards hold one branch of intermediate gradients at a
+time, while one merged backward holds both. So these constants are not stale on that account.
 
 Usage:
   python tools/calibrate_block_caps.py taus --blocks 0-24

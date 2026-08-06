@@ -152,17 +152,17 @@ def estimate_render_load(means: torch.Tensor, scales: torch.Tensor, camera, near
 # gave A_RENDER~427, B_RENDER~1493 B/pt.
 A_RENDER = 500.0   # per-point render cost NOT cut by K (rounded up from 427 for margin)
 B_RENDER = 1550.0  # per-point backward activation, cut by K (rounded up from 1493)
-# ⚠ STALE FOR MCMC SINCE 2026-08-06. Both were calibrated while every densify step ran the SPLIT
-# backward with `retain_graph=True`, so the autograd graph stayed alive across two backwards and
-# the second allocated its workspace on top. MCMC never read the viewspace gradient that split
-# produced and now skips it (`gaussian_splatting._split_backward_needed`), freeing the graph after
-# one backward.
-#
-# B_RENDER is the dominant splittable term -- 1550 B/pt at N=2M is 3.1 GB -- so if it is even 30%
-# over-stated for the single-backward path that is ~1 GB of headroom the predictor is not using.
-# Consequence: `predict_num_strips` picks a LARGER K than needed (K x preprocess cost for nothing)
-# and `calibrate_block_caps` caps below what the card holds. "b12@2M hits a ~1.5M wall" may be
-# largely this. Re-measure peak at fixed N with the split on/off before trusting these for MCMC.
+# 2026-08-06: measured, and the "the split inflates these" hypothesis was WRONG.
+# `tools/probe_backward_peak.py` at fixed N, same camera, split on vs off:
+#     N=250k  0.541G vs 0.544G      N=500k  0.746G vs 0.766G
+#     slope   883 B/pt (split) vs 953 B/pt (merged) -- MERGING IS 7.9% WORSE
+# The forward graph has to live until the last backward either way; `retain_graph` only delays the
+# free. What actually differs is the BACKWARD WORKSPACE: two sequential backwards hold one branch's
+# intermediate gradients at a time, while `(a+b).backward()` holds both at the merge point.
+# So these constants are NOT stale on account of the split, and the claim that it explains
+# "b12@2M hits a ~1.5M wall" is retracted. (Skipping the split remains a SPEED win: one less pass.)
+# ⚠ The probe used a simplified loss, not the real SSIM+depth metric, so 883/953 is not directly
+# comparable to 1550 -- it bounds the split's CONTRIBUTION, not the constant itself.
 
 
 def predict_num_strips(load_isect: float, n_points: int, floats_per_point: int,
