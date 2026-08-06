@@ -476,16 +476,44 @@ class GaussianSplatting(LightningModule):
             pl_module=self,
         )
         # backward
-        self.manual_backward(metrics["loss"], retain_graph=("extra_loss" in metrics.keys()))
-
-        if "extra_loss" in metrics.keys():
+        if self._split_backward_needed(metrics):
+            self.manual_backward(metrics["loss"], retain_graph=True)
             grad_norm_avg = torch.norm(outputs["viewspace_points"].grad[outputs["visibility_filter"], :2], dim=-1, keepdim=True).mean()
             org_grad = outputs["viewspace_points"].grad.detach().clone()
             self.manual_backward(metrics["extra_loss"])
             grad_norm_avg_final = torch.norm(outputs["viewspace_points"].grad[outputs["visibility_filter"], :2], dim=-1, keepdim=True).mean()
             outputs["viewspace_points"].grad = org_grad * max(self.hparams["density"].densify_grad_scaler * grad_norm_avg_final / grad_norm_avg, 1.0)
+        elif "extra_loss" in metrics:
+            self.manual_backward(metrics["loss"] + metrics["extra_loss"])
+        else:
+            self.manual_backward(metrics["loss"])
 
         self._finish_training_step(optimizers, schedulers, outputs, batch, global_step)
+
+    def _split_backward_needed(self, metrics) -> bool:
+        """Does anything downstream read the viewspace gradient this step?
+
+        `CityGSV2Metrics` splits the objective while densification runs so that the viewspace
+        gradient, read between the two backwards, carries the SSIM term only -- the signal
+        gradient-based ADC densifies on (CityGaussianV2's DGD).
+
+        MCMC does not read that gradient; `mcmc_2dgs_density_controller.py:58` states it outright.
+        For those configs the split costs an extra backward and a retained graph every step, and
+        the retained graph is the "backward activation" term of the VRAM peak model on 6GB.
+        Backwarding the sum instead is gradient-identical -- the split is a partition of one sum,
+        asserted in `tests/split_backward_equivalence_test.py`.
+
+        Measured on `oreg_0p002_b12` across `densify_until_iter` at constant N (it hits cap 1M at
+        step 29,999): 1.420 it/s while splitting, 2.620 it/s after. That boundary also stops
+        relocation and contribution pruning, so the split is only part of the 84.5%, but an extra
+        backward is roughly +67% of a step's cost on its own.
+
+        Conservative by default: any controller that reads the gradient keeps the old path.
+        """
+        if "extra_loss" not in metrics:
+            return False
+        reader = getattr(self.density_controller, "READS_VIEWSPACE_GRAD", True)
+        return bool(reader)
 
     def _decide_num_strips(self, camera, global_step):
         """Number of K-strips for this step. Fixed (train_strips) unless dynamic_strips
@@ -554,9 +582,13 @@ class GaussianSplatting(LightningModule):
             batch_s = crop_batch(batch, v0, v1, cam_s)
             metrics, prog_bar = self.metric.get_train_metrics(self, self.gaussian_model, global_step, batch_s, outputs)
             w = (v1 - v0) / H
-            self.manual_backward(metrics["loss"] * w, retain_graph=("extra_loss" in metrics.keys()))
-            if "extra_loss" in metrics.keys():
+            if self._split_backward_needed(metrics):
+                self.manual_backward(metrics["loss"] * w, retain_graph=True)
                 self.manual_backward(metrics["extra_loss"] * w)
+            elif "extra_loss" in metrics:
+                self.manual_backward((metrics["loss"] + metrics["extra_loss"]) * w)
+            else:
+                self.manual_backward(metrics["loss"] * w)
             for k, v in metrics.items():
                 try:
                     v = float(v.detach()) if isinstance(v, torch.Tensor) else float(v)

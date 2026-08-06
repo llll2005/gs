@@ -45,6 +45,11 @@ class MCMCDensityController(DensityController):
 
 
 class MCMCDensityControllerImpl(DensityControllerImpl):
+    # MCMC densifies via relocate/add_new, never via the viewspace gradient. Declaring it lets
+    # gaussian_splatting skip the split backward (see `_split_backward_needed`), which saves an
+    # extra backward and a retained graph every densify step.
+    READS_VIEWSPACE_GRAD = False
+
     config: MCMCDensityController
 
     def setup(self, stage: str, pl_module: LightningModule) -> None:

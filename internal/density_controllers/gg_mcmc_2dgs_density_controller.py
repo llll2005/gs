@@ -47,6 +47,10 @@ class GGMCMC2DGSDensityController(MCMC2DGSDensityController):
 
 
 class GGMCMC2DGSDensityControllerImpl(MCMC2DGSDensityControllerImpl):
+    # This variant DOES read `outputs["viewspace_points"].grad` (see `_probs`), so it must keep
+    # the split backward even though its MCMC parent does not need it.
+    READS_VIEWSPACE_GRAD = True
+
     config: GGMCMC2DGSDensityController
 
     # ── gradient-accumulation state ──────────────────────────────────────────
