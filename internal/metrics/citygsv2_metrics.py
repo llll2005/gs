@@ -104,6 +104,14 @@ class CityGSV2MetricsModule(GS2DMetricsImpl):
         
         predicted_inverse_depth = 1. / (outputs["surf_depth"].clamp_min(0.).squeeze() + 1e-8)
 
+        # Unpack the optional GT mask up front. It used to be unpacked at the very end, AFTER the
+        # `depth_normalized` block called `.clamp()` on it -- which is an AttributeError the moment a
+        # dataparser supplies `(depth, mask)` with `depth_normalized=True`. Every config we ship sets
+        # it False so the crash never fired, but the ordering was the bug, not the flag.
+        gt_inverse_depth_mask = None
+        if isinstance(gt_inverse_depth, tuple):
+            gt_inverse_depth, gt_inverse_depth_mask = gt_inverse_depth
+
         # The pseudo-depth .npy files are baked at whatever resolution estimate_dataset_depths.py ran
         # at (1600x900 here, i.e. down_sample_factor 1.2) while the render follows the camera, so
         # changing down_sample_factor makes the two disagree -- "size of tensor a (1600) must match
@@ -112,11 +120,10 @@ class CityGSV2MetricsModule(GS2DMetricsImpl):
         # in the pipeline. MCMCInverseDepthMetrics already solves this the same way (resize the
         # PREDICTION to the target's size, not the reverse); matching that keeps one convention in
         # the codebase. No-op when the shapes agree, so no existing result changes.
-        _gt_for_shape = gt_inverse_depth[0] if isinstance(gt_inverse_depth, tuple) else gt_inverse_depth
-        if predicted_inverse_depth.shape[-2:] != _gt_for_shape.shape[-2:]:
+        if predicted_inverse_depth.shape[-2:] != gt_inverse_depth.shape[-2:]:
             predicted_inverse_depth = torch.nn.functional.interpolate(
                 predicted_inverse_depth[None, None, ...],
-                size=_gt_for_shape.shape[-2:],
+                size=gt_inverse_depth.shape[-2:],
                 mode="bilinear",
                 align_corners=False,
             )[0, 0]
@@ -127,9 +134,7 @@ class CityGSV2MetricsModule(GS2DMetricsImpl):
             predicted_inverse_depth = predicted_inverse_depth.clamp(max=clamp_val) / clamp_val
             gt_inverse_depth = gt_inverse_depth.clamp(max=clamp_val) / clamp_val
 
-        if isinstance(gt_inverse_depth, tuple):
-            gt_inverse_depth, gt_inverse_depth_mask = gt_inverse_depth
-
+        if gt_inverse_depth_mask is not None:
             gt_inverse_depth = gt_inverse_depth * gt_inverse_depth_mask
             predicted_inverse_depth = predicted_inverse_depth * gt_inverse_depth_mask
 
