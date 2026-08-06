@@ -32,6 +32,12 @@ def main():
     ap.add_argument("--block_dim", type=int, nargs=2, default=[5, 5])
     ap.add_argument("--rank_views", type=int, default=24, help="用幾個視角算貢獻度排序")
     ap.add_argument("--score_views", type=int, default=8, help="建築組取幾張評分")
+    ap.add_argument("--heldout", action="store_true",
+                    help="score on the OFFICIAL held-out test views instead of the block's own "
+                         "training views. Ranking still uses training views (that is what the trim "
+                         "sees); only the judge changes. This separates 'which primitives does "
+                         "reconstruction need' from 'which ones generalise'.")
+    ap.add_argument("--test_dir", default="data/matrix_city/aerial/test/block_all_test")
     ap.add_argument("--reduce", default="topk_mean", choices=["topk_mean", "max", "legacy", "frustum_topk"],
                     help="which contribution statistic to rank by")
     ap.add_argument("--targets", type=int, nargs="+",
@@ -53,10 +59,40 @@ def main():
         return torch.from_numpy(np.array(p.resize((W, H), Image.LANCZOS), np.uint8)) \
                     .float().permute(2, 0, 1).to(dev) / 255.
 
-    probe = idx[::max(1, len(idx) // 40)]
-    tex = sorted((GRAD(gt(i)), i) for i in probe)
-    build = [i for _, i in tex[-a.score_views:]]
-    gts = {i: gt(i) for i in build}
+    if a.heldout:
+        # Held-out judge: official MatrixCity test views whose camera centre falls inside this
+        # block's training envelope. `eval_official_test` established that
+        # `block_all_test/sparse/0` is already in our frame (residual 2e-7), so no transform.
+        from eval_official_test import block_bounds
+        t_names, t_cams = load_test_cameras(a.test_dir, 1.2)
+        lo, hi, _ = block_bounds(a.data, a.block, a.block_dim)
+        # `block_bounds` returns 3D min/max of the training camera centres; compare in XY only,
+        # which is what `eval_official_test` does (aerial flight altitude is near-constant, and a
+        # z bound would reject test views flown slightly higher).
+        centres = torch.stack([t_cams[i].camera_center for i in range(len(t_names))]).numpy()
+        inside = [i for i in range(len(t_names))
+                  if (centres[i][:2] >= lo[:2]).all() and (centres[i][:2] <= hi[:2]).all()]
+        t_files = sorted(f for f in os.listdir(f"{a.test_dir}/input")
+                         if f.lower().endswith((".png", ".jpg")))
+
+        def gt_ho(i):
+            p_ = Image.open(f"{a.test_dir}/input/{t_files[int(t_names[i][:-4]) - 1]}").convert("RGB")
+            return torch.from_numpy(np.array(p_.resize((W, H), Image.LANCZOS), np.uint8)) \
+                        .float().permute(2, 0, 1).to(dev) / 255.
+
+        probe_h = inside[::max(1, len(inside) // 40)]
+        tex = sorted((GRAD(gt_ho(i)), i) for i in probe_h)
+        build = [i for _, i in tex[-a.score_views:]]
+        gts = {i: gt_ho(i) for i in build}
+        score_cams = t_cams          # judge on test cams; ranking below still uses train cams
+        print(f"[held-out] 官方 test 落在 block {a.block} 範圍內的 {len(inside)} 幀，"
+              f"取建築組 {len(build)} 張")
+    else:
+        probe = idx[::max(1, len(idx) // 40)]
+        tex = sorted((GRAD(gt(i)), i) for i in probe)
+        build = [i for _, i in tex[-a.score_views:]]
+        gts = {i: gt(i) for i in build}
+        score_cams = cams
     rank_views = [idx[j] for j in np.linspace(0, len(idx) - 1, min(a.rank_views, len(idx))).astype(int)]
     print(f"[視角] 排序用 {len(rank_views)} 台，評分用建築組 {len(build)} 張"
           f"（GT 梯度 {tex[-a.score_views][0]:.4f}~{tex[-1][0]:.4f}）")
@@ -124,7 +160,7 @@ def main():
         P, R = [], []
         with torch.no_grad():
             for i in build:
-                o = rend(cams[i].to_device(dev), model, bg_color=bg)["render"].clamp(0, 1)
+                o = rend(score_cams[i].to_device(dev), model, bg_color=bg)["render"].clamp(0, 1)
                 P.append(PSNR(o, gts[i])); R.append(GRAD(o) / max(GRAD(gts[i]), 1e-9))
         return float(np.mean(P)), float(np.mean(R))
 
