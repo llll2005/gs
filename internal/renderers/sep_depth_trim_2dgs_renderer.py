@@ -23,6 +23,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             prune_ratio: float = 0.1,
             contribution_prune_from_iter : int = 1000,
             contribution_prune_interval: int = 500,
+            contribution_prune_until_iter: int = -1,
             start_prune_ratio: float = 0.0,
             diable_start_trimming: bool = False,
             diable_trimming: bool = False,
@@ -37,6 +38,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
         self.prune_ratio = prune_ratio
         self.contribution_prune_from_iter = contribution_prune_from_iter
         self.contribution_prune_interval = contribution_prune_interval
+        # -1 = follow the density controller's densify_until_iter (the shipped behaviour). Set it
+        # explicitly to keep harvesting after densify stops -- trimming and densify are separate
+        # mechanisms and tying them together makes a "densify off, keep shrinking" schedule
+        # impossible to express. See 紀錄/研究總覽.md §4.
+        self.contribution_prune_until_iter = contribution_prune_until_iter
         self.start_prune_ratio = start_prune_ratio
         self.diable_start_trimming = diable_start_trimming
         self.diable_trimming = diable_trimming
@@ -231,7 +237,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
             module,
     ):
         cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
-        if self.diable_trimming or (step > module.density_controller.config.densify_until_iter) \
+        until = self.contribution_prune_until_iter
+        if until < 0:
+            until = module.density_controller.config.densify_until_iter
+        if self.diable_trimming or (step > until) \
            or (step < self.contribution_prune_from_iter) \
            or (step % self.contribution_prune_interval != 0):
            return

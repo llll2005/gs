@@ -139,9 +139,9 @@ pip silently skips a same-version local path. After rebuilding, verify the `.so`
 
 **Tests:** `python -m unittest discover -s tests -p "*_test.py"` — the `-p` matters. The files are
 named `<name>_test.py` (suffix), while unittest's default pattern is `test*.py` (prefix), so the
-command without it discovers **zero tests and reports OK**. Current state: 10 pass, 5 error on
+command without it discovers **zero tests and reports OK**. Current state: 55 pass, 7 error on
 missing optional deps (`tinycudann`, and `gsplat._torch_impl` which the installed gsplat no longer
-exposes) — none are our code.
+exposes) — all 7 are upstream tests, none are our code.
 
 ## Architecture
 
