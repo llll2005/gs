@@ -33,9 +33,47 @@ def contribution_accumulator(K: int, reduce: str = "max"):
     ⚠ Measured on post-hoc pruning of a finished model. During training the trim fires repeatedly
     and the dynamics differ; that has not been separated.
     """
-    if reduce not in ("topk_mean", "max"):
+    if reduce not in ("topk_mean", "max", "frustum_topk"):
         raise ValueError(f"unknown reduce: {reduce}")
+    if reduce == "frustum_topk":
+        return _frustum_topk_accumulator(K)
     return _topk_mean_accumulator(1 if reduce == "max" else K)
+
+
+def _frustum_topk_accumulator(K: int):
+    """Top-K mean with K capped by how many views actually contain the primitive.
+
+    Fixed-K top-K punishes anything seen by fewer than K cameras, because slots K_seen+1..K stay
+    at zero and drag the mean down. Under block training that is precisely the block's EDGES: the
+    centre is seen from 50+ angles, the rim from 3-5. So fixed-K conflates "real geometry near the
+    boundary" with "floater", and measurably prunes worse than `max`.
+
+    Capping K at the frustum count removes the zero padding for edge primitives while leaving it in
+    place for a floater, which sits inside many frusta and contributes to almost none of them.
+
+    `push` takes (transmittance, num_covered_pixels). `num_covered_pixels > 0` is frustum
+    membership: occlusion lowers T, not alpha, so an occluded primitive is still rasterised and
+    still counted. Counting "views where transmittance > 0" instead would let the occluded floater
+    report a frustum count of 1 and escape.
+    """
+    state = {"buf": None, "n_frustum": None}
+
+    def push(trans, covered):
+        if state["buf"] is None:
+            state["buf"] = torch.full((K,) + trans.shape, float("-inf"),
+                                      dtype=trans.dtype, device=trans.device)
+            state["n_frustum"] = torch.zeros_like(trans)
+        state["buf"] = torch.cat([state["buf"], trans[None]], dim=0).topk(K, dim=0).values
+        state["n_frustum"] += (covered > 0).to(trans.dtype)
+
+    def result():
+        buf, nf = state["buf"], state["n_frustum"]
+        k_eff = nf.clamp(1, K)                                   # min(K, N_frustum), at least 1
+        rank = torch.arange(K, device=buf.device).view(K, *([1] * (buf.dim() - 1)))
+        keep = (rank < k_eff.unsqueeze(0)) & torch.isfinite(buf)
+        return buf.masked_fill(~keep, 0.0).sum(0) / keep.sum(0).clamp_min(1)
+
+    return push, result
 
 
 def _topk_mean_accumulator(K: int):

@@ -32,7 +32,7 @@ def main():
     ap.add_argument("--block_dim", type=int, nargs=2, default=[5, 5])
     ap.add_argument("--rank_views", type=int, default=24, help="用幾個視角算貢獻度排序")
     ap.add_argument("--score_views", type=int, default=8, help="建築組取幾張評分")
-    ap.add_argument("--reduce", default="topk_mean", choices=["topk_mean", "max", "legacy"],
+    ap.add_argument("--reduce", default="topk_mean", choices=["topk_mean", "max", "legacy", "frustum_topk"],
                     help="which contribution statistic to rank by")
     ap.add_argument("--targets", type=int, nargs="+",
                     default=[80_000, 160_000, 320_000, 640_000])
@@ -74,12 +74,17 @@ def main():
     K = 5
     push, gather = contribution_accumulator(K, "topk_mean")
     push_max, gather_max = contribution_accumulator(K, "max")
+    push_fr, gather_fr = contribution_accumulator(K, "frustum_topk")
     legacy = [None] * K
     with torch.no_grad():
         for j, i in enumerate(rank_views):
-            o = rend(cams[i].to_device(dev), model, bg_color=bg, record_transmittance=True)
-            t = (o if torch.is_tensor(o) else o["transmittance"]).float()
+            o = rend(cams[i].to_device(dev), model, bg_color=bg,
+                     record_transmittance=True, record_coverage=True)
+            t, cov = o if isinstance(o, tuple) else (o, None)
+            t = t.float()
             push(t); push_max(t)
+            if cov is not None:
+                push_fr(t, cov.float())
             if legacy[0] is not None:                 # verbatim transcription of the old loop
                 m = t > legacy[0]
                 if m.any():
@@ -91,12 +96,15 @@ def main():
             if (j + 1) % 12 == 0:
                 print(f"  ...排序 {j + 1}/{len(rank_views)}")
     contrib_max = gather_max()
+    contrib_fr = gather_fr() if a.reduce == "frustum_topk" else None
     contrib = gather()
     contrib_legacy = torch.stack(legacy, dim=-1).mean(-1)
     order_topk = torch.argsort(contrib, descending=True)
     order_max = torch.argsort(contrib_max, descending=True)
     order_legacy = torch.argsort(contrib_legacy, descending=True)
-    order = {"topk_mean": order_topk, "max": order_max, "legacy": order_legacy}[a.reduce]
+    order = {"topk_mean": order_topk, "max": order_max, "legacy": order_legacy,
+             "frustum_topk": torch.argsort(contrib_fr, descending=True)
+             if contrib_fr is not None else order_max}[a.reduce]
 
     print(f"\n[排序] 本次用 reduce={a.reduce}")
     print(f"[排序差異] topk_mean vs legacy 的 contribution 相關係數 "

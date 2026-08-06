@@ -58,6 +58,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             bg_color: torch.Tensor,
             scaling_modifier=1.0,
             record_transmittance=False,
+            record_coverage=False,
             **kwargs,
     ):
         """
@@ -129,7 +130,17 @@ class SepDepthTrim2DGSRenderer(Renderer):
 
         if record_transmittance:
             transmittance_sum, num_covered_pixels, radii = output
+            # Per-COVERED-PIXEL mean, not the sum: size-normalised, so a large primitive and a
+            # small one with the same per-pixel weight score the same.
             transmittance = transmittance_sum / (num_covered_pixels + 1e-6)
+            if record_coverage:
+                # `num_covered_pixels > 0` means the primitive was rasterised in this view at all
+                # -- including when it is fully occluded, since the blend loop only skips
+                # alpha < 1/255 and occlusion lowers T, not alpha. That makes it a frustum-
+                # membership count, which `contribution_accumulator(reduce="frustum_topk")` needs
+                # and which "views where transmittance > 0" cannot supply: an occluded floater
+                # reads 0 there and would escape the penalty it exists to receive.
+                return transmittance, num_covered_pixels
             return transmittance
         else:
             rendered_image, radii, allmap = output
