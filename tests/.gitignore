@@ -1,9 +1,8 @@
+# Upstream shipped this as a whitelist: `*` then one `!` per test file. Any test added afterwards
+# is silently ignored -- five files and ~40 tests written on 2026-08-06 were invisible to `git
+# add -A` and would have been lost. Whitelist the PATTERN instead of individual files.
+# `*` still catches __pycache__, .pyc and any dataset/output dropped in here.
 *
 !dataset
 !.gitignore
-!positional_encoding_test.py
-!network_factory_test.py
-!deformable_model_test.py
-!gaussian_projection_test.py
-!vanilla_gaussian_model_test.py
-!density_controller_utils_test.py
+!*_test.py
