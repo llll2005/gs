@@ -5,6 +5,11 @@ from torchmetrics.image import StructuralSimilarityIndexMeasure
 from .gs2d_metrics import GS2DMetrics, GS2DMetricsImpl
 
 
+def _grad_energy(img: torch.Tensor) -> torch.Tensor:
+    """Total variation of a [C, H, W] image -- how much high-frequency energy it carries."""
+    return (img[:, 1:, :] - img[:, :-1, :]).abs().mean() + (img[:, :, 1:] - img[:, :, :-1]).abs().mean()
+
+
 @dataclass
 class WeightScheduler:
     init: float = 1.0
@@ -194,5 +199,33 @@ class CityGSV2MetricsModule(GS2DMetricsImpl):
         metrics["loss"] = metrics["loss"] + d_reg
         metrics["d_reg"] = d_reg
         pbar["d_reg"] = True
+
+        # Texture ratio = render TV / GT TV: the one metric verified to have resolution on this
+        # scene (7x separation on the known-bad controls, where building LPIPS fully overlapped).
+        # It reads as "how much of the GT's high-frequency energy did we recover", so BELOW 1 means
+        # blurry and higher is better; ABOVE 1 means we are producing MORE detail than exists
+        # (noise/speckle/floaters) and is bad. It compares energy, not agreement -- correctly-scaled
+        # noise also scores 1.0 -- so it is only trustworthy alongside LPIPS.
+        #
+        # `tex_render`/`tex_gt` are logged separately on purpose. Lightning averages each over the
+        # val set, so their RATIO is the energy-weighted texture ratio, which leans towards the
+        # building views because their GT gradient is 5-10x the water views' (0.051-0.061 vs
+        # 0.005-0.013). `texratio` alone is the per-image mean, which flat water dilutes -- the
+        # same averaging trap that hid a 2.7x texture gap behind 1.37 dB of PSNR (紀錄 2026-08-06).
+        #
+        # ⚠ The weighted ratio is an UPPER BOUND on the building-only reading, not equal to it:
+        # the blurrier the buildings, the smaller their share of the NUMERATOR, so correctly
+        # rendered water inflates it. Estimated on b12 that is ~0.27 against a true ~0.145. It is
+        # biased consistently, so it is sound for tracking a run and for comparing runs on the same
+        # val set; for a number to report, use tools/rescore_by_content.py, which splits by content.
+        _, image_info, _ = batch
+        _, gt_image, _ = image_info
+        g_gt = _grad_energy(gt_image)
+        g_render = _grad_energy(outputs["render"])
+        metrics["tex_gt"] = g_gt
+        metrics["tex_render"] = g_render
+        metrics["texratio"] = g_render / g_gt.clamp_min(1e-8)
+        pbar["tex_gt"] = pbar["tex_render"] = False
+        pbar["texratio"] = True
 
         return metrics, pbar

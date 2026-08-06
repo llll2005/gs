@@ -131,7 +131,10 @@ class GaussianSplatting(LightningModule):
             self.log(
                 f"{prefix}/{name_prefix}{name}",
                 metrics[name],
-                prog_bar=prog_bar[name],
+                # .get, not [name]: a metric without a prog_bar entry used to KeyError here, and
+                # for a validate-only metric that surfaces at the FIRST val -- hours into a run.
+                # Not showing it in the progress bar is the harmless default.
+                prog_bar=prog_bar.get(name, False),
                 on_step=on_step,
                 on_epoch=on_epoch,
                 batch_size=self.batch_size,
