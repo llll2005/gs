@@ -2,6 +2,7 @@ from typing import Dict, Tuple, Union, Callable, Optional, List
 
 import lightning
 import torch
+from internal.utils.topk_contribution import topk_mean_accumulator
 import math
 from .renderer import Renderer
 from .renderer import RendererOutputTypes, RendererOutputInfo, Renderer
@@ -9,6 +10,9 @@ from ..cameras import Camera
 from ..models.gaussian import GaussianModel
 
 from diff_trim_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+
+
+
 
 class SepDepthTrim2DGSRenderer(Renderer):
     def __init__(
@@ -191,27 +195,19 @@ class SepDepthTrim2DGSRenderer(Renderer):
             return
         cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
         device =  module.gaussian_model.get_xyz.device
-        top_list = [None, ] * self.K
+        push, gather = topk_mean_accumulator(self.K)
         with torch.no_grad():
             print("Trimming...")
             for i in range(len(cameras)):
                 camera = cameras[i].to_device(device)
-                trans = self(
+                push(self(
                     camera,
                     module.gaussian_model,
                     bg_color=module._fixed_background_color().to(device),
                     record_transmittance=True
-                )
-                if top_list[0] is not None:
-                    m = trans > top_list[0]
-                    if m.any():
-                        for i in range(self.K - 1):
-                            top_list[self.K - 1 - i][m] = top_list[self.K - 2 - i][m]
-                            top_list[0][m] = trans[m]
-                else:
-                    top_list = [trans.clone() for _ in range(self.K)]
+                ))
 
-            contribution = torch.stack(top_list, dim=-1).mean(-1)
+            contribution = gather()
             tile = torch.quantile(contribution, self.start_prune_ratio)
             prune_mask = contribution <= tile
             module.density_controller._prune_points(prune_mask, module.gaussian_model, module.gaussian_optimizers)
@@ -231,28 +227,19 @@ class SepDepthTrim2DGSRenderer(Renderer):
         
         device =  module.gaussian_model.get_xyz.device
 
-        top_list = [None, ] * self.K
+        push, gather = topk_mean_accumulator(self.K)
         with torch.no_grad():
             print("Trimming...")
             for i in range(len(cameras)):
                 camera = cameras[i].to_device(device)
-                trans = self(
+                push(self(
                     camera,
                     module.gaussian_model,
                     bg_color=module._fixed_background_color().to(device),
                     record_transmittance=True
-                )
-                if top_list[0] is not None:
-                    m = trans > top_list[0]
-                    if m.any():
-                        for i in range(self.K - 1):
-                            top_list[self.K - 1 - i][m] = top_list[self.K - 2 - i][m]
-                            top_list[0][m] = trans[m]
-                else:
-                    top_list = [trans.clone() for _ in range(self.K)]
+                ))
 
-            contribution = torch.stack(top_list, dim=-1).mean(-1)
-
+            contribution = gather()
             tile = torch.quantile(contribution, self.prune_ratio)
             prune_mask = (contribution <= tile)
             module.density_controller._prune_points(prune_mask, module.gaussian_model, module.gaussian_optimizers)

@@ -16,6 +16,7 @@ See 紀錄/主線_Gaussian效率.md. Used to measure how much redundancy remains
 """
 
 import torch
+from internal.utils.topk_contribution import topk_mean_accumulator
 
 from internal.density_controllers.density_controller import Utils
 
@@ -30,20 +31,17 @@ def native_2dgs_importance_prune(module, prune_percent: float, v_pow: float = 0.
 
     # 1. harvest per-surfel contribution = mean of top-K transmittance over all train views
     #    (replicates the Trim renderer's own contribution; the renderer returns per-surfel `trans`)
+    # Shared with the trim renderer. The hand-rolled loop this replaces only inserted values that
+    # beat the running maximum, so a view that belonged in the top-K but was not a new record was
+    # dropped -- and the seed `[trans]*K` copied the first camera into every slot. It did shift
+    # correctly (unlike the renderer's copy, which also overwrote slot 0 mid-shift), but it was
+    # still not the mean of the K largest. See `tests/topk_contribution_test.py`.
     bg = module._fixed_background_color().to(device)
-    top_list = [None] * K
+    push, gather = topk_mean_accumulator(K)
     for i in range(len(cameras)):
         camera = cameras[i].to_device(device)
-        trans = renderer(camera, model, bg_color=bg, record_transmittance=True)  # [N]
-        if top_list[0] is not None:
-            m = trans > top_list[0]
-            if m.any():
-                for j in range(K - 1):
-                    top_list[K - 1 - j][m] = top_list[K - 2 - j][m]
-                top_list[0][m] = trans[m]
-        else:
-            top_list = [trans.clone() for _ in range(K)]
-    contribution = torch.stack(top_list, dim=-1).mean(-1)  # [N]
+        push(renderer(camera, model, bg_color=bg, record_transmittance=True))  # [N]
+    contribution = gather()  # [N]
 
     # 2. surfel area (= 2D analogue of volume, since a surfel's 3rd axis is identically 0 so
     #    LightGaussian's V = 4/3*pi*abc would be 0 for every point)

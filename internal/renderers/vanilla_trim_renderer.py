@@ -2,6 +2,7 @@ from typing import Dict, Tuple, Union, Callable, Optional, List
 
 import lightning
 import torch
+from internal.utils.topk_contribution import topk_mean_accumulator
 import math
 from .renderer import *
 
@@ -260,27 +261,19 @@ class VanillaTrimRenderer(VanillaRenderer):
             return
         cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
         device =  module.gaussian_model.get_xyz.device
-        top_list = [None, ] * self.K
+        push, gather = topk_mean_accumulator(self.K)
         with torch.no_grad():
             print("Trimming...")
             for i in range(len(cameras)):
                 camera = cameras[i].to_device(device)
-                trans = self(
+                push(self(
                     camera,
                     module.gaussian_model,
                     bg_color=module._fixed_background_color().to(device),
                     record_transmittance=True
-                )
-                if top_list[0] is not None:
-                    m = trans > top_list[0]
-                    if m.any():
-                        for i in range(self.K - 1):
-                            top_list[self.K - 1 - i][m] = top_list[self.K - 2 - i][m]
-                            top_list[0][m] = trans[m]
-                else:
-                    top_list = [trans.clone() for _ in range(self.K)]
+                ))
 
-            contribution = torch.stack(top_list, dim=-1).mean(-1)
+            contribution = gather()
             # tile = torch.quantile(contribution, self.prune_ratio)
             tile = 0  # only prune invisible points at start
             prune_mask = contribution <= tile
@@ -301,27 +294,19 @@ class VanillaTrimRenderer(VanillaRenderer):
         
         device =  module.gaussian_model.get_xyz.device
 
-        top_list = [None, ] * self.K
+        push, gather = topk_mean_accumulator(self.K)
         with torch.no_grad():
             print("Trimming...")
             for i in range(len(cameras)):
                 camera = cameras[i].to_device(device)
-                trans = self(
+                push(self(
                     camera,
                     module.gaussian_model,
                     bg_color=module._fixed_background_color().to(device),
                     record_transmittance=True
-                )
-                if top_list[0] is not None:
-                    m = trans > top_list[0]
-                    if m.any():
-                        for i in range(self.K - 1):
-                            top_list[self.K - 1 - i][m] = top_list[self.K - 2 - i][m]
-                            top_list[0][m] = trans[m]
-                else:
-                    top_list = [trans.clone() for _ in range(self.K)]
+                ))
 
-            contribution = torch.stack(top_list, dim=-1).mean(-1)
+            contribution = gather()
 
             tile = torch.quantile(contribution, self.prune_ratio)
             prune_mask = (contribution <= tile)
