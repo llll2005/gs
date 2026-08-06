@@ -1,26 +1,8 @@
-"""Compare initializations and trained models on frame-independent geometry.
+"""比較 init 與訓練後模型的幾何：覆蓋倍數、局部 PCA 厚度、overdraw。
 
-The 27-28 dB runs (`citygsv2_mc_aerial_sh0_trim`, 2026-04) were trained on the OLD dataset, which
-was regenerated on 2026-05-29 into a different SfM frame, and the old images are gone. So absolute
-scales cannot be compared and the old cloud cannot be projected into any camera we still have.
-
-What survives the frame change is RATIOS. And the ratio that matters is the one that sets overdraw:
-
-    coverage = 3 * scale / own-median-NN-spacing
-
-A cloud whose Gaussians span 3 sigma across k times their own spacing paints each pixel about
-pi*k^2 times over per layer. Multiply by the number of layers -- points per spacing-sized cell --
-and you have the overdraw, all from quantities internal to the cloud.
-
-    overdraw ~ pi * coverage^2 * layers
-
-Measured on b12 at 1.2x: our depth-init projects to a 22.42 px median radius while the visible
-surface supports at most ~362k primitives (~4 px each), so the initial Gaussians are an order of
-magnitude larger than the surface can use. This tool asks whether the coarse model that produced
-the 28.9 dB result had the same property or not.
-
-`layers` is also the shell measure: 1.0 means a clean single surface, 3+ means the per-image depth
-estimates were stacked rather than fused.
+全部是**座標系無關的比值**，所以舊資料的模型也能進表（絕對尺度不可跨資料集比）。
+⚠ 覆蓋倍數/overdraw **只在同類間可比**（指標不看 opacity；init 一律 0.99，訓練後 0.03~0.11）。
+判準與實測值見 紀錄/研究總覽.md §5.2。
 """
 import argparse
 import os

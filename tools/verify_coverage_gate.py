@@ -1,20 +1,7 @@
-"""Two-sided check on the depth-loss coverage gate.
+"""深度損失覆蓋率 gate 的兩面驗證：在壞掉的 run 上要觸發、在既有 run 上要靜默。
 
-The gate (`CityGSV2Metrics.depth_coverage_eps`) must satisfy two things at once, and only one of
-them is about fixing the bug:
-
-  FIRES on the run it was written for. `cap80k_60k_b12` pinned the count at 80,000, `d_reg` spiked
-  to 1.1e6 against a healthy 0.002-0.17, and val collapsed 20.34 -> 17.06. If the gate does not
-  find uncovered pixels there, the diagnosis is wrong.
-
-  SILENT on the runs already in the results table. `aggr24k_b12`, `graded_k4_24k_b12`,
-  `oreg_0p002_b12` and `b12_cap2m_reg000_exact` all held `d_reg` inside 0.0009-0.0055 for their
-  whole schedule, so a change in their loss would invalidate every comparison drawn against them.
-  A single 1e8 pixel would have lifted the mean over 1.44M pixels to ~69, so those runs cannot have
-  had any -- the gate should report 0.00%.
-
-Reports the fraction of pixels below the alpha threshold, and what the depth term would have been
-with and without the gate, so "no-op" is measured rather than asserted.
+靜默是必要條件——gate 若改變了 oreg/reg000 的損失，所有對它們的比較就作廢。
+背景與汙染界線見 紀錄/研究總覽.md §7.3。
 """
 import argparse
 import os

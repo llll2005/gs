@@ -1,28 +1,8 @@
-"""What does the start-of-training trim actually delete, and why?
+"""起始 trim（sep_depth_trim_2dgs_renderer.py:185-218）到底刪掉了什麼。
 
-`sep_depth_trim_2dgs_renderer.py:185-218` runs once at step 1 over all training cameras and drops
-every primitive whose contribution equals the minimum -- in practice, everything that is invisible
-in every single view. Measured on b12 it removes ~73% of any initialization, deterministically,
-before a single optimizer step. That is the direct cause of Stage 0 returning a null result: the
-treatment was deleted before it could be measured.
-
-Two readings, with opposite consequences:
-
-  (a) THE TRIM IS RIGHT. Those points are genuinely invisible, the initialization was 73% waste,
-      and the right move is to stop generating them (and to note that 73% of the init budget is
-      provably wasted -- material for the cost-aware argument).
-
-  (b) THE TRIM KILLS REAL GEOMETRY. The points are occluded by badly-placed points in front of
-      them, so the trim locks in the error. The right move is to protect verified points.
-
-The discriminating prediction, and the reason this tool exists: depth-init back-projects every
-pixel of 284 images, and those per-image surface estimates disagree by the measured depth error
-(0.0795) while the voxel grid is only 0.03. So the cloud is not a surface, it is a SHELL roughly
-2-3 voxels thick, and the trim keeps its front layer. If that is what is happening, culled points
-sit systematically BEHIND surviving ones along the viewing direction -- which is testable here.
-
-Anchors sharpen it further. A `track >= 4` SfM point was seen by at least 4 cameras, so it cannot
-honestly be invisible in all of them; if anchors are culled, something is in front of them.
+量三件事：被砍點的離表面距離、被砍錨點的 track 長度、被砍點是否在存活點「後方」。
+⚠ 厚殼假說最後被 PCA 厚度 0.81 推翻（見 紀錄/研究總覽.md §7.1）；本工具的「後方 69.1%」
+是拿相距 6.86 格距的點在比，那距離下表面起伏就能解釋。
 """
 import argparse
 import os

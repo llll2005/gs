@@ -1,36 +1,8 @@
-"""How far can a trained model be pruned before its texture goes? No retraining.
+"""已訓練模型按貢獻度排序後保留前 N 名（不重新擬合），量建築區紋理比。
 
-TWO QUESTIONS AT ONCE
----------------------
-1. IS "FEW BUT ACCURATE" REAL? The evidence for it was `aggr24k_b12`: 77,616 points, val 22.070,
-   only 1.3 dB under a 1.8M model. That run is now known to be P7-contaminated (2.4% of steps had
-   an exploded depth loss), so the number cannot be used. And the controlled retry, `cap80k_60k_b12`,
-   was a bad design independent of the bug: `add_new_gs` computes
-   `num_gs = max(0, min(cap, 1.05N) - N)`, so the moment N reaches the cap densification is off for
-   good while relocation and trimming keep running -- destruction without construction.
-
-   Pruning an already-healthy model asks the question directly and costs no training at all. It
-   also separates two things the cap conflated: can a small model REPRESENT this scene, versus can
-   our density control REACH a small model.
-
-2. IS THERE A "VISIBLE SURFACE CAPACITY"? The start trim keeps a near-fixed count regardless of
-   what it is fed -- 360,817 from 1,316,223 and 363,190 from 991,841. If that ~362k is really the
-   number of primitives the visible surface can hold at this resolution, quality should hold down
-   to roughly there and fall off below it. The curve tests that; two points did not.
-
-METRIC
-------
-Building-region texture ratio (rendered gradient energy / GT gradient energy), which is the only
-measure verified to have resolution here: b12 is half flat water where a near-uniform blob still
-scores 32-40 dB, and averaging that in is what hid every mechanism for two months. Overall PSNR is
-reported alongside but is not the judge.
-
-RANKING
--------
-Contribution, accumulated as the mean of the top-K transmittances across views -- the same
-statistic the trim renderer uses, so "pruned to N" means what the pipeline would itself keep. Note
-this ranks by usefulness to the TRAINING views; it says nothing about novel views, and the earlier
-dust work found sub-pixel culling is view-distance dependent.
+⚠ 這測不到「小模型能不能表現場景」——剪枝沒有重新擬合，剩下的高斯 scale/opacity 是在別人
+存在的前提下調出來的。唯一有效的宣稱是**部署側**（剪 30% 幾乎免費）。見 紀錄/研究總覽.md §10。
+排序＝跨視角 top-K transmittance 平均，與 trim renderer 同一個統計量。
 """
 import argparse
 import os

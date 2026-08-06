@@ -1,40 +1,8 @@
-"""Confidence-graded initialization: verified SfM anchors + depth-projected fill.
+"""信心分級初始化：SfM track>=k 的錨點 + 深度點只補沒錨點的體素。
 
-WHY THIS EXISTS
----------------
-Five separate criteria failed to identify floaters after the fact -- contribution pruning,
-opacity_reg, dust harvesting, multi-view concentration, depth agreement. They all failed for the
-same reason: "is this primitive on a real surface?" is not recoverable from a trained model.
-
-But it is available for free BEFORE training. A COLMAP point's track length is the number of
-independent views that cross-validated that 3D position. `internal/utils/colmap.py` has carried
-`image_ids` on every Point3D the whole time; we never read it.
-
-    track length   p10/p50/p90/p99 = 2 / 4 / 17 / 60   max 338
-    track >= 4     54.3% of points, and every other point is still within p90 3.9x of a kept one
-
-DO NOT USE REPROJECTION ERROR AS CONFIDENCE. It is anti-correlated with verification here:
-
-    track <= 2  median error 0.142 px      (2 rays, exactly solvable, never checked by a third)
-    track >= 6  median error 0.549 px      (must compromise across every observation)
-
-A 2-view point has low residual because bundle adjustment can place it freely to satisfy both
-rays. Weighting by error would systematically favour the least-verified points.
-
-WHAT THIS BUILDS
-----------------
-Tier A (anchor): SfM points with track >= k inside the depth-init cloud's footprint. Position is metric --
-    0x from the surface by construction, against depth-init's measured 20.2x.
-Tier B (fill):   depth-init points, kept ONLY where no anchor already occupies the neighbourhood.
-    Monocular depth is demoted to what it is uniquely good for: covering the textureless regions
-    (water, blank walls) where SfM triangulates nothing.
-
-Anchors take their normal / scale / rotation from the NEAREST depth-init point, so both tiers use
-an identical surfel convention and the only variable against the depth-init arm is POSITION.
-
-Stage 0 writes a plain PLY and needs no training-code change. The per-primitive confidence w_i is
-saved alongside as `<out>.w.npy` (1.0 anchors, 0.0 fill) for Stage 1, which spends it on
-differential position lr and prune immunity.
+⛔ 重投影誤差**不可**當信心指標，它與驗證度**反相關**（track<=2 誤差 0.142px < track>=6 的
+0.549px）。用 track 長度。⚠ 取點區域要用「離 depth-init 雲夠近」不是 partition AABB
+（AABB 只涵蓋足跡的 1/6）。Stage 0 結果與後續見 紀錄/研究總覽.md §7.1。
 """
 import argparse
 import os

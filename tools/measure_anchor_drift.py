@@ -1,30 +1,8 @@
-"""Do verified anchors stay put, and do they survive pruning better than guessed points?
+"""錨點在訓練中漂多遠、存活率是否高於單目填充點。
 
-Stage 0 of confidence-graded init seeds 15.5% of the cloud from SfM points with track >= 4 --
-positions that multiple independent views agreed on -- and fills the rest from monocular depth.
-It applies NO protection to the anchors (that is Stage 1). So the run answers two questions that
-decide whether Stage 1 is worth building, and neither of them is PSNR:
-
-  DRIFT     Does photometric optimization pull verified points off the surface?
-            If yes, the differential position lr of Stage 1 is required, and this measures by how
-            much. If no, the whole init line is weaker than hypothesized and RAIN-GS is right that
-            optimization, not initialization, is the lever.
-
-  SURVIVAL  v1's schedule is net-decaying (interval 350 > break-even 231.5, -22% per 3500 steps),
-            so contribution pruning executes most of the population. If anchors -- known real
-            surface -- do not survive at a higher rate than fill, that is a sixth independent
-            demonstration that contribution pruning is blind to geometry.
-
-PRIMITIVES HAVE NO PERSISTENT ID. Pruning and MCMC relocation rewrite the array every few hundred
-steps, so an anchor cannot be followed individually. Both measurements are therefore defined on
-OCCUPANCY of the initial voxel grid, which needs no identity:
-
-    retention   fraction of cells that held a tier-X seed and still hold some primitive
-    drift       distance from each seed to the nearest surviving primitive, in units of the
-                initial grid spacing. ~0 means something is still sitting where the seed was.
-
-Run it on the graded arm and the depth-init arm at matching steps; the depth-init arm has no
-anchors, so pass its own PLY and every seed counts as fill.
+⚠ 粒子沒有持久 ID（剪枝/relocation 每幾百步重寫陣列），所以兩個量測都定義在**初始體素格的
+佔用率**上。⚠ 漂移欄被剪枝污染，分不出「移動了」和「被刪了」。
+結論（剪枝盲於多視角驗證）見 紀錄/研究總覽.md §5.3。
 """
 import argparse
 import os

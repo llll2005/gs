@@ -19,9 +19,11 @@ This repo is being extended for an undergraduate research project (國科會/專
 consumer-GPU (RTX 4050 Laptop, **6GB VRAM**, 46GB RAM) training of city-scale 2DGS at quality
 competitive with CityGaussianV2.
 
-**Authority for everything below: `紀錄/README.md` (single entry) and `紀錄/現行方案與公式.md`
-(the only file that states the CURRENT formulas, with per-item "implemented where / verified how
-far"). Read those before proposing mechanisms — this section is a summary and goes stale.**
+**Authority for everything below: `紀錄/研究總覽.md` — the single source of truth (proposition,
+current numbers, theory, measurement rules, refuted hypotheses, traps). `紀錄/_ctx.md` is a compact
+primer that costs far fewer tokens; read it first, then the relevant section of 研究總覽.
+Everything else under `紀錄/` is in `archive/` and is history, not current state.
+Read those before proposing mechanisms — this section is a summary and goes stale.**
 
 **Core contribution: cost-aware density control.** Existing density control prices primitives by
 COUNT (`cap_max`, opacity L1, scale L1) and is blind to what they actually cost to render. We
@@ -31,7 +33,10 @@ price them by render cost and solve a resource-constrained problem:
 
 with `c_i` = screen-tile footprint (VRAM-grounded), `λ` = shadow price, `K` = strip tiling as a
 supply-side lever. Every prior method surveyed is the `c_i ≡ 1` special case; see
-`紀錄/現行方案與公式.md` §4/§7 and `紀錄/論文核對表.md` (11 papers audited implementation-vs-text).
+`紀錄/研究總覽.md` §3 (theory) and §8 (12 papers audited implementation-vs-text).
+⚠ The claim "every prior method is the `c_i ≡ 1` special case" does NOT hold for RAIN-GS
+(arXiv 2403.09413), whose `s = HW/(9πN)` is a per-primitive screen budget — see §3.1 for the
+precise distinction that survives.
 
 **Current best single-block recipe (b12, MatrixCity aerial):**
 - `opacity_reg=0` — MCMC's opacity L1 exists to feed relocation with dead points, and our
@@ -42,9 +47,9 @@ supply-side lever. Every prior method surveyed is the `c_i ≡ 1` special case; 
   Byte-identical (the blend loop already discards `alpha < 1/255` in both passes), −20.3% render
   VRAM, training ceiling 2.0M → 2.5M primitives.
 - SB color (`Gaussian2DSB`, F=25 vs SH3's 59). Costs −0.46 dB in this diffuse aerial content;
-  see `紀錄/論文核對表.md` §2 for why (DBS never evaluates SB on a Gaussian kernel).
+  see `紀錄/研究總覽.md` §8 for why (DBS never evaluates SB on a Gaussian kernel).
 
-**⚫ Retired lines — do not restart without reading `紀錄/廢案彙整.md` first:**
+**⚫ Retired lines — do not restart without reading `紀錄/研究總覽.md` §7 first:**
 DT-ADMM-GAT (the original proposal), reactive shadow-price λ, radius-based monster detection,
 gradient checkpointing, Scaffold/latent-MLP variants, error-guided densify (measured ceiling only
 1.2×). The dual mathematics from the ADMM line survives, applied to the VRAM constraint.
@@ -82,7 +87,7 @@ pip install -r requirements/gsplat.txt
 
 **⚠ These are OUR pipeline (depth-init). The upstream CityGS pipeline in the README uses a coarse
 global model and different tools; mixing them silently fails.** Full recipes with all flags:
-`紀錄/完整指令手冊.md`. Verified 2026-07-29.
+`紀錄/完整指令手冊.md`; the ones used daily are in `紀錄/_ctx.md`. Verified 2026-07-29.
 
 **Data prep (once per dataset):**
 ```bash
@@ -132,7 +137,11 @@ the matching 11.8 in the env, and the build then refuses. `--force-reinstall` is
 pip silently skips a same-version local path. After rebuilding, verify the `.so` mtime changed —
 "no measurable difference" from a rasterizer change almost always means it was not rebuilt.
 
-**Tests:** `python -m unittest discover -s tests`
+**Tests:** `python -m unittest discover -s tests -p "*_test.py"` — the `-p` matters. The files are
+named `<name>_test.py` (suffix), while unittest's default pattern is `test*.py` (prefix), so the
+command without it discovers **zero tests and reports OK**. Current state: 10 pass, 5 error on
+missing optional deps (`tinycudann`, and `gsplat._torch_impl` which the installed gsplat no longer
+exposes) — none are our code.
 
 ## Architecture
 
@@ -154,7 +163,7 @@ pip silently skips a same-version local path. After rebuilding, verify the `.so`
 
 For 3DGS (CityGSV1), swap to `VanillaGaussian`, `VanillaRenderer`, `VanillaDensityController`, `VanillaMetrics`.
 
-SB-color variant (DBS port, 2026-07-17): swap model to `internal/models/gaussian_2d_sb.py:Gaussian2DSB` and renderer to `internal/renderers/sep_depth_trim_2dgs_sb_renderer.py:SepDepthTrim2DGSSBRenderer` (config: `configs/mcmc_2dgs_sb_60k_aggr17_aerial.yaml`). Color = SH0 DC + Spherical Beta lobes via `colors_precomp` — 25 floats/point vs 59 (SH3). Per-block cap calibration: `tools/calibrate_block_caps.py` (see 紀錄/完整指令手冊.md §9).
+SB-color variant (DBS port, 2026-07-17): swap model to `internal/models/gaussian_2d_sb.py:Gaussian2DSB` and renderer to `internal/renderers/sep_depth_trim_2dgs_sb_renderer.py:SepDepthTrim2DGSSBRenderer` (config: `configs/mcmc_2dgs_sb_60k_aggr17_aerial.yaml`). Color = SH0 DC + Spherical Beta lobes via `colors_precomp` — 25 floats/point vs 59 (SH3). Per-block cap calibration: `tools/calibrate_block_caps.py` (see `紀錄/完整指令手冊.md` §9).
 
 ### Config System
 All components are specified in YAML via `class_path` + `init_args` using jsonargparse. Example configs for each scene are in `configs/citygsv2_*.yaml`. CLI args can override any config key at runtime (e.g., `--data.path`, `--model.density.init_args.cap_max`).
