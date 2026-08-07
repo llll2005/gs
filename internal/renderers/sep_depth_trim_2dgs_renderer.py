@@ -255,18 +255,32 @@ class SepDepthTrim2DGSRenderer(Renderer):
         device =  module.gaussian_model.get_xyz.device
 
         push, gather = contribution_accumulator(self.K)
+        blur = None
         with torch.no_grad():
             print("Trimming...")
             for i in range(len(cameras)):
                 camera = cameras[i].to_device(device)
-                push(self(
+                mean, covered = self(
                     camera,
                     module.gaussian_model,
                     bg_color=module._fixed_background_color().to(device),
-                    record_transmittance=True
-                ))
+                    record_transmittance=True,
+                    record_coverage=True,
+                )
+                push(mean)
+                # Mini-Splatting's blur criterion (arXiv 2403.14166 Eq. 2) wants S_i = #pixels where
+                # i is the argmax-weight Gaussian. The soft equivalent sum_p T_i*a_i is already
+                # here, and both sum over i to the covered-pixel count, so the paper's threshold
+                # transfers. Measured on cap4m (紀錄 §11.9.1): 0.01% of primitives exceed it while
+                # carrying 12.6% of the blending weight, and 74.6% of that weight sits on textured
+                # content -- genuine under-reconstruction, not efficient flat regions.
+                raw = mean * covered.float()
+                blur = raw if blur is None else blur + raw
+                del mean, covered, raw
 
             contribution = gather()
+            if blur is not None:
+                module.density_controller.blur_score = blur / max(len(cameras), 1)
             tile = torch.quantile(contribution, self.prune_ratio)
             prune_mask = (contribution <= tile)
             module.density_controller._prune_points(prune_mask, module.gaussian_model, module.gaussian_optimizers)

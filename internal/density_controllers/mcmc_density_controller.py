@@ -39,6 +39,19 @@ class MCMCDensityController(DensityController):
     https://github.com/ubc-vision/3dgs-mcmc/blob/main/utils/reloc_utils.py
     """
 
+    blur_split_weight: float = 0.0
+    """
+    Bias `add_new_gs` host selection towards primitives that alone explain a large patch, i.e.
+    that are under-reconstructing it. 0 = off (opacity-only, the shipped MCMC behaviour).
+    Mini-Splatting arXiv 2403.14166 Eq. 2; see 紀錄/研究總覽.md §11.9.
+    """
+
+    blur_split_threshold: float = 288.0
+    """
+    theta_blur * H * W in pixels. 288 = 2e-4 * 900 * 1600, the paper's setting at our resolution.
+    Only the ratio score/threshold is used, so this just sets what "one threshold over" means.
+    """
+
     def instantiate(self, *args, **kwargs) -> DensityControllerImpl:
         assert self.cap_max > 0, "cap_max must > 0"
         return MCMCDensityControllerImpl(self)
@@ -231,6 +244,20 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
             return 0
 
         probs = gaussian_model.get_opacities().squeeze(-1)
+        # Blur split. MCMC picks hosts by opacity, which is blind to WHERE detail is missing: a
+        # primitive that alone explains a large patch is under-reconstructing it, and cloning THAT
+        # one is what adds detail. Mini-Splatting (arXiv 2403.14166 Eq. 2) splits on exactly that
+        # statistic; here it arrives as `blur_score` (sum_p T*alpha per primitive per view) from the
+        # trim pass in sep_depth_trim_2dgs_renderer, which already visits every camera, so it costs
+        # nothing extra. weight 0 = shipped behaviour, so no existing config changes.
+        # ⚠ Premise measured (紀錄 §11.9.1), NOT yet validated on a training run.
+        w = getattr(self.config, "blur_split_weight", 0.0)
+        score = getattr(self, "blur_score", None)
+        if w > 0 and score is not None and score.shape[0] == probs.shape[0]:
+            # Normalised by the paper's threshold, so the knob reads as "being N thresholds over
+            # is worth N*w extra selection weight", independent of image resolution.
+            thr = getattr(self.config, "blur_split_threshold", 288.0)
+            probs = probs * (1.0 + w * (score / max(thr, 1e-9)).clamp(0.0, 32.0))
         add_idx, ratio = self._sample_alives(probs=probs, num=num_gs)
 
         new_params = self._get_new_params(gaussian_model, add_idx, ratio=ratio)
