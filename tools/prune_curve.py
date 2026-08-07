@@ -162,24 +162,34 @@ def main():
     saved = {k: v.detach().clone() for k, v in model.gaussians.items()}
 
     def score():
-        P, R = [], []
+        """Quality AND cost. W = sum_i c_i is the (primitive, pixel) evaluations the kernel runs --
+        the quantity that predicts VRAM, which count does not (R^2 = 0.066 over 20 runs). It
+        over-counts tile granularity, but that inflation is present before AND after pruning, so
+        the RATIO W/W0 is clean. That is why the cost is measured here rather than by instrumenting
+        the CUDA blend loop: the confound cancels."""
+        P, R, W = [], [], 0.0
         with torch.no_grad():
             for i in build:
-                o = rend(score_cams[i].to_device(dev), model, bg_color=bg)["render"].clamp(0, 1)
+                cam = score_cams[i].to_device(dev)
+                o = rend(cam, model, bg_color=bg)["render"].clamp(0, 1)
                 P.append(PSNR(o, gts[i])); R.append(GRAD(o) / max(GRAD(gts[i]), 1e-9))
-        return float(np.mean(P)), float(np.mean(R))
+                _, covered = rend(cam, model, bg_color=bg,
+                                  record_transmittance=True, record_coverage=True)
+                W += float(covered.sum())
+        return float(np.mean(P)), float(np.mean(R)), W
 
-    p0, r0 = score()
-    print(f"\n{'保留顆數':>12}{'佔原本':>9}{'建築PSNR':>11}{'建築紋理比':>12}{'紋理比損失':>12}")
-    print(f"{n0:>12,}{'100.0%':>9}{p0:>11.2f}{r0:>12.3f}{'—':>12}")
+    p0, r0, w0 = score()
+    print(f"\n{'保留顆數':>12}{'佔原本':>9}{'建築PSNR':>11}{'建築紋理比':>12}{'紋理比損失':>12}{'成本W':>9}")
+    print(f"{n0:>12,}{'100.0%':>9}{p0:>11.2f}{r0:>12.3f}{'—':>12}{'100.0%':>9}")
     for t in sorted(a.targets, reverse=True):
         if t >= n0:
             continue
         keep = order[:t]
         for k, v in saved.items():
             model.gaussians[k] = torch.nn.Parameter(v[keep], requires_grad=False)
-        p, r = score()
-        print(f"{t:>12,}{100 * t / n0:>8.1f}%{p:>11.2f}{r:>12.3f}{100 * (r - r0) / r0:>+11.1f}%")
+        p, r, w = score()
+        print(f"{t:>12,}{100 * t / n0:>8.1f}%{p:>11.2f}{r:>12.3f}{100 * (r - r0) / r0:>+11.1f}%"
+              f"{100 * w / max(w0, 1):>8.1f}%")
 
     print(f"\n  ★ 起始 trim 的存活容量 ≈ 362,000（餵 1.32M 得 360,817、餵 0.99M 得 363,190）")
     print(f"  若品質撐到 ~36 萬才崩 ⇒ 支持「可見表面容量」假說；若一路平滑下滑 ⇒ 不支持")
