@@ -163,6 +163,26 @@ B_RENDER = 1550.0  # per-point backward activation, cut by K (rounded up from 14
 # "b12@2M hits a ~1.5M wall" is retracted. (Skipping the split remains a SPEED win: one less pass.)
 # ⚠ The probe used a simplified loss, not the real SSIM+depth metric, so 883/953 is not directly
 # comparable to 1550 -- it bounds the split's CONTRIBUTION, not the constant itself.
+#
+# ⚠⚠ 2026-08-07 -- DO NOT SIZE A CAP FROM THESE CONSTANTS UNTIL THEY ARE RE-FITTED.
+# Two full-run anchors say the per-point model is not just miscalibrated, it is the wrong shape:
+#
+#   cap4m_b12       N=4.0M, K=1, surface-fitted (depth-init grown)  ->  peak 5.51 G
+#                   predicted by A+B: 4.0M * 2050 = 8.2 G render alone. Actual render, after
+#                   subtracting 1.6 G of model state, is 3.91 G = 978 B/pt -- 2.1x LOWER.
+#   uniform_60k_b12 N=0.5M, K=1, uniform VOLUME fill                ->  peak ~5.5 G
+#                   i.e. the SAME peak with 8x fewer points, and it did not fall as N was pruned
+#                   from 1.0M to 0.47M.
+#
+# So peak is dominated by how the primitives are ARRANGED (overdraw: layers per pixel), not by N.
+# A volume fill costs ~7x per point what a surface cloud does. The `load_isect` term exists for
+# exactly this but is calibrated as a small correction, and 2450 B/pt was fitted over 0.7-1.45M of
+# ONE arrangement, then extrapolated 3x beyond its range.
+#
+# Consequence already paid: predict_num_strips said 4M would OOM with the wall at 2.04M; the run
+# finished at 3.6M using 5.51/6.1 G. tools/calibrate_block_caps.py takes its caps from this model,
+# so every per-block cap it has produced is likely far below what the card holds.
+# Re-fit needs points spanning arrangements (surface vs volumetric), not just N. See 紀錄 2026-08-07.
 
 
 def predict_num_strips(load_isect: float, n_points: int, floats_per_point: int,
