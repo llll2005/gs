@@ -75,5 +75,36 @@ class TrimPruneGateTest(unittest.TestCase):
         self.assertFalse(_ran(r, 20_000, densify_until=16_000))
 
 
+
+
+class TrimBlurScoreTest(unittest.TestCase):
+    """The trim pass now unpacks a (mean, covered) tuple and stashes a blur score.
+
+    The mocked tests above run with 0 cameras, so they never execute the loop body -- exactly the
+    hole that let a `prog_bar[name]` KeyError reach a real run earlier today. This one puts a
+    camera in and patches the render call, so the unpacking and the stash are actually exercised.
+    """
+
+    def test_blur_score_is_stashed_on_the_controller(self):
+        r = SepDepthTrim2DGSRenderer(contribution_prune_from_iter=1000,
+                                     contribution_prune_interval=500)
+        module, _ = _module(densify_until=16_000)
+        module.trainer.datamodule.dataparser_outputs.train_set.cameras = [
+            SimpleNamespace(to_device=lambda d: None)]
+        mean = torch.tensor([0.10, 0.20, 0.30, 0.40])
+        covered = torch.tensor([10, 20, 30, 40])
+        acc = (lambda out: None, lambda: torch.tensor([0.0, 1.0, 2.0, 3.0]))
+        with mock.patch(
+                "internal.renderers.sep_depth_trim_2dgs_renderer.contribution_accumulator",
+                return_value=acc), \
+             mock.patch.object(SepDepthTrim2DGSRenderer, "__call__",
+                               return_value=(mean, covered)):
+            r.after_training_step(15_000, module)
+        score = module.density_controller.blur_score
+        self.assertIsNotNone(score, "blur_score 沒有被寫入")
+        # one camera, so the per-view mean is mean*covered itself
+        self.assertTrue(torch.allclose(score, mean * covered.float()))
+
+
 if __name__ == "__main__":
     unittest.main()
