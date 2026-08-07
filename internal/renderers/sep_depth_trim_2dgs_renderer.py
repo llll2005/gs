@@ -140,12 +140,19 @@ class SepDepthTrim2DGSRenderer(Renderer):
             # small one with the same per-pixel weight score the same.
             transmittance = transmittance_sum / (num_covered_pixels + 1e-6)
             if record_coverage:
-                # `num_covered_pixels > 0` means the primitive was rasterised in this view at all
-                # -- including when it is fully occluded, since the blend loop only skips
-                # alpha < 1/255 and occlusion lowers T, not alpha. That makes it a frustum-
-                # membership count, which `contribution_accumulator(reduce="frustum_topk")` needs
-                # and which "views where transmittance > 0" cannot supply: an occluded floater
-                # reads 0 there and would escape the penalty it exists to receive.
+                # What `num_covered_pixels` actually counts (forward.cu:406/452/455/459, read
+                # 2026-08-07): the atomicAdd sits BEFORE both the `alpha < 1/255` skip and the
+                # `T < 1e-4` early-out, but the whole loop is gated by `!done`. So it counts the
+                # (primitive, pixel) evaluations the kernel ACTUALLY PERFORMED -- including
+                # partially occluded ones (small T) and negligible-alpha ones, excluding anything
+                # behind an already-saturated pixel, which is never reached.
+                #
+                # ⚠ An earlier comment here called it "frustum membership, including fully
+                # occluded" and that is wrong: a primitive hidden behind an opaque surface reads 0,
+                # exactly like one outside the frustum. `reduce="frustum_topk"` inherits that
+                # limitation. What it IS, is a per-primitive render COST: sum_i c_i is the total
+                # blend work, and that is the quantity that predicts VRAM (see
+                # tools/measure_overdraw_waste.py and tools/fit_vram_model.py).
                 return transmittance, num_covered_pixels
             return transmittance
         else:
