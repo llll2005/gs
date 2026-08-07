@@ -384,9 +384,16 @@ class TrainConsole(ProgressBar):
         def g(k):
             v = cm.get(k)
             return float(v) if v is not None else 0.0
-        m = {"psnr": g("val/psnr"), "ssim": g("val/ssim"), "lpips": g("val/lpips")}
+        # texratio is shown because PSNR misleads on this scene: b12 is half flat water, and on
+        # 2026-08-07 `uniform_60k_b12` had PSNR fall 22.21 -> 21.93 at the same step that LPIPS and
+        # texratio both improved -- blur is the MSE-optimal answer, so sharpening can cost PSNR.
+        # 0 when the metric is absent (models other than CityGSV2Metrics do not log it).
+        m = {"psnr": g("val/psnr"), "ssim": g("val/ssim"), "lpips": g("val/lpips"),
+             "texratio": g("val/texratio")}
         step = trainer.global_step
         self._state.add_val(step, m)
-        self._state.event(f"val step{step:,}: psnr{m['psnr']:.2f} ssim{m['ssim']:.3f} lpips{m['lpips']:.3f}")
+        tex = f" tex{m['texratio']:.3f}" if m["texratio"] > 0 else ""
+        self._state.event(f"val step{step:,}: psnr{m['psnr']:.2f} ssim{m['ssim']:.3f} "
+                          f"lpips{m['lpips']:.3f}{tex}")
         if self.status_file:
             self._state.write_status_file()

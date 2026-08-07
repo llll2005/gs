@@ -80,7 +80,11 @@ class _TrainConsoleState:
         L.append("- latest val " + "-" * 26)
         if vals:
             for s, m in vals[-3:]:
-                L.append(f"step{s:>7,}: PSNR {m.get('psnr',0):.2f} SSIM {m.get('ssim',0):.3f} LPIPS {m.get('lpips',0):.3f}")
+                # 紋理比放最後：PSNR 在半面是水的塊上會誤導（成因見 internal/callbacks.py）。
+                # 沒有這個指標的模型回傳 0，就不顯示。
+                tex = m.get("texratio", 0)
+                L.append(f"step{s:>7,}: PSNR {m.get('psnr',0):.2f} SSIM {m.get('ssim',0):.3f} "
+                         f"LPIPS {m.get('lpips',0):.3f}" + (f" 紋理比 {tex:.3f}" if tex > 0 else ""))
         else:
             L.append("(尚無 val)")
         # 最近事件
