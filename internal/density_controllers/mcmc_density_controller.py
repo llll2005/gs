@@ -11,7 +11,7 @@ import math
 from lightning import LightningModule
 import torch
 from gsplat.relocation import compute_relocation
-from internal.utils.general_utils import inverse_sigmoid
+from internal.utils.general_utils import inverse_sigmoid, build_rotation
 from internal.utils.gaussian_projection import compute_cov_3d
 
 from .density_controller import DensityController, DensityControllerImpl, Utils
@@ -53,6 +53,14 @@ class MCMCDensityController(DensityController):
     """
     theta_blur * H * W in pixels. 288 = 2e-4 * 900 * 1600, the paper's setting at our resolution.
     Only the ratio score/threshold is used, so this just sets what "one threshold over" means.
+    """
+
+    long_axis_spread: float = 0.0
+    """
+    Offset each new Gaussian from its host by up to this fraction of the host's LONGEST axis,
+    along that axis. 0 = off (position copied verbatim, the shipped MCMC behaviour).
+    MCMC's Eq. 9 corrects opacity and scale so N stacked copies render like the original, but
+    leaves them at the same point, so only SGLD noise separates them. See 紀錄/研究總覽.md §11.9.3.
     """
 
     def instantiate(self, *args, **kwargs) -> DensityControllerImpl:
@@ -170,6 +178,30 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         for attr_name, value in gaussian_model.properties.items():
             if attr_name not in new_params:
                 new_params[attr_name] = value[idxs]
+
+        # Long-axis spread. Every child is copied to the host's exact position above, so N copies
+        # start stacked and only SGLD noise separates them -- a random walk that the MCMC paper
+        # itself calls irrecoverable once a Gaussian leaves its support region. MCMC's Eq. 9 fixes
+        # opacity and scale so the stack renders like the original, but says nothing about
+        # position. ImprovingDensification (arXiv 2508.12313) makes exactly this point and places
+        # children along the long axis instead.
+        # It matters most for the blur-split hosts: those are the primitives that alone cover a
+        # large patch, and stacking their children at the centre cannot cover it.
+        # 0 = off (shipped behaviour, position copied verbatim).
+        spread = getattr(self.config, "long_axis_spread", 0.0)
+        means_name = getattr(gaussian_model, "_mean_name", "means")
+        if spread > 0 and means_name in new_params:
+            scales = gaussian_model.get_scales()[idxs]                       # [M, K]
+            long_len, long_ax = scales.max(dim=-1)                           # extent + which axis
+            R = build_rotation(gaussian_model.get_rotations()[idxs])         # [M, 3, 3]
+            direction = torch.gather(
+                R, 2, long_ax.view(-1, 1, 1).expand(-1, 3, 1)).squeeze(-1)   # that axis in world
+            # Uniform in [-1, 1] rather than a fixed +-: children are sampled WITH replacement, so
+            # there is no copy index to alternate on, and a deterministic offset would move every
+            # child of a host to the same place -- back to a stack, just displaced.
+            t = torch.rand_like(long_len) * 2.0 - 1.0
+            new_params[means_name] = new_params[means_name] + \
+                direction * (spread * long_len * t).unsqueeze(-1)
 
         return new_params
 
