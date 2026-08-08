@@ -55,6 +55,14 @@ class MCMCDensityController(DensityController):
     Only the ratio score/threshold is used, so this just sets what "one threshold over" means.
     """
 
+    blur_split_weight: float = 0.0
+    """
+    DEPRECATED, ignored. Kept only so configs saved by runs from 2026-08-08 still load -- removing
+    the field made `main.py test` fail on blursplit_b12 with "Option not accepted". It was a
+    multiplier on the sampling probability, which cannot move a population that is 0.01% of the
+    total; `blur_split_budget` replaces it. See 紀錄/研究總覽.md §11.9.1.
+    """
+
     long_axis_spread: float = 0.0
     """
     Offset each new Gaussian from its host by up to this fraction of the host's LONGEST axis,
