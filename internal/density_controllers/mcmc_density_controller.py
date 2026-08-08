@@ -39,10 +39,13 @@ class MCMCDensityController(DensityController):
     https://github.com/ubc-vision/3dgs-mcmc/blob/main/utils/reloc_utils.py
     """
 
-    blur_split_weight: float = 0.0
+    blur_split_budget: float = 0.0
     """
-    Bias `add_new_gs` host selection towards primitives that alone explain a large patch, i.e.
-    that are under-reconstructing it. 0 = off (opacity-only, the shipped MCMC behaviour).
+    Share of each densification step's budget given to primitives that alone explain a large patch,
+    i.e. that are under-reconstructing it. 0 = off (opacity-only, the shipped MCMC behaviour);
+    0.3 = 30% of new Gaussians are cloned from over-threshold hosts.
+    A SHARE rather than a multiplier because candidates are ~0.01% of the population, so any
+    plausible multiplier is swallowed by the rest of the distribution (紀錄 §11.9.1).
     Mini-Splatting arXiv 2403.14166 Eq. 2; see 紀錄/研究總覽.md §11.9.
     """
 
@@ -251,13 +254,24 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         # trim pass in sep_depth_trim_2dgs_renderer, which already visits every camera, so it costs
         # nothing extra. weight 0 = shipped behaviour, so no existing config changes.
         # ⚠ Premise measured (紀錄 §11.9.1), NOT yet validated on a training run.
-        w = getattr(self.config, "blur_split_weight", 0.0)
+        #
+        # The knob is a BUDGET SHARE, not a multiplier. A multiplier cannot work here: the
+        # candidates are ~0.01% of the population (303 of 3.6M on cap4m), so a 3x boost moves them
+        # from 0.0084% to 0.0253% of the sampling mass -- 15 of 60,000 additions, which is what the
+        # first attempt measured (blursplit_b12 tracked its control within noise). Mini-Splatting
+        # splits ALL over-threshold Gaussians deterministically; a budget share is the closest
+        # equivalent that still fits MCMC's sample-with-replacement scheme, and it stays meaningful
+        # however few candidates there are.
+        share = getattr(self.config, "blur_split_budget", 0.0)
         score = getattr(self, "blur_score", None)
-        if w > 0 and score is not None and score.shape[0] == probs.shape[0]:
-            # Normalised by the paper's threshold, so the knob reads as "being N thresholds over
-            # is worth N*w extra selection weight", independent of image resolution.
-            thr = getattr(self.config, "blur_split_threshold", 288.0)
-            probs = probs * (1.0 + w * (score / max(thr, 1e-9)).clamp(0.0, 32.0))
+        thr = getattr(self.config, "blur_split_threshold", 288.0)
+        if share > 0 and score is not None and score.shape[0] == probs.shape[0]:
+            over = score > thr
+            m_over, m_rest = probs[over].sum(), probs[~over].sum()
+            if m_over > 0 and m_rest > 0:
+                # rescale so that mass(over) / total == share
+                probs = probs.clone()
+                probs[over] *= (share / (1.0 - share)) * m_rest / m_over
         add_idx, ratio = self._sample_alives(probs=probs, num=num_gs)
 
         new_params = self._get_new_params(gaussian_model, add_idx, ratio=ratio)
