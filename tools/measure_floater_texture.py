@@ -64,7 +64,7 @@ def main():
         views.append((cams[i].full_projection, centre, tex))
     print(f"[視角] {len(views)} 張   [判準] 距相機 <{a.near} 且 opacity>{a.min_opacity}")
 
-    print(f"\n{'run':<22}{'floater 紋理':>13}{'全體紋理':>11}{'比值':>8}{'floater 數':>11}")
+    print(f"\n{'run':<22}{'floater 紋理':>13}{'全體紋理':>11}{'混合比':>8}{'逐視角比':>10}{'floater 數':>11}")
     for run in a.runs:
         f = glob.glob(f"outputs/{run}/blocks/block_{a.block}/checkpoints/*.ckpt")
         if not f:
@@ -75,7 +75,11 @@ def main():
         xyz = sd[[k for k in sd if k.endswith("means")][0]]
         op = torch.sigmoid(sd[[k for k in sd if k.endswith("opacities")][0]]).ravel()
 
-        tex_float, tex_all, n_float = [], [], 0
+        # Per-view normalisation. Pooling texture across views confounds "floaters prefer flat
+        # REGIONS" with "floaters concentrate in flat VIEWS" -- and b12 is half water, so the
+        # second is entirely possible on its own. Comparing each floater against the mean of the
+        # image it lands in removes that.
+        tex_float, tex_all, n_float, per_view = [], [], 0, []
         for proj, centre, tex in views:
             d = (xyz - centre).norm(dim=-1)
             p = torch.cat([xyz, torch.ones_like(xyz[:, :1])], 1) @ proj.cpu()
@@ -90,6 +94,7 @@ def main():
             if fl.any():
                 tex_float.append(t_at[fl])
                 n_float += int(fl.sum())
+                per_view.append((float(t_at[fl].mean()), float(t_at[on].mean()), int(fl.sum())))
             tex_all.append(t_at[on])
 
         if not tex_float:
@@ -97,10 +102,14 @@ def main():
             continue
         tf = float(torch.cat(tex_float).mean())
         ta = float(torch.cat(tex_all).mean())
-        print(f"{run[:21]:<22}{tf:>13.5f}{ta:>11.5f}{tf / max(ta, 1e-9):>8.2f}{n_float:>11,}")
+        # weighted mean of the per-view ratios: each floater compared to ITS OWN image
+        w = sum(n for _, _, n in per_view)
+        rv = sum((f / max(a2, 1e-9)) * n for f, a2, n in per_view) / max(w, 1)
+        print(f"{run[:21]:<22}{tf:>13.5f}{ta:>11.5f}{tf / max(ta, 1e-9):>8.2f}{rv:>10.2f}{n_float:>11,}")
 
-    print("\n  比值 <1 ⇒ floater 確實偏好低紋理區，支持梯度飢餓假說")
-    print("  比值 ≈1 ⇒ 與紋理無關，假說錯，不要據此實作跨視角一致性約束")
+    print("\n  ★逐視角比才是判準（混合比會把「集中在低紋理視角」誤判成「偏好低紋理區」）")
+    print("  逐視角比 <1 ⇒ floater 確實偏好低紋理區，支持梯度飢餓假說")
+    print("  逐視角比 ≈1 ⇒ 與紋理無關，假說錯，不要據此實作跨視角一致性約束")
 
 
 if __name__ == "__main__":
