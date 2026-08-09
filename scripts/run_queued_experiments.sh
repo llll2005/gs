@@ -103,4 +103,24 @@ conda run -n gspl python -u main.py fit --config $SB \
   -n blurlas_b12 > logs/blurlas_b12.log 2>&1
 report blurlas_b12 12 "blur 0.3 + 長軸 0.5"
 
+# --- 5. ★ blur budget + raised LR floor: the two mechanisms buy DIFFERENT things ----------------
+# Measured against the noise floor (blursplit_b12 is a near-replicate of cap4m: 0.053 dB PSNR,
+# 0.0022 LPIPS, 0.0037 texratio):
+#   lrfloor     PSNR +0.158 (3.0x noise)   LPIPS unchanged (0.0x)
+#   blurbudget  PSNR  0.0x                 LPIPS -0.0129 (5.9x), texratio +0.019 (5.2x)
+# One buys pixel accuracy, the other perceptual detail, and neither touches the other's metric.
+# If they are independent this lands near 24.5 with LPIPS ~0.467; if they interact, that is worth
+# knowing too, since both act on primitive positions.
+wait_gpu; echo "[queue] blurlr start $(date +%F_%T)" >> $PROG
+rm -rf outputs/blurlr_b12
+conda run -n gspl python -u main.py fit --config $SB \
+  --model.initialize_from $PLY_DIR/block_12.ply --data.parser.block_id 12 \
+  --model.density.init_args.cap_max 4000000 \
+  --model.density.init_args.screen_size_prune_px 300 \
+  --model.density.init_args.blur_split_budget 0.3 \
+  --model.gaussian.init_args.optimization.means_lr_scheduler.lr_final 0.0000064 \
+  --model.metric.init_args.opacity_reg 0.002 \
+  -n blurlr_b12 > logs/blurlr_b12.log 2>&1
+report blurlr_b12 12 "blur 0.3 + lr_final x10; 目標 PSNR>=24.5 且 LPIPS<=0.467"
+
 echo "[queue] all done $(date +%F_%T)" >> $PROG
