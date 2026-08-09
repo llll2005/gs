@@ -113,13 +113,14 @@
 # ════════════════════════════════════════════════════════════════════════════
 
 # blur budget 評測（渲染圖 + test_speed）
-bash scripts/task_test.sh blurbudget_b12
 
 # floater 是否落在低紋理區（梯度飢餓假說的前提驗證，CPU 不佔卡）
-[cpu] bash scripts/task_floater_texture.sh
 
 # blur budget + 長軸散開 — 挑對宿主之後，子代不再全疊在原點
 bash scripts/task_blurlas.sh
 
 # blur budget + LR 下限×10 — 兩機制買的東西不重疊（前者 LPIPS 5.9x 噪音、後者 PSNR 3x 噪音）
 bash scripts/task_blurlr.sh
+
+# densify 早停 25k、剪枝續到 42k — trimstop 的另一半（那臂已 OOM 且結果為 null）
+bash scripts/task_densifystop.sh
