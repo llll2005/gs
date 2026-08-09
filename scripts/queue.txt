@@ -115,6 +115,9 @@
 # blur budget 評測（渲染圖 + test_speed）
 bash scripts/task_test.sh blurbudget_b12
 
+# floater 是否落在低紋理區（梯度飢餓假說的前提驗證，CPU 不佔卡）
+[cpu] bash scripts/task_floater_texture.sh
+
 # blur budget + 長軸散開 — 挑對宿主之後，子代不再全疊在原點
 bash scripts/task_blurlas.sh
 

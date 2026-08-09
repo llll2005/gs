@@ -122,6 +122,28 @@ python main.py test --config outputs/$NAME/config.yaml --save_val      # ⚠ `va
 python tools/cull_dust.py <in.ckpt> <out.ckpt>                          # deployment-side, bit-identical
 ```
 
+**⚠ Scheduling — use `scripts/runner.sh`, never write another watcher.** One GPU, so every run is
+serial and something has to hold the queue. That something already exists:
+
+```bash
+setsid nohup bash scripts/runner.sh > /dev/null 2>&1 < /dev/null &   # start (usually already up)
+$EDITOR scripts/queue.txt      # one task per line; edit/add/reorder any time, even mid-run
+touch scripts/queue.stop       # stop after the current task
+tail -f logs/runner.log        # status
+```
+
+It re-reads `scripts/queue.txt` before every task, so **only the line currently executing is
+fixed**; everything below it can be changed while it works. Long commands go in `scripts/task_*.sh`
+and the queue line just calls them (queue lines must not contain `$(...)` or backslashes). A `#`
+comment block directly above a task names it in the ledger. Prefix a line with `[cpu]` for work
+that never touches the GPU, so it does not queue behind training. `flock` prevents a second runner.
+
+GPU availability is decided by `nvidia-smi` reported VRAM (<1500 MiB = free). **Do not use `pgrep`
+for this** — `conda run` rewrites the cmdline so the pattern misses, a hung-but-unreaped process
+still matches, and the checking shell's own command line matches itself. All three have cost this
+project a stalled queue (2026-07-25, and again 2026-08-06..09 when nine ad-hoc `/tmp` watchers were
+written instead of using this file; one sat blocked 2.5 h behind a 151 MiB zombie).
+
 **Run ledger:** every training run appends structured START/DONE/DIED to `logs/quad_progress.log`
 from `internal/callbacks.py` (step/N/it-s/VRAM/PSNR, and for DIED the exception plus where it
 died). Wrapper scripts must not write those lines themselves.
