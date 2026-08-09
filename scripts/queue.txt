@@ -122,6 +122,10 @@ bash scripts/task_blurlas.sh
 # blur budget + LR 下限×10 — 兩機制買的東西不重疊（前者 LPIPS 5.9x 噪音、後者 PSNR 3x 噪音）
 bash scripts/task_blurlr.sh
 
+# ★視角相依：SB 換回 SH3（等 VRAM 對齊 cap 2.6M）— 低頻誤差 45% 是對比壓縮到 66%，
+# 且與顆數無關 ⇒ 疑為跨視角平均；同時檢驗水面鬼影是否為漫射模型硬湊反射所致
+bash scripts/task_sh3_viewdep.sh
+
 # 快長 + 長精修 — 12k 步到 cap、35k 步精修，顆數不減（取代 densifystop：那臂的顆數混淆
 # 約 0.2 dB，和待測效應同量級，正負都解釋得通；且就算答案是 churn 有害也沒有可執行動作）
 bash scripts/task_fastgrow.sh
