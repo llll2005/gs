@@ -67,8 +67,25 @@ class MCMCDensityController(DensityController):
     """
     Offset each new Gaussian from its host by up to this fraction of the host's LONGEST axis,
     along that axis. 0 = off (position copied verbatim, the shipped MCMC behaviour).
-    MCMC's Eq. 9 corrects opacity and scale so N stacked copies render like the original, but
-    leaves them at the same point, so only SGLD noise separates them. See 紀錄/研究總覽.md §11.9.3.
+
+    ⛔ MEASURED 2026-08-10 AND REFUTED -- keep at 0. `blurlas_b12` (blur budget 0.3 + spread 0.5)
+    scored 24.224 / LPIPS 0.4678 / texratio 0.3762 against `blurbudget_b12`'s 24.353 / 0.4674 /
+    0.3783: PSNR down 0.129 = 2.4x the measured noise floor, everything else flat.
+
+    Two reasons, both visible in hindsight:
+      1. The premise was that stacked children can only separate via SGLD noise, whose scale is
+         op_sigmoid(1-o) ~ 0 above opacity 0.03. True, but irrelevant -- only 0.01% of primitives
+         in a finished model are bit-identical in position, so they do separate anyway (most likely
+         via non-deterministic atomicAdd ordering in the rasteriser, amplified chaotically).
+      2. It actively breaks MCMC's Eq. 9. `compute_relocation` derives the corrected opacity and
+         scale on the assumption that the N copies are CO-LOCATED, which is what makes their
+         combined contribution equal the original's. Displacing them invalidates that, so every
+         densification step injects a small image perturbation.
+
+    Kept rather than deleted because this is a real mechanism from the literature (Long-Axis Split,
+    ImprovingDensification arXiv 2508.12313 §Methods) and we appear to be the only ones with a
+    measured noise floor able to say it does not transfer to MCMC's relocation framework. Useful
+    for related work; do not enable. See 紀錄/研究總覽.md §11.9.3.
     """
 
     def instantiate(self, *args, **kwargs) -> DensityControllerImpl:
