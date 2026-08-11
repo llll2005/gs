@@ -127,7 +127,9 @@
 # 約 0.2 dB，和待測效應同量級，正負都解釋得通；且就算答案是 churn 有害也沒有可執行動作）
 
 # SH3 評測（渲染圖）— 水面鬼影是否消失、低頻對比壓縮是否改善，這兩個才是假說的直接判準
-bash scripts/task_test.sh sh3_viewdep_b12
 
 # ★SH3 + blur split，cap 3.4M（SH3 位元上限 3.13M）— SH3 原本 cap-bound 在 2.34M
 bash scripts/task_sh3blur.sh
+
+# [cpu 不佔卡] reg=0 的渲染圖 — 對比壓縮對顆數/init/LR/blur/顏色模型全免疫，剩 opacity_reg 沒驗過
+bash scripts/task_test.sh oreg_0p0_b12
