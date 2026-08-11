@@ -161,11 +161,8 @@
 bash scripts/task_sh3blur.sh
 bash scripts/task_test.sh sh3blur_b12
 
-# ★★★ 找出官方 test 的真實配對。合併模型在訓練視角 23.35/覆蓋100%（merge 沒壞），
-# 官方 test 卻只有 16.63 且三個偏移全錯（使用者目視：左右是不同地方）。
-# 相機名 0000~0740（0起算）在影像目錄裡不存在（那裡是 0001~0741），配對純靠順序猜，
-# 而工具只搜 ±1。這支不預設偏移大小，直接對全部 741 張比對。
-bash scripts/task_find_test_pairing.sh
+# ★★★ 北極星：b3x3_full 合併 + 官方 741 幀（用既有腳本，偏移 -1 早已在訓練視角上以 7dB 確立）
+bash scripts/merge_3x3_and_eval.sh b3x3_full
 
 bash scripts/task_sh3_nonormal.sh
 bash scripts/task_test.sh sh3_nonormal_b12
