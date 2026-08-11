@@ -132,19 +132,33 @@
 bash scripts/task_sh3blur.sh
 
 # [cpu 不佔卡] reg=0 的渲染圖 — 對比壓縮對顆數/init/LR/blur/顏色模型全免疫，剩 opacity_reg 沒驗過
-bash scripts/task_test.sh oreg_0p0_b12
 
 # 同上，補齊 opacity_reg 的三點單變數掃描（同 config 同 cap，只差 reg）— 幾分鐘就有答案
-bash scripts/task_test.sh oreg_0p002_b12
-bash scripts/task_test.sh oreg_0p007_b12
 
 # SH3 + reg 0.008（使用者指定）— 若上面三點顯示 reg 不影響對比壓縮，可直接刪掉這行省 11 小時
-bash scripts/task_sh3_reg008.sh
 
 # ★消融：拿掉法向一致先驗（lambda_normal 0）— 從未消融過，且在所有跑次裡恆為 0.0125，
 # 正是對比壓縮「對一切免疫」的簽名；而它是平滑先驗，我們的病症正是過度平滑
-bash scripts/task_sh3_nonormal.sh
 
 # ★消融：拿掉深度損失 — 最後一個 DA2 依賴；深度監督已量到榨乾（偽深度誤差 174× 表面解析度、
 # 62.8% 粒子已落在其誤差內）。若可砍，整條 estimate_dataset_depths 流程都能刪
+
+# 補上最後兩個的渲染圖（test 只要 90 秒，但沒圖就無法目視判斷幾何是否退化）
+
+# opacity_reg 三點單變數掃描（同 config 同 cap，已訓練好，只差渲染圖）— 各約 90 秒
+bash scripts/task_test.sh oreg_0p0_b12
+bash scripts/task_test.sh oreg_0p002_b12
+bash scripts/task_test.sh oreg_0p007_b12
+bash scripts/task_test.sh sh3blur_b12
+
+# SH3 + reg 0.008（使用者指定）→ 隨即出圖。若上面掃描顯示 reg 不影響對比壓縮，可刪這兩行省 11h
+bash scripts/task_sh3_reg008.sh
+bash scripts/task_test.sh sh3_reg008_b12
+
+# ★消融：拿掉法向一致先驗 → 隨即出圖（它是 2DGS 自己的表面先驗，幾何退化只看得出來、量不出來）
+bash scripts/task_sh3_nonormal.sh
+bash scripts/task_test.sh sh3_nonormal_b12
+
+# ★消融：拿掉深度損失 → 隨即出圖（影響在早期，看 step 5,680 的 val 不要只看終點）
 bash scripts/task_sh3_nodepth.sh
+bash scripts/task_test.sh sh3_nodepth_b12
