@@ -133,3 +133,10 @@ bash scripts/task_sh3blur.sh
 
 # [cpu 不佔卡] reg=0 的渲染圖 — 對比壓縮對顆數/init/LR/blur/顏色模型全免疫，剩 opacity_reg 沒驗過
 bash scripts/task_test.sh oreg_0p0_b12
+
+# 同上，補齊 opacity_reg 的三點單變數掃描（同 config 同 cap，只差 reg）— 幾分鐘就有答案
+bash scripts/task_test.sh oreg_0p002_b12
+bash scripts/task_test.sh oreg_0p007_b12
+
+# SH3 + reg 0.008（使用者指定）— 若上面三點顯示 reg 不影響對比壓縮，可直接刪掉這行省 11 小時
+bash scripts/task_sh3_reg008.sh
