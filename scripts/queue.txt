@@ -140,3 +140,11 @@ bash scripts/task_test.sh oreg_0p007_b12
 
 # SH3 + reg 0.008（使用者指定）— 若上面三點顯示 reg 不影響對比壓縮，可直接刪掉這行省 11 小時
 bash scripts/task_sh3_reg008.sh
+
+# ★消融：拿掉法向一致先驗（lambda_normal 0）— 從未消融過，且在所有跑次裡恆為 0.0125，
+# 正是對比壓縮「對一切免疫」的簽名；而它是平滑先驗，我們的病症正是過度平滑
+bash scripts/task_sh3_nonormal.sh
+
+# ★消融：拿掉深度損失 — 最後一個 DA2 依賴；深度監督已量到榨乾（偽深度誤差 174× 表面解析度、
+# 62.8% 粒子已落在其誤差內）。若可砍，整條 estimate_dataset_depths 流程都能刪
+bash scripts/task_sh3_nodepth.sh
