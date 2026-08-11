@@ -8,14 +8,17 @@
 # blurlr had established -- pixel accuracy and perceptual quality improved together, which
 # no placement or schedule lever managed.
 #
-# Two things it leaves on the table:
-#  1. It was CAP-BOUND: 2,339,999 = 0.9 x cap 2.6M. The byte ceiling for F=59 is 3.13M
-#     (944 B/pt state + 978 render), so cap 3.4M reaches ~3.06M and stays inside it.
-#  2. blur split acts on WHERE primitives go, view-dependence on what they can express --
-#     different axes, and unlike the LR floor it does not fight detail (it creates it).
-#     blurbudget's own gains were LPIPS -0.0129 and texratio +0.0191 over its control.
-# ⚠ If this OOMs the fix is cap, not the mechanism: 3.06M x 1922 B/pt = 5.6 GB is right at
-#    the wall measured for SB (3.78M survived, 4.00M did not, at 1378 B/pt).
+# blur split acts on WHERE primitives go, view-dependence on what they can express -- different
+# axes, and unlike the LR floor it does not fight detail (it creates it). blurbudget's own gains
+# over its control were LPIPS -0.0129 (5.9x noise) and texture ratio +0.0191 (5.2x).
+#
+# CAP IS 2.6M, MATCHING sh3_viewdep EXACTLY. The first attempt used cap 3.4M reasoning from the
+# byte ceiling (3.13M) and OOM'd at 3.02M -- the ceiling was computed from SB's 978 B/pt render
+# term, and blur split raises it by cloning large primitives. Matching the control's cap is worth
+# more than the extra count anyway: sh3_viewdep landed at 2,339,999, so this is a genuine
+# single-variable comparison against 24.672 / 0.7025 / 0.4500 / 0.3921. Running at 1.5M or 2M
+# instead would move count AND mechanism, and the count correction (~0.1-0.2 dB) is the same size
+# as the effect being measured.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
@@ -24,7 +27,7 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
   --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply \
   --data.parser.block_id 12 \
-  --model.density.init_args.cap_max 3400000 \
+  --model.density.init_args.cap_max 2600000 \
   --model.density.init_args.screen_size_prune_px 300 \
   --model.density.init_args.blur_split_budget 0.3 \
   --model.metric.init_args.opacity_reg 0.002 \

@@ -157,6 +157,11 @@
 # （包括我說的「26 dB 需要 100 倍顆數」）都是在錯的尺上外推。
 bash scripts/task_merge_eval_3x3.sh
 
+# SH3 + blur split 重跑，cap 改為 2.6M（原本 3.4M 在 3.02M OOM）。與 sh3_viewdep 同 cap
+# ⇒ 真正的單變數對照（後者實得 2,339,999 顆 / 24.672 / 0.7025 / 0.4500 / 0.3921）
+bash scripts/task_sh3blur.sh
+bash scripts/task_test.sh sh3blur_b12
+
 bash scripts/task_sh3_nonormal.sh
 bash scripts/task_test.sh sh3_nonormal_b12
 
