@@ -184,6 +184,12 @@ bash scripts/task_test.sh sh3_viewdep_refix_b12
 # ★ SB 對照（位元對齊 cap 3.6M）— 修正後重測「SH3 是否仍勝過 SB」。
 # 理由：我對 SH3 優勢的解釋是「跨視角平均」，而用鄰幀 GT 訓練正是在人為製造跨視角不一致
 # ⇒ SH3 的優勢可能有一部分只是在補償這個 bug。機制結論要重新建立在修正後的資料上。
+# ★ 顆數衰減組（24k 排程，約 1.5h）— 修正後「少而準」是否成立。
+# 舊版 77,089 顆 22.022 vs 3.6M 的 24.307（23 倍顆數只差 1.37 dB），但建築紋理比只有 0.145
+# ⇒ 是「少而糊」。而錯位 GT ≡ 模糊目標，小模型最沒有餘裕吸收 ⇒ 這一臂受害最重、修正後增益應最大。
+bash scripts/task_v1_refix.sh
+bash scripts/task_test.sh v1_refix_b12
+
 bash scripts/task_sb_refix.sh
 bash scripts/task_test.sh sb_refix_b12
 
