@@ -52,7 +52,7 @@ conda run --no-capture-output -n gspl python tools/cull_dust.py "$MERGED" "$CULL
 if [ -f "$CULLED" ]; then
   echo "---- 合併模型（cull_dust 後）----" | tee -a $OUT
   conda run --no-capture-output -n gspl python tools/eval_official_test.py \
-    --ckpt "$CULLED" --offset -1 2>&1 | grep -vE "^\s*\.\.\.|Warning|warn" | tee -a $OUT || rc_any=1
+    --ckpt "$CULLED" --offset 0 2>&1 | grep -vE "^\s*\.\.\.|Warning|warn" | tee -a $OUT || rc_any=1
 fi
 echo "[彙整] $OUT"
 [ "$rc_any" -eq 0 ] || { echo "⚠ 至少一次評測失敗（見上方 traceback）"; exit 1; }
