@@ -187,6 +187,8 @@ class ColmapDataParser(DataParser):
                 errors.append(error)
         return np.asarray(xyzs), np.asarray(rgbs), np.asarray(errors)
 
+    _positional_images = None
+
     def get_outputs(self) -> DataParserOutputs:
         # load colmap sparse model
         sparse_model_dir = self.detect_sparse_model_dir()
@@ -330,14 +332,38 @@ class ColmapDataParser(DataParser):
                 undistorted_output_dir = os.path.join(self.path, "dense")
                 raise RuntimeError("Unsupported camera model: only PINHOLE or SIMPLE_PINHOLE currently. Please undistort your images with the command below first:\n  colmap image_undistorter --image_path {} --input_path {} --output_path {}\nthen use `{}` as the value of `--data.path`.".format(image_dir, sparse_model_dir, undistorted_output_dir, undistorted_output_dir))
 
-            # Resolve image path: try original name, then 6-digit zero-padded fallback.
-            # Skip the image entirely if neither exists (e.g. COLMAP record with no file on disk).
+            # Resolve image path: exact name first, then POSITIONAL fallback.
+            #
+            # The zfill(6) fallback that used to live here was silently off by one and every model
+            # trained on the current data learned a world shifted by a frame (2026-08-12). COLMAP
+            # names this capture 0-based (`0000.png`..`5620.png`) while the files on disk are
+            # 1-based (`000001.png`..`005621.png`), so `"0862".zfill(6)` resolves to `000862.png`
+            # when the camera actually belongs to `000863.png`. Verified against transforms.json by
+            # matching BOTH position and orientation -- position alone is ambiguous here, since only
+            # 1879 of 5621 poses have a unique centre (~3 orientations per waypoint) and a
+            # position-only match returns a scrambled permutation with zero residual.
+            # It went unnoticed because the older 4-digit files matched by name directly, and
+            # because train and val share the mapping, so every metric stayed self-consistent.
+            #
+            # Positional matching (i-th sorted camera name -> i-th sorted file) reproduces the
+            # verified +1 mapping without hardcoding it, and works for any consistent convention.
             img_path = os.path.join(image_dir, extrinsics.name)
             if not os.path.exists(img_path):
-                base_n, ext_n = extrinsics.name.rsplit('.', 1)
-                padded_path = os.path.join(image_dir, f"{base_n.zfill(6)}.{ext_n}")
-                if os.path.exists(padded_path):
-                    img_path = padded_path
+                if self._positional_images is None:
+                    files = sorted(f for f in os.listdir(image_dir)
+                                   if f.lower().endswith((".png", ".jpg", ".jpeg")))
+                    order = sorted(images, key=lambda k: images[k].name)
+                    if len(files) == len(order):
+                        self._positional_images = {images[k].name: files[i]
+                                                   for i, k in enumerate(order)}
+                        print(f"[dataparser] 檔名不同名，改用位置對應：{images[order[0]].name}"
+                              f" -> {files[0]}（共 {len(files)} 張）")
+                    else:
+                        self._positional_images = {}
+                        print(f"[WARNING] 影像 {len(files)} 張 vs 相機 {len(order)} 台，數量不符，無法用位置對應")
+                mapped = self._positional_images.get(extrinsics.name)
+                if mapped is not None:
+                    img_path = os.path.join(image_dir, mapped)
                 else:
                     print(f"[WARNING] image file not found, skipping: {img_path}")
                     continue
