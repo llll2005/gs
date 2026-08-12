@@ -71,3 +71,52 @@ LPIPS 0.7517
   block_5_test    29  16.890  0.5621  0.7231
   block_3_test    19  15.704  0.4994  0.7736
   block_7_test     5  18.553  0.6546  0.6722
+===== 合併模型 官方 held-out test（741 幀全集）  2026-08-12 08:21:32 =====
+區塊: block_0 block_1 block_2 block_3 block_4 block_5 block_6 block_7 block_8 
+---- 合併模型（未清塵）----
+  __import__("pkg_resources").declare_namespace(__name__)
+[選視角] 全部 741 幀
+[模型] N=7,184,532
+[偏移校準] -1:16.60dB  +0:16.63dB  +1:16.42dB   → 最佳 +0（領先 0.03 dB）
+[偏移] 校準指向 +0，但依指定採用 -1（領先僅 0.03 dB，本就無法分辨）
+
+=== 官方 held-out test（741 幀）===
+PSNR  16.421   (min 12.67 / max 30.18)
+SSIM  0.4894
+LPIPS 0.7517
+
+          來源區塊     幀    PSNR    SSIM   LPIPS
+  block_9_test   247  16.364  0.4472  0.7502
+  block_1_test   127  16.891  0.5718  0.7497
+ block_10_test   124  16.110  0.4939  0.7757
+  block_4_test    69  15.379  0.3934  0.7455
+  block_6_test    51  15.676  0.4361  0.8137
+  block_2_test    36  19.114  0.6828  0.6535
+  block_8_test    34  16.282  0.4498  0.7293
+  block_5_test    29  16.890  0.5621  0.7231
+  block_3_test    19  15.704  0.4994  0.7736
+  block_7_test     5  18.553  0.6546  0.6722
+[圖] outputs/b3x3_full/official_test_vis（左=GT 右=渲染）
+---- 合併模型（cull_dust 後）----
+  __import__("pkg_resources").declare_namespace(__name__)
+[選視角] 全部 741 幀
+[模型] N=7,112,599
+[偏移校準] -1:16.60dB  +0:16.63dB  +1:16.42dB   → 最佳 +0（領先 0.03 dB）
+[偏移] 校準指向 +0，但依指定採用 -1（領先僅 0.03 dB，本就無法分辨）
+
+=== 官方 held-out test（741 幀）===
+PSNR  16.421   (min 12.67 / max 30.18)
+SSIM  0.4894
+LPIPS 0.7517
+
+          來源區塊     幀    PSNR    SSIM   LPIPS
+  block_9_test   247  16.364  0.4472  0.7502
+  block_1_test   127  16.891  0.5718  0.7497
+ block_10_test   124  16.110  0.4939  0.7757
+  block_4_test    69  15.379  0.3934  0.7455
+  block_6_test    51  15.676  0.4361  0.8137
+  block_2_test    36  19.114  0.6828  0.6535
+  block_8_test    34  16.282  0.4498  0.7293
+  block_5_test    29  16.890  0.5621  0.7231
+  block_3_test    19  15.704  0.4994  0.7736
+  block_7_test     5  18.553  0.6546  0.6722
