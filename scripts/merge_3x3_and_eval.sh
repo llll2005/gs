@@ -44,7 +44,7 @@ OUT=紀錄/official_test_merged.txt
 
 echo "---- 合併模型（未清塵）----" | tee -a $OUT
 conda run --no-capture-output -n gspl python tools/eval_official_test.py \
-  --ckpt "$MERGED" --offset -1 --save_dir outputs/$NAME/official_test_vis 2>&1 \
+  --ckpt "$MERGED" --offset 0 --save_dir outputs/$NAME/official_test_vis 2>&1 \
   | grep -vE "^\s*\.\.\.|Warning|warn" | tee -a $OUT || rc_any=1
 
 CULLED="${MERGED%.ckpt}_culled.ckpt"
