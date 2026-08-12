@@ -55,6 +55,8 @@ class ColmapBlockDataParser(ColmapDataParser):
     def __init__(self, path: str, output_path: str, global_rank: int, params: ColmapBlock) -> None:
         super().__init__(path, output_path, global_rank, params)
 
+    _positional_images = None
+
     def get_outputs(self) -> DataParserOutputs:
         # load colmap sparse model
         sparse_model_dir = self.detect_sparse_model_dir()
@@ -199,14 +201,35 @@ class ColmapBlockDataParser(ColmapDataParser):
                 undistorted_output_dir = os.path.join(self.path, "dense")
                 raise RuntimeError("Unsupported camera model: only PINHOLE or SIMPLE_PINHOLE currently. Please undistort your images with the command below first:\n  colmap image_undistorter --image_path {} --input_path {} --output_path {}\nthen use `{}` as the value of `--data.path`.".format(image_dir, sparse_model_dir, undistorted_output_dir, undistorted_output_dir))
 
-            # Resolve image path: try original name, then 6-digit zero-padded fallback.
-            # Skip the image entirely if neither exists (COLMAP record with no file on disk).
+            # Resolve image path: exact name first, then POSITIONAL fallback. The zfill(6) that
+            # used to be here was off by one on this capture -- COLMAP names it 0-based
+            # (`0000.png`..`5620.png`), the files are 1-based (`000001.png`..`005621.png`) -- so
+            # every image was trained against its neighbour's frame (2026-08-12). Verified against
+            # transforms.json by matching BOTH position and orientation; position alone is
+            # ambiguous (1879 unique centres for 5621 poses, ~3 orientations per waypoint).
+            # See internal/dataparsers/colmap_dataparser.py for the full note.
             img_path = os.path.join(image_dir, extrinsics.name)
             if not os.path.exists(img_path):
-                base_n, ext_n = extrinsics.name.rsplit('.', 1)
-                padded_path = os.path.join(image_dir, f"{base_n.zfill(6)}.{ext_n}")
-                if os.path.exists(padded_path):
-                    img_path = padded_path
+                if self._positional_images is None:
+                    files = sorted(f for f in os.listdir(image_dir)
+                                   if f.lower().endswith((".png", ".jpg", ".jpeg")))
+                    # Build from the FULL reconstruction, not `images` -- that has already been
+                    # filtered down to this block's cameras, so the counts would never match and
+                    # the map would come out empty, skipping every image (0 cameras -> "need at
+                    # least one array to stack").
+                    all_images = colmap_utils.read_images_binary(
+                        os.path.join(sparse_model_dir, "images.bin"))
+                    order = sorted(all_images, key=lambda k: all_images[k].name)
+                    if len(files) == len(order):
+                        self._positional_images = {all_images[k].name: files[i] for i, k in enumerate(order)}
+                        print(f"[dataparser] 檔名不同名，改用位置對應：{all_images[order[0]].name}"
+                              f" -> {files[0]}（共 {len(files)} 張）")
+                    else:
+                        self._positional_images = {}
+                        print(f"[WARNING] 影像 {len(files)} 張 vs 相機 {len(order)} 台，數量不符")
+                mapped = self._positional_images.get(extrinsics.name)
+                if mapped is not None:
+                    img_path = os.path.join(image_dir, mapped)
                 else:
                     print(f"[WARNING] image file not found, skipping: {img_path}")
                     continue

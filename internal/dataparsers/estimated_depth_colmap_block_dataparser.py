@@ -44,9 +44,14 @@ class EstimatedDepthBlockColmapDataParser(ColmapBlockDataParser):
         loaded_depth_count = 0
         for image_set in [dataparser_outputs.train_set, dataparser_outputs.val_set]:
             for idx, image_name in enumerate(image_set.image_names):
-                depth_file_path = os.path.join(self.path, self.params.depth_dir, f"{image_name}.npy")
+                # Depth maps are named after the IMAGE FILE, so resolve them from the path the
+                # image dataparser actually picked -- not from the COLMAP name via zfill. That
+                # zfill was off by one on this capture (COLMAP is 0-based, the files are 1-based),
+                # which silently fed every image the neighbouring frame's depth (2026-08-12).
+                actual = os.path.basename(image_set.image_paths[idx]) \
+                    if getattr(image_set, "image_paths", None) is not None else image_name
+                depth_file_path = os.path.join(self.path, self.params.depth_dir, f"{actual}.npy")
                 if os.path.exists(depth_file_path) is False:
-                    # try zero-padded name (e.g. "0014.png" -> "000014.png.npy")
                     base, ext = image_name.rsplit('.', 1)
                     padded_path = os.path.join(self.path, self.params.depth_dir, f"{base.zfill(6)}.{ext}.npy")
                     if os.path.exists(padded_path):

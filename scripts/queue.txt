@@ -162,11 +162,12 @@
 # ★★★ 北極星：b3x3_full 合併 + 官方 741 幀（用既有腳本，偏移 -1 早已在訓練視角上以 7dB 確立）
 
 # ★ 官方 741 幀重測，offset 0（姿態比對驗出：相機 N ↔ 影像 N+1，741 台殘差 0.000000）
-bash scripts/task_eval_merged_off0.sh
 
-bash scripts/task_sh3_nonormal.sh
-bash scripts/task_test.sh sh3_nonormal_b12
 
 # ★消融：拿掉深度損失 → 隨即出圖（影響在早期，看 step 5,680 的 val 不要只看終點）
-bash scripts/task_sh3_nodepth.sh
+
+# ⚠ 2026-08-12：dataparser 的 zfill 對應 bug 已修（相機 N ↔ 影像 N+1，先前差一格）。
+# 當前資料上的所有既有訓練結果作廢，以下重跑。先跑最佳組態確認修好之後品質是否躍升。
+
+# 修正後重跑兩個消融（先前因缺反斜線 rc=127 空跑，已修）
 bash scripts/task_test.sh sh3_nodepth_b12

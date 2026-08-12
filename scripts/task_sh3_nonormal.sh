@@ -1,5 +1,5 @@
 #!/bin/bash
-# opacity_reg 0.002 -> 0.008 on the SH3 recipe. Single variable against sh3_viewdep_b12 (24.672 /
+# ⚠ 已作廢：本檔頭是從 reg008 複製來的，內容不符。真正的目的見 queue.txt 的註解。
 # 0.7025 / 0.4500 / 0.3921), which is currently the best model on all four metrics.
 #
 # Two things it answers at once:
@@ -24,6 +24,6 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --data.parser.block_id 12 \
   --model.density.init_args.cap_max 2600000 \
   --model.density.init_args.screen_size_prune_px 300 \
-  --model.metric.init_args.lambda_normal 0.0
+  --model.metric.init_args.lambda_normal 0.0 \
   --model.metric.init_args.opacity_reg 0.002 \
   -n sh3_nonormal_b12
