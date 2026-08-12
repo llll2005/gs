@@ -170,4 +170,26 @@
 # 當前資料上的所有既有訓練結果作廢，以下重跑。先跑最佳組態確認修好之後品質是否躍升。
 
 # 修正後重跑兩個消融（先前因缺反斜線 rc=127 空跑，已修）
+
+# ════════════════════════════════════════════════════════════════════════════
+#  【2026-08-12 重建】dataparser 的檔名對應 bug 已修（相機 N ↔ 影像 N+1，先前 zfill 差一格）
+#  ⇒ 當前資料上的所有既有訓練結果作廢。先重跑最佳組態確認品質躍升，再跑消融。
+# ════════════════════════════════════════════════════════════════════════════
+
+# 最佳組態重跑（SH3 / cap 2.6M / reg 0.002）— 對照作廢的 24.672，看修正後躍升多少
+bash scripts/task_sh3_viewdep_refix.sh
+bash scripts/task_test.sh sh3_viewdep_refix_b12
+
+# 消融：拿掉法向一致先驗
+# ★ SB 對照（位元對齊 cap 3.6M）— 修正後重測「SH3 是否仍勝過 SB」。
+# 理由：我對 SH3 優勢的解釋是「跨視角平均」，而用鄰幀 GT 訓練正是在人為製造跨視角不一致
+# ⇒ SH3 的優勢可能有一部分只是在補償這個 bug。機制結論要重新建立在修正後的資料上。
+bash scripts/task_sb_refix.sh
+bash scripts/task_test.sh sb_refix_b12
+
+bash scripts/task_sh3_nonormal.sh
+bash scripts/task_test.sh sh3_nonormal_b12
+
+# 消融：拿掉深度損失（最後一個 DA2 依賴）
+bash scripts/task_sh3_nodepth.sh
 bash scripts/task_test.sh sh3_nodepth_b12
