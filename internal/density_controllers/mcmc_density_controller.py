@@ -41,6 +41,8 @@ class MCMCDensityController(DensityController):
 
     blur_split_budget: float = 0.0
     """
+    範圍 [0, 1)。0 = 關（出廠的純 opacity 取樣）。建議 0.3。
+
     Share of each densification step's budget given to primitives that alone explain a large patch,
     i.e. that are under-reconstructing it. 0 = off (opacity-only, the shipped MCMC behaviour);
     0.3 = 30% of new Gaussians are cloned from over-threshold hosts.
@@ -51,6 +53,9 @@ class MCMCDensityController(DensityController):
 
     blur_split_threshold: float = 288.0
     """
+    單位是像素，預設 288 = 2e-4 x 900 x 1600（論文設定套到我方解析度）。
+    改解析度時要跟著改；只有「分數/門檻」的比值被使用。
+
     theta_blur * H * W in pixels. 288 = 2e-4 * 900 * 1600, the paper's setting at our resolution.
     Only the ratio score/threshold is used, so this just sets what "one threshold over" means.
     """
@@ -65,6 +70,8 @@ class MCMCDensityController(DensityController):
 
     long_axis_spread: float = 0.0
     """
+    ⛔ 保持 0。已實測證偽，見下方。
+
     Offset each new Gaussian from its host by up to this fraction of the host's LONGEST axis,
     along that axis. 0 = off (position copied verbatim, the shipped MCMC behaviour).
 
