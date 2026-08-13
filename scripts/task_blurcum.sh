@@ -1,5 +1,10 @@
 #!/bin/bash
-# Optimise for structure, not pixels. lambda_dssim 0.2 -> 0.5 ON TOP OF the current best,
+# blur split ON TOP OF the current best. Its two previous measurements were both under the GT
+# mapping bug: it looked worth LPIPS -0.013 / texture +0.019 on SB, and null on SH3. The
+# explanation offered then -- that SH3 had already removed the appearance error blur split was
+# compensating for -- was itself derived from buggy models, so the question is open again.
+#
+# Original note (now applied to blur split, not lambda_dssim): ON TOP OF the current best,
 # sh3_nonormal_b12 (25.828 / 0.7632 / 0.3734 / 0.4854 @ 2.34M, i.e. lambda_normal already 0).
 #
 # Cumulative rather than isolated: each run is best-so-far plus ONE change, so every measurement is
@@ -26,7 +31,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-rm -rf outputs/dssim05_b12
+rm -rf outputs/blurcum_b12
 conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
   --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply \
@@ -35,5 +40,5 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --model.density.init_args.screen_size_prune_px 300 \
   --model.metric.init_args.opacity_reg 0.002 \
   --model.metric.init_args.lambda_normal 0.0 \
-  --model.metric.init_args.lambda_dssim 0.5 \
-  -n dssim05_b12
+  --model.density.init_args.blur_split_budget 0.3 \
+  -n blurcum_b12

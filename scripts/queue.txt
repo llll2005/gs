@@ -187,23 +187,25 @@
 # ⇒ 是「少而糊」。而錯位 GT ≡ 模糊目標，小模型最沒有餘裕吸收 ⇒ 這一臂受害最重、修正後增益應最大。
 
 
-bash scripts/task_sh3_nonormal.sh
-bash scripts/task_test.sh sh3_nonormal_b12
 
 # 消融：拿掉深度損失（最後一個 DA2 依賴）
 bash scripts/task_sh3_nodepth.sh
 bash scripts/task_test.sh sh3_nodepth_b12
 
 # ════════════════════════════════════════════════════════════════════════════
-#  ★★★ 4x4 全場景（16 塊，約 7 天）→ 合併 → 官方 741 幀 held-out
-#  這是唯一能與論文 27.23 直接比較的數字。舊的 b3x3 合併 16.42 是 bug 下訓練的，作廢。
-# ★ 感知目標實驗：lambda_dssim 0.2 -> 0.5（損失從 80%L1 改成 50/50）。
-# 兩個修正後的跑次都在 56,800 達到 PSNR 峰值、到 60,000 反而掉 0.09~0.10，而紋理比還在漲
-# ⇒ 訓練到最後仍在「用像素精度換細節」，還沒收斂。這一臂改變的是「優化什麼」，不是「多快」。
-# ⚠ 判準看 LPIPS 與紋理比，不看 PSNR（主動降低 L1 權重，PSNR 下降是代價不是結果）。
+#  累積式測試：每一跑 = 目前最佳 + 一個機制。目前最佳 = sh3_nonormal_b12
+#  （SH3 / cap 2.6M / opacity_reg 0.002 / lambda_normal 0）= 25.828 / 0.7632 / 0.3734 / 0.4854
+#  這樣每個量測都是在「實際會出貨的組態」上做的 —— 本專案已兩次量到疊加互相抵消
+#  （blur split x LR 下限、blur split x SH3），對舊基準量到的增益不保證轉移。
+#
+#  ⏸ 4x4 全場景（16 塊 / 7 天）等配方定調後再排：
+#     bash scripts/task_4x4_train.sh  然後  bash scripts/task_4x4_merge_eval.sh
+# ════════════════════════════════════════════════════════════════════════════
+
+# 最佳 + lambda_dssim 0.5（判準看 LPIPS 與紋理比，不看 PSNR）
 bash scripts/task_dssim05.sh
 bash scripts/task_test.sh dssim05_b12
 
-# ════════════════════════════════════════════════════════════════════════════
-bash scripts/task_4x4_train.sh
-bash scripts/task_4x4_merge_eval.sh
+# 最佳 + blur split 0.3（先前兩次量測都在 bug 下，結論作廢，重新開放）
+bash scripts/task_blurcum.sh
+bash scripts/task_test.sh blurcum_b12
