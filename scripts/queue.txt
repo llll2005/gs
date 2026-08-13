@@ -177,8 +177,6 @@
 # ════════════════════════════════════════════════════════════════════════════
 
 # 最佳組態重跑（SH3 / cap 2.6M / reg 0.002）— 對照作廢的 24.672，看修正後躍升多少
-bash scripts/task_sh3_viewdep_refix.sh
-bash scripts/task_test.sh sh3_viewdep_refix_b12
 
 # 消融：拿掉法向一致先驗
 # ★ SB 對照（位元對齊 cap 3.6M）— 修正後重測「SH3 是否仍勝過 SB」。
@@ -187,11 +185,7 @@ bash scripts/task_test.sh sh3_viewdep_refix_b12
 # ★ 顆數衰減組（24k 排程，約 1.5h）— 修正後「少而準」是否成立。
 # 舊版 77,089 顆 22.022 vs 3.6M 的 24.307（23 倍顆數只差 1.37 dB），但建築紋理比只有 0.145
 # ⇒ 是「少而糊」。而錯位 GT ≡ 模糊目標，小模型最沒有餘裕吸收 ⇒ 這一臂受害最重、修正後增益應最大。
-bash scripts/task_v1_refix.sh
-bash scripts/task_test.sh v1_refix_b12
 
-bash scripts/task_sb_refix.sh
-bash scripts/task_test.sh sb_refix_b12
 
 bash scripts/task_sh3_nonormal.sh
 bash scripts/task_test.sh sh3_nonormal_b12
@@ -199,3 +193,10 @@ bash scripts/task_test.sh sh3_nonormal_b12
 # 消融：拿掉深度損失（最後一個 DA2 依賴）
 bash scripts/task_sh3_nodepth.sh
 bash scripts/task_test.sh sh3_nodepth_b12
+
+# ════════════════════════════════════════════════════════════════════════════
+#  ★★★ 4x4 全場景（16 塊，約 7 天）→ 合併 → 官方 741 幀 held-out
+#  這是唯一能與論文 27.23 直接比較的數字。舊的 b3x3 合併 16.42 是 bug 下訓練的，作廢。
+# ════════════════════════════════════════════════════════════════════════════
+bash scripts/task_4x4_train.sh
+bash scripts/task_4x4_merge_eval.sh

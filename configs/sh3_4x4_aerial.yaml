@@ -1,0 +1,85 @@
+# 4x4 全場景（16 塊）的 SH3 配方。2026-08-13。
+#
+# 為何 4x4 而不是 3x3 或 5x5：每一塊都獨享完整的 6GB 預算，所以場景總容量 = 塊數 x 每塊上限。
+#   3x3   9 x 2.52M = 22.7M 顆   約 4 天
+#   4x4  16 x 2.34M = 37.4M 顆   約 7 天    <- 比 3x3 多 65% 容量
+#   5x5  25 x 2.34M = 58.5M 顆   約 11.5 天
+# 分塊數本身就是容量槓桿，而且不需要任何新機制。舊的 b3x3 各塊只有 20.8~25.2 而 b12(5x5) 有
+# 24.67，差別就在塊小、密度高。
+#
+# 與 mcmc_2dgs_60k_sh3_aggr17_aerial.yaml 的差異（其餘完全相同）：
+#   block_dim 5x5 -> 4x4
+#   cap_max -> 2,600,000        單塊最佳組態 sh3_viewdep_refix 的值；4x4 的塊只比 5x5 大 1.6 倍
+#   opacity_reg 0.007 -> 0.002  同上
+#   screen_size_prune_px -> 300 同上
+#
+# ⚠ 不要用 tools/calibrate_block_caps.py 定 cap：它吃 strip_cameras.py 的常數，而那組常數的
+#   形狀就錯（render = V_fix + c*N 在 81 個跑次上 R^2 = 0.066；VRAM 由 overdraw 主導不由 N），
+#   曾預測「4M 必爆、牆在 2.04M」而實際跑到 3.6M 無事。
+# ⚠ K-strip 理論上能把 SH3 推到 4.9M（K=4），但它在 cap 2M 上 0 勝 2 敗，且每步跑 K 遍
+#   => 16 塊會從 7 天變成 28 天。驗證成本高於收益，不用。
+model:
+  initialize_from: null          # depth-init via CLI: --model.initialize_from .../depth_init/block_7.ply
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 3              # sh3: +0.295 dB measured on 30k run
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 60_000
+      opacity_reg: 0.002          # 0.01 -> 0.007 : 小幅鬆綁，少砍掉峰值的點（cap2M 後半掉 10%）
+      scale_reg: 0.007            # 同上
+      immune_opacity_threshold: 0.9
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      screen_size_prune_px: 300  # 單塊最佳組態的值
+      cap_max: 2600000           # 上一階 1.3M 撞 cap 仍在爬 -> 往上推找天花板
+      noise_lr: 500000.0
+      densify_from_iter: 1000
+      densify_until_iter: 42_000  # 30k -> 42k : 主力積極槓桿，內容導向的點長更久
+      densification_interval: 150 # 200 -> 150 : 加密 add 事件
+      min_opacity: 0.005
+      N_max: 51
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 4
+      - 4
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000
+- 42000
+- 60000
