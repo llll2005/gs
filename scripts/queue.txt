@@ -189,8 +189,6 @@
 
 
 # 消融：拿掉深度損失（最後一個 DA2 依賴）
-bash scripts/task_sh3_nodepth.sh
-bash scripts/task_test.sh sh3_nodepth_b12
 
 # ════════════════════════════════════════════════════════════════════════════
 #  累積式測試：每一跑 = 目前最佳 + 一個機制。目前最佳 = sh3_nonormal_b12
@@ -205,6 +203,12 @@ bash scripts/task_test.sh sh3_nodepth_b12
 # 最佳 + lambda_dssim 0.5（判準看 LPIPS 與紋理比，不看 PSNR）
 bash scripts/task_dssim05.sh
 bash scripts/task_test.sh dssim05_b12
+
+# ★ 兩個幾何先驗一起砍（lambda_normal 0 + depth loss 0）—— 各自對基準都是正向
+# （+0.393 / +0.240）但都在約束幾何，增益很可能重疊，不能相加。這一跑量的是「兩者一起」。
+# 若成立，整條 DA2 流程（5,621 張影像的深度估計 + 校準 + 法向 + 體素去重）都能刪掉。
+bash scripts/task_noprior.sh
+bash scripts/task_test.sh noprior_b12
 
 # 最佳 + blur split 0.3（先前兩次量測都在 bug 下，結論作廢，重新開放）
 bash scripts/task_blurcum.sh
