@@ -205,8 +205,6 @@
 # ★ 兩個幾何先驗一起砍（lambda_normal 0 + depth loss 0）—— 各自對基準都是正向
 # （+0.393 / +0.240）但都在約束幾何，增益很可能重疊，不能相加。這一跑量的是「兩者一起」。
 # 若成立，整條 DA2 流程（5,621 張影像的深度估計 + 校準 + 法向 + 體素去重）都能刪掉。
-bash scripts/task_noprior.sh
-bash scripts/task_test.sh noprior_b12
 
 # ★ SSIM 權重的第三點（0.2 → 0.5 → 0.8）。0.5 那跑順便讓 floater 降 20%，而它沒有任何
 # floater 機制 —— 若成立，機制是「SSIM 是窗口比較，懲罰量正比於螢幕足跡」＝隱式的 c_i 定價，
@@ -214,13 +212,18 @@ bash scripts/task_test.sh noprior_b12
 # 於是 depth_to_normal / rend_dist / view_normal 每步都算卻沒人用（view_normal 更是從來沒人用）。
 # A 量成本、B 量 rend_dist 是不是新訊號（它逐像素量「視線上樣本多分散」＝ overdraw，
 # 但若與 alpha/覆蓋高度相關就不是新資訊）。
-bash scripts/task_audit_byproducts.sh
 
 # 那正是我們在密度控制裡顯式做而被退化定理否證的東西。兩點分不出機制與巧合，第三點可以。
 bash scripts/task_dssim08.sh
 bash scripts/task_test.sh dssim08_b12
 
 # ★ 顯式的粗尺度 L1（1/8 解析度）—— CPU 實測發現大足跡誤差同時落在 L1 與 SSIM 的盲區
+# ★★ 兩個先驗全砍 + dssim 0.5 —— 至今最強的兩個改動從未合過。
+# noprior 26.083 是第一次越過 26，但 floater 1.726%（dssim05 的 1.8 倍）；
+# 而提高 SSIM 權重是目前唯一被觀察到會【降低】floater 的改動（1.193% → 0.958%），正好對症。
+bash scripts/task_npd.sh
+bash scripts/task_test.sh npd_b12
+
 # （等誤差量下 SSIM/L1 懲罰比從 r=2 的 15.1 單調降到 r=64 的 1.14），而低頻仍佔 37% 誤差能量。
 bash scripts/task_coarsel1.sh
 bash scripts/task_test.sh coarsel1_b12
