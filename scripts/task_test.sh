@@ -16,4 +16,11 @@ rc=$?
 mv -f $D/results.txt.bak $D/results.txt 2>/dev/null
 mv -f $D/best_val.txt.bak $D/best_val.txt 2>/dev/null
 echo "圖 $(find $D/test -name '*.png' 2>/dev/null | wc -l) 張"
+
+# Geometry-side numbers the photometric metrics cannot see. Removing the two geometric priors
+# bought PSNR and paid in floaters (0.94% -> 1.19% -> 1.45%), and nothing in results.txt showed it.
+# CPU only, a few seconds, so every run gets it for free.
+PYTHONPATH=. conda run -n gspl --no-capture-output python tools/geometry_health.py \
+  --runs "$NAME" --block "$BLK" || true
+
 exit $rc
