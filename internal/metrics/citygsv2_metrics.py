@@ -10,6 +10,27 @@ def _grad_energy(img: torch.Tensor) -> torch.Tensor:
     return (img[:, 1:, :] - img[:, :-1, :]).abs().mean() + (img[:, :, 1:] - img[:, :, :-1]).abs().mean()
 
 
+COARSE_DOC = '''Weight on an L1 computed at 1/2**coarse_l1_levels resolution, added to the loss.
+
+Measured, not guessed. tools/loss_footprint_pricing.py injects a FIXED total amount of error into a
+real render and varies only how it is spread; at equal error mass the SSIM penalty relative to L1
+falls monotonically with blob radius -- 15.1x at r=2 down to 1.14x at r=64, and 7.47x -> 1.34x on a
+second sweep with different amplitude and area. So a large-footprint error is in the blind spot of
+BOTH terms: L1 sees a faint tint spread thin, SSIM sees nothing structural. That is how large
+floaters survive.
+
+Meanwhile the band decomposition of the fixed model puts 37% of the residual ENERGY at >=32 px
+(2.57e-3 of 6.87e-3), even though its relative error there is only 2.5%. Large signal, small
+relative error, no prioritisation from either loss.
+
+Downsampling by 8 and taking L1 there prices exactly that band. It costs nothing: avg_pool on an
+already-computed image, no extra VRAM.
+
+⚠ Unvalidated. 0 = off. It is a NEW loss term, and this project's record with added regularisers is
+poor (AtomGS edge-normal, EdgeAware, FreGS all lost on PSNR *and* LPIPS). What distinguishes this
+one is that the gap it targets was measured first.'''
+
+
 @dataclass
 class WeightScheduler:
     init: float = 1.0
@@ -40,6 +61,10 @@ class CityGSV2Metrics(GS2DMetrics):
     depth_normalized: bool = False
 
     depth_output_key: str = "inverse_depth"
+
+    coarse_l1_weight: float = 0.0
+    coarse_l1_levels: int = 3
+    __doc_coarse__ = COARSE_DOC
 
     depth_coverage_eps: float = 1e-4
     """Pixels whose rendered alpha is below this carry no depth information and are excluded.
@@ -181,6 +206,18 @@ class CityGSV2MetricsModule(GS2DMetricsImpl):
         metrics["d_w"] = d_reg_weight
         pbar["d_reg"] = True
         pbar["d_w"] = True
+
+        # Coarse-scale L1: prices the band both photometric terms ignore. See COARSE_DOC.
+        if self.config.coarse_l1_weight > 0:
+            _, image_info, _ = batch
+            _, gt_image, _ = image_info
+            pred = outputs["render"]
+            k = 2 ** self.config.coarse_l1_levels
+            lo = lambda x: torch.nn.functional.avg_pool2d(x.unsqueeze(0), k).squeeze(0)
+            c_l1 = (lo(pred) - lo(gt_image)).abs().mean()
+            metrics["loss"] = metrics["loss"] + self.config.coarse_l1_weight * c_l1
+            metrics["c_l1"] = c_l1
+            pbar["c_l1"] = False
 
         if step < pl_module.hparams["density"].densify_until_iter:
             pbar["extra_loss"] = False
