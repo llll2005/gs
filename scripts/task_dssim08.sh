@@ -1,17 +1,19 @@
 #!/bin/bash
-# blur split ON TOP OF the current best, which is now dssim05_b12
-# (25.519 / 0.7709 / 0.3614 / 0.4959, floater 0.958%) -- lambda_normal 0 AND lambda_dssim 0.5. Its two previous measurements were both under the GT
-# mapping bug: it looked worth LPIPS -0.013 / texture +0.019 on SB, and null on SH3. The
-# explanation offered then -- that SH3 had already removed the appearance error blur split was
-# compensating for -- was itself derived from buggy models, so the question is open again.
+# Third point on the SSIM-weight axis: 0.2 -> 0.5 -> 0.8. Everything else as dssim05_b12.
 #
-# Original note (now applied to blur split, not lambda_dssim): ON TOP OF the current best,
-# sh3_nonormal_b12 (25.828 / 0.7632 / 0.3734 / 0.4854 @ 2.34M, i.e. lambda_normal already 0).
+# 0.5 won on three of four photometric metrics AND cut floaters 20% (1.193% -> 0.958%), which is
+# the interesting part: nothing in that run targets floaters. The mechanism would be that SSIM is a
+# WINDOW comparison, so a near-camera primitive with a huge screen footprint wrecks the structure of
+# everything it covers, while L1 only sees a faint tint. That makes SSIM an implicit penalty
+# proportional to screen footprint -- which is exactly the c_i this project spent days trying to
+# price explicitly in the density controller before the degeneracy theorem killed that route.
 #
-# Cumulative rather than isolated: each run is best-so-far plus ONE change, so every measurement is
-# taken in the configuration it would actually ship in. This project has twice measured pairs that
-# cancel (blur split x raised LR floor, blur split x SH3), so a gain measured against an old
-# baseline does not transfer.
+# Two points cannot distinguish a mechanism from a coincidence. A third does:
+#   floaters keep falling and LPIPS keeps improving  -> the implicit c_i pricing is real, and the
+#       cost-aware idea belongs in the LOSS, not in primitive selection
+#   floaters bottom out or LPIPS turns around at 0.5 -> 0.5 was just a good operating point
+# ⚠ Expect PSNR to fall further -- L1 is down to 20% of the objective. Judge on LPIPS, texture
+#   ratio and the floater fraction that task_test.sh now reports.
 #
 # The loss is currently 0.8*L1 + 0.2*(1-SSIM) -- the 3DGS default we never questioned. L1 is
 # precisely the term that prefers blur when uncertain, so 80% of the objective is pulling against
@@ -32,7 +34,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-rm -rf outputs/blurcum_b12
+rm -rf outputs/dssim08_b12
 conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
   --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply \
@@ -41,6 +43,5 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --model.density.init_args.screen_size_prune_px 300 \
   --model.metric.init_args.opacity_reg 0.002 \
   --model.metric.init_args.lambda_normal 0.0 \
-  --model.metric.init_args.lambda_dssim 0.5 \
-  --model.density.init_args.blur_split_budget 0.3 \
-  -n blurcum_b12
+  --model.metric.init_args.lambda_dssim 0.8 \
+  -n dssim08_b12
