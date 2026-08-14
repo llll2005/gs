@@ -210,6 +210,12 @@ bash scripts/task_test.sh noprior_b12
 
 # ★ SSIM 權重的第三點（0.2 → 0.5 → 0.8）。0.5 那跑順便讓 floater 降 20%，而它沒有任何
 # floater 機制 —— 若成立，機制是「SSIM 是窗口比較，懲罰量正比於螢幕足跡」＝隱式的 c_i 定價，
+# ★ 副產物審計（幾分鐘，但要獨佔 GPU）：現行配方把 lambda_normal 設 0、lambda_dist 預設 0，
+# 於是 depth_to_normal / rend_dist / view_normal 每步都算卻沒人用（view_normal 更是從來沒人用）。
+# A 量成本、B 量 rend_dist 是不是新訊號（它逐像素量「視線上樣本多分散」＝ overdraw，
+# 但若與 alpha/覆蓋高度相關就不是新資訊）。
+bash scripts/task_audit_byproducts.sh
+
 # 那正是我們在密度控制裡顯式做而被退化定理否證的東西。兩點分不出機制與巧合，第三點可以。
 bash scripts/task_dssim08.sh
 bash scripts/task_test.sh dssim08_b12
