@@ -222,6 +222,14 @@
 bash scripts/task_npd.sh
 bash scripts/task_test.sh npd_b12
 
+# ★★ 每位元組買到多少品質：SB 加到 4 個 lobe（F=37）+ 位元對齊 cap 3.5M。
+# 診斷指出瓶頸是「每單位面積的粒子數」，而 cap 被 VRAM 鎖死、切細塊要線性增加時間
+# ⇒ 唯一免費的槓桿是【每顆的位元組】。SB 每個 lobe 只要 6 float，SH2→SH3 卻要 21。
+# 且我們場景的視角相依內容是水面鏡反射＝角度上稀疏的銳利 lobe，SB 天生擅長、SH 要用一堆低階基底疊。
+# ⇒ SB-2 輸 SH3 可能是「兩個 lobe 不夠」而非表徵較差；lobe 數從沒掃過（2 是 DBS 預設）。
+bash scripts/task_sb4.sh
+bash scripts/task_test.sh sb4_b12
+
 # （等誤差量下 SSIM/L1 懲罰比從 r=2 的 15.1 單調降到 r=64 的 1.14），而低頻仍佔 37% 誤差能量。
 bash scripts/task_coarsel1.sh
 bash scripts/task_test.sh coarsel1_b12
