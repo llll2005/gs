@@ -39,6 +39,10 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 rm -rf outputs/coarsel1_b12
+# 2026-08-16 改基座：本臂原本疊在 dssim 0.5 + depth loss 開之上，但那組已被判定為被支配
+# （研究總覽 §12.6：dssim 0.2->0.5 每 dB 只換 41% floater，depth loss 換 122~147%；
+#  且建築區三組一致顯示 depth loss 淨負）。改疊在現行最佳 noprior（26.083，depth 關、
+#  dssim 0.2）之上，這樣結果可以直接進最終配方，也不會和剛關掉的旋鈕混淆。
 conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
   --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply \
@@ -47,6 +51,6 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --model.density.init_args.screen_size_prune_px 300 \
   --model.metric.init_args.opacity_reg 0.002 \
   --model.metric.init_args.lambda_normal 0.0 \
-  --model.metric.init_args.lambda_dssim 0.5 \
+  --model.metric.init_args.depth_loss_weight.init 0.0 \
   --model.metric.init_args.coarse_l1_weight 0.3 \
   -n coarsel1_b12

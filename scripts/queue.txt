@@ -219,8 +219,6 @@
 # ★★ 兩個先驗全砍 + dssim 0.5 —— 至今最強的兩個改動從未合過。
 # noprior 26.083 是第一次越過 26，但 floater 1.726%（dssim05 的 1.8 倍）；
 # 而提高 SSIM 權重是目前唯一被觀察到會【降低】floater 的改動（1.193% → 0.958%），正好對症。
-bash scripts/task_npd.sh
-bash scripts/task_test.sh npd_b12
 
 # ★★ 每位元組買到多少品質：SB 加到 4 個 lobe（F=37）+ 位元對齊 cap 3.5M。
 # 診斷指出瓶頸是「每單位面積的粒子數」，而 cap 被 VRAM 鎖死、切細塊要線性增加時間
