@@ -74,7 +74,12 @@ while true; do
   log "▶ START  $label"
   log "         $cmd"
   [ "$needs_gpu" -eq 1 ] && wait_for_gpu
-  ledger "TASK START  $label"
+  # 台帳帶上腳本名：label 是用 awk 掃「任務上方的註解區塊」推的，多個區塊相鄰時會抓到別人的，
+  # 而監控只看台帳那一行 => 已經多次讓人以為跑錯了實驗（實際上指令一直是對的）。
+  # 腳本名直接從指令取，不會錯。
+  short=$(printf '%s' "$cmd" | grep -oE '[a-zA-Z0-9_./-]+\.sh( [a-zA-Z0-9_]+)?' | head -1)
+  short=${short##*/}
+  ledger "TASK START  [${short:-?}] $label"
   start=$(date +%s)
   # 9>&- : the lock fd must NOT be inherited by the task. flock holds as long as ANY process has
   # the fd open, so an orphaned child (e.g. a training run that outlived a killed runner) would
@@ -84,10 +89,10 @@ while true; do
   dur=$(( $(date +%s) - start ))
   if [ $rc -eq 0 ]; then
     log "✔ DONE   $label  (rc=0, ${dur}s)"
-    ledger "TASK DONE   $label (${dur}s)"
+    ledger "TASK DONE   [${short:-?}] $label (${dur}s)"
   else
     log "✘ FAIL   $label  (rc=$rc, ${dur}s) — 佇列繼續往下跑"
-    ledger "TASK FAIL   $label rc=$rc (${dur}s)"
+    ledger "TASK FAIL   [${short:-?}] $label rc=$rc (${dur}s)"
   fi
 
   # Remove exactly this task from a FRESH read, so concurrent edits survive.
