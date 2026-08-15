@@ -230,6 +230,14 @@ bash scripts/task_test.sh npd_b12
 bash scripts/task_sb4.sh
 bash scripts/task_test.sh sb4_b12
 
+# ★ lobe 軸的另一端：16 個 lobe（F=109，2.21M 顆，比 SH3 的 2.34M 還少）。
+# 與 sb4 一起跑才能分開兩件事：sb4 贏而 sb16 輸 ⇒ 顆數主導，別再加 lobe；
+# sb16 贏 ⇒ 角度表達力勝過顆數（它顆數更少還贏），那才值得去做逐粒子自適應 lobe。
+# 免費後續（不用 GPU）：從 ckpt 讀 lobe 振幅分布，看「一顆粒子實際用幾個 lobe」——
+# 若多數只用一個、只有水面/玻璃用多個，那就量到了自適應能省多少，再決定要不要寫 CUDA。
+bash scripts/task_sb16.sh
+bash scripts/task_test.sh sb16_b12
+
 # （等誤差量下 SSIM/L1 懲罰比從 r=2 的 15.1 單調降到 r=64 的 1.14），而低頻仍佔 37% 誤差能量。
 bash scripts/task_coarsel1.sh
 bash scripts/task_test.sh coarsel1_b12
