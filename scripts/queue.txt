@@ -250,9 +250,14 @@ bash scripts/task_test.sh blurcum_b12
 
 # ★ 收割期的 opacity L1 是流失還是正則？四個跑次全停在 cap 的 90.00%，10% 全掉在 42k->60k。
 # freeze_opacity_after_densify 已實作但從未跑過，一個旗標零程式碼。對照 noprior 26.083/2.34M。
-# 顆數回到 ~2.6M 且 PSNR 不掉 => 收割期的 opacity L1 是白付的（直接餵成本感知論述）。
-bash scripts/task_freeze.sh
-bash scripts/task_test.sh freeze_b12
+# ⛔ 原本這裡是 task_freeze.sh（freeze_opacity_after_densify），已撤換：逐步顆數軌跡證明
+# 那 10% 是 trim 渲染器每 500 步剪 10% 造成的，不是 opacity 流失，該實驗在測被推翻的假說。
+#
+# ★★ 改測排程壓縮：densify 42k->30k。顆數 step 28,399 就撞 cap => 28.4k~42k 這 13,600 步
+# 零成長、純 churn（總流動量是族群的 5.2 倍），且那段 PSNR 是下降的；而 densify 一停，
+# 收割期就給出 +1.85 dB（比所有機制加起來還多）。唯一變數 densify_until_iter。
+bash scripts/task_sched30.sh
+bash scripts/task_test.sh sched30_b12
 
 # ★★ 修正後的顆數標度律：全專案唯一同基底顆數對照。使用者質疑「4.96M/24.16 是不是 bug 期跑的」
 # 查證後確認是（2026-06-30 vs 修正 2026-08-12）=> 連同「+0.229 dB/加倍」「見頂 1.5M」全部作廢。
