@@ -245,3 +245,9 @@ bash scripts/task_test.sh blurcum_b12
 # 顆數回到 ~2.6M 且 PSNR 不掉 => 收割期的 opacity L1 是白付的（直接餵成本感知論述）。
 bash scripts/task_freeze.sh
 bash scripts/task_test.sh freeze_b12
+
+# ★★ 修正後的顆數標度律：全專案唯一同基底顆數對照。使用者質疑「4.96M/24.16 是不是 bug 期跑的」
+# 查證後確認是（2026-06-30 vs 修正 2026-08-12）=> 連同「+0.229 dB/加倍」「見頂 1.5M」全部作廢。
+# cap 1.3M 對 noprior 的 2.6M = 2 倍對照，唯一變數是 cap_max，且顆數少跑得比 12.5h 快。
+bash scripts/task_halfcap.sh
+bash scripts/task_test.sh halfcap_b12
