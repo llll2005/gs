@@ -236,6 +236,14 @@
 bash scripts/task_coarsel1.sh
 bash scripts/task_test.sh coarsel1_b12
 
+# ★★ 配方轉移測試（使用者提議）：現行最佳 noprior 換到 block_7，唯一變數是 block_id。
+# b12 在 25 塊裡內容密度**排第 13、低於中位數**（GT 梯度 0.01547，半面水），b7 是**最重的一塊**
+# （0.02189 = 1.42x），且是官方 baseline 重跑用的塊。在繼續拿 b12 調參之前先確認結論轉不轉得動。
+# 判讀 vs b12 的 26.083：落 25~26 = 會轉移；<24 = 過擬合到低內容；OOM = VRAM 餘裕是 b12 特有的
+# （這本身就是全場景 25 塊會一路踩的雷）。順便給合併分數一個有內容加權的推估底。
+bash scripts/task_b7.sh
+bash scripts/task_test.sh best_b7
+
 # 最佳 + blur split 0.3（先前兩次量測都在 bug 下，結論作廢，重新開放）
 bash scripts/task_blurcum.sh
 bash scripts/task_test.sh blurcum_b12
