@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Merge harvested results.txt metrics with run-level annotations -> 紀錄/實驗總表.csv"""
+"""Merge harvested results.txt metrics with run-level annotations -> 紀錄/實驗總表.csv
+
+⚠⚠ 2026-08-17：**跑完這支之後必須再跑 `python tools/mark_csv_eras.py`**。
+下面 A 字典裡手寫的 era 只有「舊資料/當前資料」兩級，而「當前資料」把 **GT 錯位期**
+（2026-08-12 10:08:37 faeb4d4 之前，每張影像對到鄰幀）和修正後混在一起 —— 那是 191 筆
+不可比的數據被當成可比。`mark_csv_eras.py` 會用**實際檔案時間**覆寫 era（舊資料集／GT錯位／
+修正後）、**逐塊**標未跑完/OOM、補上 outputs/ 有但表裡沒有的 run，並標記已刪 ckpt 的列。
+手寫 era 不要再維護，會過時；status/note 仍由這裡提供。"""
 import csv, os
 
 HARVEST = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'harvest.csv')
