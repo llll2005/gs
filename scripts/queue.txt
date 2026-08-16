@@ -233,8 +233,6 @@
 # 若多數只用一個、只有水面/玻璃用多個，那就量到了自適應能省多少，再決定要不要寫 CUDA。
 
 # （等誤差量下 SSIM/L1 懲罰比從 r=2 的 15.1 單調降到 r=64 的 1.14），而低頻仍佔 37% 誤差能量。
-bash scripts/task_coarsel1.sh
-bash scripts/task_test.sh coarsel1_b12
 
 # ★★ 配方轉移測試（使用者提議）：現行最佳 noprior 換到 block_7，唯一變數是 block_id。
 # b12 在 25 塊裡內容密度**排第 13、低於中位數**（GT 梯度 0.01547，半面水），b7 是**最重的一塊**
@@ -243,6 +241,14 @@ bash scripts/task_test.sh coarsel1_b12
 # （這本身就是全場景 25 塊會一路踩的雷）。順便給合併分數一個有內容加權的推估底。
 bash scripts/task_b7.sh
 bash scripts/task_test.sh best_b7
+
+# ⚠⚠ 重跑 noprior：2026-08-17 我用 sed 產生 task_b7.sh 時漏改 `rm -rf outputs/noprior_b12`，
+# b7 一啟動就把它整個刪光（ckpt/test圖/tensorboard 全沒了）。數字都在紀錄裡，但模型沒了 =>
+# 後續所有結構分析（低頻誤差、分區域、對照圖）都缺這個參照，必須重建。
+# ★副產物：它同時是**修正後從未量過的種子噪音**——把重跑結果對紀錄的 26.083 / 0.7693 /
+#   0.3611 / 0.5005，差多少就是噪音底，全專案所有顯著性宣稱都靠它。
+bash scripts/task_noprior.sh
+bash scripts/task_test.sh noprior_b12
 
 # 最佳 + blur split 0.3（先前兩次量測都在 bug 下，結論作廢，重新開放）
 bash scripts/task_blurcum.sh

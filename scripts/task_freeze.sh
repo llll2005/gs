@@ -1,4 +1,6 @@
 #!/bin/bash
+# ⛔ 已退役（2026-08-17）：研究總覽 §12.12 證明那 10% 是 trim 每 500 步剪 10% 造成的，
+#    不是 opacity 流失 => 本臂在測一個被推翻的假說。已從 queue 移除，保留檔案供追溯。
 # Can BOTH geometric priors go? lambda_normal 0 AND depth loss 0, on top of SH3 / cap 2.6M /
 # opacity_reg 0.002.
 #
@@ -38,7 +40,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-rm -rf outputs/noprior_b12
+rm -rf outputs/freeze_b12
 # ★ 收割期的 opacity L1：是流失還是正則？（2026-08-16 排入）
 #
 # 發現（研究總覽 §12.8）：四個跑次全部停在 cap 的 90.00%，逐 ckpt 追蹤顯示 10% 全掉在

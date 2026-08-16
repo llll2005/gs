@@ -38,7 +38,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-rm -rf outputs/noprior_b12
+rm -rf outputs/sched30_b12
 # ★★ 排程壓縮：densify 42k -> 30k，收割期從 18k 拉到 30k（2026-08-17）
 #
 # 動機來自逐步軌跡分析（研究總覽 §12.12）。三個修正後跑次型態完全一致：

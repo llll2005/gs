@@ -38,7 +38,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-rm -rf outputs/noprior_b12
+rm -rf outputs/best_b7
 # ★★ 配方轉移測試：現行最佳（noprior）換到 block_7（2026-08-16 排入）
 #
 # 動機（使用者提議）：整套配方都是在 b12 上調的，而**b12 在 25 塊裡內容密度排第 13、

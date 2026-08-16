@@ -38,7 +38,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-rm -rf outputs/noprior_b12
+rm -rf outputs/halfcap_b12
 # ★ 修正後的顆數標度律 —— 全專案唯一一個同基底顆數對照（2026-08-16 排入）
 #
 # 使用者問「4.96M 只拿到 24.16 是在 GT 正確還是錯誤時跑的」，查證結果：2026-06-30，
