@@ -225,16 +225,12 @@
 # ⇒ 唯一免費的槓桿是【每顆的位元組】。SB 每個 lobe 只要 6 float，SH2→SH3 卻要 21。
 # 且我們場景的視角相依內容是水面鏡反射＝角度上稀疏的銳利 lobe，SB 天生擅長、SH 要用一堆低階基底疊。
 # ⇒ SB-2 輸 SH3 可能是「兩個 lobe 不夠」而非表徵較差；lobe 數從沒掃過（2 是 DBS 預設）。
-bash scripts/task_sb4.sh
-bash scripts/task_test.sh sb4_b12
 
 # ★ lobe 軸的另一端：16 個 lobe（F=109，2.21M 顆，比 SH3 的 2.34M 還少）。
 # 與 sb4 一起跑才能分開兩件事：sb4 贏而 sb16 輸 ⇒ 顆數主導，別再加 lobe；
 # sb16 贏 ⇒ 角度表達力勝過顆數（它顆數更少還贏），那才值得去做逐粒子自適應 lobe。
 # 免費後續（不用 GPU）：從 ckpt 讀 lobe 振幅分布，看「一顆粒子實際用幾個 lobe」——
 # 若多數只用一個、只有水面/玻璃用多個，那就量到了自適應能省多少，再決定要不要寫 CUDA。
-bash scripts/task_sb16.sh
-bash scripts/task_test.sh sb16_b12
 
 # （等誤差量下 SSIM/L1 懲罰比從 r=2 的 15.1 單調降到 r=64 的 1.14），而低頻仍佔 37% 誤差能量。
 bash scripts/task_coarsel1.sh
@@ -243,3 +239,9 @@ bash scripts/task_test.sh coarsel1_b12
 # 最佳 + blur split 0.3（先前兩次量測都在 bug 下，結論作廢，重新開放）
 bash scripts/task_blurcum.sh
 bash scripts/task_test.sh blurcum_b12
+
+# ★ 收割期的 opacity L1 是流失還是正則？四個跑次全停在 cap 的 90.00%，10% 全掉在 42k->60k。
+# freeze_opacity_after_densify 已實作但從未跑過，一個旗標零程式碼。對照 noprior 26.083/2.34M。
+# 顆數回到 ~2.6M 且 PSNR 不掉 => 收割期的 opacity L1 是白付的（直接餵成本感知論述）。
+bash scripts/task_freeze.sh
+bash scripts/task_test.sh freeze_b12
