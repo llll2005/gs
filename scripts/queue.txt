@@ -239,13 +239,14 @@
 # （0.02189 = 1.42x），且是官方 baseline 重跑用的塊。在繼續拿 b12 調參之前先確認結論轉不轉得動。
 # 判讀 vs b12 的 26.083：落 25~26 = 會轉移；<24 = 過擬合到低內容；OOM = VRAM 餘裕是 b12 特有的
 # （這本身就是全場景 25 塊會一路踩的雷）。順便給合併分數一個有內容加權的推估底。
-bash scripts/task_b7.sh
-bash scripts/task_test.sh best_b7
 
 # ⚠⚠ 重跑 noprior：2026-08-17 我用 sed 產生 task_b7.sh 時漏改 `rm -rf outputs/noprior_b12`，
 # b7 一啟動就把它整個刪光（ckpt/test圖/tensorboard 全沒了）。數字都在紀錄裡，但模型沒了 =>
 # 後續所有結構分析（低頻誤差、分區域、對照圖）都缺這個參照，必須重建。
 # ★副產物：它同時是**修正後從未量過的種子噪音**——把重跑結果對紀錄的 26.083 / 0.7693 /
+# 補跑：上一輪漏給 block 參數（task_test.sh 預設 block 12，b7 沒有 block_12）而秒失敗。
+bash scripts/task_test.sh best_b7 7
+
 #   0.3611 / 0.5005，差多少就是噪音底，全專案所有顯著性宣稱都靠它。
 bash scripts/task_noprior.sh
 bash scripts/task_test.sh noprior_b12
