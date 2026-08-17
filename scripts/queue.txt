@@ -251,23 +251,21 @@ bash scripts/task_test.sh best_b7 7
 bash scripts/task_noprior.sh
 bash scripts/task_test.sh noprior_b12
 
-# 最佳 + blur split 0.3（先前兩次量測都在 bug 下，結論作廢，重新開放）
-bash scripts/task_blurcum.sh
-bash scripts/task_test.sh blurcum_b12
-
-# ★ 收割期的 opacity L1 是流失還是正則？四個跑次全停在 cap 的 90.00%，10% 全掉在 42k->60k。
-# freeze_opacity_after_densify 已實作但從未跑過，一個旗標零程式碼。對照 noprior 26.083/2.34M。
-# ⛔ 原本這裡是 task_freeze.sh（freeze_opacity_after_densify），已撤換：逐步顆數軌跡證明
-# 那 10% 是 trim 渲染器每 500 步剪 10% 造成的，不是 opacity 流失，該實驗在測被推翻的假說。
-#
-# ★★ 改測排程壓縮：densify 42k->30k。顆數 step 28,399 就撞 cap => 28.4k~42k 這 13,600 步
-# 零成長、純 churn（總流動量是族群的 5.2 倍），且那段 PSNR 是下降的；而 densify 一停，
-# 收割期就給出 +1.85 dB（比所有機制加起來還多）。唯一變數 densify_until_iter。
+# ★★ 排程壓縮 2x2（b12 x b7）。densify_until 42k->30k 不是「多給步數」而是收斂預算 x3.02，
+# 且 30k/60k=50% 正好回到上游 vanilla 的比例（15k/30k）——我們 2026-06-25 漂到 70%，
+# 而那次調參在 GT 修正之前、依據已作廢。顆數 26,879(b7)/28,399(b12) 撞 cap => 30k 是最早切點。
+# **b7 先跑**：它到 60,000 仍在爬(+0.107)，是有餘裕卻預算不夠的那個，機制若成立效應最大；
+# b12 已在 56.8k 飽和，預期只是打平。兩個一起才能把「內容決定步數需求」從 n=2 變成 2x2。
+bash scripts/task_sched30_b7.sh
+bash scripts/task_test.sh sched30_b7 7
 bash scripts/task_sched30.sh
 bash scripts/task_test.sh sched30_b12
 
-# ★★ 修正後的顆數標度律：全專案唯一同基底顆數對照。使用者質疑「4.96M/24.16 是不是 bug 期跑的」
-# 查證後確認是（2026-06-30 vs 修正 2026-08-12）=> 連同「+0.229 dB/加倍」「見頂 1.5M」全部作廢。
-# cap 1.3M 對 noprior 的 2.6M = 2 倍對照，唯一變數是 cap_max，且顆數少跑得比 12.5h 快。
+# blur-split 預算 0.3：目前唯一「改變粒子集合」而非「改損失權重」的臂。低頻結構缺口已證實
+# 不是損失工程能補的（coarsel1 佔目標 5.3% 只推動 1.5%），所以改變集合的手段相對重要性上升。
+bash scripts/task_blurcum.sh
+bash scripts/task_test.sh blurcum_b12
+
+# 修正後的顆數標度律：全專案唯一同基底顆數對照（cap 1.3M vs 2.6M，唯一變數 cap_max）。
 bash scripts/task_halfcap.sh
 bash scripts/task_test.sh halfcap_b12
