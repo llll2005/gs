@@ -12,9 +12,10 @@ def half(p):
 def lo(im, s=12):
     return np.asarray(im.filter(ImageFilter.GaussianBlur(s)), np.float32)/255.
 rows=[]
-for run in sys.argv[1:]:
-    fs = glob.glob("outputs/%s/blocks/block_12/test/*/*.png" % run)
-    if not fs: print(run, "無 test 圖"); continue
+for spec in sys.argv[1:]:
+    run, _, b = spec.partition(":")          # 用 run:block 指定非 12 的塊，例：best_b7:7
+    fs = glob.glob("outputs/%s/blocks/block_%s/test/*/*.png" % (run, b or "12"))
+    if not fs: print(spec, "無 test 圖"); continue
     e_lo, e_hi = [], []
     for p in sorted(fs):
         gt, r = half(p)
@@ -22,8 +23,9 @@ for run in sys.argv[1:]:
         e_lo.append(np.abs(x-g).mean())
         gh = np.asarray(gt,np.float32)/255. - g; xh = np.asarray(r,np.float32)/255. - x
         e_hi.append(np.abs(xh-gh).mean())
-    rows.append((run, float(np.mean(e_lo)), float(np.mean(e_hi))))
+    rows.append((spec, float(np.mean(e_lo)), float(np.mean(e_hi)), len(fs)))
 rows.sort(key=lambda r: r[1])
-print("%-24s %11s %11s" % ("run", "低頻誤差", "高頻誤差"))
-for n,a,b in rows: print("%-24s %11.5f %11.5f" % (n.replace('_b12',''), a, b))
+print("%-24s %11s %11s %6s" % ("run", "低頻誤差", "高頻誤差", "張數"))
+for n,a,b,k in rows: print("%-24s %11.5f %11.5f %6d" % (n.replace('_b12',''), a, b, k))
+print("\n  ⚠ 不同塊之間不可比（內容不同）。跨塊只能各自對自己的基線比。")
 print("\n  低頻誤差 = 大團塊/鬼影/整片色偏（越小越好）；高頻 = 細節與銳利度")
