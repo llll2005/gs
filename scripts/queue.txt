@@ -245,21 +245,14 @@
 # 後續所有結構分析（低頻誤差、分區域、對照圖）都缺這個參照，必須重建。
 # ★副產物：它同時是**修正後從未量過的種子噪音**——把重跑結果對紀錄的 26.083 / 0.7693 /
 # 補跑：上一輪漏給 block 參數（task_test.sh 預設 block 12，b7 沒有 block_12）而秒失敗。
-bash scripts/task_test.sh best_b7 7
 
 #   0.3611 / 0.5005，差多少就是噪音底，全專案所有顯著性宣稱都靠它。
-bash scripts/task_noprior.sh
-bash scripts/task_test.sh noprior_b12
 
 # ★★ 排程壓縮 2x2（b12 x b7）。densify_until 42k->30k 不是「多給步數」而是收斂預算 x3.02，
 # 且 30k/60k=50% 正好回到上游 vanilla 的比例（15k/30k）——我們 2026-06-25 漂到 70%，
 # 而那次調參在 GT 修正之前、依據已作廢。顆數 26,879(b7)/28,399(b12) 撞 cap => 30k 是最早切點。
 # **b7 先跑**：它到 60,000 仍在爬(+0.107)，是有餘裕卻預算不夠的那個，機制若成立效應最大；
 # b12 已在 56.8k 飽和，預期只是打平。兩個一起才能把「內容決定步數需求」從 n=2 變成 2x2。
-bash scripts/task_sched30_b7.sh
-bash scripts/task_test.sh sched30_b7 7
-bash scripts/task_sched30.sh
-bash scripts/task_test.sh sched30_b12
 
 # blur-split 預算 0.3：目前唯一「改變粒子集合」而非「改損失權重」的臂。低頻結構缺口已證實
 # 不是損失工程能補的（coarsel1 佔目標 5.3% 只推動 1.5%），所以改變集合的手段相對重要性上升。
@@ -269,3 +262,11 @@ bash scripts/task_test.sh blurcum_b12
 # 修正後的顆數標度律：全專案唯一同基底顆數對照（cap 1.3M vs 2.6M，唯一變數 cap_max）。
 bash scripts/task_halfcap.sh
 bash scripts/task_test.sh halfcap_b12
+
+# ★ densify_until 掃描（36k / 24k）：sched30 是唯一有效的東西，但三個機制故事全被推翻。
+# 單調 => 晚期 densify 純有害，整條 densify 排程要重設計；30k 附近有極值 => 與族群建完時點有關。
+# 對照 noprior 26.0504 / sched30 26.3771，噪音底 PSNR 0.0325。判讀同時看 PSNR 與建築低頻。
+bash scripts/task_sched36.sh
+bash scripts/task_test.sh sched36_b12
+bash scripts/task_sched24.sh
+bash scripts/task_test.sh sched24_b12
