@@ -256,15 +256,18 @@
 
 # blur-split 預算 0.3：目前唯一「改變粒子集合」而非「改損失權重」的臂。低頻結構缺口已證實
 # 不是損失工程能補的（coarsel1 佔目標 5.3% 只推動 1.5%），所以改變集合的手段相對重要性上升。
-bash scripts/task_blurcum.sh
-bash scripts/task_test.sh blurcum_b12
 
 # 修正後的顆數標度律：全專案唯一同基底顆數對照（cap 1.3M vs 2.6M，唯一變數 cap_max）。
-bash scripts/task_halfcap.sh
-bash scripts/task_test.sh halfcap_b12
 
 # ★ densify_until 掃描（36k / 24k）：sched30 是唯一有效的東西，但三個機制故事全被推翻。
 # 單調 => 晚期 densify 純有害，整條 densify 排程要重設計；30k 附近有極值 => 與族群建完時點有關。
+# ★★ 顆數線重開：halfcap 量到修正後斜率 **+0.541 dB/加倍**（bug 期估的 +0.229 的 2.4 倍，
+# 而 +0.229 正是當初「count 不是主槓桿」的依據）。cap 2.6M->3.5M 預期 +0.232，與 sched30 同級。
+# 疊在現行最佳 sched30 上，唯一變數 cap。⚠ 先前算的「SH3 天花板 2.9M」站不住（VRAM 記的是
+# reserved 峰值，1.17M 用 5.70G 比 3.15M 的 5.53G 還多，對容量沒有鑑別力）=> 只能實測。
+bash scripts/task_cap35.sh
+bash scripts/task_test.sh cap35_b12
+
 # 對照 noprior 26.0504 / sched30 26.3771，噪音底 PSNR 0.0325。判讀同時看 PSNR 與建築低頻。
 bash scripts/task_sched36.sh
 bash scripts/task_test.sh sched36_b12

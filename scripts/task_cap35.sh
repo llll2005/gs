@@ -1,0 +1,72 @@
+#!/bin/bash
+# Can BOTH geometric priors go? lambda_normal 0 AND depth loss 0, on top of SH3 / cap 2.6M /
+# opacity_reg 0.002.
+#
+# Each was measured alone against sh3_viewdep_refix_b12 (25.435 / 0.7498 / 0.3990 / 0.4504):
+#   lambda_normal 0   -> 25.828  (+0.393)
+#   depth loss 0      -> 25.675  (+0.240)
+# Both positive on all four metrics, but they cannot be added: both constrain geometry, so the
+# gains very likely overlap. This run measures the pair.
+#
+# What it decides beyond the number: the depth loss is the LAST dependency on DA2 (depth-init was
+# already shown replaceable by a uniform fill). If it can go, utils/estimate_dataset_depths.py over
+# 5,621 images, the per-image scale/offset calibration, the normals and the voxel dedup all go with
+# it, and the GT-free story stops involving a monocular depth network at all.
+#
+# ⚠ Photometric metrics cannot see geometry degradation, and 2DGS's surface quality is part of what
+#   CityGSV2 sells. Removing BOTH geometric priors is exactly the case where that blind spot bites.
+#   Check surf_normal / surf_depth before this becomes the recipe -- a win here is not sufficient.
+#   (Supporting datum, not proof: nodepth's val/d_reg rose only 0.1498 -> 0.170, i.e. geometry drifts
+#   13.5% further from the pseudo-depth without supervision, consistent with "already exhausted".)
+#
+# The loss is currently 0.8*L1 + 0.2*(1-SSIM) -- the 3DGS default we never questioned. L1 is
+# precisely the term that prefers blur when uncertain, so 80% of the objective is pulling against
+# detail. That is why perceptual convergence is slow: we are not optimising perception.
+#
+# The trajectory says the run is not converged in that sense. Both fixed runs peak in PSNR at
+# 56,800 and then LOSE 0.09-0.10 by 60,000 while texture ratio keeps climbing (+0.009/+0.010) --
+# i.e. training is still trading pixel accuracy for detail when the clock runs out. Raising the
+# structure weight changes what that trade optimises rather than how fast it runs.
+#
+# READ LPIPS AND TEXTURE, NOT PSNR. This arm deliberately de-weights L1, so a PSNR drop is the
+# expected cost, not the result.
+#   success : LPIPS clearly better, texture ratio up and still below ~0.6 (real detail)
+#   failure : texture ratio shoots past 0.6 without LPIPS following (manufacturing noise)
+# ⚠ Expect a modest effect. A CPU upper-bound test found LPIPS is best around texture ratio 0.53
+#   and worsens beyond it -- and the fixed model already sits at 0.45. (That test ran on a
+#   pre-fix model, so the ceiling itself may have moved; this run also re-measures it.)
+set -u
+cd "$(dirname "$0")/.." || exit 1
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+rm -rf outputs/cap35_b12
+# ★★ SH3 顆數天花板：cap 2.6M -> 3.5M，疊在現行最佳 sched30 上（2026-08-19）
+#
+# 為什麼現在測：`halfcap` 開獎，修正後的顆數斜率是 **+0.541 dB / 加倍**（1.17M 25.510 vs
+# 2.34M 26.050），是 bug 期估計 +0.229 的 **2.4 倍**。而 +0.229 正是當初用來下
+# 「count 不是主槓桿，此線收掉」的數字 => **顆數線重開**。
+# cap 2.6M -> 3.5M = 1.346x 交付顆數 = 0.428 加倍 => 預期 **+0.232 dB**（與 sched30 的 +0.327 同級）。
+#
+# ⚠ 而且我先前算的「SH3 天花板 cap 2.9M」站不住。ledger 的 VRAM 是 PyTorch **reserved** 峰值，
+#   配置器會機會性撐到接近上限：實測 N=1.17M 用 5.70G、2.34M 用 5.52~5.67G、3.15M 用 5.53G
+#   —— 顆數差 2.7 倍而峰值不變，最小的還用最多 => **這個數字對「還能塞多少顆」沒有鑑別力**，
+#   拿它反推的每顆位元組（4872 / 2360 / 1755 B/pt）只是固定成本被 N 除出來的假象。
+#   **能不能塞下只能實測。**
+#
+# ⚠ SH3 從未在 cap 2.6M 以上跑過（cap4m / blurlas / blurlr 都是 SB 配置，F=25，不可比）。
+#
+# 判讀（對照 sched30_b12 26.377；噪音底 PSNR 0.0325、低頻 0.00028）：
+#   >= 26.6   -> 顆數增益如預期，**cap 仍是綁定的，該繼續往上推**
+#   26.4~26.6 -> 增益打折，接近邊際遞減點
+#   OOM       -> 天花板找到了，ledger 會記死在第幾步與當時顆數；那就是 SH3 在 6GB 的真上限
+# ⚠ 交付顆數是 0.9 x cap（§12.8）=> cap 3.5M 實得約 3.15M。
+conda run -n gspl --no-capture-output python -u main.py fit \
+  --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
+  --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply \
+  --data.parser.block_id 12 \
+  --model.density.init_args.cap_max 3500000 \
+  --model.density.init_args.densify_until_iter 30000 \
+  --model.density.init_args.screen_size_prune_px 300 \
+  --model.metric.init_args.opacity_reg 0.002 \
+  --model.metric.init_args.lambda_normal 0.0 \
+  --model.metric.init_args.depth_loss_weight.init 0.0 \
+  -n cap35_b12
