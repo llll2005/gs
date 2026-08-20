@@ -271,8 +271,6 @@
 # 預期 +0.112 dB（3.4x 噪音底），疊在 sched30 上目標約 26.49。
 
 # 對照 noprior 26.0504 / sched30 26.3771，噪音底 PSNR 0.0325。判讀同時看 PSNR 與建築低頻。
-bash scripts/task_sched24.sh
-bash scripts/task_test.sh sched24_b12
 
 # ★★ 使用者目視發現的疊影（best_b7）。四個假設已 CPU 否證（收斂/多層/供給/配對），
 # 站得住的是**粒子相對尺度**：b7 2.06 vs b12 1.47（長軸/表面取樣間距，已正規化）
@@ -287,3 +285,9 @@ bash scripts/task_test.sh scalereg_b7 7
 # 從頭就爛 -> 初始化局部極小 => 下一步換 init（SfM-init 零成本）
 # 曾經好過 -> densify/trim 弄壞的 => 下一步保護那些區域
 bash scripts/task_earlyckpt.sh
+
+# ★★ 多指標排名後的合成配方：cap30（平均名次第一）+ blurcum 的 blur_split_budget 0.3（最差10% 第一）。
+# 五個指標五個不同第一名、Pareto 前緣四個 => 單一指標宣布勝負是錯的（研究總覽 §12.30）。
+# ⚠ 疊加不可假設可加（本專案已量到兩對互相抵消）。開獎跑 `python tools/audit_all.py` 多指標比。
+bash scripts/task_combo.sh
+bash scripts/task_test.sh combo_b12
