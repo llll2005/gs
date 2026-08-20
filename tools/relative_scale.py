@@ -9,7 +9,9 @@ names, cams = load_test_cameras(D, 1.2)
 pts=C.read_points3D_binary(os.path.join(D,"sparse/0/points3D.bin"))
 SFM=np.stack([p.xyz for p in pts.values()]).astype(np.float32)
 rng=np.random.default_rng(0)
-for run,blk,part in [("best_b7",7,"002_001"),("sched30_b7",7,"002_001"),("sched30_b12",12,"002_002")]:
+import sys as _s
+SPECS=[tuple(x.split(":")) for x in _s.argv[1:]] or [("best_b7","7","002_001"),("sched30_b7","7","002_001"),("sched30_b12","12","002_002")]
+for run,blk,part in [(a,int(b),c) for a,b,c in SPECS]:
     fs=sorted(glob.glob("outputs/%s/blocks/block_%d/checkpoints/*.ckpt"%(run,blk)),key=lambda p:int(pat.search(p).group(1)))
     sd=torch.load(fs[-1],map_location="cpu")["state_dict"]
     xyz=sd[[k for k in sd if k.endswith("means")][0]].numpy()
