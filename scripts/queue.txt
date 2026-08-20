@@ -282,10 +282,13 @@
 # 且訓練損失本來就對誤差最大的視角給最大梯度卻修不好 => 不是分配問題。
 # 從頭就爛 -> 初始化局部極小 => 下一步換 init（SfM-init 零成本）
 # 曾經好過 -> densify/trim 弄壞的 => 下一步保護那些區域
-bash scripts/task_earlyckpt.sh
 
 # ★★ 多指標排名後的合成配方：cap30（平均名次第一）+ blurcum 的 blur_split_budget 0.3（最差10% 第一）。
 # 五個指標五個不同第一名、Pareto 前緣四個 => 單一指標宣布勝負是錯的（研究總覽 §12.30）。
+# 重跑：第一版腳本用 `find -newer` 搬圖，把 sched30_b12 原本的 60k test 圖一起搬走並同名覆蓋
+# （毀掉 36 張）。已改成按 main.py 自己的子目錄名搬。這次會補齊 15k/30k/42k/60k 四組。
+bash scripts/task_earlyckpt.sh sched30_b12 12
+
 # ⚠ 疊加不可假設可加（本專案已量到兩對互相抵消）。開獎跑 `python tools/audit_all.py` 多指標比。
 bash scripts/task_combo.sh
 bash scripts/task_test.sh combo_b12
