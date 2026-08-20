@@ -280,3 +280,10 @@ bash scripts/task_test.sh sched24_b12
 # ⚠ 主判準是相對尺度與**目視**，PSNR 只當護欄 —— 這問題是眼睛找到的，數字全沒抓到。
 bash scripts/task_scalereg_b7.sh
 bash scripts/task_test.sh scalereg_b7 7
+
+# ★ 最便宜的診斷（~3 分鐘 GPU）：尾巴視角是「從頭就爛」還是「曾經好過後來壞掉」。
+# 修好最差 25% 值 +1.551 dB（sched30 的 4.7 倍），而六個視角層級假設全否證，
+# 且訓練損失本來就對誤差最大的視角給最大梯度卻修不好 => 不是分配問題。
+# 從頭就爛 -> 初始化局部極小 => 下一步換 init（SfM-init 零成本）
+# 曾經好過 -> densify/trim 弄壞的 => 下一步保護那些區域
+bash scripts/task_earlyckpt.sh
