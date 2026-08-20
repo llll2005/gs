@@ -295,6 +295,14 @@ bash scripts/task_test.sh combo_b12
 
 # ★★ b7 的顆數天花板：scale_reg 證明尺度壓不下去（2.9 倍正則只換 4%），是重建損失頂回來
 # => 粒子需要那麼大才能覆蓋表面。b7 的 SfM 取樣間距與 b12 相近但粒子大 1.4 倍
+# ★★★ 打開一個從沒跑過的機制：`screen_size_prune_px 300` 在每個跑次都是死參數
+# （_max_radii2D 只在 screen_prune_emergency_px>0 時被填，而它預設 -1 且從沒設過；
+#  runner.log 裡 "screen-prune" 出現 0 次）。原始碼註解自己就寫了要兩個一起設。
+# 它正是專門剪超大螢幕足跡粒子的機制，而疊影的成因量到就是粒子相對尺度過大 => 直接對症。
+# ⚠ 必須看圖 + 多指標（tools/audit_all.py），不可只看 PSNR。
+bash scripts/task_scrprune_b7.sh
+bash scripts/task_test.sh scrprune_b7 7
+
 # => 空拍 SfM 在立面稀疏、真實表面積被低估 => b7 可能供給不足。b7 的 cap 從沒測過。
 bash scripts/task_cap30_b7.sh
 bash scripts/task_test.sh cap30_b7 7
