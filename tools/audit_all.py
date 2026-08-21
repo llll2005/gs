@@ -24,9 +24,15 @@ for rd in sorted(glob.glob("outputs/*")):
         if not fs: continue
         t0=min(os.path.getmtime(x) for x in glob.glob(bd+"/**/*",recursive=True))
         if t0 < 1786000000: continue                            # 2026-08-12 10:08 之後
-        r=bd+"/results.txt"
-        if not os.path.exists(r): continue
-        d=dict(re.findall(r"val/(\w+): ([0-9.]+)", open(r).read()))
+        # val 指標一律讀 tensorboard，不讀 results.txt —— 後者會被 `main.py test` 覆蓋成
+        # test/* 指標（2026-08-21 sched30_b12 就這樣被舊版 earlyckpt.sh 洗掉），tensorboard 不會。
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+        ev=sorted(glob.glob(bd+"/lightning_logs/version_*/events*"))
+        if not ev: continue
+        ea=EventAccumulator(ev[-1], size_guidance={'scalars':0}); ea.Reload()
+        tg=set(ea.Tags()['scalars']); d={}
+        for k in ["psnr","ssim","lpips","texratio"]:
+            if "val/"+k in tg: d[k]="%.6f"%ea.Scalars("val/"+k)[-1].value
         imgs=sorted(glob.glob(bd+"/test/*/*.png"))
         tail=lof=lob=float("nan")
         if len(imgs)>=20:

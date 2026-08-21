@@ -287,10 +287,8 @@
 # 五個指標五個不同第一名、Pareto 前緣四個 => 單一指標宣布勝負是錯的（研究總覽 §12.30）。
 # 重跑：第一版腳本用 `find -newer` 搬圖，把 sched30_b12 原本的 60k test 圖一起搬走並同名覆蓋
 # （毀掉 36 張）。已改成按 main.py 自己的子目錄名搬。這次會補齊 15k/30k/42k/60k 四組。
-bash scripts/task_earlyckpt.sh sched30_b12 12
 
 # ⚠ 疊加不可假設可加（本專案已量到兩對互相抵消）。開獎跑 `python tools/audit_all.py` 多指標比。
-bash scripts/task_combo.sh
 bash scripts/task_test.sh combo_b12
 
 # ★★ b7 的顆數天花板：scale_reg 證明尺度壓不下去（2.9 倍正則只換 4%），是重建損失頂回來
@@ -299,6 +297,13 @@ bash scripts/task_test.sh combo_b12
 # （_max_radii2D 只在 screen_prune_emergency_px>0 時被填，而它預設 -1 且從沒設過；
 #  runner.log 裡 "screen-prune" 出現 0 次）。原始碼註解自己就寫了要兩個一起設。
 # 它正是專門剪超大螢幕足跡粒子的機制，而疊影的成因量到就是粒子相對尺度過大 => 直接對症。
+# ★★★ 尾巴診斷已開獎：45,000 步把平均改善 39%，卻只把最差視角改善 4.5%（1729 在 30k 後完全不動）
+# => 尾巴不是被 densify/trim 弄壞的，是**從頭就沒成功過** => 事前判準指向換初始化。
+# SfM-init 零成本（`--model.initialize_from null`），修正後從未測過。
+# ⚠ 判讀看**最差 10%**（+1.55 dB 在那裡），不是平均；且必須看圖。
+bash scripts/task_sfminit.sh
+bash scripts/task_test.sh sfminit_b12
+
 # ⚠ 必須看圖 + 多指標（tools/audit_all.py），不可只看 PSNR。
 bash scripts/task_scrprune_b7.sh
 bash scripts/task_test.sh scrprune_b7 7
