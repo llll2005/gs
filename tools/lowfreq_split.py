@@ -1,6 +1,17 @@
 """低頻誤差住在水面還是建築？§12.13 的排名若是水面主導，那它排的不是結構品質。純 CPU。"""
-import glob, sys, numpy as np
+import glob
+import re, sys, numpy as np
 from PIL import Image, ImageFilter
+def _final_test_dir(run, blk):
+    """只取最高 step 的 test 目錄。2026-08-21 起 test/ 底下可能同時有多個 checkpoint 的圖
+    （earlyckpt 診斷留下 15k/30k/42k/60k 四組），用 `test/*/*.png` 會把早期的爛圖平均進去——
+    sched30_b12 的建築低頻就因此從 0.02570 被汙染成 0.03136。"""
+    ds = glob.glob("outputs/%s/blocks/block_%s/test/*/" % (run, blk))
+    if not ds:
+        return None
+    return max(ds, key=lambda d: int(re.search(r"step=(\d+)", d).group(1)) if re.search(r"step=(\d+)", d) else -1)
+
+
 def half(p):
     im = Image.open(p); w = im.width // 2
     return im.crop((0,0,w,im.height)), im.crop((w,0,im.width,im.height))
@@ -8,7 +19,8 @@ def lo(im, s=12): return np.asarray(im.filter(ImageFilter.GaussianBlur(s)), np.f
 print("%-22s %10s %10s %10s   %s" % ("run","水面低頻","建築低頻","全體","建築佔比"))
 for spec in sys.argv[1:]:
     run, _, b = spec.partition(":")
-    fs = sorted(glob.glob("outputs/%s/blocks/block_%s/test/*/*.png" % (run, b or "12")))
+    _d = _final_test_dir(run, b or "12")
+    fs = sorted(glob.glob(_d + "*.png")) if _d else []
     if not fs: print(spec, "無 test 圖"); continue
     rec = []
     for p in fs:

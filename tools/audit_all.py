@@ -1,7 +1,16 @@
 """修正後所有跑完的跑次，全指標一表。含尾巴（最差十分位）與結構（建築低頻）。純 CPU。"""
-import glob, os, re, sys, numpy as np
+import glob
+import re, os, re, sys, numpy as np
 from PIL import Image, ImageFilter
 FIX_STEPS={}
+def _final_test_dir(run, blk):
+    """只取最高 step 的 test 目錄（earlyckpt 診斷會在 test/ 留下多個 checkpoint 的圖）。"""
+    ds = glob.glob("outputs/%s/blocks/block_%s/test/*/" % (run, blk))
+    if not ds:
+        return None
+    return max(ds, key=lambda d: int(re.search(r"step=(\d+)", d).group(1)) if re.search(r"step=(\d+)", d) else -1)
+
+
 def half(p):
     im=Image.open(p); w=im.width//2
     return im.crop((0,0,w,im.height)), im.crop((w,0,im.width,im.height))
@@ -33,7 +42,7 @@ for rd in sorted(glob.glob("outputs/*")):
         tg=set(ea.Tags()['scalars']); d={}
         for k in ["psnr","ssim","lpips","texratio"]:
             if "val/"+k in tg: d[k]="%.6f"%ea.Scalars("val/"+k)[-1].value
-        imgs=sorted(glob.glob(bd+"/test/*/*.png"))
+        imgs=sorted((lambda _d: glob.glob(_d+"*.png") if _d else [])(_final_test_dir(run, blk)))
         tail=lof=lob=float("nan")
         if len(imgs)>=20:
             ms=[];lfs=[]

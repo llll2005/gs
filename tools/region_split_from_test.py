@@ -12,11 +12,20 @@
 ⚠ 分組用 GT 梯度排序後取兩端，不需要標註；但 36 張測試視角裡「建築組」GT 梯度 0.0242~0.0302、
   「水面組」0.0025~0.0204 —— 是連續光譜的兩端，不是二分類，別當成乾淨的語意分割。
 """
-import glob, os, sys
+import glob
+import re, os, sys
 import numpy as np
 from PIL import Image
 
 RUNS = sys.argv[1:] or ["noprior_b12", "npd_b12", "dssim05_b12", "dssim08_b12"]
+
+def _final_test_dir(run, blk):
+    """只取最高 step 的 test 目錄（earlyckpt 診斷會在 test/ 留下多個 checkpoint 的圖）。"""
+    ds = glob.glob("outputs/%s/blocks/block_%s/test/*/" % (run, blk))
+    if not ds:
+        return None
+    return max(ds, key=lambda d: int(re.search(r"step=(\d+)", d).group(1)) if re.search(r"step=(\d+)", d) else -1)
+
 
 def halves(p):
     a = np.asarray(Image.open(p).convert("RGB"), np.float32) / 255.
@@ -31,8 +40,8 @@ def psnr(a, b):
     return 10 * np.log10(1.0 / max(m, 1e-12))
 
 # 先確定哪一半是 GT：兩個 run 的同一張圖，GT 那半應該完全相同
-d0 = sorted(glob.glob(f"outputs/{RUNS[0]}/blocks/block_12/test/*/*.png"))
-d1 = sorted(glob.glob(f"outputs/{RUNS[1]}/blocks/block_12/test/*/*.png"))
+d0 = sorted(glob.glob(_final_test_dir(RUNS[0], "12")+"*.png"))
+d1 = sorted(glob.glob(_final_test_dir(RUNS[1], "12")+"*.png"))
 L0, R0 = halves(d0[0]); L1, R1 = halves(d1[0])
 gt_is_left = np.abs(L0 - L1).mean() < np.abs(R0 - R1).mean()
 print(f"[版面] GT 在{'左' if gt_is_left else '右'}半  "
@@ -53,7 +62,7 @@ print(f"[分組] 各 {K} 張   水面 GT梯度 {grad(gts[rank[0]]):.4f}~{grad(gt
 print(f"{'run':<15}{'全體PSNR':>10}{'水面PSNR':>10}{'建築PSNR':>10}{'建築紋理比':>12}{'水面紋理比':>12}")
 res = {}
 for run in RUNS:
-    fs = sorted(glob.glob(f"outputs/{run}/blocks/block_12/test/*/*.png"))
+    fs = sorted((lambda _d: glob.glob(_d+"*.png") if _d else [])(_final_test_dir(run, "12")))
     by = {os.path.basename(f): f for f in fs}
     row = {}
     for gname, sel in list(groups.items()) + [("全體", rank)]:
