@@ -1,4 +1,4 @@
-# _ctx —— 給 Claude 的精簡提要
+# _ctx —— 給 Claude 的精簡提要（2026-08-21）
 
 正文是 `研究總覽.md`。這份只放「開場就該知道、且查一次要花很多 token」的東西。
 **有衝突以 `研究總覽.md` 為準。** 更新本檔時只增刪要點，不要寫敘事。
@@ -11,29 +11,56 @@
 ## 現在的數字
 
 ```
-單塊最佳   oreg_0p002_b12       23.848 / 0.661 / 0.536   900k   cap1M reg0.002 interval150 60k
-次佳       b12_cap2m_reg000     23.39                    1.80M  cap2M reg0
-官方對照   official_ft_blk5     23.342 / 0.619 / 0.665   1.18M  官方流程於當前資料(4×4 blk5)
-論文錨點   CityGaussianV2 全域  27.23（8×A100，只有 PSNR）
+現行最佳  sched30_b12   26.377 / 0.7711 / 0.3542   2.34M   cap2.6M densify_until30k reg0.002
+                                                            lambda_normal 0 depth_loss 0
+同配方    sched30_b7    24.993 / 0.8009 / 0.2554   2.34M   （跨塊不可比：b12 半面水）
+論文錨點  CityGaussianV2 全域 27.23（8×A100，只有 PSNR）
 ```
+⚠ 我方全是 **val ⊂ train**，27.23 是留出測試集 ⇒ **方向對我方有利，不可直接比。**
+現成腳本：`scripts/task_sched30.sh`（b12）／`task_sched30_b7.sh`（b7）。
 
-## 五個最常誤用的地方
+## 噪音底（效應量一律除以它報倍數）
 
-1. **整體 PSNR 在 b12 沒有鑑別力**（一半是平坦水面，均勻色塊也 32-40 dB）。
-   唯一驗證過的尺是**建築區紋理比**（`tools/rescore_by_content.py`），現行 kernel 0.315~0.393。
-2. **⛔ P7 汙染**：2026-08-05~06 的 7 個跑次全中（v1 的 22.070、77.6k 的紋理比 0.170 都不可引用），
-   更早的 60 個全乾淨。判準 `d_reg > 1`。
-3. **離表面距離同時在量 SfM 密度** ⇒ 只能同塊比較，且**不可用它論證 SfM-init 較好**（循環）。
-4. **覆蓋倍數／overdraw 只在同類間可比**（init opacity 0.99 vs 訓練後 0.03~0.11，指標不看 opacity）。
-5. **驗「有沒有異常值」取 max 與計數，不要取樣。**
+```
+PSNR 0.0325   SSIM 0.00091   LPIPS 0.00200   紋理比 0.00314   低頻誤差 0.00028
+```
+⚠ n=2 單對，是差值的一次抽樣不是 σ。
 
-## 五個踩過的程式陷阱
+## ★ 真正的瓶頸：尾巴（一切決策先看這個）
 
-1. `gaussian_splatting.py:180-215` **ckpt 路徑會連模型與 renderer 一起換掉**；PLY 路徑不會。
-2. `add_new_gs = max(0, min(cap,1.05N) − N)` ⇒ **cap 低於現有顆數 = densify 永久關閉**。
-3. `_initialize_from_trained_model` **不做 block 過濾**；官方不裁切 coarse，我們也不該裁。
-4. 重編 rasterizer 要 `rm -rf build` + 強制 `CUDA_HOME` + `--force-reinstall`，然後**確認 .so mtime 變了**。
-5. `main.py validate` 會**覆寫 results.txt**；要用 `main.py test --save_val`。
+```
+最差視角跨五種配方全距 0.08 dB（平均 0.33 / 中位 0.76 / 最好 0.88）
+最差視角從 step 15,000 起 45,000 步只改善 4.5%（同期平均改善 39%）
+修好最差 25% = +1.55 dB  <- 現行最強機制(sched30 +0.327)的 4.7 倍，且超過到 27.23 的缺口
+```
+⇒ **尾巴是硬失效，不是調參問題；診斷指向「從頭就沒成功過」⇒ 換起點而非調旋鈕。**
+⇒ **所有實驗除平均外一律報最差 10%**（`tools/tail_analysis.py`）。
+
+## 判準（2026-08-21 改判，六個最常誤用的地方）
+
+1. **一律多指標**（`tools/audit_all.py`）：曾出現五個指標五個不同第一名。
+2. **`geometry_health.py` 的 floater% 與結構誤差反向**（r=−0.739）⇒ 不可當結構判準。
+3. **紋理比與結構誤差正相關**（r=+0.659）、可用拉高局部對比灌水 ⇒ 不可當優化目標。
+4. **結構機制用 `tools/lowfreq_error.py` 判，不要用 PSNR**（小效應時解析度差約 3 倍）。
+   跨配方大差異時 PSNR 才是有效代理（r=−0.885）。
+5. **相關不是因果，不可預測單一介入**（我因此翻車兩次）。
+6. **整體 PSNR 在 b12 被水面稀釋**（一半平坦水面，均勻色塊也 32-40 dB）。
+   `tools/lowfreq_split.py` / `region_split_from_test.py` 可分水面／建築（純 CPU，訓練中可用）。
+
+**⚠ 每個配方都要看圖。** 使用者目視發現的疊影，PSNR/LPIPS/建築低頻/floater% **全都沒抓到**。
+
+## 六個踩過的程式陷阱
+
+1. **`screen_size_prune_px` 從來沒執行過**：`_max_radii2D` 只在 `screen_prune_emergency_px>0`
+   時被填，而它預設 −1 且從沒設過 ⇒ **要兩個一起設**（prune=300, emergency=600）。
+2. **`results.txt` 會被 `main.py test` 從 `val/*` 覆寫成 `test/*`** ⇒ 一律從 tensorboard 讀。
+3. **`test/` 可能有多組 ckpt 的圖**（earlyckpt 留四組）⇒ 用 `_final_test_dir()`，
+   別用 `glob(test/*/*.png)`（曾汙染建築低頻 +22%）。
+4. **批次刪／搬既有檔案**：條件要用「這次產生的子目錄名」正向指定；
+   `rm -rf $VAR` 與 `find -newer` 曾兩次毀資料 ⇒ sed 複製腳本後跑 `tools/lint_task_scripts.py`。
+5. **`results.txt` 不寫步數** ⇒ 半途 OOM 的跑次留下看似正常的分數
+   ⇒ **比較前先跑 `tools/run_status.py`**。
+6. 重編 rasterizer 要 `rm -rf build` + 強制 `CUDA_HOME` + `--force-reinstall`，**確認 .so mtime 變了**。
 
 ## 破平衡公式（已 4/5 命中）
 
@@ -41,35 +68,41 @@
 break-even interval = contribution_prune_interval × ln(1.05) / (−ln(1−prune_ratio)) = 231.5
 interval > 231.5 → 顆數衰減；< → 成長
 ```
+另：**顆數交付 = 0.9 × cap**（trim 每 500 步剪 10%、densify 每 150 步加 5%，
+兩者同時在 densify_until 停 ⇒ 凍結在最後一次 trim 的輸出）。
 
 ## 常用指令
 
 ```bash
-# 單塊訓練
-python -u main.py fit --config configs/<cfg>.yaml \
-  --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply \
-  --data.parser.block_id 12 -n <name>
+# 單塊訓練（現行最佳）
+bash scripts/task_sched30.sh
+
+# 多指標總表（含最差10%、建築低頻；從 tensorboard 讀，不看 results.txt）
+python tools/audit_all.py
+
+# 尾巴分析 / 結構誤差 / 分水面建築
+python tools/tail_analysis.py <run>[:blk] ...
+python tools/lowfreq_error.py <run>[:blk] ...
+python tools/lowfreq_split.py <run> ...
+
+# 比較分數前必跑（過濾半途死掉的跑次）
+python tools/run_status.py --runs <name> ...
 
 # 進度／死因
 tail logs/quad_progress.log
-tr '\r' '\n' < logs/<name>.log | grep -oE "val/psnr=[0-9.]+" | tail
-
-# P7 汙染檢查（新跑次都該做）
-tr '\r' '\n' < logs/<name>.log | grep -oE "d_reg=[0-9.e+-]+" | sed 's/.*=//' \
-  | awk '{if($1+0>mx)mx=$1+0; if($1+0>1)c++} END{print "max="mx, "spikes="c}'
-
-# 建築區紋理比（唯一有鑑別力的尺）
-python tools/rescore_by_content.py --runs <name> [--at_step N]
 ```
 
-## 隊列（2026-08-06 夜）
+## 隊列（2026-08-21）
 
 ```
-official_depthinit_blk5   跑中   官方 config 只換 depth-init，對照 23.342
-v1clean_24k_b12           排隊   P7 傷害 + 訓練到 7.7 萬顆
+sfminit_b12   跑中   換 SfM-init 打尾巴（判準看最差 10%）
+scrprune_b7   排隊   打開從未執行過的 screen-size prune，針對疊影
+cap30_b7      排隊   b7 的 cap 從未測過
 ```
 
 ## 鐵律
 
-只用當前資料（SfM 2026-05-29 重生）／outputs 全是這台 6GB 跑的、不准質疑硬體／
-繁體中文＋ASCII 數學／指令用腳本或單行／大實驗前先 CPU 驗前提／拿檔案當基準前先查來源。
+只用當前資料（SfM 2026-05-29 重生）／**GT 修正 = 2026-08-12 10:08:37，之前開跑的一律作廢
+且 bug 對內容重的塊傷害 2.13 倍**／outputs 全是這台 6GB 跑的、不准質疑硬體／
+繁體中文＋ASCII 數學／指令用腳本或單行／大實驗前先 CPU 驗前提／拿檔案當基準前先查來源／
+排程只用 `scripts/runner.sh`＋`queue.txt`，不准自開 watcher。
