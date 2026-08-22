@@ -51,8 +51,11 @@ PSNR 0.0325   SSIM 0.00091   LPIPS 0.00200   紋理比 0.00314   低頻誤差 0.
 
 ## 六個踩過的程式陷阱
 
-1. **`screen_size_prune_px` 從來沒執行過**：`_max_radii2D` 只在 `screen_prune_emergency_px>0`
-   時被填，而它預設 −1 且從沒設過 ⇒ **要兩個一起設**（prune=300, emergency=600）。
+1. **⛔ 不要同時開 `screen_size_prune_px` 與 `screen_prune_emergency_px`**：兩者讀同一個
+   `_max_radii2D`，但 emergency 會把它從「光柵器實際半徑」覆寫成 `projected_radius()` 的
+   **解析上界**（含相機後方的點）⇒ 300px 門檻變成每次 densify 刪 25% 族群。
+   實測 `scrprune_b7` **PSNR 13.498**（對照 24.993）。單開 `screen_size_prune_px` 是安全的
+   （它一直在跑，只是光柵器半徑從沒超過 300px ⇒ 等於無作用）。
 2. **`results.txt` 會被 `main.py test` 從 `val/*` 覆寫成 `test/*`** ⇒ 一律從 tensorboard 讀。
 3. **`test/` 可能有多組 ckpt 的圖**（earlyckpt 留四組）⇒ 用 `_final_test_dir()`，
    別用 `glob(test/*/*.png)`（曾汙染建築低頻 +22%）。
