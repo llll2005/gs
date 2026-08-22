@@ -117,13 +117,42 @@ def get_intrinsics(cam, depth_h, depth_w):
     return fx, fy, cx, cy
 
 
+_POSITIONAL_DEPTH = None
+
+
+def _build_positional_depth_map():
+    """COLMAP 名 -> 深度檔名，用**位置**對應，不是補零。
+
+    ⛔ 2026-08-22 修正的 bug（與 dataparser 2026-08-12 `faeb4d4` 完全相同的 off-by-one，
+    但當時只修了 dataparser，漏了這裡，而 PLY 從 2026-05-29 起就沒重生過）：
+    舊版用 `base.zfill(6)`，把相機 `1729.png` 對到 `001729.png.npy`。
+    但 COLMAP 相機名是 **0 起算**（0000.png ~ 5620.png）而磁碟檔案是 **1 起算**
+    （000001.png ~ 005621.png）=> 正確的是 `001730.png.npy`。
+    ⇒ 舊 PLY 的**每一顆點都是用鄰幀的深度圖擺位置的**。四位數檔名時代同名可對上所以是好的，
+    資料重新下載成六位數後才壞。
+    """
+    global _POSITIONAL_DEPTH
+    if _POSITIONAL_DEPTH is not None:
+        return _POSITIONAL_DEPTH
+    files = sorted(f for f in os.listdir(args.depth_dir) if f.endswith(".npy"))
+    order = sorted(images, key=lambda k: images[k].name)
+    if len(files) != len(order):
+        raise SystemExit(
+            f"深度圖 {len(files)} 張 != COLMAP 相機 {len(order)} 台，無法用位置對應。"
+            " 位置對應是唯一正確的方式（見本函式 docstring），數量不符必須先修資料。")
+    _POSITIONAL_DEPTH = {images[k].name: files[i] for i, k in enumerate(order)}
+    return _POSITIONAL_DEPTH
+
+
 def npy_path_for(img_name):
-    """Return the .npy path, trying both unpadded and zero-padded names."""
+    """Return the .npy path for a COLMAP image name (positional mapping)."""
     p1 = os.path.join(args.depth_dir, f"{img_name}.npy")
-    if os.path.exists(p1):
+    if os.path.exists(p1):          # 同名直接對上（四位數時代）
         return p1
-    base, ext = img_name.rsplit('.', 1)
-    p2 = os.path.join(args.depth_dir, f"{base.zfill(6)}.{ext}.npy")
+    fn = _build_positional_depth_map().get(img_name)
+    if fn is None:
+        return None
+    p2 = os.path.join(args.depth_dir, fn)
     return p2 if os.path.exists(p2) else None
 
 

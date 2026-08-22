@@ -49,6 +49,15 @@ PSNR 0.0325   SSIM 0.00091   LPIPS 0.00200   紋理比 0.00314   低頻誤差 0.
 
 **⚠ 每個配方都要看圖。** 使用者目視發現的疊影，PSNR/LPIPS/建築低頻/floater% **全都沒抓到**。
 
+## ⛔⛔ depth-init PLY 汙染（2026-08-22 發現，未解決前不要下 init 相關結論）
+
+`utils/depth_init_blocks.py:126` 有和 dataparser **一模一樣的 zfill off-by-one**，
+而 2026-08-12 的修正只修了 dataparser。**`depth_init/*.ply`（2026-05-29）的每一顆點
+都是用鄰幀的深度圖擺位置的**，注入誤差中位 **35.6%**（偽深度自身只有 8.6%，**4.1 倍**）。
+⇒ 「20 倍厚殼」「起始 trim 砍 72%」「錯的前層鎖死」全是它的產物。
+✅ 程式已修，`depth_init_fix/` 重生中；`scripts/task_fixdepth.sh` 量它值多少 dB。
+✅ 臂與臂的比較仍成立（同一混淆在每一臂，且監督是對的）；❌ 絕對值要重測。
+
 ## 六個踩過的程式陷阱
 
 1. **⛔ 不要同時開 `screen_size_prune_px` 與 `screen_prune_emergency_px`**：兩者讀同一個

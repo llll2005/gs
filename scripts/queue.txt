@@ -1,16 +1,23 @@
-# ★★★ 起始 trim 鎖死了錯的前層（研究總覽 §11.2）—— 這是尾巴那 +1.55 dB 的第一個真正入口。
-# b12 實測：depth_init 的 1,211,537 顆裡**只有 157 顆真的在視錐外**，卻被 step 1 的起始 trim
-# 砍掉 873,504 顆（72.1%）=> 砍的是「看得見但被前層遮住」的點，含正確的表面。
-# 成因：depth_init 給每一顆都設 opacity 0.99，而殼比表面厚 20 倍 => 前層吸光 transmittance。
-#
-# 本臂攻根因：把 init 的 opacity 改成 0.5（只改 opacity，位置/尺度/法向/顏色不動）。
-# 五層深處的 transmittance 從 1.0e-10 變成 3.1e-2 => 後層拿得到梯度。
-# ⚠ 判讀看**最差 10%**（tools/tail_analysis.py）與**看圖**，不是只看平均。
-bash scripts/task_op05.sh
-bash scripts/task_test.sh op05_b12
+# ⚠ fixdepth 曾因守衛失敗被 runner 移除（它不管退出碼都移除任務行）=> 守衛已改成「等待」。
+# ★★★★★ depth-init 的 off-by-one（2026-08-22 發現）：`depth_init_blocks.py:126` 有和
+# dataparser 一模一樣的 zfill bug，而 08-12 的修正只修了 dataparser、漏了這裡，
+# PLY 從 2026-05-29 起沒重生過 => 每一顆點都用鄰幀的深度圖擺位置。
+# 實測汙染：相鄰深度圖相對差中位 **35.6%**，是偽深度自身誤差 8.6% 的 **4.1 倍**。
+# 本臂 = sched30 唯一換掉 init（用重生的 depth_init_fix）=> 量出這個 bug 值多少 dB。
+# ⚠ 腳本有守衛：PLY 沒重生完會直接中止，不會靜默用錯檔。
+bash scripts/task_fixdepth.sh
+bash scripts/task_test.sh fixdepth_b12
 
-# 歸因對照：只關掉 step 1 那一刀，opacity 維持 0.99、保留全部 1.21M 顆。
-# op05 有效而本臂中性 => 問題是**遮擋**（後層拿不到梯度），不是那一刀本身。
-# 預期偏中性，而那個中性本身就是資訊。
+# 歸因對照：只關掉 step 1 那一刀（opacity 仍 0.99、用**修好的** init）。
+# 若修好 init 之後 trim 就不再砍掉大量點，本臂會趨近 fixdepth => 證實 trim 只是症狀偵測器。
 bash scripts/task_notrim.sh
 bash scripts/task_test.sh notrim_b12
+
+# ★ 使用者要求：重跑一個 coarse（官方原版設定：sh2 / down_sample 2 / 30k / 不 trim / grad-densify）
+# ⚠ 全域、5,621 張，很久。舊 coarse 是舊 SfM 座標系，永久不可用（鐵律）。
+bash scripts/task_coarse.sh
+
+# ★ 使用者要求：coarse-init + 當前最佳機制。回答「我方機制疊在官方 coarse 流程上能不能贏」。
+# 先前的 coarse 對照全是 GT bug 期 + 舊 coarse，不可引用。
+bash scripts/task_coarse_ft.sh
+bash scripts/task_test.sh coarseft_b12

@@ -38,48 +38,46 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-rm -rf outputs/notrim_b12
-# ★★ 歸因對照：關掉起始 trim（2026-08-22；08-22 晚更新為使用**修正後**的 depth-init）
+rm -rf outputs/fixdepth_b12
+# ★★★★★ 修好 depth-init 的 off-by-one 之後重跑（2026-08-22）—— 目前最重要的一臂
 #
-# 【共同背景】起始 trim 在 step 1 鎖死了錯的前層（研究總覽 §11.2）
+# ⛔ 發現：`utils/depth_init_blocks.py:126` 有**和 dataparser 一模一樣的 zfill off-by-one**，
+#    而 2026-08-12 的修正（faeb4d4）**只修了 dataparser，漏了這裡**，PLY 從 2026-05-29
+#    起就沒重生過 => **每一顆點都是用鄰幀的深度圖擺位置的**。
+#      COLMAP 相機名 0 起算（0000.png ~ 5620.png），磁碟深度圖 1 起算（000001 ~ 005621）
+#      舊版 `base.zfill(6)`：相機 1729.png -> 001729.png.npy（錯，正確是 001730）
+#      而相機 0000.png -> 000000.png.npy 不存在 => **那台相機被整個跳過**
 #
-# depth_init 給**每一顆**都設 opacity 0.99，而那層殼比表面厚 20 倍。起始 trim 用
-# `sum T*alpha` 算貢獻度 => 前層吸收掉幾乎所有 transmittance => 後層歸零被砍。
-#   b12 實測：1,211,537 顆裡**只有 157 顆真的在視錐外**，卻砍掉 **873,504 顆（72.1%）**
-#   => 砍的是「看得見但被前層遮住」的點，其中包含正確的表面。
-#   => 錯的前層在**任何最佳化之前**就被鎖死。
+# 汙染量級（實測相鄰兩張深度圖的逐像素相對差）：
+#      中位 **35.6%**（範圍 3.2%~87.7%）   vs 偽深度自身的誤差 8.6%（§7.1）
+#    => 這個 bug 注入的誤差是偽深度本身噪音的 **4.1 倍**。
+#    => 「20 倍厚的殼」「起始 trim 砍掉 72% 看得見的點」「錯的前層被鎖死」
+#       全都是這個 bug 的直接產物（§11.2 要據此改寫）。
 #
-# 這解釋三件先前對不起來的事：尾巴為什麼「從頭就爛」（§12.36）、為什麼五種旋鈕全距只有
-# 0.08 dB（§2.3）、為什麼換 SfM-init 只動了 +0.15（它沒有殼，所以沒有前層問題，但太稀疏）。
+# 本臂 = `sched30`（現行最佳配方，26.377）唯一換掉 init PLY：`depth_init_fix/block_12.ply`
+# （`tools/` 無關，是 `utils/depth_init_blocks.py` 修好後重生的）。**唯一變數是 init 的正確性。**
 #
-# 判讀（對照 `sched30_b12`：平均 26.369 / 最差 17.43 / 建築低頻 0.02570；噪音底 PSNR 0.0325）：
-#   **最差 10% 明顯上升** -> 機制證實，這是 +1.55 dB 那條路的入口
-#   只有平均動、尾巴不動   -> 鎖死的不是尾巴的成因
-#   全面變差             -> 那層殼是必要的，trim 砍對了
-# ⚠ 判讀看**最差 10%**（`tools/tail_analysis.py`）與**看圖**，不是只看平均。
-#
-# 本臂 = `sched30` 但 `--model.renderer.init_args.diable_start_trimming true`
-# => 保留全部 1,211,537 顆（opacity 仍是 0.99）。唯一變數是「step 1 那一刀砍不砍」。
-#
-# 這是 `op05` 的**歸因對照**：
-#   op05 有效、本臂無效 -> 問題是**遮擋**（後層拿不到梯度），不是那一刀本身
-#   兩臂都有效          -> 問題是那一刀刪掉了可用的點
-#   本臂有效、op05 無效 -> 出乎預料，要重查
-# ⚠ 預期本臂偏中性：即使不砍，被遮住的點仍然拿不到梯度，只是改由 opacity_reg 慢慢殺。
-#   **那個「中性」本身就是資訊**（它會把矛頭指向遮擋而非刪除）。
+# 判讀（對照 `sched30_b12` 平均 26.369 / 最差 17.43 / 建築低頻 0.02570；噪音底 PSNR 0.0325）：
+#   全面上升 + **最差 10% 明顯上升** -> 這個 bug 就是尾巴的病灶，
+#                                       且所有 depth-init 跑次的絕對值都要重測
+#   只有平均動、尾巴不動              -> 尾巴另有成因，但絕對值仍要重測
+#   幾乎不動                          -> 起始 trim 把汙染吸收掉了（它砍的正是最錯的那些點）
+# ⚠ 必須看圖。⚠ 多指標（tools/audit_all.py），不可只看 PSNR。
 PLY=data/matrix_city/aerial/train/block_all/depth_init_fix/block_12.ply
+# 守衛：等 PLY 重生完（上限 4 小時）。**刻意用等待而不是失敗** —— runner 不管退出碼
+# 都會把任務行移除，失敗一次這一臂就從佇列消失了（2026-08-22 踩過）。
 for _ in $(seq 1 240); do [ -f "$PLY" ] && break; sleep 60; done
 [ -f "$PLY" ] || { echo "✘ 等了 4 小時 $PLY 仍不存在，中止"; exit 1; }
+echo "✔ 使用修正後的 init: $PLY"
 
 conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
   --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init_fix/block_12.ply \
   --data.parser.block_id 12 \
-  --model.renderer.init_args.diable_start_trimming true \
   --model.density.init_args.cap_max 2600000 \
   --model.density.init_args.densify_until_iter 30000 \
   --model.density.init_args.screen_size_prune_px 300 \
   --model.metric.init_args.opacity_reg 0.002 \
   --model.metric.init_args.lambda_normal 0.0 \
   --model.metric.init_args.depth_loss_weight.init 0.0 \
-  -n notrim_b12
+  -n fixdepth_b12
