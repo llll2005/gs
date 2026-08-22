@@ -95,12 +95,12 @@ python tools/run_status.py --runs <name> ...
 tail logs/quad_progress.log
 ```
 
-## 隊列（2026-08-21）
+## 隊列（2026-08-22）
 
 ```
-sfminit_b12   跑中   換 SfM-init 打尾巴（判準看最差 10%）
-scrprune_b7   排隊   打開從未執行過的 screen-size prune，針對疊影
-cap30_b7      排隊   b7 的 cap 從未測過
+cap30_b7      跑中   b7 的 cap 從未測過（b12 在 2.3M 飽和，但 b12 半面是水）
+（已完成）sfminit_b12  尾巴 +0.15（4.6x 底）= 第一個推出 0.08 帶的介入，但平均 −0.097
+（已完成）scrprune_b7  ⛔ PSNR 13.498 崩潰，是配置不相容不是機制無效（見程式陷阱 1）
 ```
 
 ## 鐵律
