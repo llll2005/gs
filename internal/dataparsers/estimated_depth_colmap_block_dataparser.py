@@ -52,13 +52,13 @@ class EstimatedDepthBlockColmapDataParser(ColmapBlockDataParser):
                     if getattr(image_set, "image_paths", None) is not None else image_name
                 depth_file_path = os.path.join(self.path, self.params.depth_dir, f"{actual}.npy")
                 if os.path.exists(depth_file_path) is False:
-                    base, ext = image_name.rsplit('.', 1)
-                    padded_path = os.path.join(self.path, self.params.depth_dir, f"{base.zfill(6)}.{ext}.npy")
-                    if os.path.exists(padded_path):
-                        depth_file_path = padded_path
-                    else:
-                        print("[WARNING] {} does not have a depth file".format(image_name))
-                        continue
+                    # ⛔ 這裡曾經有一個 zfill(6) fallback，會在位置解析失敗時**靜默**改用鄰幀的
+                    # 深度圖（同一個 off-by-one 在本專案出現過三處：dataparser 2026-08-12、
+                    # depth_init_blocks 2026-08-22、get_depth_scales 2026-08-23）。
+                    # 靜默退回是這個 bug 活了六週的原因 => 改成大聲失敗，不要猜。
+                    print("[WARNING] {} 找不到深度圖 {} —— 位置對應失敗，"
+                          "**不做補零猜測**（那會餵鄰幀的深度）".format(image_name, depth_file_path))
+                    continue
 
                 depth_scale = {
                     "scale": 1.,

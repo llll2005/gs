@@ -74,7 +74,10 @@ def main():
     seen = np.zeros(n, dtype=np.int32)
     for j, i in enumerate(probe):
         nm = names[i]
-        f = f"{a.data}/estimated_depths/{int(nm[:-4]):06d}.png.npy"
+        # ⛔ 2026-08-23 修正：舊版 `{int(nm[:-4]):06d}` 與 zfill 等價，是同一個 off-by-one
+        # （COLMAP 名 0 起算、深度檔 1 起算）=> 每張都讀到鄰幀的深度圖。
+        # ⚠ 這支產生過「62.8% 粒子與深度圖一致度在 10% 以內」那個結論，**該結論作廢**。
+        f = f"{a.data}/estimated_depths/{int(nm[:-4]) + 1:06d}.png.npy"
         if nm not in scales or not os.path.exists(f):
             continue
         s = scales[nm]

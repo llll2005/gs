@@ -36,6 +36,38 @@ points3d_ordered[pts_indices] = pts_xyzs
 points3d_error_ordered[pts_indices] = pts_errors
 
 
+_POSITIONAL_DEPTH = None
+
+
+def _npy_for(img_name, images, depth_dir):
+    """COLMAP 名 -> 深度 .npy，用**位置**對應，不是補零。
+
+    ⛔ 2026-08-23 修正（與 dataparser 2026-08-12 `faeb4d4`、`depth_init_blocks.py` 2026-08-22
+    完全相同的 off-by-one，這是第三處）：舊版 `base_name.zfill(6)` 把相機 `1729.png` 對到
+    `001729.png.npy`，但 COLMAP 相機名 **0 起算**（0000.png~5620.png）而深度檔 **1 起算**
+    （000001~005621）=> 正確是 `001730.png.npy`。
+    ⇒ 舊版**用鄰幀的深度圖去擬合每張影像的 scale/offset**，而這個 JSON 同時餵給
+      depth-init 與訓練時的深度監督。
+    """
+    global _POSITIONAL_DEPTH
+    p1 = os.path.join(depth_dir, f"{img_name}.npy")
+    if os.path.exists(p1):          # 同名直接對上（四位數檔名時代）
+        return p1
+    if _POSITIONAL_DEPTH is None:
+        files = sorted(f for f in os.listdir(depth_dir) if f.endswith(".npy"))
+        order = sorted(images, key=lambda k: images[k].name)
+        if len(files) != len(order):
+            raise SystemExit(
+                f"深度圖 {len(files)} 張 != COLMAP 相機 {len(order)} 台，無法用位置對應。"
+                " 位置對應是唯一正確的方式，數量不符必須先修資料。")
+        _POSITIONAL_DEPTH = {images[k].name: files[i] for i, k in enumerate(order)}
+    fn = _POSITIONAL_DEPTH.get(img_name)
+    if fn is None:
+        return None
+    p2 = os.path.join(depth_dir, fn)
+    return p2 if os.path.exists(p2) else None
+
+
 def get_scales(key, cameras, images, points3d_ordered, points3d_error_ordered, args):
     image_meta = images[key]
     cam_intrinsic = cameras[image_meta.camera_id]
@@ -69,11 +101,9 @@ def get_scales(key, cameras, images, points3d_ordered, points3d_error_ordered, a
     invcolmapdepth = 1. / pts[..., 2]
     # invmonodepthmap = np.load(os.path.join(args.depth_dir, "{}.npy".format(image_meta.name)))  # already normalized
     # invmonodepthmap = np.load(os.path.join(args.depth_dir, "{}.npy".format(image_meta.name)))
-    base_name, ext = image_meta.name.rsplit('.', 1)
-    padded_name = f"{base_name.zfill(6)}.{ext}"
-    npy_path = os.path.join(args.depth_dir, f"{padded_name}.npy")
-    if not os.path.exists(npy_path):
-        print(f"Warning: Missing depth map for {padded_name}, skipping.")
+    npy_path = _npy_for(image_meta.name, images, args.depth_dir)
+    if npy_path is None:
+        print(f"Warning: Missing depth map for {image_meta.name}, skipping.")
         return None # 找不到就回傳 None
     invmonodepthmap = np.load(npy_path)
     if invmonodepthmap is None:
