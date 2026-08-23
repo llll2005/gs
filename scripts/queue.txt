@@ -5,19 +5,29 @@
 # 實測汙染：相鄰深度圖相對差中位 **35.6%**，是偽深度自身誤差 8.6% 的 **4.1 倍**。
 # 本臂 = sched30 唯一換掉 init（用重生的 depth_init_fix）=> 量出這個 bug 值多少 dB。
 # ⚠ 腳本有守衛：PLY 沒重生完會直接中止，不會靜默用錯檔。
-bash scripts/task_fixdepth.sh
-bash scripts/task_test.sh fixdepth_b12
 
 # 歸因對照：只關掉 step 1 那一刀（opacity 仍 0.99、用**修好的** init）。
 # 若修好 init 之後 trim 就不再砍掉大量點，本臂會趨近 fixdepth => 證實 trim 只是症狀偵測器。
-bash scripts/task_notrim.sh
-bash scripts/task_test.sh notrim_b12
 
 # ★ 使用者要求：重跑一個 coarse（官方原版設定：sh2 / down_sample 2 / 30k / 不 trim / grad-densify）
 # ⚠ 全域、5,621 張，很久。舊 coarse 是舊 SfM 座標系，永久不可用（鐵律）。
-bash scripts/task_coarse.sh
 
 # ★ 使用者要求：coarse-init + 當前最佳機制。回答「我方機制疊在官方 coarse 流程上能不能贏」。
 # 先前的 coarse 對照全是 GT bug 期 + 舊 coarse，不可引用。
-bash scripts/task_coarse_ft.sh
 bash scripts/task_test.sh coarseft_b12
+
+# ★ 半透明殼重排（原 op05 被我以錯誤理由停掉）：殼是**偽深度的固有性質**、不是 off-by-one
+# 造成的（重生後實測殼只從 20.0x 變 19.5x），所以 op05 治的是真問題。
+# 這次用**修正後**的 init 重跑：opacity 0.99 -> 0.5，讓後層拿得到 transmittance 與梯度。
+# ★★★★ RTG-SLAM B4 移植：錯誤觸發的 opacity 解鎖（使用者提問帶出來的）
+# 病灶 §11.7：壞視角 opacity>0.9 佔 18~23%、好視角只有 8~9% => 早熟的不透明幾何擋住梯度。
+# RTG 的解法（B4 stable->unstable reversion）我們早就移植了，但預設關閉且在不用的 controller 裡。
+# 本臂把它的想法搬到 MCMC：每個 densify 事件，在 opacity>0.5 的候選裡取誤差最高的 10%
+# 壓回 0.05 並重置 Adam 狀態。⚠ 判準看**最差 10%** 與看圖。
+bash scripts/task_errunlock.sh
+bash scripts/task_test.sh errunlock_b12
+
+# ⚠ 需要先產生 block_12_op05 的修正版 PLY（見下一行的 [cpu] 任務）。
+[cpu] PYTHONPATH=. conda run -n gspl python tools/reopacity_ply.py data/matrix_city/aerial/train/block_all/depth_init_fix/block_12.ply data/matrix_city/aerial/train/block_all/depth_init_fix/block_12_op05.ply --opacity 0.5
+bash scripts/task_op05.sh
+bash scripts/task_test.sh op05_b12

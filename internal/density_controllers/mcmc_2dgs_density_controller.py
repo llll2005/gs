@@ -96,6 +96,34 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """scene-units size of one pixel at typical view distance (b12-calibrated);
     scale this with your scene if reusing elsewhere"""
 
+    # ── 錯誤觸發的 opacity 解鎖（RTG-SLAM B4 的想法移植到 MCMC）─────────────────
+    err_unlock_frac: float = 0.0
+    """>0 時，每個 densify 事件把「持續高誤差 + 高不透明」的粒子 opacity 壓回
+    `err_unlock_to`，讓被它們擋住的幾何重新收到梯度。0.0 = 關閉（現行行為）。
+
+    為什麼需要（研究總覽 §11.7）：b12 最差的視角（1729/2999/3007）與最好的（2652/2643/1292）
+    內容難度相同、粒子更多、沒有錯位（平移掃描峰值在 (0,0)），唯一分得開的是 **opacity 分布**：
+    壞視角 opacity>0.9 的粒子佔 18~23%，好視角只有 8~9%。
+    ⇒ 假說：早期把某層推到高 opacity ⇒ 後面的正確幾何永遠收不到梯度 ⇒ 自我強化的局部極小。
+    這解釋了為什麼它從 step 15,000 起 45,000 步只改善 4.5%、跨六種配方 Spearman ρ=0.990。
+
+    為什麼是這個做法而不是 vanilla 的 `opacity_reset_interval`：
+      * vanilla 3DGS 每 3,000 步把**全部**opacity 壓低 —— 會連 90% 正常的區域一起打斷；
+      * RTG-SLAM 的 B4（見 `rtg_stable_density_controller.py` 的 B4 段）是**錯誤觸發**的：
+        只把「持續落在高誤差像素上」的粒子退回可塑狀態。本項是它在 MCMC 上的對應物。
+      * 零件本來就有：`_err_score` 每一步都在累積逐顆誤差（`_accumulate_error_score`），
+        目前只餵給從沒開過的 `err_guided_densify`。
+
+    ⚠ 壓到 `err_unlock_to` 而不是壓到 0：低於 `min_opacity` 會被 MCMC 判定為 dead 並被
+      relocate 搬走，那會連位置一起換掉（多一個變數）。留在原地變透明，讓最佳化自己決定。
+    """
+
+    err_unlock_to: float = 0.05
+    """`err_unlock_frac` 觸發時把 opacity 壓到多少（要 > min_opacity，否則會被 relocate 搬走）。"""
+
+    err_unlock_min_opacity: float = 0.5
+    """只解鎖 opacity 高於此值的粒子 —— 低 opacity 的本來就沒擋住任何東西。"""
+
     err_guided_densify: float = 0.0
     """>0 steers add_new_gs toward unexplained error; 0.0 = DIAGNOSTIC ONLY (measure, change
     nothing). MCMC picks split sites with `probs = get_opacities()` -- there is no error term at
@@ -386,6 +414,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 print(f"[dead-mask] step {global_step}: total {float(dead_mask.float().mean()):.1%} "
                       f"= opacity {op_frac:.1%} (stock, pre-gate) + our channels")
             self._report_densify_blindness(gaussian_model, global_step)
+            self._err_triggered_unlock(gaussian_model, optimizers, global_step)
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
             self.add_new_gs(gaussian_model, optimizers)
             self._err_score = None                 # window restarts with the next interval
@@ -407,6 +436,41 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     _err_score: torch.Tensor = None
 
     @torch.no_grad()
+    @torch.no_grad()
+    def _err_triggered_unlock(self, gaussian_model, optimizers, global_step: int) -> None:
+        """把「持續高誤差 + 高不透明」的粒子壓回半透明，讓它們身後的幾何重新收到梯度。
+
+        RTG-SLAM B4（stable->unstable reversion）的想法在 MCMC 上的對應物。見設定項
+        `err_unlock_frac` 的 docstring 與 研究總覽 §11.7。
+        """
+        f = self.config.err_unlock_frac
+        e = self._err_score
+        if f <= 0 or e is None or e.numel() == 0:
+            return
+        o = gaussian_model.get_opacities().squeeze(-1)
+        if o.shape[0] != e.shape[0]:
+            return                                   # 拓樸剛變過，這個窗口不可用
+        cand = o > self.config.err_unlock_min_opacity
+        n_cand = int(cand.sum())
+        if n_cand == 0:
+            return
+        k = max(1, int(round(f * n_cand)))
+        # 只在候選之中挑誤差最高的 k 顆（不是全族群 —— 低 opacity 的沒擋住任何東西）
+        thr = torch.topk(e[cand], k).values[-1]
+        hit = cand & (e >= thr)
+        n_hit = int(hit.sum())
+        if n_hit == 0:
+            return
+        target = torch.logit(torch.tensor(
+            self.config.err_unlock_to, device=o.device, dtype=torch.float32))
+        raw = gaussian_model.get_property("opacities")
+        raw[hit] = target.to(raw.dtype)
+        # ⚠ 只改值不重置 Adam 狀態，動量會在幾步內把 opacity 推回去（機制會靜默失效）。
+        # MCMC 自己的 relocation 也是這樣處理的（mcmc_density_controller.py:298）。
+        self.replace_tensors_to_optimizers(gaussian_model, optimizers=optimizers, inds=hit)
+        print(f"[err-unlock] step {global_step}: {n_hit} 顆高誤差高不透明粒子壓回 "
+              f"opacity {self.config.err_unlock_to} (候選 {n_cand}, 取前 {f:.0%})")
+
     def _accumulate_error_score(self, outputs, batch, gaussian_model) -> None:
         """Per-primitive tally of unexplained error at its screen position; see the
         err_guided_densify docstring. Cheap: one avg_pool over the frame plus an O(N) gather."""

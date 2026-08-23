@@ -38,42 +38,47 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
-rm -rf outputs/op05_b12
-# ★★★ 半透明初始化：opacity 0.99 -> 0.5（2026-08-22；08-23 改用**修正後**的 depth-init）
+rm -rf outputs/errunlock_b12
+# ★★★★ 錯誤觸發的 opacity 解鎖（RTG-SLAM B4 移植到 MCMC）（2026-08-24）
 #
-# ⚠ 我 08-22 曾以「這在治 off-by-one 的症狀」為由停掉本臂 —— **那個理由是錯的**：
-#   重生 PLY 後實測，殼只從 20.0x 變 19.5x（薄 2.6%）=> **殼是單目偽深度的固有性質**，
-#   不是 off-by-one 造成的。本臂治的是真問題。
+# 使用者問：「這是不是就跟 RTG-SLAM 的凍結機制一樣？RTG 有相應的算法解決嗎？」
+# 查證：**有，而且我們早就移植了，只是從沒開過、而且在一個現在不用的 controller 裡。**
+#   `rtg_stable_density_controller.py` 的 **B4 stable->unstable reversion**：
+#   把 stable 粒子投影到當前相機，若其像素誤差連續 N 個 densify 週期超過門檻，就退回 unstable。
+#   `stable_revert_enabled` 預設 False，configs/ 與 scripts/ 全庫沒有任何地方開過它。
+#   ⚠ 該檔的「RTG-SLAM Sec 3.2」章節標註是先前的人寫的，**論文不在 參考論文/，未經核對**。
 #
-# 【共同背景】起始 trim 在 step 1 鎖死了錯的前層（研究總覽 §11.2）
+# 病灶（研究總覽 §11.7）：b12 最差視角（1729/2999/3007）與最好的（2652/2643/1292）
+#   內容難度相同、粒子更多（489k vs 322k）、沒有錯位（平移掃描峰值在 (0,0)），
+#   唯一分得開的是 **opacity 分布**：壞視角 opacity>0.9 佔 18~23%，好視角只有 8~9%。
+#   ⇒ 早期把某層推到高 opacity ⇒ 後面的正確幾何永遠收不到梯度 ⇒ 自我強化的局部極小。
 #
-# depth_init 給**每一顆**都設 opacity 0.99，而那層殼比表面厚 20 倍。起始 trim 用
-# `sum T*alpha` 算貢獻度 => 前層吸收掉幾乎所有 transmittance => 後層歸零被砍。
-#   b12 實測：1,211,537 顆裡**只有 157 顆真的在視錐外**，卻砍掉 **873,504 顆（72.1%）**
-#   => 砍的是「看得見但被前層遮住」的點，其中包含正確的表面。
-#   => 錯的前層在**任何最佳化之前**就被鎖死。
+# 為什麼不用 vanilla 的 `opacity_reset_interval`（3,000 步全體壓低）：
+#   那會連 90% 正常的區域一起打斷。B4 是**錯誤觸發**的，只動持續做錯的那些。
+#   而 MCMC 把 opacity reset 整個拿掉了（我們的 controller 裡 `opacity_reset` 出現 0 次）。
 #
-# 這解釋三件先前對不起來的事：尾巴為什麼「從頭就爛」（§12.36）、為什麼五種旋鈕全距只有
-# 0.08 dB（§2.3）、為什麼換 SfM-init 只動了 +0.15（它沒有殼，所以沒有前層問題，但太稀疏）。
+# 本臂 = `sched30` + `err_unlock_frac 0.10`（每個 densify 事件，在 opacity>0.5 的候選裡
+#        取誤差最高的 10%，把 opacity 壓回 0.05 並**重置其 Adam 狀態**）。
+#   ⚠ 不重置 Adam 動量會在幾步內把 opacity 推回去 => 機制靜默失效。MCMC 自己的 relocation
+#     也是這樣處理的（`mcmc_density_controller.py:298`）。
+#   ⚠ 壓到 0.05 而非 0：低於 `min_opacity`(0.005) 會被判 dead 並被 relocate 搬走，
+#     那會連位置一起換掉（多一個變數）。留在原地變透明，讓最佳化自己決定。
 #
-# 判讀（對照 `sched30_b12`：平均 26.369 / 最差 17.43 / 建築低頻 0.02570；噪音底 PSNR 0.0325）：
-#   **最差 10% 明顯上升** -> 機制證實，這是 +1.55 dB 那條路的入口
-#   只有平均動、尾巴不動   -> 鎖死的不是尾巴的成因
-#   全面變差             -> 那層殼是必要的，trim 砍對了
-# ⚠ 判讀看**最差 10%**（`tools/tail_analysis.py`）與**看圖**，不是只看平均。
-#
-# 本臂 = `sched30` 但 init PLY 換成 `block_12_op05.ply`（`tools/reopacity_ply.py` 產生，
-# **只改 opacity，位置/尺度/法向/顏色完全不動**）。單層後殘餘 transmittance 0.01 -> 0.50，
-# 五層後 1.0e-10 -> 3.1e-2 => 後層拿得到 transmittance 與梯度，最佳化才有機會自己選出正確那層。
-# 唯一變數是 init 的 opacity。
+# 判讀（對照 `sched30_b12` 平均 26.369 / **最差 17.43** / 建築低頻 0.02570；噪音底 0.0325）：
+#   **最差 10% 明顯上升** -> 病灶確認，這是尾巴那 +1.55 dB 的第一個真入口
+#   平均升但尾巴不動      -> 解鎖有用但不是打在尾巴上
+#   全面下降             -> 那些高 opacity 是必要的，假說錯
+# ⚠ 判準看**最差 10%**（tools/tail_analysis.py）與**看圖**，不是只看平均。
+# ⚠ 這是我今天第五個假說（前四個都被自己的資料推翻），先驗機率不高，但零件現成、代價一臂。
 conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
-  --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init_fix/block_12_op05.ply \
+  --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply \
   --data.parser.block_id 12 \
   --model.density.init_args.cap_max 2600000 \
+  --model.density.init_args.err_unlock_frac 0.10 \
   --model.density.init_args.densify_until_iter 30000 \
   --model.density.init_args.screen_size_prune_px 300 \
   --model.metric.init_args.opacity_reg 0.002 \
   --model.metric.init_args.lambda_normal 0.0 \
   --model.metric.init_args.depth_loss_weight.init 0.0 \
-  -n op05_b12
+  -n errunlock_b12
