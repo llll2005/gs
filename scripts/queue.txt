@@ -14,7 +14,6 @@
 
 # ★ 使用者要求：coarse-init + 當前最佳機制。回答「我方機制疊在官方 coarse 流程上能不能贏」。
 # 先前的 coarse 對照全是 GT bug 期 + 舊 coarse，不可引用。
-bash scripts/task_test.sh coarseft_b12
 
 # ★ 半透明殼重排（原 op05 被我以錯誤理由停掉）：殼是**偽深度的固有性質**、不是 off-by-one
 # 造成的（重生後實測殼只從 20.0x 變 19.5x），所以 op05 治的是真問題。
@@ -26,6 +25,19 @@ bash scripts/task_test.sh coarseft_b12
 # 壓回 0.05 並重置 Adam 狀態。⚠ 判準看**最差 10%** 與看圖。
 bash scripts/task_errunlock.sh
 bash scripts/task_test.sh errunlock_b12
+
+# ★★★ depth loss 用**修正後的 scales** 重測（幾乎零成本，只是恢復 config 預設 0.5）
+# §12.6 判它「建築區一致淨負」而關掉，但那是用汙染的 scales 量的（08-23 才修，scale 中位變 11%），
+# 且**只看了平均與建築區、沒看尾巴**。而 RTG 正是靠深度誤差偵測幾何錯誤（§11.9），
+# 我方的失效模式就是幾何錯誤（壞視角結構相關只有 0.364）。判準以**最差 10%** 為主。
+bash scripts/task_depthre.sh
+bash scripts/task_test.sh depthre_b12
+
+# ★★★★ RTG-SLAM 式的透明修正層：relocation 目的地若父代「高誤差+高不透明」，
+# 新粒子 opacity 直接設 0.1 而不走 Eq.9 分裂（RTG 原文：加透明的修顏色，不解鎖已承諾的）。
+# ⚠ 與 errunlock 是互斥的兩個假說，刻意分開跑。
+bash scripts/task_tcorr.sh
+bash scripts/task_test.sh tcorr_b12
 
 # ⚠ 需要先產生 block_12_op05 的修正版 PLY（見下一行的 [cpu] 任務）。
 [cpu] PYTHONPATH=. conda run -n gspl python tools/reopacity_ply.py data/matrix_city/aerial/train/block_all/depth_init_fix/block_12.ply data/matrix_city/aerial/train/block_all/depth_init_fix/block_12_op05.ply --opacity 0.5

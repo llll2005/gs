@@ -96,6 +96,36 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """scene-units size of one pixel at typical view distance (b12-calibrated);
     scale this with your scene if reusing elsewhere"""
 
+    # ── RTG-SLAM 式的透明修正層（§11.9）────────────────────────────────────────
+    transparent_corrector: float = 0.0
+    """>0 時：relocation 的目的地若其父代是「高誤差 + 高不透明」，就把新粒子的 opacity
+    直接設成本值（例 0.1），而**不是**用 MCMC Eq.9 的分裂公式。0.0 = 關閉（現行行為）。
+
+    來源（研究總覽 §11.9，已逐句核對 `參考論文/3641519.3657455.pdf` §3.1-3.2）：
+    RTG-SLAM 對「已承諾的不透明高斯做錯了」的處理**不是解鎖它**（RTG 的 opacity 是二元的
+    0.99/0.1 且 `lr_α = 0`，根本沒有梯度），而是
+      "we add a transparent (α = 0.1) Gaussian to correct color errors together with the
+       stable Gaussian"
+    理由（原文）："such Gaussians with low opacity do not cause a significant attenuation of
+    light energy, and the color impact to other views is little... during depth rendering,
+    they are automatically filtered out by δ_α"。
+
+    為什麼對我方有意義：§11.7 量到**好視角是靠大量半透明粒子做出來的**
+    （opacity<0.1 佔 47~49%），壞視角反而高不透明多（>0.9 佔 18~23%）。
+    RTG 的設計正好解釋了「半透明多」為什麼是好事：修顏色而不擋光、不干擾幾何。
+
+    ⚠ 這**破壞 MCMC Eq.9 的 alpha 守恆**（那正是重點：RTG 不守恆，它是「加修正」不是「分裂」）。
+    ⚠ 與 `err_unlock_frac` 是**互斥的兩個假說**：那個壓低已存在的粒子（我自己發明的），
+      這個新增低不透明的伴隨粒子（RTG 的做法）。**不要同時開**，否則分不出是誰的功勞。
+    ⚠ RTG 用 RGB-D 感測器的公制深度，我方是單目估計（8.6% 誤差）——機制可搬，精度不會跟著搬。
+    """
+
+    transparent_corrector_min_opacity: float = 0.5
+    """只有父代 opacity 高於此值才觸發（低不透明的父代本來就沒擋住任何東西）。"""
+
+    transparent_corrector_err_frac: float = 0.3
+    """在符合上一條的父代裡，只取 `_err_score` 最高的這個比例。"""
+
     # ── 錯誤觸發的 opacity 解鎖（RTG-SLAM B4 的想法移植到 MCMC）─────────────────
     err_unlock_frac: float = 0.0
     """>0 時，每個 densify 事件把「持續高誤差 + 高不透明」的粒子 opacity 壓回
@@ -417,6 +447,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             self._err_triggered_unlock(gaussian_model, optimizers, global_step)
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
             self.add_new_gs(gaussian_model, optimizers)
+            if self._tc_last is not None:
+                print(f"[transparent-corrector] step {global_step}: {self._tc_last[0]}/{self._tc_last[1]} "
+                      f"個高誤差高不透明父代的子代改為 opacity {self.config.transparent_corrector}")
+                self._tc_last = None
             self._err_score = None                 # window restarts with the next interval
 
     _max_radii2D: torch.Tensor = None
@@ -434,6 +468,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
 
     _err_score: torch.Tensor = None
+    _tc_last = None      # (n_hit, n_cand) of the last transparent-corrector event
 
     @torch.no_grad()
     @torch.no_grad()
@@ -748,6 +783,25 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             N=ratio[idxs, 0] + 1,
         )
         new_opacity = torch.clamp(new_opacity.unsqueeze(-1), max=1.0 - torch.finfo(torch.float32).eps, min=0.005)
+
+        # RTG-SLAM 式的透明修正層：父代是「高誤差 + 高不透明」時，新粒子不走 Eq.9 的分裂，
+        # 直接給一個固定的低 opacity（見 `transparent_corrector` 的 docstring / §11.9）。
+        tc = self.config.transparent_corrector
+        if tc > 0 and self._err_score is not None and self._err_score.shape[0] == gaussian_model.n_gaussians:
+            with torch.no_grad():
+                o_par = gaussian_model.get_opacities()[idxs, 0]
+                e_par = self._err_score[idxs]
+                cand = o_par > self.config.transparent_corrector_min_opacity
+                n_cand = int(cand.sum())
+                if n_cand > 0:
+                    k = max(1, int(round(self.config.transparent_corrector_err_frac * n_cand)))
+                    thr = torch.topk(e_par[cand], k).values[-1]
+                    hit = cand & (e_par >= thr)
+                    n_hit = int(hit.sum())
+                    if n_hit > 0:
+                        new_opacity[hit, 0] = tc
+                        self._tc_last = (n_hit, n_cand)
+
         new_opacity = gaussian_model.opacity_inverse_activation(new_opacity)
         new_scaling = gaussian_model.scale_inverse_activation(new_scaling)
 
