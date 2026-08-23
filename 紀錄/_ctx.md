@@ -11,7 +11,9 @@
 ## 現在的數字
 
 ```
-現行最佳  sched30_b12   26.377 / 0.7711 / 0.3542   2.34M   cap2.6M densify_until30k reg0.002
+現行最佳  coarseft_b12  26.518 / 0.7736 / 0.3522   2.60M   coarse-init + sched30 全部機制
+          （中位數 +0.68 dB = 21x 噪音底，但尾巴不動；coarse 用的還是舊 scales，未達上限）
+次佳      sched30_b12   26.377 / 0.7711 / 0.3542   2.34M   cap2.6M densify_until30k reg0.002
                                                             lambda_normal 0 depth_loss 0
 同配方    sched30_b7    24.993 / 0.8009 / 0.2554   2.34M   （跨塊不可比：b12 半面水）
 論文錨點  CityGaussianV2 全域 27.23（8×A100，只有 PSNR）
