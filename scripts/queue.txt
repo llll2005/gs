@@ -55,6 +55,17 @@ bash scripts/task_test.sh depthre_b12
 bash scripts/task_notrim2.sh
 bash scripts/task_test.sh notrim2_b12
 
+# ★★★ 用**我方配方**訓練 coarse（使用者提議）+ 對應的微調
+# 現有 coarse_fix 是官方原版設定（sh2 / grad-densify / diable_trimming:true / depth_loss 0.5）。
+# ★附帶價值：coarse 的 renderer 會被微調端整個繼承 => 用我方 config 訓練的 coarse，
+#   它的 renderer 是我方的（trimming 啟用）=> coarseft_ours 與 sched30 的差別**只剩 init**，
+#   那才是「coarse-init 值多少」的乾淨答案（coarseft_b12 的 +0.141 混了 trim 這個變數）。
+# ⚠ coarse 設 cap 550,000 => 交付約 495,000，刻意對齊 coarse_fix 的 494,317（同大小不同演算法）。
+# ⚠ train_max_num_images_to_cache 512 必須設，否則 5,621 張全快取會撐爆 RAM。
+bash scripts/task_coarse_ours.sh
+bash scripts/task_coarseft_ours.sh
+bash scripts/task_test.sh coarseft_ours_b12
+
 # ⚠ 與 errunlock 是互斥的兩個假說，刻意分開跑。
 bash scripts/task_tcorr.sh
 bash scripts/task_test.sh tcorr_b12
