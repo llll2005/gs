@@ -26,6 +26,18 @@
 bash scripts/task_errunlock.sh
 bash scripts/task_test.sh errunlock_b12
 
+# ★★★★ 壓縮排程（使用者要求「謹慎但大膽，OOM 也沒關係」）：coarseft 的組態、總步數砍半，
+# 各階段按機制特性重調而非等比例縮放：
+#   max_steps 與 **means_lr_scheduler.max_steps** 一起 60k->30k（只改前者 LR 會停在 10% 不衰減）
+#   densify interval 150->100 + add_ratio 1.05->1.08 + trim interval 500->250
+#     => 每步淨成長速度約 2 倍（破平衡 231.5->182.6，interval 100 仍在成長側），補回步數砍半
+#   densify_until 30k->**10k（33%，比 sched30 的 50% 更激進）** —— 收割是最大增益來源且前傾，
+#     而撞 cap 後的 churn 實測淨負；推估 step ~5,800 撞 cap，留 4,200 步餘裕
+#   start_prune_ratio 0->0.3（壓低初期顆數）、noise_lr x2（補回 LR 積分減半的探索量）
+#   sh_degree_up_interval 1000->500、cap 2.6M 不動（保持與 coarseft 可比）
+bash scripts/task_half30k.sh
+bash scripts/task_test.sh half30k_b12
+
 # ★★★ depth loss 用**修正後的 scales** 重測（幾乎零成本，只是恢復 config 預設 0.5）
 # §12.6 判它「建築區一致淨負」而關掉，但那是用汙染的 scales 量的（08-23 才修，scale 中位變 11%），
 # 且**只看了平均與建築區、沒看尾巴**。而 RTG 正是靠深度誤差偵測幾何錯誤（§11.9），
@@ -52,15 +64,3 @@ bash scripts/task_test.sh op05_b12
 bash scripts/task_coarse2.sh
 bash scripts/task_coarseft2.sh
 bash scripts/task_test.sh coarseft2_b12
-
-# ★★★★ 壓縮排程（使用者要求「謹慎但大膽，OOM 也沒關係」）：coarseft 的組態、總步數砍半，
-# 各階段按機制特性重調而非等比例縮放：
-#   max_steps 與 **means_lr_scheduler.max_steps** 一起 60k->30k（只改前者 LR 會停在 10% 不衰減）
-#   densify interval 150->100 + add_ratio 1.05->1.08 + trim interval 500->250
-#     => 每步淨成長速度約 2 倍（破平衡 231.5->182.6，interval 100 仍在成長側），補回步數砍半
-#   densify_until 30k->**10k（33%，比 sched30 的 50% 更激進）** —— 收割是最大增益來源且前傾，
-#     而撞 cap 後的 churn 實測淨負；推估 step ~5,800 撞 cap，留 4,200 步餘裕
-#   start_prune_ratio 0->0.3（壓低初期顆數）、noise_lr x2（補回 LR 積分減半的探索量）
-#   sh_degree_up_interval 1000->500、cap 2.6M 不動（保持與 coarseft 可比）
-bash scripts/task_half30k.sh
-bash scripts/task_test.sh half30k_b12
