@@ -96,6 +96,18 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """scene-units size of one pixel at typical view distance (b12-calibrated);
     scale this with your scene if reusing elsewhere"""
 
+    add_ratio: float = 1.05
+    """每個 densify 事件的族群成長倍率（`add_new_gs`: N -> min(cap, add_ratio*N)）。
+    3dgs-mcmc 原版寫死 1.05；改成可調是為了壓縮排程（總步數砍半 => 事件數也砍半 =>
+    每次變動量要提高，族群才到得了 cap）。
+
+    ⚠ 與 `contribution_prune_interval` / `prune_ratio` 有破平衡關係：
+        break-even interval = prune_interval x ln(add_ratio) / (-ln(1-prune_ratio))
+      densification_interval 大於它 => 族群衰減。預設組（1.05 / 500 / 0.1）的破平衡點是 231.5。
+    ⚠ 調高會讓族群更早撞 cap => 撞到之後全是 churn，而 §12.21/§12.25 證實那段是淨負的
+      => 調高 add_ratio 時要同步把 `densify_until_iter` 往前拉。
+    """
+
     # ── RTG-SLAM 式的透明修正層（§11.9）────────────────────────────────────────
     transparent_corrector: float = 0.0
     """>0 時：relocation 的目的地若其父代是「高誤差 + 高不透明」，就把新粒子的 opacity

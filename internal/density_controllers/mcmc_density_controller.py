@@ -304,7 +304,10 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         gradually increase the number of live Gaussians by 5% until the maximum desired number of Gaussians is met
         """
         current_num_points = gaussian_model.n_gaussians
-        target_num = min(cap_max, int(1.05 * current_num_points))
+        # 每次 densify 事件的成長倍率。原本寫死 1.05（3dgs-mcmc 原版）；改成可調是為了
+        # 「總步數砍半」那類壓縮排程 —— 步數少一半、事件也少一半，若每次變動量不提高，
+        # 族群就到不了 cap（研究總覽 §11.11）。預設 1.05 = 原行為。
+        target_num = min(cap_max, int(getattr(self.config, "add_ratio", 1.05) * current_num_points))
         num_gs = max(0, target_num - current_num_points)
 
         if num_gs <= 0:
