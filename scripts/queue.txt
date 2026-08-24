@@ -29,6 +29,12 @@ bash scripts/task_test.sh errunlock_b12
 # ★★★ depth loss 用**修正後的 scales** 重測（幾乎零成本，只是恢復 config 預設 0.5）
 # §12.6 判它「建築區一致淨負」而關掉，但那是用汙染的 scales 量的（08-23 才修，scale 中位變 11%），
 # 且**只看了平均與建築區、沒看尾巴**。而 RTG 正是靠深度誤差偵測幾何錯誤（§11.9），
+# ★ 便宜驗證（~10 分鐘 GPU）：尾巴是不是在 15k 就定了 —— 這個答案值 27 小時。
+# sched30 實測：最差視角 15k->60k 只改善 4.5%（平均改善 39%）。但那是 n=1。
+# 本任務在 coarseft_b12（現行最佳、且顆數/init 都不同）的 15k/30k/42k/60k ckpt 上重跑 test。
+# 若它的尾巴也在 15k 就定了 => 後續**尾巴專用**的實驗只跑 20k（每臂 10h -> 3.3h，省 67%）。
+bash scripts/task_earlyckpt.sh coarseft_b12 12
+
 # 我方的失效模式就是幾何錯誤（壞視角結構相關只有 0.364）。判準以**最差 10%** 為主。
 bash scripts/task_depthre.sh
 bash scripts/task_test.sh depthre_b12
