@@ -69,13 +69,18 @@ bug 做的是「在同樣厚的殼裡把點打亂」。⛔ 我原本說的「35.
 
 ## 六個踩過的程式陷阱
 
-1. **⛔ 不要同時開 `screen_size_prune_px` 與 `screen_prune_emergency_px`**：兩者讀同一個
+1. **⛔⛔ 用 ckpt 當 `initialize_from` 時，所有 `--model.renderer.init_args.*` 都會被丟棄**
+   （`gaussian_splatting.py:183` 會用 ckpt 的 renderer 整個取代）。
+   ⇒ `coarse_fix` 的 config 有 `diable_trimming: true`，所以 `coarseft`/`half30k`
+   **完全沒有 trim**（顆數下降事件 0 次、最終 1.000xcap；有 trim 的是 59 次、0.900xcap），
+   而我以為的「coarse-init 新高 +0.141」其實混了這個變數。**PLY 路徑不會有這個問題。**
+2. **⛔ 不要同時開 `screen_size_prune_px` 與 `screen_prune_emergency_px`**：兩者讀同一個
    `_max_radii2D`，但 emergency 會把它從「光柵器實際半徑」覆寫成 `projected_radius()` 的
    **解析上界**（含相機後方的點）⇒ 300px 門檻變成每次 densify 刪 25% 族群。
    實測 `scrprune_b7` **PSNR 13.498**（對照 24.993）。單開 `screen_size_prune_px` 是安全的
    （它一直在跑，只是光柵器半徑從沒超過 300px ⇒ 等於無作用）。
-2. **`results.txt` 會被 `main.py test` 從 `val/*` 覆寫成 `test/*`** ⇒ 一律從 tensorboard 讀。
-3. **`test/` 可能有多組 ckpt 的圖**（earlyckpt 留四組）⇒ 用 `_final_test_dir()`，
+3. **`results.txt` 會被 `main.py test` 從 `val/*` 覆寫成 `test/*`** ⇒ 一律從 tensorboard 讀。
+4. **`test/` 可能有多組 ckpt 的圖**（earlyckpt 留四組）⇒ 用 `_final_test_dir()`，
    別用 `glob(test/*/*.png)`（曾汙染建築低頻 +22%）。
 4. **批次刪／搬既有檔案**：條件要用「這次產生的子目錄名」正向指定；
    `rm -rf $VAR` 與 `find -newer` 曾兩次毀資料 ⇒ sed 複製腳本後跑 `tools/lint_task_scripts.py`。

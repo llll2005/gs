@@ -23,8 +23,6 @@
 # RTG 的解法（B4 stable->unstable reversion）我們早就移植了，但預設關閉且在不用的 controller 裡。
 # 本臂把它的想法搬到 MCMC：每個 densify 事件，在 opacity>0.5 的候選裡取誤差最高的 10%
 # 壓回 0.05 並重置 Adam 狀態。⚠ 判準看**最差 10%** 與看圖。
-bash scripts/task_errunlock.sh
-bash scripts/task_test.sh errunlock_b12
 
 # ★★★★ 壓縮排程（使用者要求「謹慎但大膽，OOM 也沒關係」）：coarseft 的組態、總步數砍半，
 # 各階段按機制特性重調而非等比例縮放：
@@ -35,8 +33,6 @@ bash scripts/task_test.sh errunlock_b12
 #     而撞 cap 後的 churn 實測淨負；推估 step ~5,800 撞 cap，留 4,200 步餘裕
 #   start_prune_ratio 0->0.3（壓低初期顆數）、noise_lr x2（補回 LR 積分減半的探索量）
 #   sh_degree_up_interval 1000->500、cap 2.6M 不動（保持與 coarseft 可比）
-bash scripts/task_half30k.sh
-bash scripts/task_test.sh half30k_b12
 
 # ★★★ depth loss 用**修正後的 scales** 重測（幾乎零成本，只是恢復 config 預設 0.5）
 # §12.6 判它「建築區一致淨負」而關掉，但那是用汙染的 scales 量的（08-23 才修，scale 中位變 11%），
@@ -50,6 +46,15 @@ bash scripts/task_test.sh depthre_b12
 
 # ★★★★ RTG-SLAM 式的透明修正層：relocation 目的地若父代「高誤差+高不透明」，
 # 新粒子 opacity 直接設 0.1 而不走 Eq.9 分裂（RTG 原文：加透明的修顏色，不解鎖已承諾的）。
+# ★★★★★ 週期性 contribution trim 的乾淨消融 —— 由 coarseft 的歸因錯誤帶出來的
+# coarse_fix 的 config 有 diable_trimming:true，而 ckpt 路徑會把 renderer 整個換掉
+# => coarseft/half30k 其實是「完全不 trim」（顆數下降事件 0 次 vs sched30 的 59 次，
+#    最終 1.000xcap vs 0.900xcap）=> coarseft 的 +0.141 不可歸給 coarse-init。
+# 而週期性 trim（每 500 步剪 10%）從沒被消融過（§11.4 的 notrim 只關了起始那一刀）。
+# 本臂用 depth-init（PLY 路徑，旗標才不會被換掉）+ diable_trimming true，唯一變數。
+bash scripts/task_notrim2.sh
+bash scripts/task_test.sh notrim2_b12
+
 # ⚠ 與 errunlock 是互斥的兩個假說，刻意分開跑。
 bash scripts/task_tcorr.sh
 bash scripts/task_test.sh tcorr_b12
