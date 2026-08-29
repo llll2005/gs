@@ -211,10 +211,21 @@
 # |g| 天花板 16.68x，opacity 取樣到 step 600 只吃到 17% => 還有約 6 倍空間。
 # ⚠ 不是「越大越好」：vpc 的教訓是強度過高直接崩。本臂就是找 w 的轉折點。
 # 對照 = agd_b12（26.432），問的是「更強有沒有更好」，不是跟 sched30 比。
-bash scripts/task_agd2_b12.sh
-bash scripts/task_test.sh agd2_b12
 
 # ★★★ trim 取樣驗證（重排）—— 08-29 第一次白跑：ckpt-init 把 renderer 整個換掉，
 # CLI 的 --model.renderer.init_args.trim_subsample_probe 完全無效（config 仍記下要求值）。
 # 已改用環境變數 TRIM_SUBSAMPLE_PROBE，不受 renderer 替換影響。
-bash scripts/task_trimsub.sh
+
+# ★★★★★ 跨塊驗證：agd2（absgrad_densify 2.0）換到 block_7 —— w=2 進配方的必要條件
+# b12 三指標全贏 w=1.0（+6.4/+25.5/+8.3 sd，新高 26.56）但 n=1 單塊；notrim2 就是 b7 反轉的。
+bash scripts/task_agd2_b7.sh
+bash scripts/task_test.sh agd2_b7
+
+# ★★★★ 找 absgrad_densify 強度轉折點：w=3.0（b12）
+# w=1->2 三指標全贏但紋理比 -2.7sd = 首次出現代價跡象 => 峰值可能就在附近。
+bash scripts/task_agd3_b12.sh
+bash scripts/task_test.sh agd3_b12
+
+# ★★★ trim 取樣 v2：24 台不夠（Spearman 0.845 / 重疊 92.5%，判準 >0.99 且 >95%）
+# 但 92.5% 已經很接近 => 試每 4 台取 1（71 台）。過關仍可省 75% 的 trim 成本 ≈ 7.5% 跑次時間。
+TRIM_SUBSAMPLE_PROBE=4 bash scripts/task_trimsub.sh

@@ -22,7 +22,7 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 # 本腳本以 `.ckpt` 初始化，而 ckpt 路徑會把 renderer **整個反序列化回來**，
 # CLI 上的 renderer 旗標因此完全無效（config.yaml 仍會記下要求值 => 光看 config 查不出來）。
 # 2026-08-29 第一次跑就是這樣白跑 370 秒：`Trimming...` 有印、`[trim-subsample]` 沒印。
-export TRIM_SUBSAMPLE_PROBE=12
+export TRIM_SUBSAMPLE_PROBE=${TRIM_SUBSAMPLE_PROBE:-12}
 rm -rf outputs/trimsub
 conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
