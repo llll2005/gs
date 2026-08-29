@@ -201,11 +201,20 @@
 
 # ★★★★★ 論文命題的另一半：成本感知增生（往便宜的地方增生）
 # ⚠ 只開 cost_aware_densify，不同時開 absgrad_densify。★ 特別看 VRAM 與 it/s。
-bash scripts/task_cad_b12.sh
-bash scripts/task_test.sh cad_b12
 
 # ★★★★★ trim 取樣驗證（~8 分鐘）—— trim pass 佔 profile 視窗 80%、約 9h 跑次的 10%
 # 24 台 vs 284 台的 contribution 排序若一致，直接省 90% 的 trim 成本。
 # 判準：Spearman>0.99 且 底部10%遮罩重疊>95%
-bash scripts/task_trimsub.sh
 
+
+# ★★★★★ 現行最佳加強度：absgrad_densify 1.0 -> 2.0（§11.47 延伸）
+# |g| 天花板 16.68x，opacity 取樣到 step 600 只吃到 17% => 還有約 6 倍空間。
+# ⚠ 不是「越大越好」：vpc 的教訓是強度過高直接崩。本臂就是找 w 的轉折點。
+# 對照 = agd_b12（26.432），問的是「更強有沒有更好」，不是跟 sched30 比。
+bash scripts/task_agd2_b12.sh
+bash scripts/task_test.sh agd2_b12
+
+# ★★★ trim 取樣驗證（重排）—— 08-29 第一次白跑：ckpt-init 把 renderer 整個換掉，
+# CLI 的 --model.renderer.init_args.trim_subsample_probe 完全無效（config 仍記下要求值）。
+# 已改用環境變數 TRIM_SUBSAMPLE_PROBE，不受 renderer 替換影響。
+bash scripts/task_trimsub.sh

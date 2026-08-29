@@ -1,5 +1,7 @@
 from typing import Dict, Tuple, Union, Callable, Optional, List
 
+import os
+
 import lightning
 import torch
 from internal.utils.topk_contribution import contribution_accumulator
@@ -257,7 +259,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 ))
 
             contribution = gather()
-            probe_n = getattr(self, "trim_subsample_probe", 0)
+            # ⚠ 環境變數優先於實例屬性：`--model.initialize_from <某.ckpt>` 會把 renderer
+            # **整個從 ckpt 反序列化回來**，CLI 上的 `--model.renderer.init_args.*` 因此
+            # 完全無效（config.yaml 仍會記下「要求值」，所以光看 config 查不出來）。
+            # 2026-08-29 的 trimsub 就是這樣白跑 370 秒：`Trimming...` 有印、探針沒印。
+            # 同一個陷阱先前讓 coarseft 實際上「完全不 trim」而歸因錯誤。
+            probe_n = int(os.environ.get("TRIM_SUBSAMPLE_PROBE", "0") or 0) \
+                or getattr(self, "trim_subsample_probe", 0)
             if probe_n > 0:
                 push2, gather2 = contribution_accumulator(self.K)
                 used = 0

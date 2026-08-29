@@ -18,6 +18,11 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+# ⚠⚠ 必須用環境變數，不能用 --model.renderer.init_args.trim_subsample_probe：
+# 本腳本以 `.ckpt` 初始化，而 ckpt 路徑會把 renderer **整個反序列化回來**，
+# CLI 上的 renderer 旗標因此完全無效（config.yaml 仍會記下要求值 => 光看 config 查不出來）。
+# 2026-08-29 第一次跑就是這樣白跑 370 秒：`Trimming...` 有印、`[trim-subsample]` 沒印。
+export TRIM_SUBSAMPLE_PROBE=12
 rm -rf outputs/trimsub
 conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
@@ -26,7 +31,6 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --trainer.max_steps 400 \
   --trainer.enable_checkpointing false \
   --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.max_steps 400 \
-  --model.renderer.init_args.trim_subsample_probe 12 \
   --model.renderer.init_args.contribution_prune_from_iter 100 \
   --model.renderer.init_args.contribution_prune_interval 100 \
   --model.density.init_args.cap_max 2600000 \
