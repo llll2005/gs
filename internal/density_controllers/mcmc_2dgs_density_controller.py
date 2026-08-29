@@ -409,8 +409,14 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # Same event gating as the parent, plus optional screen-size recycling (see the
         # config docstring). The max-radii buffer is a plain tensor that self-heals on any
         # topology change (trim/relocate/add all shift N), like the gg controller's grad buffer.
+        # ⚠ LATENT NO-OP FIXED 2026-08-29: `cost_aware_densify` reads `_max_radii2D` but was
+        # NOT in this guard list, so it was a **silent no-op** unless one of the other four
+        # flags happened to be on. `cad_b12` only measured anything because its script also
+        # passed `screen_size_prune_px 300` — by luck, not by design. Same shape as
+        # `err_guided_densify`, which was dead code and burned 9.7 h on `egd_b12`.
         if self.config.screen_size_prune_px > 0 or self.config.dar_lambda > 0 \
-                or self.config.max_relocate_frac > 0 or self.config.vpc_prune_frac > 0:
+                or self.config.max_relocate_frac > 0 or self.config.vpc_prune_frac > 0 \
+                or self.config.cost_aware_densify != 0:
             self._update_max_radii(outputs, gaussian_model)   # cost signal for DAR / gate / v-p-c
         self._accumulate_error_score(outputs, batch, gaussian_model)
         if self.config.absgrad_report > 0 or self.config.absgrad_densify > 0:
