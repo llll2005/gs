@@ -41,8 +41,29 @@
 # sched30 實測：最差視角 15k->60k 只改善 4.5%（平均改善 39%）。但那是 n=1。
 # 本任務在 coarseft_b12（現行最佳、且顆數/init 都不同）的 15k/30k/42k/60k ckpt 上重跑 test。
 # 我方的失效模式就是幾何錯誤（壞視角結構相關只有 0.364）。判準以**最差 10%** 為主。
-bash scripts/task_depthre.sh
-bash scripts/task_test.sh depthre_b12
+
+# ★★★ 診斷：trim 每次到底剪掉幾 %？（約 35 分鐘，diagnosis-first）
+# s=0.2 的 proxy 族群在 step 3,000 見頂 872k 後下跌 20.3%、永遠到不了 cap => 作廢。
+# 假說：trim 用 `contribution <= quantile(0.1)`，只要零貢獻粒子超過 10% 就會被全部剪掉，
+# 遠超名目比例。零貢獻來自 EXACT_SUPPORT（opacity<=1/255 不進 binning），而壓縮把
+# 「出生到首次 trim」從約 250 步壓到 50 步 => 子代來不及爬過門檻。
+# 兩臂都是**截斷真實跑次**（不動 LR 排程）=> 前幾百步與原跑次逐位元相同。
+# ⚠ 影響超出 proxy：破平衡公式假設每次剛好 -10%，若剪除率是狀態相依的，那條公式要修。
+# ⚠ 尾巴的 `diag` 是刻意加的：runner 用**精確文字比對**移除已執行的佇列行
+# （runner.sh:104），而正在跑的那次讀的是舊版腳本文字。文字不同 => 舊次結束時不會把這行刪掉。
+
+# ★★★ 每步 179 ms 的固定成本花在哪（~5 分鐘，Lightning 內建 profiler，零改碼）
+# ledger 擬合：每步(ms) = 178.9 + 100.5 x N(M)，R^2=0.673 => N=2.34M 時固定成本佔 43%、
+# 顆數砍半只省 28%。而 N=0.08M 仍要 163~188 ms（不是光柵化）、down_sample 2 掉到 47 ms
+# （是逐像素）。已讀碼確認 sched30 的三個幾何 loss 全是「算完再乘 0 且 backward 照走」，
+# 但**沒量過值多少** => 先量再決定要不要改。
+
+# ★★★ 每步 179 ms 的固定成本花在哪（~5 分鐘，Lightning 內建 profiler，零改碼）
+# ledger 擬合：每步(ms) = 178.9 + 100.5 x N(M)，R^2=0.673 => N=2.34M 時固定成本佔 43%、
+# 顆數砍半只省 28%。而 N=0.08M 仍要 163~188 ms（不是光柵化）、down_sample 2 掉到 47 ms
+# （是逐像素）。已讀碼確認 sched30 的三個幾何 loss 全是「算完再乘 0 且 backward 照走」，
+# 但**沒量過值多少** => 先量再決定要不要改。
+# ⚠ 上一次執行失敗（9 秒）：它指向的 px_sched30_b12.yaml 被移到 _held/ 了，已改用 probe_ctrl.yaml。
 
 # ★★★★ RTG-SLAM 式的透明修正層：relocation 目的地若父代「高誤差+高不透明」，
 # 新粒子 opacity 直接設 0.1 而不走 Eq.9 分裂（RTG 原文：加透明的修顏色，不解鎖已承諾的）。
@@ -52,31 +73,139 @@ bash scripts/task_test.sh depthre_b12
 #    最終 1.000xcap vs 0.900xcap）=> coarseft 的 +0.141 不可歸給 coarse-init。
 # 而週期性 trim（每 500 步剪 10%）從沒被消融過（§11.4 的 notrim 只關了起始那一刀）。
 # 本臂用 depth-init（PLY 路徑，旗標才不會被換掉）+ diable_trimming true，唯一變數。
-bash scripts/task_notrim2.sh
-bash scripts/task_test.sh notrim2_b12
 
-# ★★★ 用**我方配方**訓練 coarse（使用者提議）+ 對應的微調
-# 現有 coarse_fix 是官方原版設定（sh2 / grad-densify / diable_trimming:true / depth_loss 0.5）。
-# ★附帶價值：coarse 的 renderer 會被微調端整個繼承 => 用我方 config 訓練的 coarse，
-#   它的 renderer 是我方的（trimming 啟用）=> coarseft_ours 與 sched30 的差別**只剩 init**，
-#   那才是「coarse-init 值多少」的乾淨答案（coarseft_b12 的 +0.141 混了 trim 這個變數）。
-# ⚠ coarse 設 cap 550,000 => 交付約 495,000，刻意對齊 coarse_fix 的 494,317（同大小不同演算法）。
-# ⚠ train_max_num_images_to_cache 512 必須設，否則 5,621 張全快取會撐爆 RAM。
-bash scripts/task_coarse_ours.sh
-bash scripts/task_coarseft_ours.sh
-bash scripts/task_test.sh coarseft_ours_b12
+# ★★★★ AbsGS 訊號的前提驗證（重編光柵器 + ~10 分鐘 GPU）
+# 使用者提問「能不能造偽梯度來用 AbsGS」帶出來的。查碼發現 2DGS 的 viewspace 梯度
+# **不是** 3DGS 的對應物（只在次像素 fallback 分支被寫），真正的對應物是 `dL_ds`。
+# 已在 ray-splat 分支把 |dL_ds| 累加進未被使用的 `dL_dmean2D.z`（渲染與梯度逐位元不變）。
+# ⚠ 本任務不問「碰撞存不存在」，只問**這個訊號排的名次跟 opacity 有沒有實質差別**。
+#   top10% 重疊高 => 換訊號不會換掉增生位置 => 收掉，不必再花 GPU。
 
-# ⚠ 與 errunlock 是互斥的兩個假說，刻意分開跑。
-bash scripts/task_tcorr.sh
-bash scripts/task_test.sh tcorr_b12
+# ★★★★★ 新最佳配方的跨塊確認：notrim2 換到 block_7（**最高優先**）
+# notrim2_b12 26.535 是新高且全判準有利（研究總覽 §11.23），但**是 n=1**。
+# b7 是內容重的塊，最可能推翻它。若 b7 推翻，後面所有建立在「trim 是淨負」上的規劃都要重來。
+# 唯一變數＝block_id 與 init PLY，其餘旗標與 task_notrim2.sh 逐字相同（已 diff 驗證）。
+# 對照＝sched30_b7 24.993 / 0.8009 / 0.2554（同組態但有 trim）。⚠ 跨塊絕對值不可互比。
 
-# ⚠ 需要先產生 block_12_op05 的修正版 PLY（見下一行的 [cpu] 任務）。
-[cpu] PYTHONPATH=. conda run -n gspl python tools/reopacity_ply.py data/matrix_city/aerial/train/block_all/depth_init_fix/block_12.ply data/matrix_city/aerial/train/block_all/depth_init_fix/block_12_op05.ply --opacity 0.5
-bash scripts/task_op05.sh
-bash scripts/task_test.sh op05_b12
+# ★★★★★ 退化定理的前提檢驗（~8 分鐘，只讀不剪枝）—— 使用者提問帶出來的
+# 我一度用「退化定理」擋掉成本感知剪枝，**那是錯的引用**：原始檔案叫
+# `S11_成本模型_bug下量測_作廢.md`，自述「解析論證不依賴資料可能仍成立，但支持它的
+# 三個實測已作廢（bug 期量的）」=> **前提 v_i≈kappa*c_i 從未在當前資料上驗證過**。
+# 而 §11.23 指向相反方向：trim 按 v 剪最低 10% 卻省不到 VRAM => 低 v 的正好是低 c 的。
+# 決定性數字：bottom-10% by v/c 相對 by v **多省幾倍成本**（同時看價值代價，避免只是沿同一條線移動）。
+# ~1x => 退化成立，收線；>>1x => 排 notrim2+vpc_prune_frac，省下的 VRAM 再換 cap。
+# 在 notrim2_b12 的 60k ckpt 上量（v/c 分布只有在成熟族群上才有意義）。
 
-# ★★ 用修正後的 scales 重跑 coarse（coarse_fix 用的是 08-23 才修好的舊 scales，
-# 而 coarse 的 depth_loss_weight 是 0.5，比一般跑次更吃 scales 的正確性）
-bash scripts/task_coarse2.sh
-bash scripts/task_coarseft2.sh
-bash scripts/task_test.sh coarseft2_b12
+# ★★★★ 誤差導向增生：notrim2 + err_guided_densify（接口早就寫好，從沒開過）
+# MCMC 用 `probs = opacity` 抽父代，**完全沒有誤差項** => 往質量已經在的地方增生。
+# trim 關掉後 densify 是唯一還在動族群的機制 => 訊號品質直接決定結果。
+# log 會印 `[densify-blind]`：opacity 取樣看到的誤差/全體平均，1.00 = 完全盲目。
+# ⚠ 已知缺陷：誤差在投影中心取值、**不乘足跡** => 大高斯與灰塵同分（正是 AbsGS 的盲點）。
+#   若有效但不多，下一步換成 |g|（ABSGRAD=1 已編進 .so，在 grad[:,2]）。
+
+# ★★★ 退化定理前提檢驗 v2（~6 分鐘）—— 第一版量測是空的，已修
+# v1 在全體上比，但**零值粒子超過 10%**（24 視角取樣 + EXACT_SUPPORT 讓 o<=1/255 不進 binning）
+# => 兩種排序的最低 10% 都是同一批零值（0/c 還是 0）=> 兩邊都得到 2.36%/0.00%，比較是空的。
+# v2：零值另外報，所有統計只在 v>0 子集上做，並同時看剪 10% 與 30%、以及兩個遮罩的重疊率。
+# v1 仍有意義的數字：rho(v,c)=+0.379、pearson(log v,log c)=+0.620 —— **遠不到 v=kappa*c 要求的 ~1**。
+# 判準：成本倍率 >> 價值代價倍率 => 有自由度；兩者同倍上升 => 只是沿同一條線移動 => 退化。
+
+# ★★★★★ AbsGS 訊號的天花板（~5 分鐘）—— egd_b12 的教訓直接帶出來的
+# `_report_densify_blindness` 量到我方誤差分數的 ceiling(top5%)/mean 只有 **1.22**
+# => 完美取樣器也只能看到 1.22 倍平均誤差 => 誤差導向增生本來就沒空間（egd 實測淨負）。
+# 但 1.22 是**我方誤差分數**的天花板（池化到 16px tile、投影中心取值、**不乘足跡**）。
+# 本任務對 |g|（AbsGS 訊號，已編進 .so）算同一個天花板：
+#   也 ~1.2  => 整個誤差導向增生家族死，AbsGS 線收掉，不必再花 9.6h
+#   明顯更高 => 1.22 只是我方訊號爛，AbsGS 線值得做成取樣權重
+
+
+
+# ★★★★★ 成本感知回收：sched30 + vpc_prune_frac 0.05 —— 本 session 第一個有正面前提量測支持的介入
+# 前提（§11.28，只讀診斷）：rho(v,c)=+0.127 => `v=kappa*c` 推翻；等成本節省下 v/c 的價值損失
+# 低一個量級（砍 50% 成本只需剪 10% 顆、損 0.64% 價值）。
+# ⚠ 兩個缺口：Σv 不是品質；診斷量「移除」但程式走「搬移」。
+# ★ 特別看 VRAM 與 it/s —— 命題成立的話它應該**省 VRAM**，那是 count-based 剪枝做不到的。
+
+# ★★★ 量「零權重 loss 閘門」值多少（~3 分鐘，與 08-26 13:29 那次 profile 直接可比）
+# 同 config（probe_ctrl）、同 300 步、同 N => `run_training_batch` 的 mean duration 直接對照
+# 先前實測 **0.22123 s**。已修：gs2d_metrics 與 citygsv2_metrics 在權重為 0 時跳過計算
+# （現行配方 lambda_normal / lambda_dist / depth_loss_weight 全是 0）。
+# ⚠ 混淆：期間重編過 ABSGRAD（多一個 atomicAdd）=> 那是**加**成本，
+#   所以若仍變快，實際節省比量到的更多。
+# 若省得明顯 => 再處理 renderer 端的 depth_to_normal（要處理驗證期無條件用 surf_depth 的問題）。
+
+# ★★★★★ 拆開 §11.24 的混淆：notrim2 + densify_until 12,000（b7）—— 使用者看曲線帶出
+# trim 一關 => 族群 3,000 步內撞 cap => 之後 **27,700 步純 churn**（trim-on 是 9,600，2.9 倍），
+# 而那段實測淨負。根源：densify_until=30,000 是為 trim 開啟時調的 => notrim2 從沒被公平測過。
+# 本臂把 churn 對齊到 9,700 步。⚠ 收割期同時 30k->48k（三時間尺度不可兼得）。
+# 贏過 notrim2_b7 且建築低頻回到 sched30 水準 => churn 是主因；仍輸 => §11.24 的歸因成立。
+
+# ★★★ 量 `skip_surf_normal` 值多少（~3 分鐘，與 08-26 21:22 那次 profile 直接可比）
+# metric 端閘門已把 0.22123 -> 0.18206 s（§11.35）。`depth_to_normal`（深度圖反投影 +
+# 鄰域叉積，全幅逐像素且可微）是剩下的那塊，唯一消費者是已關閉的 normal loss。
+
+# ★★★★★ 把 sigma 釘死：sched30_b12 同組態重跑（使用者指示）
+# 今天所有比較都建立在 n=1 的噪音估計上，已讓我誤判三次（+0.158=1.5sigma 被我宣稱成新高、
+# -0.137=1.3sigma 被宣稱成「反轉」、egd 的「輸」根本是同組態重跑）。
+# 唯一的同組態樣本實測全距 0.107，是文件值 0.0325 的 3.3 倍（§11.29）。本跑次讓 n=1 -> n=2。
+# ⚠ 它不會提高分數。它讓之後每一個結論站得住。
+
+# ★★★★★ AbsGS 訊號當增生取樣權重（§11.30/§11.34）—— vpc 慘敗之後**接線改對**的版本
+# ⛔ 舊：低 v/c 併進 dead_mask => relocation => 丟到隨機宿主、毀掉它在做的事（-2.34 dB）
+# ✅ 新：用訊號決定**往哪裡增生**（改變集合），既有幾何完全不動
+# 前提（實測）：我方誤差分數天花板只有 1.22x，`|g|` 是 **16.68x**；且 |g| 的 top10% 與
+# opacity 只重疊 4.4~20.6%（隨機 10%）=> 換訊號會換掉增生位置。
+# ⚠ 只開 absgrad_densify，不要同時開 cost_aware_densify。強度 w=1.0（vpc 的教訓：從保守開始）。
+
+# ★★★★ scale_reg = 0（§11.32）—— 使用者提出「塵埃是 L1 造成的、後來修好了」帶出來的
+# 查證：塵埃確實從 86.5% 降到 15.5%(b12)/7.2%(b7)，但**修的是 opacity_reg**；
+# `scale_reg` 從沒被動過（還是預設 0.007），而它同時「幾乎不做它該做的事」（2.9 倍正則
+# 只壓下 4% 尺度）與「是塵埃的主犯」（紀錄兩處）=> 與 opacity_reg=0 同一個形狀。
+# ⚠ 別期待同量級：塵埃只佔 VRAM 6%，換顆數值 +0.045 dB。值錢的是動力學會不會整個變好。
+# ⚠ 風險：它是唯一壓尺度的機制，拿掉可能讓大足跡失控 => 看 VRAM/it-s 與 veil_detect。
+
+
+
+# ★★★★★ 驗證 14% 加速為真且不掉分（零權重閘門 -9% + fused_ssim -4.9% + skip_surf_normal -1%）
+# 判準：`tools/cmp_runs.py` 對照三個同組態樣本，四指標都在 ±3sd 內 => 無損，寫進配方。
+# ★ 附帶：這是第 4 個同組態樣本，把 sigma 再收緊。⚠ 9.6h 應降到 ~8.2h，時間本身就是判準之一。
+
+# ★★★★★ AbsGS 增生取樣（重排）—— 08-27 14:0x 連死兩次是我的 bug，已修
+# `absgrad_densify>0` 會呼叫 `_absgrad_report`，而該方法開頭 `global_step % absgrad_report`
+# 在 absgrad_report=0 時直接 ZeroDivisionError。已改成先檢查 >0；`|g|` 的累積在該檢查之前，
+# densify 用途不受影響（§11.39）。
+# ⚠⚠ 判準用**重新標定後**的門檻（§11.38，n=3）：PSNR <0.24 / SSIM <0.0015 不可宣稱。
+#    優先看 SSIM —— 它是四個指標裡唯一噪音底沒被低估的。
+
+# ══════════════════════════════════════════════════════════════════════════
+# 2026-08-27 使用者指示：把大實驗全部暫停（上面加了 `#[暫停 2026-08-27]` 前綴，
+# 要恢復把前綴刪掉即可），改先跑一批小測試把「冗餘計算／數值複用／無效機制」測完。
+# 依據：今天四個 9.6h 的介入全輸，而所有真正的產出都來自 5~10 分鐘的診斷
+#      （天花板 1.22 vs 16.68、rho(v,c)=0.127、疊影與配方無關、噪音底、零權重 loss −9%）。
+#      **診斷能拒絕整個家族，介入一次只能測一個點。**
+# ══════════════════════════════════════════════════════════════════════════
+
+# ★★★★★ 逐 op profile @高顆數（~5 分鐘）—— 使用者指示：接著處理減低計算量的消融
+# wall-time 顯示已省的全是逐像素固定成本（顆數少時省 14%、多時只省 6%）
+# => 工作點的主導是**逐顆數成本 ~235ms(68%)**，而 simple profiler 看不進 training_step。
+# 候選（讀碼點出，待 profile 確認）：_add_xyz_noise 每步建 N x 3x3 共變異 /
+# Adam 狀態 M=4 x F=58 / SH degree 3 的 48 個色彩 float。
+
+# ★★★ 逐 op profile @高顆數（重排；前次死於我加的 skip_surf_normal 沒對舊 ckpt 相容，已用 getattr 修）
+
+# ★★★★★ 跨塊驗證：agd 換到 b7 —— 決定前面所有結論算不算數（notrim2 就是 b12 贏 b7 反轉）
+
+# ★★★ 逐 op profile（第三次；前兩次分別死於 skip_surf_normal 相容性、以及 pytorch profiler
+# 的 weakref 讓 torch.save 炸掉而 Lightning 在 teardown 才印摘要 => 資料全丟。改用 advanced）
+
+
+# ★★★★★ 論文命題的另一半：成本感知增生（往便宜的地方增生）
+# ⚠ 只開 cost_aware_densify，不同時開 absgrad_densify。★ 特別看 VRAM 與 it/s。
+bash scripts/task_cad_b12.sh
+bash scripts/task_test.sh cad_b12
+
+# ★★★★★ trim 取樣驗證（~8 分鐘）—— trim pass 佔 profile 視窗 80%、約 9h 跑次的 10%
+# 24 台 vs 284 台的 contribution 排序若一致，直接省 90% 的 trim 成本。
+# 判準：Spearman>0.99 且 底部10%遮罩重疊>95%
+bash scripts/task_trimsub.sh
+

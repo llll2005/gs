@@ -27,7 +27,21 @@ class SepDepthTrim2DGSRenderer(Renderer):
             start_prune_ratio: float = 0.0,
             diable_start_trimming: bool = False,
             diable_trimming: bool = False,
+            skip_surf_normal: bool = False,
+            trim_subsample_probe: int = 0,
     ):
+        """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
+
+        `depth_to_normal` 把深度圖反投影成 3D 點再取鄰域叉積，**全幅逐像素且可微**，
+        而它唯一的訓練期消費者是 `gs2d_metrics` 的 normal loss。現行配方 `lambda_normal = 0`
+        ⇒ 純浪費。（metric 端的閘門已省下 9%，見 研究總覽 §11.35；這是剩下的那塊。）
+
+        ⚠ 失敗模式是**大聲的**：`lambda_normal > 0` 卻設了本旗標 ⇒ gs2d_metrics 取
+        `outputs['surf_normal']` 直接 KeyError，不會安靜地算錯。
+        ⚠ viewer 的 `surf_normal` 輸出也會消失（只影響互動檢視，不影響訓練/評測）。
+        ⚠ 不影響 `surf_depth` —— 那是兩個 allmap 通道的線性混合，很便宜，
+          且深度 loss 與 `rtg_stable_density_controller` 都要用。
+        """
         super().__init__()
 
         # hyper-parameters for trimming
@@ -46,6 +60,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
         self.start_prune_ratio = start_prune_ratio
         self.diable_start_trimming = diable_start_trimming
         self.diable_trimming = diable_trimming
+        self.skip_surf_normal = skip_surf_normal
+        # >0 時，每次 trim 事件**額外**用「每 N 台取一台」再算一次 contribution，
+        # 報告與全視角版的 Spearman 與底部 10% 遮罩重疊。只讀，不改變剪枝結果。
+        # 目的（§11.48）：trim pass 佔 profile 視窗 80%、約 9 小時跑次的 10%，
+        # 而 `_measure_multiview_contribution` 早就在用 24 台取樣。若排序一致就能省 90%。
+        self.trim_subsample_probe = trim_subsample_probe
 
     def _depth_ssim_loss(self, a, b):
         pass
@@ -193,20 +213,25 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # for unbounded scene, use expected depth, i.e., depth_ration = 0, to reduce disk anliasing.
         surf_depth = render_depth_expected * (1 - self.depth_ratio) + (self.depth_ratio) * render_depth_median
 
-        # assume the depth points form the 'surface' and generate psudo surface normal for regularizations.
-        surf_normal = self.depth_to_normal(viewpoint_camera, surf_depth)
-        surf_normal = surf_normal.permute(2, 0, 1)
-        # remember to multiply with accum_alpha since render_normal is unnormalized.
-        surf_normal = surf_normal * (render_alpha).detach()
-
         rets.update({
             'rend_alpha': render_alpha,
             'rend_normal': render_normal,
             'view_normal': -allmap[2:5],
             'rend_dist': render_dist,
             'surf_depth': surf_depth,
-            'surf_normal': surf_normal,
         })
+        # assume the depth points form the 'surface' and generate psudo surface normal for regularizations.
+        # 2026-08-26：`depth_to_normal` 是全幅逐像素且可微（反投影 + 鄰域叉積），
+        # 唯一的訓練期消費者是 lambda_normal=0 的 normal loss ⇒ 可跳過。見建構子 docstring。
+        # ⚠ 2026-08-28：用 `getattr` 不是 `self.skip_surf_normal` —— ckpt 當 init 時 renderer 是
+        # 從 checkpoint **反序列化**的（_ctx 陷阱 1），舊 ckpt 沒有這個屬性 => AttributeError。
+        # `opprofile` 就是這樣死的。新增 renderer 屬性一律要對舊 ckpt 保持相容。
+        if not getattr(self, "skip_surf_normal", False):
+            surf_normal = self.depth_to_normal(viewpoint_camera, surf_depth)
+            surf_normal = surf_normal.permute(2, 0, 1)
+            # remember to multiply with accum_alpha since render_normal is unnormalized.
+            surf_normal = surf_normal * (render_alpha).detach()
+            rets['surf_normal'] = surf_normal
 
         return rets
     
@@ -232,6 +257,36 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 ))
 
             contribution = gather()
+            probe_n = getattr(self, "trim_subsample_probe", 0)
+            if probe_n > 0:
+                push2, gather2 = contribution_accumulator(self.K)
+                used = 0
+                for i in range(0, len(cameras), probe_n):
+                    m2, _ = self(cameras[i].to_device(device), module.gaussian_model,
+                                 bg_color=module._fixed_background_color().to(device),
+                                 record_transmittance=True, record_coverage=True)
+                    push2(m2); used += 1
+                    del m2
+                c2 = gather2()
+
+                def _rank(v):
+                    r = torch.empty_like(v)
+                    r[v.argsort()] = torch.arange(v.numel(), dtype=v.dtype, device=v.device)
+                    return r
+                ra, rb = _rank(contribution), _rank(c2)
+                n = ra.numel()
+                rho = float(((ra - ra.mean()) * (rb - rb.mean())).sum()
+                            / (ra.std(unbiased=False) * rb.std(unbiased=False) * n).clamp_min(1e-12))
+                k = max(1, int(n * self.prune_ratio))
+                ma = torch.zeros(n, dtype=torch.bool, device=contribution.device)
+                ma[contribution.topk(k, largest=False).indices] = True
+                mb = torch.zeros(n, dtype=torch.bool, device=contribution.device)
+                mb[c2.topk(k, largest=False).indices] = True
+                print(f"[trim-subsample] step={step} 全視角 {len(cameras)} 台 vs 取樣 {used} 台："
+                      f"Spearman={rho:.4f} 底部{100*self.prune_ratio:.0f}%遮罩重疊="
+                      f"{100*float((ma & mb).sum())/k:.1f}%  "
+                      f"（判準：rho>0.99 且 重疊>95% => 可取樣，省約 9%）")
+                del c2
             tile = torch.quantile(contribution, self.start_prune_ratio)
             prune_mask = contribution <= tile
             module.density_controller._prune_points(prune_mask, module.gaussian_model, module.gaussian_optimizers)
@@ -283,8 +338,20 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 module.density_controller.blur_score = blur / max(len(cameras), 1)
             tile = torch.quantile(contribution, self.prune_ratio)
             prune_mask = (contribution <= tile)
+            # 診斷（2026-08-25）：`<=` 在有並列時會超剪。零貢獻的來源是 EXACT_SUPPORT ——
+            # opacity <= 1/255 的粒子根本不進 binning，貢獻恆為 0。若零貢獻佔比 > prune_ratio，
+            # 這一刀就會把它們**全部**剪掉，遠超過名目比例，破平衡公式的 0.9x 假設隨之失效。
+            # 只在 trim 事件時算（每 100~500 步一次），成本可忽略。
+            n_tot = contribution.numel()
+            n_zero = int((contribution <= 0).sum())
+            n_cut = int(prune_mask.sum())
+            # ⚠⚠ 2026-08-25：我加上面那段診斷時，Edit 把這一行連同 print 一起換掉了，
+            # 等於「trim 完全不生效」跑了兩個 probe（probe_t500 / probe_t250，結果已作廢）。
+            # 診斷只能「加」，絕對不能碰到會改變狀態的呼叫。
             module.density_controller._prune_points(prune_mask, module.gaussian_model, module.gaussian_optimizers)
-            print("Trimming done.")
+            print(f"Trimming done. step={step} N={n_tot} 剪={n_cut} ({100.0*n_cut/max(n_tot,1):.2f}%, "
+                  f"名目 {100.0*self.prune_ratio:.0f}%) 零貢獻={n_zero} ({100.0*n_zero/max(n_tot,1):.2f}%) "
+                  f"門檻={float(tile):.3e}")
         torch.cuda.empty_cache()
 
     @staticmethod

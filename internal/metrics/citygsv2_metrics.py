@@ -200,7 +200,14 @@ class CityGSV2MetricsModule(GS2DMetricsImpl):
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
 
         d_reg_weight = self.get_weight(step)
-        d_reg = self.get_inverse_depth_metric(batch, outputs) * d_reg_weight
+        # 2026-08-26：權重為 0 時**跳過計算**。`get_inverse_depth_metric` 是全幅逐像素
+        # （1/depth、resize、正規化、L1、**外加一個 SSIM 窗積分**）且帶 grad 進 loss
+        # ⇒ backward 也走一遍。現行配方 `depth_loss_weight.init = 0.0` ⇒ 全是純浪費。
+        # ⚠ 位元級等價：只在深度指標含 inf/nan 時不同（0*inf = nan）⇒ 加閘門更穩健。
+        if d_reg_weight > 0:
+            d_reg = self.get_inverse_depth_metric(batch, outputs) * d_reg_weight
+        else:
+            d_reg = metrics["loss"].new_zeros(())
 
         metrics["d_reg"] = d_reg
         metrics["d_w"] = d_reg_weight

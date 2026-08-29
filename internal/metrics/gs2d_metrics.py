@@ -22,12 +22,23 @@ class GS2DMetricsImpl(VanillaMetricsImpl):
         lambda_normal = self.config.lambda_normal if step > self.config.normal_regularization_from_iter else 0.0
         lambda_dist = self.config.lambda_dist if step > self.config.dist_regularization_from_iter else 0.0
 
-        rend_dist = outputs["rend_dist"]
-        rend_normal = outputs['rend_normal']
-        surf_normal = outputs['surf_normal']
-        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-        normal_loss = lambda_normal * (normal_error).mean()
-        dist_loss = lambda_dist * (rend_dist).mean()
+        # 2026-08-26：權重為 0 時**跳過計算**，不要算完再乘 0。
+        # 原本兩項都是無條件全幅逐像素計算、且帶 grad 進 loss ⇒ backward 也走一遍。
+        # 現行配方 `lambda_normal = 0` 且 `lambda_dist = 0`（預設）⇒ 兩項全是純浪費。
+        # ⚠ 位元級等價：`loss + 0.0 * X` 與 `loss + 0` 只在 X 含 inf/nan 時不同
+        #   （那時 0*inf = nan 會毒化整個 loss）⇒ 加閘門反而更穩健。
+        zero = metrics["loss"].new_zeros(())
+        if lambda_normal > 0:
+            rend_normal = outputs['rend_normal']
+            surf_normal = outputs['surf_normal']
+            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+            normal_loss = lambda_normal * (normal_error).mean()
+        else:
+            normal_loss = zero
+        if lambda_dist > 0:
+            dist_loss = lambda_dist * (outputs["rend_dist"]).mean()
+        else:
+            dist_loss = zero
 
         # update metrics
         metrics["loss"] = metrics["loss"] + dist_loss + normal_loss

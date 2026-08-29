@@ -300,6 +300,65 @@ class MCMC2DGSDensityController(MCMCDensityController):
     stays on the event schedule and only true runaways trigger the per-step path.
     Requires screen_size_prune_px > 0 (shares its max-radii buffer). -1 = off."""
 
+    vpc_report: int = 0
+    """>0 時，每這麼多步量一次 v/c 並報告（**只讀，不剪枝**）。需要 `screen_size_prune_px > 0`
+    （成本來自那個 max-radii 視窗）。
+
+    要驗的是**退化定理的前提**（2026-08-25）：`archive/S11_成本模型_bug下量測_作廢.md` 自述
+    「解析論證 `v_i = kappa*c_i => 選擇無自由度` 本身不依賴資料，可能仍成立，但支持它的
+    **三個實測已作廢**（bug 期量的）」⇒ **前提從未在當前資料上驗證過**，
+    而我一度拿這條定理擋掉整條成本感知剪枝線。
+
+    今天的發現反而指向相反方向（§11.23）：trim 按 v 剪掉最低的 10%，卻**省不到 VRAM**
+    （notrim2 多 11% 顆粒、VRAM 反而低 0.06G）⇒ 低 v 的正好是低 c 的 ⇒ 按 `v/c` 剪才會
+    剪到「拿得多、給得少」的那批，而省下的 VRAM 可以換更高的 cap（顆數值 +0.541 dB/加倍）。
+
+    報告的決定性數字是 **`bottom-k by v/c` 相對 `bottom-k by v` 多省下幾倍成本**：
+      比值 ~1  => 退化成立，選子集沒有自由度 => 這條線收掉，出口只剩「改變集合」
+      比值 >>1 => 有自由度 => `vpc_prune_frac` 值得跑一臂"""
+
+    absgrad_densify: float = 0.0
+    """>0 時把 AbsGS 的 `|g|` 當**增生取樣權重**：`probs *= (1 + w * |g|/mean|g|)`。
+    需要光柵器以 `ABSGRAD 1` 編譯（`|g|` 累加在 `viewspace_points.grad[:,2]`）。
+
+    為什麼是這個而不是 `vpc_prune_frac`（§11.34）：後者把 mask 併進 `dead_mask` ⇒ 走
+    relocation，把粒子丟到隨機宿主、毀掉它原本在做的事，實測 -2.34 dB。**診斷支持的是
+    「決定往哪裡增生（改變集合）」，不是「把既有粒子搬走（破壞集合）」。**
+
+    為什麼相信有空間（§11.30）：我方誤差分數的 `ceiling(top5%)/mean` 只有 **1.22**
+    （完美取樣器也只能看到 1.22 倍平均誤差 ⇒ 沒東西可賺，`egd` 也確實無效），
+    但 `|g|` 的同一個量是 **16.68**，是它的 13 倍；且 `|g|` 的 top10% 與 opacity 只重疊
+    4.4~20.6%（隨機是 10%）⇒ 選的是幾乎不相干的一批 ⇒ **換訊號會換掉增生位置**。
+    到 step 600 時 opacity 取樣只吃到 2.76/16.68 = 17%，還有 6 倍空間。"""
+
+    cost_aware_densify: float = 0.0
+    """>0 時按渲染成本折扣增生取樣權重：`probs /= (c/median(c))^w`，`c` = 區間內最大螢幕半徑^2。
+
+    論文命題的直接實作：**既有方法用顆數計價，我方用渲染成本計價**。MCMC 分裂會讓子代
+    繼承父代的尺度 ⇒ 抽到大足跡的父代就是在製造大足跡的子代。折扣它 = 讓新增的質量
+    往便宜的地方去。前提量測（§11.28）：`rho(v,c)=+0.127` ⇒ v 與 c 幾乎不相關
+    ⇒ **選擇有自由度**（退化定理的前提在當前資料上不成立）。
+
+    ⚠ 與 `absgrad_densify` 可獨立開關；同時開就是 `probs ~ o * (1+w*g) / c^w'`
+      ＝「每單位渲染成本的預期誤差下降」的貪婪規則。**先各自單獨測，別一次開兩個。**"""
+
+    absgrad_report: int = 0
+    """>0 時，每這麼多步報告一次 AbsGS 絕對值位置梯度的統計（**只讀，不改變任何行為**）。
+
+    需要光柵器以 `ABSGRAD 1` 編譯（`cuda_rasterizer/auxiliary.h`）：它把
+    `|dL_ds.x| + |dL_ds.y|` 累加進 `dL_dmean2D.z`，該分量從未進入梯度鏈
+    ⇒ 渲染與梯度逐位元不變。Python 端在 `viewspace_points.grad[:, 2]`。
+
+    為什麼要先報告而不是直接拿來用（2026-08-25）：AbsGS（arXiv 2404.10484 §3.2）證明
+    有符號的位置梯度會因梯度碰撞而低估過度重建的大粒子，但**那是在 3DGS 上證的**。
+    在動用它之前要先回答一個決策相關的問題：**這個訊號排出來的名次，跟 MCMC 現在用的
+    `probs = opacity` 有沒有實質差別？** 若前 10% 幾乎重疊，整條線就沒有意義，
+    不管碰撞是否存在。所以報告的是 Spearman rho 與 top-k 重疊率，不是碰撞比。
+
+    ⚠ 2DGS 的 viewspace 梯度 (`.x`/`.y`) **不是** 3DGS 的對應物：`dL_dmean2D` 只在
+    `rho3d > rho2d`（次像素 fallback）分支被寫，解析良好的粒子恆為 0。
+    天真移植 3DGS 的梯度式 densify 到 2DGS 只會看到次像素 splat。"""
+
     freeze_opacity_after_densify: bool = False
     """RTG-style harvest-phase opacity freeze: once global_step >= densify_until_iter,
     zero out opacity grads every step (Adam skips None-grad params entirely). Rationale:
@@ -354,6 +413,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 or self.config.max_relocate_frac > 0 or self.config.vpc_prune_frac > 0:
             self._update_max_radii(outputs, gaussian_model)   # cost signal for DAR / gate / v-p-c
         self._accumulate_error_score(outputs, batch, gaussian_model)
+        if self.config.absgrad_report > 0 or self.config.absgrad_densify > 0:
+            # densify 用途下也要累積 `|g|`（原本只有 report 會觸發累積）
+            self._absgrad_report(outputs, gaussian_model, global_step)
+        if self.config.vpc_report > 0:
+            self._vpc_report(gaussian_model, global_step)
 
         # Option-4 emergency path: per-step monster recycle, decoupled from the
         # densify-event schedule (closes the temporal gap that OOM'd b12@2M K=2).
@@ -569,6 +633,143 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         print(f"[densify-blind] step {global_step}: err@opacity-sampled/mean = {opa_w / base:.3f} "
               f"(1.00 = blind)  ceiling(top5%)/mean = {float(top) / base:.2f}  "
               f"err[mean/max]={base:.4f}/{float(e.max()):.4f}")
+
+    @torch.no_grad()
+    def _vpc_report(self, gaussian_model, global_step: int) -> None:
+        """退化定理的前提檢驗：按 v/c 剪，比按 v 剪多省多少成本？（只讀，不剪枝）
+
+        v = 多視角 Σ(T·α)/覆蓋像素（`_measure_multiview_contribution`，24 視角取樣）
+        c = 區間內最大螢幕半徑^2（∝ tile 足跡 ∝ binning 成本）
+        兩者都是既有機制在用的訊號，不需要 CUDA 改動。
+        """
+        if global_step % self.config.vpc_report != 0:
+            return
+        n = gaussian_model.n_gaussians
+        radii = self._max_radii2D
+        if radii is None or radii.shape[0] != n or float(radii.max()) <= 0:
+            print(f"[vpc] step {global_step}: 沒有 radii 視窗 —— 需要 screen_size_prune_px > 0")
+            return
+        v = self._measure_multiview_contribution(gaussian_model)
+        if v is None or v.shape[0] != n:
+            print(f"[vpc] step {global_step}: 取不到 value")
+            return
+        c = radii.float().clamp_min(1.0) ** 2
+
+        def rank(x):
+            r = torch.empty_like(x)
+            r[x.argsort()] = torch.arange(x.numel(), dtype=x.dtype, device=x.device)
+            return r
+
+        # ⚠ 2026-08-26 修正：第一版在全體上比，但**零值粒子超過 10%**（`_measure_multiview_contribution`
+        # 只取樣 24 個視角，加上 EXACT_SUPPORT 讓 o<=1/255 完全不進 binning）=> 兩種排序的
+        # 最低 10% 都是同一批零值（0/c 還是 0）=> 比較是空的（實測兩邊都是 2.36% / 0.00%）。
+        # 現在：零值另外報，所有統計只在 v > 0 的子集上做。
+        nz = v > 0
+        n_nz = int(nz.sum())
+        print(f"[vpc] step {global_step}: N={n} 零值={100*(1-n_nz/max(n,1)):.1f}% "
+              f"（零值的 v 與 v/c 排序相同 => 必須排除才有鑑別力）")
+        if n_nz < 1000:
+            print("      非零粒子太少，無法比較")
+            return
+        v, c = v[nz], c[nz]
+        rv, rc = rank(v), rank(c)
+        rho = float(((rv - rv.mean()) * (rc - rc.mean())).sum()
+                    / (rv.std(unbiased=False) * rc.std(unbiased=False) * n_nz).clamp_min(1e-12))
+        lv, lc = torch.log(v), torch.log(c)
+        pear = float(((lv - lv.mean()) * (lc - lc.mean())).mean()
+                     / (lv.std(unbiased=False) * lc.std(unbiased=False)).clamp_min(1e-12))
+        vpc = v / c
+        C, V = c.sum().clamp_min(1e-12), v.sum().clamp_min(1e-12)
+        print(f"      非零 {n_nz} 顆：rho(v,c)={rho:+.3f} pearson(log v,log c)={pear:+.3f} "
+              f"v/c 跨度={float(vpc.max()/vpc.min()):.2e}   （v=kappa*c 要求 rho≈1、跨度≈1）")
+        for frac in (0.10, 0.30):
+            k = max(1, int(n_nz * frac))
+            m_v = torch.zeros(n_nz, dtype=torch.bool, device=v.device)
+            m_v[v.topk(k, largest=False).indices] = True      # trim 現在做的事
+            m_p = torch.zeros(n_nz, dtype=torch.bool, device=v.device)
+            m_p[vpc.topk(k, largest=False).indices] = True    # 成本感知版
+            cs_v, cs_p = float(c[m_v].sum() / C), float(c[m_p].sum() / C)
+            vl_v, vl_p = float(v[m_v].sum() / V), float(v[m_p].sum() / V)
+            ov = float((m_v & m_p).sum()) / k
+            print(f"      剪最低 {100*frac:.0f}%：按 v 省成本 {100*cs_v:5.2f}% 損價值 {100*vl_v:5.2f}% ｜ "
+                  f"按 v/c 省成本 {100*cs_p:5.2f}% 損價值 {100*vl_p:5.2f}% ｜ "
+                  f"成本 {cs_p/max(cs_v,1e-12):5.2f}x 價值代價 {vl_p/max(vl_v,1e-12):5.2f}x 重疊 {100*ov:.0f}%")
+        # ⚠ 2026-08-26：原本寫「成本倍率 >> 價值代價倍率 才算有自由度」，**那是錯的測法** ——
+        # 兩種方法落在成本軸的完全不同位置（按 v 剪 10% 只砍 6.75% 成本，按 v/c 砍 49.6%），
+        # 比「倍率的倍率」沒有意義。正確的問法是**等成本節省下誰損失的價值少**。
+        print(f"      判讀：比較同一個成本節省水準下的價值損失（按 v 要剪更多顆才追得上 v/c 的成本節省）；"
+              f"rho(v,c) 接近 1 才是退化")
+
+    @torch.no_grad()
+    def _absgrad_report(self, outputs, gaussian_model, global_step: int) -> None:
+        """AbsGS 絕對值位置梯度 vs MCMC 現行的 opacity —— 排出來的名次有沒有實質差別？
+
+        只讀，不改變任何行為。需要光柵器以 `ABSGRAD 1` 編譯（見 `absgrad_report` 的說明）。
+
+        決策相關的問題不是「碰撞存不存在」而是「換了訊號會不會換掉增生的位置」：
+        若 top-10% 幾乎重疊、rho 接近 1，這條線就沒有意義，不必再花 GPU。
+        另外報 |g| 與螢幕足跡的相關 —— AbsGS 的主張是被它抓到的正是**大**粒子。
+        """
+        vp = outputs.get("viewspace_points")
+        g = getattr(vp, "grad", None) if vp is not None else None
+        if g is None or g.shape[-1] < 3:
+            return
+        a = g[:, 2].detach().abs()
+        buf = getattr(self, "_absgrad_accum", None)
+        if buf is None or buf.shape[0] != a.shape[0]:
+            buf = torch.zeros_like(a)                 # N 變動時自癒（trim/relocate/add 都會變）
+        self._absgrad_accum = buf + a
+        # ⚠ 2026-08-27：`absgrad_densify > 0` 但 `absgrad_report == 0` 時，
+        # 原本的 `global_step % 0` 直接 ZeroDivisionError（`agd_b12` 連死兩次）。
+        # 累積發生在上一行、在這個檢查**之前** ⇒ 只要守住取模，densify 用途照常拿得到 `|g|`。
+        if self.config.absgrad_report <= 0 or global_step % self.config.absgrad_report != 0:
+            return
+        e = self._absgrad_accum
+        if float(e.sum()) <= 0:
+            print(f"[absgrad] step {global_step}: 全為 0 —— 光柵器沒有以 ABSGRAD=1 重編，"
+                  f"或 .so 沒有真的換掉（確認 mtime）")
+            self._absgrad_accum = None
+            return
+        o = gaussian_model.get_opacities().detach().squeeze(-1)
+        if o.shape[0] != e.shape[0]:
+            self._absgrad_accum = None
+            return
+
+        def rank(v):
+            r = torch.empty_like(v)
+            r[v.argsort()] = torch.arange(v.numel(), dtype=v.dtype, device=v.device)
+            return r
+
+        ra, ro = rank(e), rank(o)
+        rho = float(((ra - ra.mean()) * (ro - ro.mean())).sum()
+                    / (ra.std(unbiased=False) * ro.std(unbiased=False) * ra.numel()).clamp_min(1e-12))
+        k = max(1, e.numel() // 10)
+        overlap = len(set(e.topk(k).indices.tolist()) & set(o.topk(k).indices.tolist())) / k
+        zero = float((e <= 0).float().mean())
+        # ★ 天花板（2026-08-26，`egd_b12` 的教訓）：`_report_densify_blindness` 量到
+        # 我方誤差分數的 `ceiling(top5%)/mean` 只有 **1.22** —— 完美取樣器也只能看到
+        # 1.22 倍的平均誤差 ⇒ 「往誤差高處增生」本來就沒什麼可賺，實測也確實淨負
+        # （egd_b12 26.271 vs sched30 26.377）。但那是**我方誤差分數**的天花板：它把
+        # |render-gt| 池化到 16px tile、在投影中心取值、**不乘足跡** ⇒ 分數天生就平。
+        # 這裡對 |g| 算同一個量：若也 ~1.2，整個「誤差導向增生」家族就死了；
+        # 若明顯更高，代表 1.22 只是我方訊號做得爛，AbsGS 那條線還活著。
+        mean_e = e.mean().clamp_min(1e-30)
+        k5 = max(1, e.numel() // 20)
+        ceil5 = float(e.topk(k5).values.mean() / mean_e)
+        opa_w = float((o * e).sum() / o.sum().clamp_min(1e-12) / mean_e)
+        line = (f"[absgrad] step {global_step}: N={e.numel()} rho(|g|, opacity)={rho:+.3f} "
+                f"top10%重疊={100*overlap:.1f}% 零值={100*zero:.1f}% "
+                f"|g|@opacity取樣/平均={opa_w:.3f}(1.00=盲) "
+                f"天花板(top5%)/平均={ceil5:.2f}  <- 誤差分數版只有 1.22 "
+                f"|g|[中位/最大]={float(e.median()):.3e}/{float(e.max()):.3e}")
+        r2 = getattr(self, "_max_radii2D", None)
+        if r2 is not None and r2.shape[0] == e.shape[0] and float(r2.max()) > 0:
+            rr = rank(r2.float())
+            rho_r = float(((ra - ra.mean()) * (rr - rr.mean())).sum()
+                          / (ra.std(unbiased=False) * rr.std(unbiased=False) * ra.numel()).clamp_min(1e-12))
+            line += f" rho(|g|, 螢幕半徑)={rho_r:+.3f}"
+        print(line)
+        self._absgrad_accum = None
 
     @torch.no_grad()
     def _dar_cost_decay(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:

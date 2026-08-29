@@ -142,6 +142,10 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
 
         with torch.no_grad():
             dead_mask = (gaussian_model.get_opacities() <= self.config.min_opacity).squeeze(-1)
+            # ⚠ 2026-08-25：我曾在這裡加 densify 診斷輸出，但**這個方法被
+            # `MCMC2DGSDensityControllerImpl.after_backward` 覆寫**（我方所有跑次都走子類），
+            # 所以它從來沒執行過 —— 沉默地量到「什麼都沒有」。要加診斷請加在子類。
+            # 該問題最後是用 `tools/trim_audit.py`（零 GPU，從族群曲線反推）解掉的，見 §11.21。
             # replace based on alive Gaussians
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
             self.add_new_gs(gaussian_model, optimizers)
@@ -314,6 +318,31 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
             return 0
 
         probs = gaussian_model.get_opacities().squeeze(-1)
+
+        # ── 成本感知／AbsGS 導向的增生取樣（2026-08-26，§11.34 的結論）─────────────────
+        # `vpc_prune_frac 0.05` 慘敗（-2.34 dB）的根因是**接線與診斷不符**：診斷（§11.28）
+        # 量的是「**移除**」低 v/c 的成本-價值前緣，但那個旗標把 mask 併進 `dead_mask`
+        # ⇒ 實際走 relocation，把粒子丟到依 opacity 取樣的隨機宿主、毀掉它原本在做的事。
+        # ⇒ 正確的用法是**決定往哪裡增生（改變集合）**，而不是把既有粒子搬走（破壞集合）。
+        # 這裡就是那個插槽 —— `blur_split_budget` 也是用同一個位置。
+        #
+        # 兩個獨立旗標，預設 0 = 現行行為：
+        #   absgrad_densify   probs *= (1 + w * |g|/mean|g|)   AbsGS 訊號，天花板實測 16x（§11.30）
+        #   cost_aware_densify probs /= (c/median(c))^w        成本感知，c = 螢幕半徑^2
+        # 保留 opacity 當基底：MCMC 的分裂公式 o_new = 1-(1-o)^(1/N) 會把父代 opacity 分給
+        # 子代，抽到低 opacity 的父代只會生出更淡的子代 ⇒ 乘法式只改「質量往哪去」。
+        _n = probs.shape[0]
+        _w = getattr(self.config, "absgrad_densify", 0.0)
+        if _w > 0:
+            _g = getattr(self, "_absgrad_accum", None)
+            if _g is not None and _g.shape[0] == _n and float(_g.sum()) > 0:
+                probs = probs * (1.0 + _w * _g / _g.mean().clamp_min(1e-30))
+        _cw = getattr(self.config, "cost_aware_densify", 0.0)
+        if _cw > 0:
+            _r = getattr(self, "_max_radii2D", None)
+            if _r is not None and _r.shape[0] == _n and float(_r.max()) > 0:
+                _c = _r.float().clamp_min(1.0) ** 2
+                probs = probs / (_c / _c.median().clamp_min(1e-12)).pow(_cw)
         # Blur split. MCMC picks hosts by opacity, which is blind to WHERE detail is missing: a
         # primitive that alone explains a large patch is under-reconstructing it, and cloning THAT
         # one is what adds detail. Mini-Splatting (arXiv 2403.14166 Eq. 2) splits on exactly that
