@@ -38,26 +38,47 @@ supply-side lever. Every prior method surveyed is the `c_i ≡ 1` special case; 
 (arXiv 2403.09413), whose `s = HW/(9πN)` is a per-primitive screen budget — see §3.1 for the
 precise distinction that survives.
 
-**Current best single-block recipe (b12, MatrixCity aerial):**
-- `opacity_reg=0` — MCMC's opacity L1 exists to feed relocation with dead points, and our
-  depth-init already solves the initialisation problem relocation is there to fix. Removing it:
-  **+1.04 dB, 10.9× faster, 3G less VRAM** (22.117 → 23.158). It also turned out that the
-  "two-phase dynamics" and the "87% zombie" economy were artifacts of that L1, not intrinsic.
-- `EXACT_SUPPORT` in the trim rasterizer — drops primitives with `o ≤ 1/255` from binning.
-  Byte-identical (the blend loop already discards `alpha < 1/255` in both passes), −20.3% render
-  VRAM, training ceiling 2.0M → 2.5M primitives.
-- SB color (`Gaussian2DSB`, F=25 vs SH3's 59). Costs −0.46 dB in this diffuse aerial content;
-  see `紀錄/研究總覽.md` §8 for why (DBS never evaluates SB on a Gaussian kernel).
+**Current best recipe (validated on BOTH b12 and b7, 2026-08-29):**
+`sched30` + **`absgrad_densify 1.0`** — script `scripts/task_absgrad_densify.sh`
+```
+b12  26.29 -> 26.43   PSNR +6.3sd  SSIM +68.8sd  LPIPS +13.4sd
+b7   24.99 -> 25.28   PSNR +10.0sd SSIM +99.6sd  LPIPS +16.7sd
+```
+- `sched30` = cap 2.6M / `densify_until_iter` 30k / `opacity_reg` **0.002** / `lambda_normal` 0 /
+  `depth_loss_weight.init` 0. ⚠ **NOT `opacity_reg=0`** — that was an older result on older data.
+- **`absgrad_densify`** steers MCMC's parent sampling by AbsGS's absolute positional gradient:
+  `probs = opacity * (1 + w*|g|/mean|g|)`. Requires the rasterizer built with `ABSGRAD 1`
+  (`cuda_rasterizer/auxiliary.h`); `|g|` is accumulated into the never-read `dL_dmean2D.z`,
+  so renders and gradients are bit-identical. See `紀錄/研究總覽.md` §11.45/§11.47.
+- `EXACT_SUPPORT` in the trim rasterizer — drops primitives with `o <= 1/255` from binning.
+  Byte-identical, -20.3% render VRAM.
+- Zero-weight loss gating (`gs2d_metrics` / `citygsv2_metrics`): skip the normal/dist/depth
+  losses when their weight is 0 — bit-identical, **-9%** wall clock. `skip_surf_normal` -1%.
+  ⛔ `fused_ssim` was tried and **reverted**: -4.9% time but SSIM is an outlier vs same-config
+  repeats (-4.06sd, sample sd +119% when included).
 
 **⚫ Retired lines — do not restart without reading `紀錄/研究總覽.md` §7 first:**
 DT-ADMM-GAT (the original proposal), reactive shadow-price λ, radius-based monster detection,
-gradient checkpointing, Scaffold/latent-MLP variants, error-guided densify (measured ceiling only
-1.2×). The dual mathematics from the ADMM line survives, applied to the VRAM constraint.
+gradient checkpointing, Scaffold/latent-MLP variants. The dual mathematics from the ADMM line
+survives, applied to the VRAM constraint.
+⚠ **"error-guided densify" was on this list with "measured ceiling only 1.2×" — that was WRONG
+and would have blocked the current best recipe.** The 1.2x ceiling belongs to OUR error score
+(pooled |render-gt| at the projected centre, **not footprint-weighted**); AbsGS's `|g|` measures
+**16.68x** on the same statistic. Signal quality, not the family, was the problem. See §11.30.
+Also retired with measurements: `vpc_prune_frac` (-2.34 dB — relocating low-v/c primitives
+destroys what they were doing; "change the set" works, "break the set" does not),
+`scale_reg=0` (-18sd — the "dust" it makes is a by-product of it holding the scale ceiling),
+pure time-compressed proxies (three time scales cannot all be preserved), `notrim2`
+(b12 wins, b7 reverses).
 
 **Hard constraints (these are 鐵律, violating them invalidates results):**
-- **GT-free**: method uses images + SfM + pseudo-depth only. MatrixCity GT is not used at all —
-  the official test set is ~150× Sim3-misaligned with our COLMAP frame. Comparison protocol is
-  SfM held-out (`split_mode=experiment`) plus a self-run CityGS baseline; the paper's 27.23 is
+- **GT-free**: method uses images + SfM + pseudo-depth only.
+  ⚠ **Two claims here were refuted (2026-08-01, memory `data_poses_are_gt`) and are kept only
+  as history**: (a) the "~150x Sim3-misaligned official test set" — the official 741 frames are
+  100% alignable; (b) "GT is not used at all" — `sparse/0` poses ARE the GT poses x1/100
+  (alignment residual 0.0px), so we are already consuming GT poses. **"GT-free" needs re-deciding.**
+  Comparison protocol is SfM held-out (`split_mode=experiment`) plus a self-run CityGS baseline;
+  the paper's 27.23 is
   context, not a target to claim against. See memory `eval_protocol`.
 - **Current data only** (SfM regenerated 2026-05-29; older coarse models are in a different
   coordinate system and must not be used as init).
