@@ -34,9 +34,13 @@ price them by render cost and solve a resource-constrained problem:
 with `c_i` = screen-tile footprint (VRAM-grounded), `λ` = shadow price, `K` = strip tiling as a
 supply-side lever. Every prior method surveyed is the `c_i ≡ 1` special case; see
 `紀錄/研究總覽.md` §3 (theory) and §8 (12 papers audited implementation-vs-text).
-⚠ The claim "every prior method is the `c_i ≡ 1` special case" does NOT hold for RAIN-GS
-(arXiv 2403.09413), whose `s = HW/(9πN)` is a per-primitive screen budget — see §3.1 for the
-precise distinction that survives.
+⚠ The claim "every prior method is the `c_i ≡ 1` special case" has **two counterexamples** —
+RAIN-GS (arXiv 2403.09413), whose `s = HW/(9πN)` is a global screen budget, and **Taming 3DGS,
+whose densify score contains `c^i_g` = "number of pixels covered by g in view i" per primitive**.
+Taming's sign is **positive** (+0.1: large footprint -> blurry -> densify MORE), ours divides.
+Their weight is 0.1 against `∇g`'s 50, i.e. ~0.2% of the score, so **they never really tested
+that direction either**. The surviving distinction is `c` as **detector** vs `c` as **price**
+(bound to `(1/K)·Σc_i ≤ B`), NOT "who uses `c`". See §3.1.
 
 **Current best recipe (validated on BOTH b12 and b7, 2026-08-29):**
 `sched30` + **`absgrad_densify 1.0`** — script `scripts/task_absgrad_densify.sh`

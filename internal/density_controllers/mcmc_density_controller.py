@@ -337,8 +337,15 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
             _g = getattr(self, "_absgrad_accum", None)
             if _g is not None and _g.shape[0] == _n and float(_g.sum()) > 0:
                 probs = probs * (1.0 + _w * _g / _g.mean().clamp_min(1e-30))
+        # w > 0：往**便宜**的地方增生 —— 我方成本感知命題。
+        # w < 0：往**貴**的地方增生 —— Taming 3DGS 的方向（2026-08-29 讀原文查出）。
+        #   它的 score 有一項 `c^i_g` =「g 在該視角覆蓋的像素數」，權重 **+0.1（正的）**，
+        #   理由 "large projections ... lead to a blurry appearance" ⇒ 大足跡該多分裂。
+        #   ⚠ 但 0.1 相對 `∇g` 的 50、`D^i_g` 的 50 只佔約 0.2% ⇒ **他們並沒有真的檢驗過
+        #     這個方向**，只是給了個近乎 no-op 的小權重加一句敘述。
+        #   ⇒ 兩個方向都值得量，負值路徑因此保持可達（原本 `> 0` 會靜默忽略負值）。
         _cw = getattr(self.config, "cost_aware_densify", 0.0)
-        if _cw > 0:
+        if _cw != 0:
             _r = getattr(self, "_max_radii2D", None)
             if _r is not None and _r.shape[0] == _n and float(_r.max()) > 0:
                 _c = _r.float().clamp_min(1.0) ** 2
