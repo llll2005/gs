@@ -241,3 +241,13 @@ bash scripts/task_test.sh agd2du36_b12
 # 判準：四指標都在 ±3sd 內 => 採用（每次跑次省約 7.5%）。對照 agd2_b12。
 bash scripts/task_tsub4_b12.sh
 bash scripts/task_test.sh tsub4_b12
+
+# ★★★★★ 把 V2 有、我方關掉的幾何正則項加回來（1/2）：偽深度監督 depth_loss 0.5
+# depth_loss 是在 §12.6 用**汙染的 scales** 關掉的，且只看平均與建築區、沒看尾巴。
+# 判準改為主看糊掉%/corr中位（§11.55：失效集中在 46% 的 tile，平均被能用的 54% 主導）。
+bash scripts/task_agd2dl05_b12.sh
+bash scripts/task_test.sh agd2dl05_b12
+
+# ★★★★★ 把 V2 有、我方關掉的幾何正則項加回來（2/2）：法線一致性 lambda_normal 0.0125
+bash scripts/task_agd2ln_b12.sh
+bash scripts/task_test.sh agd2ln_b12
