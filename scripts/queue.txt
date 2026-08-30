@@ -221,8 +221,6 @@
 
 # ★★★★ 找 absgrad_densify 強度轉折點：w=3.0（b12）
 # w=1->2 三指標全贏但紋理比 -2.7sd = 首次出現代價跡象 => 峰值可能就在附近。
-bash scripts/task_agd3_b12.sh
-bash scripts/task_test.sh agd3_b12
 
 # ★★★ trim 取樣 v2：24 台不夠（Spearman 0.845 / 重疊 92.5%，判準 >0.99 且 >95%）
 # 但 92.5% 已經很接近 => 試每 4 台取 1（71 台）。過關仍可省 75% 的 trim 成本 ≈ 7.5% 跑次時間。
