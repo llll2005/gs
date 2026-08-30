@@ -320,8 +320,20 @@ class SepDepthTrim2DGSRenderer(Renderer):
         push, gather = contribution_accumulator(self.K)
         blur = None
         with torch.no_grad():
-            print("Trimming...")
-            for i in range(len(cameras)):
+            # `TRIM_SUBSAMPLE=n` => 週期 trim 只用每 n 台相機算 contribution（n=1 = 原行為）。
+            # trim pass 佔 profile 視窗約 80%、約 9h 跑次的 10% => n=4 省約 7.5% 總時間。
+            # 前提（§11.52，`TRIM_SUBSAMPLE_PROBE`）：71 台 vs 284 台，
+            #   **底部 10% 遮罩重疊 99.8%** —— trim 只用到這個集合（`contribution <= quantile`），
+            #   全排序的 Spearman(0.951) 沒有被任何程式碼讀到。
+            # ⚠ 但只在 step=1 量過**一個時點**，而一次跑次有約 120 次 trim ⇒ 誤差可能累積
+            #   ⇒ **必須端到端驗分數才可採用**，不可只憑探針。
+            # ⚠ 只作用在**週期** trim。起始 trim（step==1，另一處）維持全視角：
+            #   它只跑一次、不佔時間，但會砍掉 73~90% 的初始化，是被記錄的關鍵機制。
+            # ⚠ 用環境變數而非 config：ckpt-init 會把 renderer 整個換掉（同 §11.52 的坑）。
+            stride = max(1, int(os.environ.get("TRIM_SUBSAMPLE", "1") or 1))
+            n_used = len(range(0, len(cameras), stride))
+            print(f"Trimming...（相機 {n_used}/{len(cameras)}，stride={stride}）")
+            for i in range(0, len(cameras), stride):
                 camera = cameras[i].to_device(device)
                 mean, covered = self(
                     camera,
