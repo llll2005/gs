@@ -226,12 +226,10 @@
 # 但 92.5% 已經很接近 => 試每 4 台取 1（71 台）。過關仍可省 75% 的 trim 成本 ≈ 7.5% 跑次時間。
 
 # ★★★★ 補跑 agd2_b7 的 test（08-30 15:41 因漏帶區塊參數 0 秒失敗；task_test.sh 已修成自動推斷）
-bash scripts/task_test.sh agd2_b7 7
 
 # ★★★ 逐 op profile @現行最佳組態（~5 分鐘）—— 兩天速度線的第一個診斷
 # 先前的 profile 早於零權重閘門(-9%)、skip_surf_normal(-1%) 與 ABSGRAD 的額外 atomicAdd
 # => 現在的成本分布已經不同，先量再決定往哪裡砍。
-bash scripts/task_opprofile.sh
 
 # ★★★★ densify_until x 強度的交互作用：agd2 + densify_until 36k（b12）
 # sched30 的 30k 是在 w=0 時調出來的；w=2 讓 densify 階段更有產出 => 最佳停止點可能後移。
