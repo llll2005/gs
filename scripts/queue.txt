@@ -218,8 +218,6 @@
 
 # ★★★★★ 跨塊驗證：agd2（absgrad_densify 2.0）換到 block_7 —— w=2 進配方的必要條件
 # b12 三指標全贏 w=1.0（+6.4/+25.5/+8.3 sd，新高 26.56）但 n=1 單塊；notrim2 就是 b7 反轉的。
-bash scripts/task_agd2_b7.sh
-bash scripts/task_test.sh agd2_b7
 
 # ★★★★ 找 absgrad_densify 強度轉折點：w=3.0（b12）
 # w=1->2 三指標全贏但紋理比 -2.7sd = 首次出現代價跡象 => 峰值可能就在附近。
@@ -229,3 +227,11 @@ bash scripts/task_test.sh agd3_b12
 # ★★★ trim 取樣 v2：24 台不夠（Spearman 0.845 / 重疊 92.5%，判準 >0.99 且 >95%）
 # 但 92.5% 已經很接近 => 試每 4 台取 1（71 台）。過關仍可省 75% 的 trim 成本 ≈ 7.5% 跑次時間。
 TRIM_SUBSAMPLE_PROBE=4 bash scripts/task_trimsub.sh
+
+# ★★★★ 補跑 agd2_b7 的 test（08-30 15:41 因漏帶區塊參數 0 秒失敗；task_test.sh 已修成自動推斷）
+bash scripts/task_test.sh agd2_b7 7
+
+# ★★★★ densify_until x 強度的交互作用：agd2 + densify_until 36k（b12）
+# sched30 的 30k 是在 w=0 時調出來的；w=2 讓 densify 階段更有產出 => 最佳停止點可能後移。
+bash scripts/task_agd2du36_b12.sh
+bash scripts/task_test.sh agd2du36_b12

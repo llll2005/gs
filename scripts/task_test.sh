@@ -5,7 +5,18 @@
 # otherwise leave the wrong numbers in place (happened to cap4m_b12 on 2026-08-07).
 set -u
 cd "$(dirname "$0")/.." || exit 1
-NAME=$1; BLK=${2:-12}
+NAME=$1; BLK=${2:-}
+# ⚠ 2026-08-30：原本寫死 `BLK=${2:-12}`，`task_test.sh agd2_b7`（漏第二個參數）
+# 就去找不存在的 block_12 => `no config` + exit 1，**0 秒失敗**，而 runner 只記 rc=1
+# 往下跑，很容易被當成「跑過了」。現在缺參數就自己推斷（只有一個區塊時）。
+if [ -z "$BLK" ]; then
+  cand=$(find "outputs/$NAME/blocks" -maxdepth 1 -type d -name 'block_*' 2>/dev/null)
+  if [ "$(printf '%s\n' "$cand" | grep -c .)" = "1" ]; then
+    BLK=$(basename "$cand" | sed 's/^block_//')
+  else
+    BLK=12
+  fi
+fi
 D=outputs/$NAME/blocks/block_$BLK
 CFG=$(ls -t $D/lightning_logs/version_*/config.yaml 2>/dev/null | head -1)
 [ -z "$CFG" ] && { echo "no config for $NAME"; exit 1; }

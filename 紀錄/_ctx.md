@@ -12,7 +12,7 @@
 
 ```
 現行最佳  sched30 + **absgrad_densify 1.0**   腳本 scripts/task_absgrad_densify.sh
-★ 2026-08-30 待驗：`absgrad_densify` **2.0** 在 b12 三指標全贏 w=1.0（26.56，+6.4/+25.5/+8.3 sd），但 n=1 單塊，**b7 驗證前不可當配方**（§11.51）。
+★ 2026-08-30 **已採用**：`absgrad_densify` **2.0**（b12 26.5602 / b7 25.1361）。SSIM/LPIPS 兩塊都顯著贏、無指標轉負；⚠ 但 PSNR 大增益**只在 b12**（+6.4sd vs b7 +1.5sd）⇒ 增益塊相依，不可宣稱普遍 +0.18 dB（§11.53）。
           b12 = **26.43**（vs sched30 的 26.29±0.08，+6.3sd）
           b7  = **25.28**（vs sched30 的 24.99，+10.0sd）  <- **兩塊都贏，四指標同向**
           ⚠ 需要光柵器以 `ABSGRAD 1` 編譯（cuda_rasterizer/auxiliary.h）
