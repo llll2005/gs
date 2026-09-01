@@ -333,6 +333,22 @@ class MCMC2DGSDensityController(MCMCDensityController):
 
     cost_aware_densify: float = 0.0
 
+    harvest_relocate: bool = False
+    """★ 收割期回收（使用者 2026-09-01 提案）：`densify_until_iter` 之後**繼續 relocation
+    但不成長**（只搬死粒子到 `probs` 抽中的宿主，不呼叫 `add_new_gs`）⇒ N 不變、不動 cap/VRAM。
+
+    動機（§11.61/§11.62）：收割期的 opacity 兩極化持續製造死粒子（判死 3.77% -> 15.03%），
+    而回收路徑在 `:487` early-return ⇒ 最終 2.34M 顆裡約 351,500 顆躺著不做事。
+
+    ⚠ **與已知淨負的 churn 是同一個操作**（`notrim2` 的 27,700 步純 churn，§11.26）。
+    差別在**送去哪裡**：那時 `probs = opacity`（盲目），現在是 `o*(1+w|g|/mean|g|)`
+    ⇒ 送到「梯度說缺細節的地方」，而那是唯一跨塊驗證過有效的機制（w=2 為峰值）。
+    ⚠ 成本在**目的地**：`relocate_gs` 會 reset 宿主的 Adam 動量（MCMC 論文 §3.4），
+    而收割期的宿主正是在收斂最終外觀的那些 —— 這就是 churn 淨負的具體機制。
+    ⚠ 強度小：死亡累積 0.375pp/1000 步 x `densification_interval` 150
+    ⇒ 每次事件僅擾動約 **0.056%** 的族群（notrim2 的 churn 遠比這密集）。
+    """
+
     cost_budget: float = 0.0
     """★ 成本預算（§11.60）。>0 時把族群的生長條件從**顆數** `N <= cap_max`
     換成**渲染成本** `max_view Σ_i (2r_i/16)^2 <= cost_budget`。
@@ -485,6 +501,30 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             gaussian_model.gaussians["opacities"].grad = None
 
         if global_step >= self.config.densify_until_iter:
+            # ★ 收割期回收（使用者 2026-09-01 提案）：densify 停了，但 opacity 兩極化持續
+            # 製造死粒子（判死 3.77% -> 15.03%，§11.62），而回收路徑在這裡 early-return
+            # ⇒ 那些粒子躺到結束，什麼也不做。本旗標讓 relocation 繼續，**但不成長**
+            # （只呼叫 relocate，不呼叫 add_new_gs ⇒ N 不變 ⇒ 不動 cap/VRAM）。
+            #
+            # 為什麼值得試（與已知淨負的 churn 的差別）：
+            #   ⚠ notrim2 的 27,700 步純 churn 實測淨負（§11.26），**是同一個操作**。
+            #   但那時 `probs = opacity`（盲目）；現在 `probs = o*(1+w|g|/mean|g|)`
+            #   ⇒ 送去的地方變成「梯度說缺細節的地方」，而那是唯一驗證過有效的機制。
+            #   強度也小：死亡累積 0.375pp/1000 步 x 間隔 150 = 每次約 0.056% 的族群。
+            # ⚠ 成本在**目的地**：relocate 會 reset 宿主的 Adam 動量（MCMC 論文 §3.4），
+            #   而收割期的宿主正是在收斂外觀的那些 ⇒ 這就是 churn 淨負的機制。
+            # ⚠ 門檻用 `min_opacity` 即可：實測 `o<0.005` 與 `o<=1/255` 選到同一批
+            #   （15.03% vs 14.96%，比 0.995，§11.61）⇒ 再收緊門檻沒有意義。
+            if self.config.harvest_relocate and global_step % self.config.densification_interval == 0:
+                with torch.no_grad():
+                    _dead = (gaussian_model.get_opacities()
+                             <= self._current_min_opacity(global_step)).squeeze(-1)
+                    _n_dead = int(_dead.sum())
+                    if _n_dead > 0:
+                        self.relocate_gs(gaussian_model, optimizers, _dead)
+                        if global_step % 3000 == 0:
+                            print(f"[harvest-relocate] step {global_step}: 回收 {_n_dead} 顆"
+                                  f"（{_n_dead / max(gaussian_model.n_gaussians, 1):.3%} 的族群）")
             if self.config.harvest_dust_trim_interval > 0 \
                     and global_step % self.config.harvest_dust_trim_interval == 0:
                 with torch.no_grad():

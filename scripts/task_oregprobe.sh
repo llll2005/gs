@@ -27,7 +27,7 @@ export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 CKPT="outputs/agd2_b12/blocks/block_12/checkpoints/epoch=105-step=29999.ckpt"
 [ -f "$CKPT" ] || { echo "找不到 30k ckpt: $CKPT"; exit 1; }
 
-run_arm () {   # $1 = 臂名  $2 = opacity_reg_until_iter
+run_arm () {   # $1 = 臂名  $2 = opacity_reg_until_iter  $3 = harvest_relocate
   rm -rf "outputs/$1"
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
@@ -41,13 +41,19 @@ run_arm () {   # $1 = 臂名  $2 = opacity_reg_until_iter
     --model.density.init_args.screen_size_prune_px 300 \
     --model.metric.init_args.opacity_reg 0.002 \
     --model.metric.init_args.opacity_reg_until_iter "$2" \
+    --model.density.init_args.harvest_relocate "$3" \
     --model.metric.init_args.lambda_normal 0.0 \
     --model.metric.init_args.depth_loss_weight.init 0.0 \
     -n "$1"
 }
-run_arm oregprobe_a -1        # 對照：L1 全程
-run_arm oregprobe_b 30000     # 介入：L1 在 30k 後歸零
+run_arm oregprobe_a -1     false   # 對照：現行行為（L1 全程、收割期不回收）
+run_arm oregprobe_b 30000  false   # 介入1：只移除 L1 下壓力
+run_arm oregprobe_c -1     true    # 介入2：L1 照舊，但收割期繼續回收死粒子（使用者提案）
+#   ⚠ c 臂是「同一個操作、不同目的地」：notrim2 的純 churn 實測淨負，但那時 probs=opacity
+#     （盲目）；現在是 o*(1+2|g|/mean|g|) => 送到梯度說缺細節的地方。
+#   ⚠ c 臂的成本在目的地：relocate 會 reset 宿主 Adam 動量，而收割期宿主正在收斂外觀。
+#     強度：每次事件約搬族群的 0.056%（1,350 顆），遠低於 notrim2 的 churn 密度。
 
 echo; echo "===== 開獎 ====="
 CUDA_VISIBLE_DEVICES="" python tools/opacity_drift.py \
-  "agd2_b12@29999:起點" oregprobe_a:對照-L1全程 oregprobe_b:介入-L1歸零
+  "agd2_b12@29999:起點30k" oregprobe_a:A對照 oregprobe_b:B移除L1 oregprobe_c:C收割回收
