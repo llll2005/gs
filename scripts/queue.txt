@@ -256,3 +256,9 @@ bash scripts/task_cbcal.sh
 # => freeze_opacity_after_densify 會把兩極化一起關掉，大概率輸且理由會被誤讀。已撤。
 # 改測更外科的介入：只移除 L1 下壓力、保留光度梯度。判準看**速率**不看終點分數。
 bash scripts/task_oregprobe.sh
+
+# ★★★ 穩態每步成本拆解（~2 分鐘）—— 速度線的前置量測工具
+# 先前三次量測全被誤導：跨跑次 wall time 噪音 5%／cProfile 的 CUDA 非同步歸因／
+# 40 步視窗被一次性起始 trim 佔 80%。本工具用 CUDA event + 同 process + 多次取中位數。
+# 目的：先知道 602ms/step 花在哪，再決定要不要動 —— 不再讀碼猜。
+bash scripts/task_stepbreak.sh
