@@ -43,10 +43,19 @@ TILE = 16
 
 
 def load_run(run):
+    """`run` 或 `run@step`。後者用於量**同一次跑次的軌跡**：
+    B 與 N 若在整條軌跡上等比例上升，代表「限制成本」等價於「限制顆數」
+    ⇒ `Sigma c_i <= B` 動態上退化，不值得寫 controller（§11.50 只比了三個跑次的終點）。"""
+    want_step = None
+    if "@" in run:
+        run, w = run.split("@", 1)
+        want_step = int(w)
     cks = sorted(glob.glob(f"outputs/{run}/**/*.ckpt", recursive=True),
                  key=lambda p: int(p.split("step=")[-1].split(".")[0]))
     if not cks:
         raise SystemExit(f"找不到 {run} 的 ckpt")
+    if want_step is not None:
+        cks = [p for p in cks if int(p.split("step=")[-1].split(".")[0]) == want_step] or cks[-1:]
     ck = torch.load(cks[-1], map_location="cpu")
     g = ck["state_dict"]
     means = g["gaussian_model.gaussians.means"].float()
