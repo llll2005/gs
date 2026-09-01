@@ -249,3 +249,10 @@ bash scripts/task_test.sh agd2ln_b12
 # ★★★ 成本預算標定（~4 分鐘）：讀出線上 Load 的單位，才能設 cost_budget
 # 探針的 23.1M 是解析投影算的，線上用光柵器 radii => 同定義不同實作，不可直接沿用。
 bash scripts/task_cbcal.sh
+
+# ★★★★★ 收割期凍結 opacity（§11.61 的缺口）：判死比例 30k 3.77% -> 60k 15.03%
+# 旗標 freeze_opacity_after_densify 早就實作、預設關、從沒跑過。
+# ⚠ 不等於 opacity_reg=0：正則在生長期照常，只在回收器已關的收割期關掉。
+# ★ 除四指標外另看終點 N（預期 >2.34M）與判死比例（預期 <<15.03%）。
+bash scripts/task_agd2frz_b12.sh
+bash scripts/task_test.sh agd2frz_b12
