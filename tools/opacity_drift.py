@@ -74,6 +74,16 @@ def main():
 
     if len(rows) >= 2:
         base = rows[0]
+        same_step = all(r[1] == base[1] for r in rows)
+        if same_step:
+            # 同步數的臂間比較：速率沒有意義（Δ步=0），只印絕對差
+            print(f"\n相對「{base[0]}」的差（同一步數，直接比絕對值）：")
+            for label, step, n, med, frac in rows[1:]:
+                print(f"  {label:>20}  判死 {frac[0] - base[4][0]:>+7.2%}  "
+                      f"中間帶 {frac[1] - base[4][1]:>+7.2%}  "
+                      f"0.05~0.5 {frac[2] - base[4][2]:>+7.2%}  "
+                      f"確信 {frac[3] - base[4][3]:>+7.2%}  中位 {med - base[3]:>+8.4f}")
+            return
         print(f"\n相對「{base[0]}」的變化（每 1000 步）：")
         for label, step, n, med, frac in rows[1:]:
             d = max(step - base[1], 1) / 1000.0
