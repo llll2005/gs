@@ -250,9 +250,9 @@ bash scripts/task_test.sh agd2ln_b12
 # 探針的 23.1M 是解析投影算的，線上用光柵器 radii => 同定義不同實作，不可直接沿用。
 bash scripts/task_cbcal.sh
 
-# ★★★★★ 收割期凍結 opacity（§11.61 的缺口）：判死比例 30k 3.77% -> 60k 15.03%
-# 旗標 freeze_opacity_after_densify 早就實作、預設關、從沒跑過。
-# ⚠ 不等於 opacity_reg=0：正則在生長期照常，只在回收器已關的收割期關掉。
-# ★ 除四指標外另看終點 N（預期 >2.34M）與判死比例（預期 <<15.03%）。
-bash scripts/task_agd2frz_b12.sh
-bash scripts/task_test.sh agd2frz_b12
+# ★★★★★ 收割期 opacity 動力學小實驗（兩臂各約 20 分鐘）—— 取代原本排的 9.6h freeze 跑次
+# 免費 CPU 量測已削弱原假說：收割期不是「L1 壓死大家」而是**兩極化**
+#   （o 中位 0.1083->0.1539 升／o>0.5 9.12%->23.22% 翻倍／中間帶 22.26%->8.99% 排乾）
+# => freeze_opacity_after_densify 會把兩極化一起關掉，大概率輸且理由會被誤讀。已撤。
+# 改測更外科的介入：只移除 L1 下壓力、保留光度梯度。判準看**速率**不看終點分數。
+bash scripts/task_oregprobe.sh
