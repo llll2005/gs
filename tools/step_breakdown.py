@@ -126,6 +126,42 @@ def main():
             return torch.bmm(cov, nz.unsqueeze(-1)).squeeze(-1)
         results.append(("MCMC noise(cov3d+bmm)", cuda_time(noise_term, args.repeat)))
 
+    # ---------------- VRAM 分項 ----------------
+    # 為什麼要量（§11.66）：成本預算的目標值取決於「VRAM 到底是誰用掉的」。
+    # 舊模型 `M*F*4 + gamma*tau` 給出 1,119 B/顆 x 2.34M = 2.62 GB，
+    # 但台帳實測 5.6 GB ⇒ **有 3 GB 沒被解釋**，而那個缺口決定成本感知的可得空間。
+    print("\n===== VRAM 分項 =====")
+    B = 1024 ** 3
+    _gs = model.gaussians
+    # ParameterDict / dict 都有 .values()；真的沒有就退回 model.parameters()
+    _params = list(_gs.values()) if hasattr(_gs, "values") else list(model.parameters())
+    n_par = sum(p.numel() for p in _params)
+    print(f"{'逐顆參數（實數）':>24} {n_par * 4 / B:>7.3f} GB   "
+          f"（{n_par / max(n, 1):.1f} floats/顆）")
+    print(f"{'  + 梯度（同大小）':>24} {n_par * 4 / B:>7.3f} GB")
+    print(f"{'  + Adam 兩個動量':>24} {n_par * 8 / B:>7.3f} GB")
+    print(f"{'小計（訓練期常駐）':>24} {n_par * 16 / B:>7.3f} GB   <- 這項只看 N，成本預算動不到")
+
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    base = torch.cuda.memory_allocated()
+    o = render()
+    fwd_peak = torch.cuda.max_memory_allocated()
+    print(f"{'渲染 forward 峰值增量':>24} {(fwd_peak - base) / B:>7.3f} GB   <- 成本預算能動的就是這塊")
+    del o
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    base2 = torch.cuda.memory_allocated()
+    fb()
+    fb_peak = torch.cuda.max_memory_allocated()
+    print(f"{'forward+backward 峰值增量':>24} {(fb_peak - base2) / B:>7.3f} GB")
+    print(f"{'（目前 allocated）':>24} {torch.cuda.memory_allocated() / B:>7.3f} GB")
+    print(f"{'（目前 reserved）':>24} {torch.cuda.memory_reserved() / B:>7.3f} GB")
+    print("""
+判讀：常駐（參數+梯度+Adam）只隨 N 變化，**成本感知動不到它**；
+      能動的只有「渲染 forward 峰值增量」。兩者的比值就是成本預算的可得空間上界。
+⚠ 台帳的 VRAM 是 reserved 峰值（含碎片與快取），一定大於這裡的 allocated。""")
+
     tot = sum(v for _, v in results)
     print(f"\n{'段落':>24} {'ms':>9} {'佔已量':>8}")
     for k, v in results:
