@@ -314,6 +314,22 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         target_num = min(cap_max, int(getattr(self.config, "add_ratio", 1.05) * current_num_points))
         num_gs = max(0, target_num - current_num_points)
 
+        # ★ 成本預算（§11.60）：把生長的**綁定約束**從顆數換成渲染成本。
+        # `cap_max` 保留為儲存項的安全閥（VRAM = 逐顆儲存 + binning，本旗標只管後者）。
+        # `_load_max` = 這個 densify 區間內、已見視角中最壞的 Σ_i (2r_i/16)^2（線上量）。
+        _cb = getattr(self.config, "cost_budget", 0.0)
+        if _cb > 0:
+            _load = getattr(self, "_load_max", 0.0)
+            if _load > 0:                      # 0 = 這個區間還沒量到，讓它照原規則長
+                if _load >= _cb:
+                    num_gs = 0                 # 預算用完 -> 停止生長（relocate 不受影響）
+                else:
+                    # 線性外推：成本與顆數在**同一個區間內**近似等比例（跨階段才會解耦），
+                    # 所以用剩餘預算的比例限制這次的增量，避免一次超支。
+                    _room = (_cb - _load) / _load
+                    num_gs = min(num_gs, int(current_num_points * _room))
+            self._load_max = 0.0               # 每個 densify 事件重開視窗
+
         if num_gs <= 0:
             return 0
 

@@ -332,6 +332,25 @@ class MCMC2DGSDensityController(MCMCDensityController):
     到 step 600 時 opacity 取樣只吃到 2.76/16.68 = 17%，還有 6 倍空間。"""
 
     cost_aware_densify: float = 0.0
+
+    cost_budget: float = 0.0
+    """★ 成本預算（§11.60）。>0 時把族群的生長條件從**顆數** `N <= cap_max`
+    換成**渲染成本** `max_view Σ_i (2r_i/16)^2 <= cost_budget`。
+
+    依據（`agd2_b12` 軌跡實測，五個 ckpt）：`B/N` 在 7.21~15.98 之間變動（2.2 倍）；
+    **15k -> 30k 顆數 +98% 而成本只 +9.4%** ⇒ 模型在 step 15k 就付掉最終渲染成本的 91%，
+    卻只用了最終顆數的 56% ⇒ `cap_max` 對「貴的前半」與「幾乎免費的後半」收一樣的價。
+
+    ⚠ **`cap_max` 仍然生效，且必須保留**：VRAM = 逐顆儲存（M*F*4 bytes/顆，只看 N）
+    ＋ binning（gamma*tau，只看成本）。本旗標只約束後者，前者仍需顆數上限防 OOM。
+    ⇒ 實驗時把 `cap_max` 設高當安全閥，讓 `cost_budget` 成為實際綁住的約束。
+
+    ⚠ 單位與 `tools/cost_budget_probe.py` 的 B **同定義但不同實作路徑**（光柵器 radii
+    vs 解析投影）⇒ **不可直接沿用探針的 23.1M**，先用 `cost_budget_report` 短跑標定。
+    """
+
+    cost_budget_report: int = 0
+    """>0 時每 N 步印出線上量到的 `Load`（不改變任何行為），用來標定 `cost_budget`。"""
     """>0 時按渲染成本折扣增生取樣權重：`probs /= (c/median(c))^w`，`c` = 區間內最大螢幕半徑^2。
 
     論文命題的直接實作：**既有方法用顆數計價，我方用渲染成本計價**。MCMC 分裂會讓子代
@@ -418,6 +437,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 or self.config.max_relocate_frac > 0 or self.config.vpc_prune_frac > 0 \
                 or self.config.cost_aware_densify != 0:
             self._update_max_radii(outputs, gaussian_model)   # cost signal for DAR / gate / v-p-c
+        # 成本預算（§11.60）：B 與 N 動態解耦（B/N 在軌跡上變動 2.2 倍；15k->30k 顆數 +98%
+        # 而成本只 +9.4%）⇒ `cap_max` 按顆數計價是錯的貨幣。這裡量的是正確的貨幣。
+        if self.config.cost_budget > 0 or self.config.cost_budget_report > 0:
+            self._update_load(outputs)
+            _cbr = self.config.cost_budget_report
+            if _cbr > 0 and global_step % _cbr == 0:
+                _n = gaussian_model.n_gaussians
+                _l = getattr(self, "_load_max", 0.0)
+                print(f"[cost-budget] step {global_step}: N={_n:,} "
+                      f"Load(區間最壞視角)={_l:,.0f} Load/N={_l / max(_n, 1):.2f} "
+                      f"預算={self.config.cost_budget:,.0f}"
+                      f"{'（未設，純標定）' if self.config.cost_budget <= 0 else ''}")
         self._accumulate_error_score(outputs, batch, gaussian_model)
         if self.config.absgrad_report > 0 or self.config.absgrad_densify > 0:
             # densify 用途下也要累積 `|g|`（原本只有 report 會觸發累積）
@@ -962,6 +993,34 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         t1 = cfg.min_opacity_anneal_end_iter
         frac = min(max((step - t0) / max(t1 - t0, 1), 0.0), 1.0)
         return cfg.min_opacity * (cfg.min_opacity_final / cfg.min_opacity) ** frac
+
+    TILE_PX = 16
+
+    def _update_load(self, outputs: dict) -> None:
+        """每步累積**這個視角**的 binning 負載 `Load = Σ_i (2r_i/16)^2`，並保留區間內的最大值。
+
+        這就是 `tools/cost_budget_probe.py` 量的 `B = max_view Load`，只是改成線上量：
+        每步只渲染一台相機，所以逐步取 max 就是「已見視角中的最壞視角」。
+        成本 = 每步一個 O(N) 的 sum，相對每步 460ms 可忽略。
+
+        為什麼要這個而不是沿用 `_max_radii2D`（§11.60）：`_max_radii2D` 是**逐顆跨視角取 max**
+        的半徑，把它加總得到的是「每顆都用自己最壞視角」的上界，比任何真實單一視角都大，
+        與探針量到的 B 不是同一個量。預算若用錯的量標定，實驗就白跑。
+
+        ⚠ 光柵器的 `radii` 與探針的 `3*fx*s/z*stretch` 未必逐位元相同（兩者都是 3-sigma
+        意義下的螢幕半徑，但實作路徑不同）⇒ **不可直接把探針的 23.1M 當預算**，
+        要先用 `cost_budget_report` 跑一次短標定讀出線上值。
+        """
+        radii = outputs.get("radii", None)
+        if radii is None:
+            return
+        r = radii.float()
+        vis = r > 0
+        if not bool(vis.any()):
+            return
+        load = float(((2.0 * r[vis] / self.TILE_PX) ** 2).sum())
+        if load > getattr(self, "_load_max", 0.0):
+            self._load_max = load
 
     def _update_max_radii(self, outputs: dict, gaussian_model) -> None:
         radii = outputs.get("radii", None)

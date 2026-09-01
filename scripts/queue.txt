@@ -233,21 +233,19 @@
 
 # ★★★★ densify_until x 強度的交互作用：agd2 + densify_until 36k（b12）
 # sched30 的 30k 是在 w=0 時調出來的；w=2 讓 densify 階段更有產出 => 最佳停止點可能後移。
-bash scripts/task_agd2du36_b12.sh
-bash scripts/task_test.sh agd2du36_b12
 
 # ★★★★ 速度：週期 trim 相機取樣 stride=4（71/284 台）—— 端到端驗分數
 # 探針：底部10%遮罩重疊 99.8%（trim 只用這個集合）；但只量過 step=1，約120次 trim 可能累積。
 # 判準：四指標都在 ±3sd 內 => 採用（每次跑次省約 7.5%）。對照 agd2_b12。
-bash scripts/task_tsub4_b12.sh
-bash scripts/task_test.sh tsub4_b12
 
 # ★★★★★ 把 V2 有、我方關掉的幾何正則項加回來（1/2）：偽深度監督 depth_loss 0.5
 # depth_loss 是在 §12.6 用**汙染的 scales** 關掉的，且只看平均與建築區、沒看尾巴。
 # 判準改為主看糊掉%/corr中位（§11.55：失效集中在 46% 的 tile，平均被能用的 54% 主導）。
-bash scripts/task_agd2dl05_b12.sh
-bash scripts/task_test.sh agd2dl05_b12
 
 # ★★★★★ 把 V2 有、我方關掉的幾何正則項加回來（2/2）：法線一致性 lambda_normal 0.0125
 bash scripts/task_agd2ln_b12.sh
 bash scripts/task_test.sh agd2ln_b12
+
+# ★★★ 成本預算標定（~4 分鐘）：讀出線上 Load 的單位，才能設 cost_budget
+# 探針的 23.1M 是解析投影算的，線上用光柵器 radii => 同定義不同實作，不可直接沿用。
+bash scripts/task_cbcal.sh
