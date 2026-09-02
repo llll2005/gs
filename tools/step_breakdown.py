@@ -75,11 +75,14 @@ def main():
     print(f"N = {n:,}")
 
     # 相機用訓練集第一台（與訓練時同解析度、同 down_sample）
+    # ⚠ 不能用 DataModule.setup()：它要 `self.trainer.lightning_module.hparams`
+    #   （`dataset.py:370`），而這裡沒有 trainer ⇒ 直接實例化 dataparser（setup 也只是這樣做）。
     ckpt = torch.load(ck_path, map_location="cpu")
-    from internal.dataset import DataModule
-    dm = DataModule(**ckpt["datamodule_hyper_parameters"])
-    dm.setup("fit")
-    cam = dm.dataparser_outputs.train_set.cameras[0].to_device(dev)
+    dmh = ckpt["datamodule_hyper_parameters"]
+    dataparser = dmh["parser"].instantiate(
+        path=dmh["path"], output_path=os.path.dirname(os.path.dirname(ck_path)), global_rank=0)
+    dp_out = dataparser.get_outputs()
+    cam = dp_out.train_set.cameras[0].to_device(dev)
     print(f"影像 {int(cam.width)}x{int(cam.height)}")
 
     bg = torch.zeros((3,), device=dev)
