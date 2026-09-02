@@ -252,10 +252,18 @@
 #   （o 中位 0.1083->0.1539 升／o>0.5 9.12%->23.22% 翻倍／中間帶 22.26%->8.99% 排乾）
 # => freeze_opacity_after_densify 會把兩極化一起關掉，大概率輸且理由會被誤讀。已撤。
 # 改測更外科的介入：只移除 L1 下壓力、保留光度梯度。判準看**速率**不看終點分數。
-bash scripts/task_oregprobe.sh
 
 # ★★★ 穩態每步成本拆解（~2 分鐘）—— 速度線的前置量測工具
 # 先前三次量測全被誤導：跨跑次 wall time 噪音 5%／cProfile 的 CUDA 非同步歸因／
 # 40 步視窗被一次性起始 trim 佔 80%。本工具用 CUDA event + 同 process + 多次取中位數。
 # 目的：先知道 602ms/step 花在哪，再決定要不要動 —— 不再讀碼猜。
-bash scripts/task_stepbreak.sh
+
+# ★★★★★ 收割期移除 opacity L1（三臂小實驗 B 臂：判死 +3.57pp -> -0.06pp、確信 +2.91 -> +8.24pp）
+# 兩個事前判準都過且第二個超額（兩極化不但沒壞，還快 2.8 倍）。
+bash scripts/task_agd2oru_b12.sh
+bash scripts/task_test.sh agd2oru_b12
+
+# ★★★★★ 收割期回收死粒子（使用者提案；C 臂：判死 +3.57pp -> -3.48pp、確信 +2.91 -> +2.61pp）
+# 我原本擔心的「relocate reset 宿主 Adam 動量會傷收斂」實測只值 -0.30pp。
+bash scripts/task_agd2hr_b12.sh
+bash scripts/task_test.sh agd2hr_b12

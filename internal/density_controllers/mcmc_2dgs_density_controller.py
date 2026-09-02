@@ -333,6 +333,18 @@ class MCMC2DGSDensityController(MCMCDensityController):
 
     cost_aware_densify: float = 0.0
 
+    fast_noise: bool = False
+    """MCMC noise 的等價改寫：`cov @ v = R S S^T R^T v = R (s^2 * (R^T v))`
+    （`compute_cov_3d` 明文是 `(RS)(RS)^T`，S 對角 ⇒ 不必 materialize N x 3 x 3）。
+
+    **實測（`agd2_b12` 60k ckpt，N=2.34M，CUDA event）**：57.47 -> 31.98 ms，
+    省 44.4%（1.80x）⇒ 對每步 602 ms 只佔 **4.2%**。
+    ⚠ **非位元級相同**：最大絕對差 9.5e-07，但**最大相對差 25%**（小值上的浮點抵消）。
+      作用對象是**隨機**噪音項，統計上應無影響，但無法證明 ⇒ 預設關閉。
+    ⚠ **4.2% 低於跨跑次 wall-time 的 5% 噪音底**（§11.64）⇒ 單獨投 9.6h 驗證不划算；
+      規劃是等要跑 25 塊時再開（4.2% x 25 = 省約 10 小時，那時才值得驗）。
+    """
+
     harvest_relocate: bool = False
     """★ 收割期回收（使用者 2026-09-01 提案）：`densify_until_iter` 之後**繼續 relocation
     但不成長**（只搬死粒子到 `probs` 抽中的宿主，不呼叫 `add_new_gs`）⇒ N 不變、不動 cap/VRAM。
@@ -1142,11 +1154,17 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 pad = torch.zeros((scales.shape[0], 3 - d), dtype=scales.dtype, device=scales.device)
                 scales = torch.cat([scales, pad], dim=-1)
 
-            cov_3d = compute_cov_3d(
-                scales=scales,
-                scale_modifier=1.,
-                quaternions=gaussian_model.get_rotations(),
-            )
+            _fast = getattr(self.config, "fast_noise", False)
+            if not _fast:
+                cov_3d = compute_cov_3d(
+                    scales=scales,
+                    scale_modifier=1.,
+                    quaternions=gaussian_model.get_rotations(),
+                )
+            else:
+                from internal.utils.gaussian_projection import build_rotation_matrix
+                _R = build_rotation_matrix(gaussian_model.get_rotations())
+                cov_3d = None      # 走等價路徑，不 materialize（見 fast_noise docstring）
 
             xyz_lr = -1
             for opt in pl_module.gaussian_optimizers:
@@ -1158,5 +1176,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             assert xyz_lr >= 0
 
             noise = torch.randn_like(gaussian_model.means) * (self.op_sigmoid(1 - gaussian_model.get_opacities())) * self.config.noise_lr * xyz_lr
-            noise = torch.bmm(cov_3d, noise.unsqueeze(-1)).squeeze(-1)
+            if cov_3d is not None:
+                noise = torch.bmm(cov_3d, noise.unsqueeze(-1)).squeeze(-1)
+            else:
+                # R (s^2 * (R^T v))：與上面 `cov @ v` 數學等價，省掉 N x 3 x 3 的建構
+                noise = torch.bmm(_R.transpose(1, 2), noise.unsqueeze(-1)).squeeze(-1)
+                noise = noise * (scales ** 2)
+                noise = torch.bmm(_R, noise.unsqueeze(-1)).squeeze(-1)
             gaussian_model.means.add_(noise)
