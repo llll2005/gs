@@ -271,3 +271,10 @@ bash scripts/task_test.sh agd2hr_b12
 # => 等 VRAM 可裝 ~3.0M（cap 3.4M）。預測打平或小輸，但這正是「6GB 該買量還是買質」的正題。
 bash scripts/task_sh2cap34_b12.sh
 bash scripts/task_test.sh sh2cap34_b12
+
+# ★★★★★ 乾淨的方法比較：grad-densify（CityGSV2 密度控制）vs MCMC，當前資料同硬體
+# 「MCMC +1.457 勝」跑於 GT 錯位期已作廢 => 當前資料上從未有過有效的 grad-densify 數字。
+# 用我方 depth-init PLY 起步（33.8 萬）避開當初載入 4.39M coarse 的 OOM。
+# ⚠ 無 cap（官方如此）=> 顆數由方法自己決定，也是要量的東西；有 OOM 風險要盯。
+bash scripts/task_graddens_b12.sh
+bash scripts/task_test.sh graddens_b12
