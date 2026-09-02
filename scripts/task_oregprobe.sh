@@ -21,6 +21,18 @@
 #   若 B 的 o>0.5 也跟著變緩 => L1 其實是兩極化的驅動力之一 => 整條線收掉
 #
 # ✅ ckpt-init 只替換 gaussian_model 與 renderer，**metric 不受影響** => 旗標會生效。
+#
+# ⛔⛔ 2026-09-02 修正：第一版每臂跑了 **6.8 小時**而非預估的 20 分鐘（20 倍）。
+# 真因：`--model.initialize_from <ckpt>` **只載權重、不接續 global_step**
+#      （接續是 `--ckpt_path` 的事）⇒ `--trainer.max_steps 32500` 是「從 0 跑 32,500 步」。
+# 連帶**階段邏輯全錯**：global_step 從 0 起算 ⇒ `densify_until_iter 30000` 讓 densify
+#      重跑 30,000 步，族群一路長回 cap（也是速率從 2.1 掉到 1.3 it/s 的原因），
+#      而三個旗標都只在最後 2,500 步才生效。
+# ✅ 正確寫法（本版）：`max_steps 2500` + `densify_until_iter 0`
+#      ⇒ 從第一步就在收割期，2,500 步全部是有效的介入期。
+#      `opacity_reg_until_iter` 也跟著改成 0。
+# ⚠ 一般化：**用 initialize_from 時，所有「按 step 排程」的參數都要按新的 0 起點重寫**
+#      （densify_until / opacity_reg_until / LR scheduler / min_opacity 退火 …）。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
@@ -33,11 +45,11 @@ run_arm () {   # $1 = 臂名  $2 = opacity_reg_until_iter  $3 = harvest_relocate
     --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
     --model.initialize_from "$CKPT" \
     --data.parser.block_id 12 \
-    --trainer.max_steps 32500 \
+    --trainer.max_steps 2500 \
     --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.max_steps 60000 \
     --model.density.init_args.cap_max 2600000 \
     --model.density.init_args.absgrad_densify 2.0 \
-    --model.density.init_args.densify_until_iter 30000 \
+    --model.density.init_args.densify_until_iter 0 \
     --model.density.init_args.screen_size_prune_px 300 \
     --model.metric.init_args.opacity_reg 0.002 \
     --model.metric.init_args.opacity_reg_until_iter "$2" \
@@ -46,9 +58,9 @@ run_arm () {   # $1 = 臂名  $2 = opacity_reg_until_iter  $3 = harvest_relocate
     --model.metric.init_args.depth_loss_weight.init 0.0 \
     -n "$1"
 }
-run_arm oregprobe_a -1     false   # 對照：現行行為（L1 全程、收割期不回收）
-run_arm oregprobe_b 30000  false   # 介入1：只移除 L1 下壓力
-run_arm oregprobe_c -1     true    # 介入2：L1 照舊，但收割期繼續回收死粒子（使用者提案）
+run_arm oregprobe_a -1  false   # 對照：現行行為（L1 全程、收割期不回收）
+run_arm oregprobe_b 0   false   # 介入1：只移除 L1 下壓力（step>=0 即生效）
+run_arm oregprobe_c -1  true    # 介入2：L1 照舊，但收割期繼續回收死粒子（使用者提案）
 #   ⚠ c 臂是「同一個操作、不同目的地」：notrim2 的純 churn 實測淨負，但那時 probs=opacity
 #     （盲目）；現在是 o*(1+2|g|/mean|g|) => 送到梯度說缺細節的地方。
 #   ⚠ c 臂的成本在目的地：relocate 會 reset 宿主 Adam 動量，而收割期宿主正在收斂外觀。

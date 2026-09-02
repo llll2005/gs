@@ -243,12 +243,9 @@
 # 判準改為主看糊掉%/corr中位（§11.55：失效集中在 46% 的 tile，平均被能用的 54% 主導）。
 
 # ★★★★★ 把 V2 有、我方關掉的幾何正則項加回來（2/2）：法線一致性 lambda_normal 0.0125
-bash scripts/task_agd2ln_b12.sh
-bash scripts/task_test.sh agd2ln_b12
 
 # ★★★ 成本預算標定（~4 分鐘）：讀出線上 Load 的單位，才能設 cost_budget
 # 探針的 23.1M 是解析投影算的，線上用光柵器 radii => 同定義不同實作，不可直接沿用。
-bash scripts/task_cbcal.sh
 
 # ★★★★★ 收割期 opacity 動力學小實驗（兩臂各約 20 分鐘）—— 取代原本排的 9.6h freeze 跑次
 # 免費 CPU 量測已削弱原假說：收割期不是「L1 壓死大家」而是**兩極化**
