@@ -31,8 +31,22 @@
 # ✅ 正確寫法（本版）：`max_steps 2500` + `densify_until_iter 0`
 #      ⇒ 從第一步就在收割期，2,500 步全部是有效的介入期。
 #      `opacity_reg_until_iter` 也跟著改成 0。
-# ⚠ 一般化：**用 initialize_from 時，所有「按 step 排程」的參數都要按新的 0 起點重寫**
-#      （densify_until / opacity_reg_until / LR scheduler / min_opacity 退火 …）。
+# ⚠ 一般化：**用 initialize_from 時，所有「按 step 排程」的參數都要按新的 0 起點重寫**。
+#
+# 逐項稽核（2026-09-02，使用者要求「要確保正確」）：
+#   ✅ densify_until_iter  30000 -> **0**       從第一步就在收割期（trim 也隨之停，與真實收割期一致）
+#   ✅ opacity_reg_until   30000 -> **0**       B 臂的介入從第一步生效
+#   ⛔ means_lr            **真 bug，已修**
+#        排程 lr = lr_init * (lr_final/lr_init)^(step/max_steps)（schedulers.py:82）
+#        真實 LR(30000) = 6.4e-5 * 0.01^0.5 = **6.4e-6**
+#        修正前 LR(0)   = 6.4e-5  => **10 倍**，means 會亂跑，漂移量測全毀
+#        改為 lr_init 6.4e-6 + max_steps 30000（lr_final 不變）
+#        => LR(s) = 6.4e-6 * 0.1^(s/30000) == 6.4e-5 * 0.01^((30000+s)/60000)  **逐點相等**
+#   ✅ sh_degree           不用改：`_active_sh_degree` 是 persistent buffer，
+#                          ckpt 內實測 = 3，載入即還原（歸零只發生在 setup_from_pcd/number）
+#   ✅ depth_loss_weight   配方已設 init 0.0 => 排程無作用
+#   ✅ scales/rotations/opacities lr  無排程，常數
+#   ✅ 收尾 ckpt           Lightning 在 max_steps 結束時會存（A/B 臂實測有 step=32500.ckpt）
 set -u
 cd "$(dirname "$0")/.." || exit 1
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
@@ -46,7 +60,8 @@ run_arm () {   # $1 = 臂名  $2 = opacity_reg_until_iter  $3 = harvest_relocate
     --model.initialize_from "$CKPT" \
     --data.parser.block_id 12 \
     --trainer.max_steps 2500 \
-    --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.max_steps 60000 \
+    --model.gaussian.init_args.optimization.means_lr_init 0.0000064 \
+    --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.max_steps 30000 \
     --model.density.init_args.cap_max 2600000 \
     --model.density.init_args.absgrad_densify 2.0 \
     --model.density.init_args.densify_until_iter 0 \
