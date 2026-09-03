@@ -360,6 +360,14 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         #   ⚠ 但 0.1 相對 `∇g` 的 50、`D^i_g` 的 50 只佔約 0.2% ⇒ **他們並沒有真的檢驗過
         #     這個方向**，只是給了個近乎 no-op 的小權重加一句敘述。
         #   ⇒ 兩個方向都值得量，負值路徑因此保持可達（原本 `> 0` 會靜默忽略負值）。
+        # ★ 顯性高頻觸發（§11.80）：繞過被空間積分抵消的梯度通道。
+        # 實測失敗區高頻殘差多 86% 而位置梯度只有 41%（每單位殘差少 4.6 倍），
+        # 且該盲區在 step 1,499 就存在（當時失敗區殘差還比較低）⇒ 盲區是原因非結果。
+        _aw = getattr(self.config, "ac_densify", 0.0)
+        if _aw > 0:
+            _a = getattr(self, "_ac_score", None)
+            if _a is not None and _a.shape[0] == _n and float(_a.sum()) > 0:
+                probs = probs * (1.0 + _aw * _a / _a.mean().clamp_min(1e-30))
         _cw = getattr(self.config, "cost_aware_densify", 0.0)
         if _cw != 0:
             _r = getattr(self, "_max_radii2D", None)

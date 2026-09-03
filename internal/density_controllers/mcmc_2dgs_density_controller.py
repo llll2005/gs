@@ -345,6 +345,25 @@ class MCMC2DGSDensityController(MCMCDensityController):
       規劃是等要跑 25 塊時再開（4.2% x 25 = 省約 10 小時，那時才值得驗）。
     """
 
+    ac_densify: float = 0.0
+    """★ **顯性高頻觸發**的增生取樣（2026-09-04，梯度盲區確認後的第一個機制）。
+
+    `probs = opacity * (1 + w * AC/mean(AC))`，其中 `AC` = 該顆投影位置所在 tile 的
+    **殘差高頻能量**（tile 內殘差的標準差），而**不是** `err_guided_densify` 用的
+    `|render-gt|` 池化平均（那是 DC 誤差，天花板只有 1.22x）。
+
+    **為什麼是這個訊號**（§11.80，實測）：失敗區的高頻殘差多 **86%**，
+    但位置梯度只有 **41%** ⇒ **每單位殘差的訊號少 4.6 倍**；而且這個盲區
+    **在 step 1,499 就存在**（那時失敗區殘差還比成功區低）⇒ **盲區是原因不是結果**。
+    數學上：DC 擬合完後殘差是零均值高頻振盪，而 `d(alpha)/d(mu)` 在 footprint 上是
+    平滑奇函數 ⇒ 兩者求和正負抵消 ⇒ `|g_mu| > tau` 永不觸發。
+
+    ⇒ **繞過被抵消的梯度通道，直接用高頻殘差當觸發訊號。**
+    ⚠ 這與已否證的十次密度控制介入**不同類**：那些調的是「往哪裡分配」，
+      而**訊號本身是死的**；本旗標換的是**觸發訊號**。
+    ⚠ 動手前先量天花板（`tools/grad_blindspot.py` 會印）——這是 `absgrad` 成功的關鍵步驟。
+    """
+
     harvest_relocate: bool = False
     """★ 收割期回收（使用者 2026-09-01 提案）：`densify_until_iter` 之後**繼續 relocation
     但不成長**（只搬死粒子到 `probs` 抽中的宿主，不呼叫 `add_new_gs`）⇒ N 不變、不動 cap/VRAM。
@@ -478,6 +497,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"預算={self.config.cost_budget:,.0f}"
                       f"{'（未設，純標定）' if self.config.cost_budget <= 0 else ''}")
         self._accumulate_error_score(outputs, batch, gaussian_model)
+        # ⚠ 守衛必須含 `ac_densify` 自己（`cost_aware_densify` 曾因守衛不含自己而靜默 no-op）
+        if self.config.ac_densify > 0:
+            self._accumulate_ac_score(outputs, batch, gaussian_model)
         if self.config.absgrad_report > 0 or self.config.absgrad_densify > 0:
             # densify 用途下也要累積 `|g|`（原本只有 report 會觸發累積）
             self._absgrad_report(outputs, gaussian_model, global_step)
@@ -621,6 +643,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     _max_radii2D: torch.Tensor = None
     _vpc_contrib: torch.Tensor = None   # cached multi-view contribution (value)
     _vpc_step: int = -1
+    _ac_score: torch.Tensor = None
 
     def _dar_report(self, global_step: int) -> None:
         """so a silent no-op is distinguishable from a mechanism that never ran: the 1700-step
@@ -697,6 +720,40 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             self._err_score += e
         except Exception:
             pass                                    # a diagnostic must never take the run down
+
+    @torch.no_grad()
+    def _accumulate_ac_score(self, outputs, batch, gaussian_model) -> None:
+        """逐顆累積「投影位置所在 tile 的**殘差高頻能量**」。
+
+        與 `_accumulate_error_score` 的唯一差別是訊號的定義：
+            DC（舊）  avg_pool(|render - gt|)          <- 整片偏移時大；天花板 1.22x
+            AC（本）  std(render - gt) within tile     <- **殘差振盪**時大，即結構缺失
+        用 `std = sqrt(E[e^2] - E[e]^2)` 兩次 avg_pool 求得，成本與舊版同量級。
+        """
+        try:
+            render = outputs.get("render", None)
+            camera, image_info, _ = batch
+            gt = image_info[1]
+            if render is None or gt is None:
+                return
+            e = (render.detach() - gt).mean(0, keepdim=True)[None]        # 有號、灰階 [1,1,H,W]
+            m1 = torch.nn.functional.avg_pool2d(e, 16, ceil_mode=True)
+            m2 = torch.nn.functional.avg_pool2d(e * e, 16, ceil_mode=True)
+            tile = (m2 - m1 * m1).clamp_min(0).sqrt()[0, 0]               # 逐 tile 的 AC 能量
+            gy, gx = tile.shape
+            pc = gaussian_model.get_xyz.detach() @ camera.R.T + camera.T
+            z = pc[:, 2].clamp_min(0.2)
+            W, H = int(camera.width), int(camera.height)
+            u = (float(camera.fx) * pc[:, 0] / z + W / 2).div(16).long().clamp(0, gx - 1)
+            v = (float(camera.fy) * pc[:, 1] / z + H / 2).div(16).long().clamp(0, gy - 1)
+            a = torch.where(pc[:, 2] > 0.2, tile[v, u], torch.zeros_like(z))
+            n = gaussian_model.n_gaussians
+            if self._ac_score is None or self._ac_score.shape[0] != n \
+                    or self._ac_score.device != a.device:
+                self._ac_score = torch.zeros_like(a)                      # N 變動時自癒
+            self._ac_score += a
+        except Exception:
+            pass                                    # 診斷/取樣訊號不得讓跑次死掉
 
     @torch.no_grad()
     def _report_densify_blindness(self, gaussian_model, global_step: int) -> None:
