@@ -124,7 +124,10 @@ def main():
         rmean, rstd, corr = ref[1][f][runs[0]]
         ty, tx = keep // nx, keep % nx
         # 到畫面中心的正規化半徑（0=中心, 1=角落）
-        rad = np.sqrt(((tx - nx / 2) / (nx / 2)) ** 2 + ((ty - ny / 2) / (ny / 2)))
+        # ⚠ 2026-09-03 修：第二項原本漏了 `** 2` ⇒ 畫面上半 (ty<ny/2) 的項為負
+        #   ⇒ sqrt(負數) = nan ⇒ 整欄中位數變 nan。除錯時我憑記憶重打公式（打對了）
+        #   所以重現不出來 —— **除錯要逐字複製，不可重打**。
+        rad = np.sqrt(((tx - nx / 2) / (nx / 2)) ** 2 + ((ty - ny / 2) / (ny / 2)) ** 2)
         for m, acc in ((allb, rows_p), (neverb, rows_n)):
             if m.sum():
                 acc.append(np.stack([gmean[m], gstd[m], rmean[m], rstd[m], rad[m]], 1))
@@ -135,10 +138,10 @@ def main():
     for nm, A in (("持續糊掉", P), ("從不糊掉", N)):
         if len(A) == 0:
             continue
-        m = np.median(A, 0)
+        m = np.nanmedian(A, 0)   # nan 會傳染整欄，一律用 nanmedian
         print(f"{nm:>16} {m[0]:>8.3f} {m[1]:>8.4f} {m[2]:>11.3f} {m[3]:>11.4f} {m[4]:>10.3f} {len(A):>8,}")
     if len(P) and len(N):
-        mp, mn = np.median(P, 0), np.median(N, 0)
+        mp, mn = np.nanmedian(P, 0), np.nanmedian(N, 0)
         print(f"{'比值 糊/不糊':>16} {mp[0]/max(mn[0],1e-9):>8.2f} {mp[1]/max(mn[1],1e-9):>8.2f} "
               f"{mp[2]/max(mn[2],1e-9):>11.2f} {mp[3]/max(mn[3],1e-9):>11.2f} {mp[4]/max(mn[4],1e-9):>10.2f}")
     print("""
