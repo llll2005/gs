@@ -55,21 +55,27 @@ def main():
     ap.add_argument("--contrast-q", type=float, default=0.85)
     ap.add_argument("--lambda-dssim", type=float, default=0.2)
     ap.add_argument("--max-cam", type=int, default=36)
+    ap.add_argument("--step", type=int, default=60000,
+                    help="用哪一步的 ckpt 量梯度。★ 因果檢驗：tile 遮罩固定用**最終模型**"
+                         "定義的『持續失敗』集合，只把梯度量測換到早期 ckpt —— "
+                         "若盲區在早期就存在 => 它是**原因**；若早期沒有 => 是**結果**")
     args = ap.parse_args()
 
     if not torch.cuda.is_available():
         raise SystemExit("需要 GPU")
     dev = torch.device("cuda")
     mr = args.model_run or args.runs[0]
-    ck = sorted(glob.glob(f"outputs/{mr}/**/*step=60000.ckpt", recursive=True))
+    ck = sorted(glob.glob(f"outputs/{mr}/**/*step={args.step}.ckpt", recursive=True))
     if not ck:
-        raise SystemExit(f"找不到 {mr} 的 60k ckpt")
+        av = sorted(int(p.split("step=")[-1].split(".")[0])
+                    for p in glob.glob(f"outputs/{mr}/**/*.ckpt", recursive=True))
+        raise SystemExit(f"找不到 {mr} 的 step={args.step} ckpt；可用的有 {av}")
 
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     from internal.utils.ssim import ssim as ssim_fn
     model, renderer, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
         ck[0], device=dev, eval_mode=False, pre_activate=False)
-    print(f"模型 {mr}  N = {model.n_gaussians:,}")
+    print(f"模型 {mr} @ step={args.step}  N = {model.n_gaussians:,}")
 
     ckpt = torch.load(ck[0], map_location="cpu")
     dmh = ckpt["datamodule_hyper_parameters"]
@@ -176,6 +182,22 @@ def main():
         print(f"\n  |g| 比（失敗/成功）      = **{gp / max(gn, 1e-30):.3f}x**")
         print(f"  高頻殘差比               = {ap_ / max(an, 1e-12):.3f}x")
         print(f"  **梯度/殘差 比值的比**   = **{(gp / max(ap_, 1e-12)) / max(gn / max(an, 1e-12), 1e-30):.3f}x**")
+    # ---- 新機制的前置量測：AC 訊號的天花板 ----
+    # 為什麼要量（§11.30 的方法論）：`absgrad` 之所以成功，是因為先量了天花板
+    # `ceiling(top5%)/mean` —— 我方舊的誤差分數只有 **1.22x**（完美取樣器也賺不到），
+    # 而 `|g|` 是 **16.68x**。
+    # ⚠ 舊的 1.22x 量的是 `|render-gt|` 池化後的 **DC 誤差**；
+    #   這裡量的是 **AC（零均值高頻）能量** —— **正是梯度看不見的那個量**，兩者不同。
+    allac = np.concatenate([P[:, 1], N_[:, 1]])
+    allac = allac[~np.isnan(allac)]
+    if len(allac) > 20:
+        k = max(1, int(len(allac) * 0.05))
+        ceil5 = np.sort(allac)[-k:].mean()
+        print(f"\n  ★ AC 訊號的天花板 ceiling(top5%)/mean = **{ceil5 / allac.mean():.2f}x**"
+              f"   （對照：我方舊誤差分數 1.22x（DC）／|g| 16.68x）")
+        print(f"    判準：>> 1.22x => AC 訊號有 DC 誤差沒有的鑑別力，"
+              f"「顯性高頻觸發」值得做；~1.2x => 這條也沒空間")
+
     print("""
 判讀：
   梯度/殘差 比值的比 << 1  => **假說成立**：失敗區殘差大而位置梯度死（空間積分抵消）
