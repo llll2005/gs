@@ -24,6 +24,7 @@ cp -f $D/results.txt $D/results.txt.bak 2>/dev/null
 cp -f $D/best_val.txt $D/best_val.txt.bak 2>/dev/null
 conda run -n gspl --no-capture-output python -u main.py test --config "$CFG" --save_val --test_speed
 rc=$?
+cp -f $D/results.txt $D/results_test.txt 2>/dev/null   # ★ 先把 test 分數另存，再還原訓練期的
 mv -f $D/results.txt.bak $D/results.txt 2>/dev/null
 mv -f $D/best_val.txt.bak $D/best_val.txt 2>/dev/null
 echo "圖 $(find $D/test -name '*.png' 2>/dev/null | wc -l) 張"
