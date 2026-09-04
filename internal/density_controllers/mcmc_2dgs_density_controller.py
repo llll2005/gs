@@ -364,6 +364,27 @@ class MCMC2DGSDensityController(MCMCDensityController):
     ⚠ 動手前先量天花板（`tools/grad_blindspot.py` 會印）——這是 `absgrad` 成功的關鍵步驟。
     """
 
+    ac_shrink: float = 0.0
+    """★ 對高 AC 殘差的粒子**直接縮小尺度**（0=關；0.5 = 尺度乘 0.5）。
+
+    **為什麼需要這個、而 `ac_densify` 不夠**（§11.82 實測）：
+    `ac_densify` 走 MCMC 的 `probs` 取樣，實測**幾乎沒有搬動族群**
+    （失敗區的高斯/像素 0.62 -> 0.64，+3%；半徑與 opacity 完全不變）
+    ⇒ 那個實驗檢驗的是「太弱的介入」，不是機制本身。
+    原因可算：AC 天花板只有 2.83x，w=1 時最大加權 3.83x，而每次事件搬動的粒子本就少。
+
+    **本旗標繞過取樣瓶頸，直接作用在成因上**：梯度抵消的程度取決於
+    **footprint 相對於殘差空間頻率的大小** —— 把 footprint 縮小就能脫離盲區。
+    這是 Gemini 原提案的另一半（我先前只實作了「往那裡增生」）。
+
+    ⚠ 與 `err_unlock_frac` 同構（那個壓 opacity，這個壓 scale），都是**直接改參數**。
+    ⚠ 風險：MCMC 的 Eq.9 假設 relocation 的子代共位；本旗標不動位置只動尺度，
+      不破壞該假設，但會讓被縮小的粒子暫時解釋不了原本的區域（由最佳化補回）。
+    """
+
+    ac_shrink_frac: float = 0.05
+    """每次 densify 事件，對 AC 分數最高的這個比例做縮小。"""
+
     harvest_relocate: bool = False
     """★ 收割期回收（使用者 2026-09-01 提案）：`densify_until_iter` 之後**繼續 relocation
     但不成長**（只搬死粒子到 `probs` 抽中的宿主，不呼叫 `add_new_gs`）⇒ N 不變、不動 cap/VRAM。
@@ -498,7 +519,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"{'（未設，純標定）' if self.config.cost_budget <= 0 else ''}")
         self._accumulate_error_score(outputs, batch, gaussian_model)
         # ⚠ 守衛必須含 `ac_densify` 自己（`cost_aware_densify` 曾因守衛不含自己而靜默 no-op）
-        if self.config.ac_densify > 0:
+        # ⚠ 守衛必須含**所有**消費者（ac_shrink 也讀 _ac_score）——
+        #   cost_aware_densify 就是因為守衛不含自己而靜默 no-op（稽核清單 §7）
+        if self.config.ac_densify > 0 or self.config.ac_shrink > 0:
             self._accumulate_ac_score(outputs, batch, gaussian_model)
         if self.config.absgrad_report > 0 or self.config.absgrad_densify > 0:
             # densify 用途下也要累積 `|g|`（原本只有 report 會觸發累積）
@@ -666,6 +689,22 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         RTG-SLAM B4（stable->unstable reversion）的想法在 MCMC 上的對應物。見設定項
         `err_unlock_frac` 的 docstring 與 研究總覽 §11.7。
         """
+        # ★ AC 導向的強制縮小（§11.82）：繞過取樣瓶頸，直接壓 footprint
+        _sh = self.config.ac_shrink
+        if _sh > 0 and self._ac_score is not None:
+            a = self._ac_score
+            if a.shape[0] == gaussian_model.n_gaussians and float(a.sum()) > 0:
+                k = max(1, int(round(self.config.ac_shrink_frac * a.numel())))
+                thr = torch.topk(a, k).values[-1]
+                hit = a >= thr
+                n_hit = int(hit.sum())
+                if n_hit > 0:
+                    # scales 存的是 log 空間 ⇒ 乘以 f 等於加 log(f)
+                    gaussian_model.scales.data[hit] += math.log(max(1.0 - _sh, 1e-3))
+                    if global_step % 3000 == 0:
+                        print(f"[ac-shrink] step {global_step}: {n_hit} 顆 scale x{1 - _sh:.2f}"
+                              f"（AC 前 {100 * self.config.ac_shrink_frac:.0f}%）")
+
         f = self.config.err_unlock_frac
         e = self._err_score
         if f <= 0 or e is None or e.numel() == 0:
