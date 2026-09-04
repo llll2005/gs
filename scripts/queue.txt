@@ -284,11 +284,12 @@
 # ★★★★★ AC 導向的強制縮小（Gemini 提案裡我漏做的另一半）
 # acd 輸了但**根本沒搬動族群**（失敗區高斯/像素 0.62->0.64）=> 是介入太弱不是機制否證。
 # 本臂繞過取樣瓶頸：每次 densify 把 AC 最高的 5% 粒子 scale x0.5，直接壓 footprint。
-bash scripts/task_acs_b12.sh
 # ★★★ 安全檢查：反覆減半有沒有把尺度打到零（14999 已約 93 次事件）
-[cpu] bash scripts/task_acs_scalecheck.sh
-bash scripts/task_test.sh acs_b12
 
-# ★★★★ acs 的機制檢查（~3 分鐘）：縮小 footprint 有沒有真的把盲區變淺？
-# 與分數獨立。四種組合的結論完全不同（見腳本註解）。對照 agd2 的 0.218x。
-bash scripts/task_gradblind_acs.sh
+# （原 acs 的 test / gradblind 已移除：該跑次在 step 17,039 被中止，無 60k ckpt。
+#   等 acs2 跑完再對它做同樣的機制檢查。）
+
+# ★★★★★ AC 強制縮小（修正版，加尺度下限）—— 前一版在 14999 塌陷（p1 1.2e-20、15.19% <1e-4）
+bash scripts/task_acs2_b12.sh
+[cpu] bash scripts/task_acs2_scalecheck.sh
+bash scripts/task_test.sh acs2_b12

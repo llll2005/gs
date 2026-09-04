@@ -698,12 +698,25 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 thr = torch.topk(a, k).values[-1]
                 hit = a >= thr
                 n_hit = int(hit.sum())
+                # ⚠⚠ 2026-09-04 修：**必須有下限**。shrink 在**每個** densify 事件（150 步）
+                # 都做，30k 步內約 193 次。我曾在 step 1499（約 3 次事件）驗過「前 5% 的
+                # 成員每次都在換」而判定安全 —— **那個外推是錯的**：到 step 14999
+                # （約 93 次）實測 acs 的 scale p1 = 1.2e-20（對照 agd2 的 4.8e-04，
+                # 差 16 個數量級），**15.19% 的粒子 scale < 1e-4**（對照 0.78%）。
+                # 成員確實在換，但換得不夠快，累積仍把一大批打到零。
+                # ⚠ 症狀是「N 正常但畫面變空」—— 分數看不出成因。
+                # 下限取「族群 scale 中位數的 1/50」：仍遠小於典型 footprint（足以脫離
+                # 梯度盲區），但不會歸零。
+                floor = float(gaussian_model.get_scales().max(dim=1).values.median()) / 50.0
+                cur = gaussian_model.get_scales().max(dim=1).values
+                hit = hit & (cur > floor)
+                n_hit = int(hit.sum())
                 if n_hit > 0:
                     # scales 存的是 log 空間 ⇒ 乘以 f 等於加 log(f)
                     gaussian_model.scales.data[hit] += math.log(max(1.0 - _sh, 1e-3))
                     if global_step % 3000 == 0:
                         print(f"[ac-shrink] step {global_step}: {n_hit} 顆 scale x{1 - _sh:.2f}"
-                              f"（AC 前 {100 * self.config.ac_shrink_frac:.0f}%）")
+                              f"（AC 前 {100 * self.config.ac_shrink_frac:.0f}%，下限 {floor:.2e}）")
 
         f = self.config.err_unlock_frac
         e = self._err_score
