@@ -25,7 +25,17 @@ primer that costs far fewer tokens; read it first, then the relevant section of 
 Everything else under `紀錄/` is in `archive/` and is history, not current state.
 Read those before proposing mechanisms — this section is a summary and goes stale.**
 
-**Core contribution: cost-aware density control.** Existing density control prices primitives by
+**⛔⛔ 2026-09-07 定案：命題的「取樣端」已被否證。** 三個變體（符號 ±／冪次+加法／
+代理+精確 c／強度未校準+校準）全輸，29 小時 GPU；**基準（無成本項）仍是最佳**
+（agd2 26.5602 vs cadd 26.3719 / fpd 26.4260 / cheap 26.2398）。
+共同形狀「紋理比↑ 而 PSNR/SSIM/LPIPS↓」且**不是塵埃**（floater 方向不一致）⇒ **虛假細節**。
+與 absgrad 互補：**往「誤差在的地方」增生有效（|g|），往「便宜/貴的地方」增生無效（c）**。
+⚠ 且 `scale_reg` 是 **r=0.977** 的成本代理（空拍深度範圍窄）⇒
+  「每個先前方法都是 `c_i ≡ 1` 的特例」**對 scale_reg 不成立**。
+❓ 只剩**約束端**未測：`cost_budget` 取代 `cap_max` ＝ `max Q s.t. (1/K)Σc_i ≤ B` 的字面形式。
+**引用以下任何成本感知的正面敘述前，先讀記憶 `cost_aware_sampling_refuted`。**
+
+**Core contribution (原始提法，取樣端已否證): cost-aware density control.** Existing density control prices primitives by
 COUNT (`cap_max`, opacity L1, scale L1) and is blind to what they actually cost to render. We
 price them by render cost and solve a resource-constrained problem:
 
@@ -42,7 +52,25 @@ Their weight is 0.1 against `∇g`'s 50, i.e. ~0.2% of the score, so **they neve
 that direction either**. The surviving distinction is `c` as **detector** vs `c` as **price**
 (bound to `(1/K)·Σc_i ≤ B`), NOT "who uses `c`". See §3.1.
 
-**Current best recipe (validated on BOTH b12 and b7, 2026-08-29):**
+**★★ 2026-09-10 目前最強的活線 = SfM-init（跑次進行中，尚未完賽）**
+`speed3_sfminit_b12` = `speed3` 配方，**唯一變數 `--model.initialize_from null`**
+（SfM 稀疏點 320,513 顆起步，取代 depth-init PLY 的 1,211,537）：
+```
+5,680 +0.72 ／ 11,360 +0.78 ／ 17,040 **+0.61（7.5sd）** ／ 22,720 +0.73 ／ 28,400 +0.37 dB
+PSNR / SSIM / 紋理比 三個指標**每個檢查點同向**
+```
+⚠ 未完賽、只有 b12 ⇒ 依鐵律新最佳要 b7 也驗。詳見記憶 `sfm_init_beats_depth_init` 與 §13。
+
+**★ 現行最佳（2026-09-06）= `speed3`**：`sched30` + `absgrad_densify 2.0`
++ **`fast_noise` + `noise_gate_eps 1e-3`**（腳本 `scripts/task_speed3.sh` / `task_speed3_b7.sh`）
+```
+b12 26.6957（+4.9sd）  b7 25.1448（+0.3sd 平）   並且**快 b12 +6.83% / b7 +9.48%**
+```
+⚠ 定位是 **Pareto 改善（更快+不更差）**，不是分數突破 —— b7 四項全平 ⇒ **不可宣稱 +0.13 dB 是普遍增益**。
+✅ 已採用且零風險：`densify_blind_report=False`（`_accumulate_error_score` 每步不再執行，
+   三個消費者現行全為 0，**訓練行為完全不變**）。
+
+**前一代 recipe (validated on BOTH b12 and b7, 2026-08-29):**
 `sched30` + **`absgrad_densify 1.0`** — script `scripts/task_absgrad_densify.sh`
 ```
 b12  26.29 -> 26.43   PSNR +6.3sd  SSIM +68.8sd  LPIPS +13.4sd
