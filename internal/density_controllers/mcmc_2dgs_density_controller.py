@@ -331,7 +331,54 @@ class MCMC2DGSDensityController(MCMCDensityController):
     4.4~20.6%（隨機是 10%）⇒ 選的是幾乎不相干的一批 ⇒ **換訊號會換掉增生位置**。
     到 step 600 時 opacity 取樣只吃到 2.76/16.68 = 17%，還有 6 倍空間。"""
 
+    cost_add_densify: float = 0.0
+    """**加法式**的成本感知增生：`probs *= (1 + |w| * ŝ)`，ŝ = 訊號/其均值。
+
+    w > 0 => 訊號 = **1/c**（偏好便宜，我方命題）／ w < 0 => 訊號 = **c**（偏好貴，Taming）。
+    `c` 取自 trim pass 的 `num_covered_pixels`（**精確**渲染成本，每視角平均），
+    而不是 `cost_aware_densify` 用的 `_max_radii2D²` 代理。
+
+    為什麼要有這個旗標（研究總覽 §11.108/§11.109）：
+    ```
+    冪次式 cost_aware_densify   動態範圍 **300x**   兩個符號都輸（-4.8sd / -11.6sd）
+    加法式 absgrad_densify      動態範圍  ~26x      **贏**（現行最佳的一部分）
+    且冪次式吃的代理把離散度**誇大 66%**（ceiling 15.26x vs 精確 9.19x）
+    ```
+    ⇒ 疑點在**形式與強度**，不在訊號本身。本旗標把兩者都換掉。
+    ★ 建議值 **2.278**：令 `1 + w*ceiling(1/c)` = 25.8，與 absgrad 同動態範圍
+      （`tools/cost_proxy_quality.py` 實測 ceiling(1/ĉ) = 10.89x）。
+    ⚠ 需要 trim 開著（精確 c 從那裡來）且 `densify_from_iter` 晚於第一次 trim。
+      拿不到訊號時會**大聲印警告**，不會靜默 no-op（§11.101 的教訓）。"""
+
     cost_aware_densify: float = 0.0
+
+    densify_blind_report: bool = False
+    """`[densify-blind]` 診斷（每個 densify 事件印一次「opacity 取樣看到的誤差 / 全體平均」）。
+
+    ⚠ 開啟它會連帶讓 `_accumulate_error_score` **每一步**執行（全幅 avg_pool2d + N x 3 投影）。
+    2026-09-05 前這個累積是**無守衛**的 ⇒ 現行配方（三個真正的消費者全為 0）下純屬浪費。
+    預設 False：訓練行為完全不變，只是少一行 log。"""
+
+    noise_gate_eps: float = 0.0
+    """>0 時，MCMC 位置噪音**只對 `op_sigmoid(1-o) > eps` 的粒子計算**（稀疏化）。
+
+    為什麼可以（2026-09-05 實測，`agd2_b12` 的 14999/29999/60000 三個 ckpt）：
+    噪音 = `cov @ (randn * gate * noise_lr * lr)`，而 `gate = sigmoid(100*(0.005-o))`
+    對高 opacity 粒子本來就 ~0 —— 我們只是把「算出一個約等於 0 的位移」換成「不算」。
+    ```
+    eps      可跳過比例（14999/29999/60000）
+    1e-4        40.2% / 53.8% / 62.6%
+    1e-3        47.6% / 62.8% / **69.0%**
+    ```
+    安全性用**相對自身尺寸**判定（不可用「相對 Adam 步長」—— 被跳過的多半梯度趨近 0，
+    比值必然爆掉，那是判準選錯不是機制有問題）：
+    eps=1e-3 時被跳過者每步位移 <= `scale^2 * noise_lr * lr * eps` = 4.15e-8，
+    60,000 步隨機遊走累積 sqrt(60000)*4.15e-8 = 1.0e-5 = **自身尺寸的 0.15%**。
+
+    成本：`_add_xyz_noise` 實測 **59.4 ms/step**（總 602 ms 的 9.9%，`tools/step_breakdown.py`），
+    成本來自 `compute_cov_3d(N)` + `randn_like(N,3)` + `bmm(N,3,3)` —— 全對整個族群做。
+    ⚠ 非位元等價（RNG 串流不同），需要端到端驗分數。
+    ⚠ 與 `fast_noise` 互補：那個是代數改寫（不 materialize N x 3 x 3），這個是減少 N。"""
 
     fast_noise: bool = False
     """MCMC noise 的等價改寫：`cov @ v = R S S^T R^T v = R (s^2 * (R^T v))`
@@ -384,6 +431,28 @@ class MCMC2DGSDensityController(MCMCDensityController):
 
     ac_shrink_frac: float = 0.05
     """每次 densify 事件，對 AC 分數最高的這個比例做縮小。"""
+
+    ac_shrink_target_px: float = 10.0
+    """⛔ **本機制已退役（2026-09-04，研究總覽 §11.91），預設 `ac_shrink=0` 不會觸發。**
+    O0 oracle 把失敗 tile 從 corr 0.273 拉到 0.850，過程中**粒子半徑比值 1.019**
+    （沒變小，反而微幅變大）、opacity 比值 1.001 ⇒ **解不在 scale 上**。
+    程式碼保留是因為冪等目標的寫法本身是對的（§11.85），但**不要再拿它做實驗**。
+
+    以下為原始說明。縮到的**目標投影半徑**（像素）。`scale = target_px * z / (3*fx)`，且只縮不放。
+
+    ⚠ 這取代了「反覆乘 0.5」——後者在兩個版本上都塌陷（見實作處的註解）。
+    本式**冪等**：套用兩次與一次相同 ⇒ 不累積、不需要下限。
+
+    ★ 10.0 是**實測**出來的，不是猜的（`tools/radius_cliff.py`，研究總覽 §11.88）：
+    ```
+       半徑 px        corr 中位
+       0.00~ 9.30      0.980
+       9.30~12.25      0.980
+      12.25~15.87      0.732   <- 懸崖（最大跌幅 = 全距的 49.5%，均勻只會是 14%）
+    ```
+    ⛔ **我最初設的是 2.0，那是憑空的**：失敗/成功區的半徑實測只差 1.18x
+    （20.73 vs 17.51 px），縮到 2px 等於對一個差 18% 的變數做 10x 介入
+    ＝破壞集合（§11.34 實測 −2.34 dB）。10.0 落在 corr 仍為 0.980 的箱內且留有餘裕。"""
 
     harvest_relocate: bool = False
     """★ 收割期回收（使用者 2026-09-01 提案）：`densify_until_iter` 之後**繼續 relocation
@@ -501,6 +570,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # flags happened to be on. `cad_b12` only measured anything because its script also
         # passed `screen_size_prune_px 300` — by luck, not by design. Same shape as
         # `err_guided_densify`, which was dead code and burned 9.7 h on `egd_b12`.
+        # ⛔ 2026-09-05 更正：上面那句「cad_b12 only measured anything because its script also
+        #    passed screen_size_prune_px 300」**是錯的，方向相反**。傳 `screen_size_prune_px`
+        #    會讓該機制在 `add_new_gs` 之前把視窗清成 None ⇒ cost_aware 反而**永遠不會觸發**。
+        #    ⇒ `cad_b12` 與 `fpd_b12` 都沒量到東西。順序 bug 已修（見 ~685 與 ~716）。
         if self.config.screen_size_prune_px > 0 or self.config.dar_lambda > 0 \
                 or self.config.max_relocate_frac > 0 or self.config.vpc_prune_frac > 0 \
                 or self.config.cost_aware_densify != 0:
@@ -517,7 +590,14 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"Load(區間最壞視角)={_l:,.0f} Load/N={_l / max(_n, 1):.2f} "
                       f"預算={self.config.cost_budget:,.0f}"
                       f"{'（未設，純標定）' if self.config.cost_budget <= 0 else ''}")
-        self._accumulate_error_score(outputs, batch, gaussian_model)
+        # ★ 2026-09-05 閘門：`_accumulate_error_score` 是**唯一沒有守衛、每步都跑**的助手
+        #   （全幅 avg_pool2d + N x 3 的投影矩陣乘）。它的消費者：
+        #     err_unlock_frac / err_guided_densify / transparent_corrector  —— 現行配方全是 0
+        #     `_report_densify_blindness`（只印字，不影響訓練）
+        #   ⇒ 現行配方下它是純診斷成本。守衛含**所有**消費者（稽核清單 §7 的教訓）。
+        if (self.config.err_unlock_frac > 0 or self.config.err_guided_densify > 0
+                or self.config.transparent_corrector > 0 or self.config.densify_blind_report):
+            self._accumulate_error_score(outputs, batch, gaussian_model)
         # ⚠ 守衛必須含 `ac_densify` 自己（`cost_aware_densify` 曾因守衛不含自己而靜默 no-op）
         # ⚠ 守衛必須含**所有**消費者（ac_shrink 也讀 _ac_score）——
         #   cost_aware_densify 就是因為守衛不含自己而靜默 no-op（稽核清單 §7）
@@ -625,7 +705,15 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 if n_big > 0:
                     dead_mask = dead_mask | big_mask
                     print(f"[screen-size prune] step {global_step}: recycling {n_big} Gaussians with radius > {self.config.screen_size_prune_px}px (max {int(self._max_radii2D.max())}px)")
-                self._max_radii2D = None  # restart the window after each event
+                # ⚠⚠ 2026-09-05 BUG 修正（第 7 個靜默 no-op，代價 = fpd_b12 的 9.6h）：
+                # 這裡原本就把視窗清成 None，但 `add_new_gs`（下面第 ~716 行）才是
+                # `cost_aware_densify` 讀 `_max_radii2D` 的地方 ⇒ 只要 `screen_size_prune_px > 0`
+                # （現行最佳配方就有，300），cost_aware **永遠讀到 None、整段跳過**。
+                # ⇒ `fpd_b12`（cost_aware -0.5）與更早的 `cad_b12` **都沒有量到任何東西**。
+                # ⛔ 連帶推翻本檔 ~521 行的註解「cad_b12 only measured anything because its
+                #    script also passed screen_size_prune_px 300」—— 方向相反，那正是讓它失效的原因。
+                # 清除改到 `add_new_gs` 之後（見該處）。此時 N 尚未變（relocate 就地搬、
+                # add_new_gs 先算 probs 再 append），所以 shape 檢查仍成立。
             # Observability: relocate_gs has no cap, and uncapped condemnation costs a churn
             # tax (gsplat-probe experience). Report the BREAKDOWN, not just the total —
             # measured 2026-07-27 that a 44% total is ~38% stock opacity deaths (normal in
@@ -653,10 +741,22 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 op_frac = float((gaussian_model.get_opacities().squeeze(-1) <= death_line).float().mean())
                 print(f"[dead-mask] step {global_step}: total {float(dead_mask.float().mean()):.1%} "
                       f"= opacity {op_frac:.1%} (stock, pre-gate) + our channels")
-            self._report_densify_blindness(gaussian_model, global_step)
+            if self.config.densify_blind_report:
+                self._report_densify_blindness(gaussian_model, global_step)
             self._err_triggered_unlock(gaussian_model, optimizers, global_step)
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
+            # ★ 2026-09-05：被 relocate 的粒子已經換位置換尺度了，但 `_max_radii2D` 還是
+            #   **搬走前**的半徑。`add_new_gs`（下一行）的 `cost_aware_densify` 會讀它
+            #   ⇒ 會用陳舊的大半徑去加權「剛剛被搬走、現在很小」的粒子。歸零才正確。
+            #   （這是原本「screen_size_prune 與 cost_aware 不能同時開」的真正原因；
+            #     修掉之後兩者可以並存 —— 而 v2 的 OOM 證明 prune 是承重的、不能拿掉。）
+            if self._max_radii2D is not None and self._max_radii2D.shape[0] == dead_mask.shape[0]:
+                self._max_radii2D[dead_mask] = 0
             self.add_new_gs(gaussian_model, optimizers)
+            # ★ 視窗在**所有**消費者用完之後才清（2026-09-05 修）。
+            #   消費者順序：vpc -> screen_size_prune -> add_new_gs(cost_aware)。
+            #   `add_new_gs` 會 append ⇒ 之後 shape 就對不上，所以必須在這裡清。
+            self._max_radii2D = None
             if self._tc_last is not None:
                 print(f"[transparent-corrector] step {global_step}: {self._tc_last[0]}/{self._tc_last[1]} "
                       f"個高誤差高不透明父代的子代改為 opacity {self.config.transparent_corrector}")
@@ -667,6 +767,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     _vpc_contrib: torch.Tensor = None   # cached multi-view contribution (value)
     _vpc_step: int = -1
     _ac_score: torch.Tensor = None
+    _last_camera = None
 
     def _dar_report(self, global_step: int) -> None:
         """so a silent no-op is distinguishable from a mechanism that never ran: the 1700-step
@@ -698,25 +799,36 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 thr = torch.topk(a, k).values[-1]
                 hit = a >= thr
                 n_hit = int(hit.sum())
-                # ⚠⚠ 2026-09-04 修：**必須有下限**。shrink 在**每個** densify 事件（150 步）
-                # 都做，30k 步內約 193 次。我曾在 step 1499（約 3 次事件）驗過「前 5% 的
-                # 成員每次都在換」而判定安全 —— **那個外推是錯的**：到 step 14999
-                # （約 93 次）實測 acs 的 scale p1 = 1.2e-20（對照 agd2 的 4.8e-04，
-                # 差 16 個數量級），**15.19% 的粒子 scale < 1e-4**（對照 0.78%）。
-                # 成員確實在換，但換得不夠快，累積仍把一大批打到零。
-                # ⚠ 症狀是「N 正常但畫面變空」—— 分數看不出成因。
-                # 下限取「族群 scale 中位數的 1/50」：仍遠小於典型 footprint（足以脫離
-                # 梯度盲區），但不會歸零。
-                floor = float(gaussian_model.get_scales().max(dim=1).values.median()) / 50.0
-                cur = gaussian_model.get_scales().max(dim=1).values
-                hit = hit & (cur > floor)
-                n_hit = int(hit.sum())
-                if n_hit > 0:
-                    # scales 存的是 log 空間 ⇒ 乘以 f 等於加 log(f)
-                    gaussian_model.scales.data[hit] += math.log(max(1.0 - _sh, 1e-3))
-                    if global_step % 3000 == 0:
-                        print(f"[ac-shrink] step {global_step}: {n_hit} 顆 scale x{1 - _sh:.2f}"
-                              f"（AC 前 {100 * self.config.ac_shrink_frac:.0f}%，下限 {floor:.2e}）")
+                # ⚠⚠ 2026-09-04 第二次修：**「反覆乘 0.5 + 下限」在結構上就是錯的**。
+                # 第一版無下限：step 14999 時 15.19% 的粒子 scale < 1e-4。
+                # 第二版下限 = median/50：**下限本身失控下滑**
+                #   step 3000 -> 18000：3.64e-4 / 3.75e-4 / 3.06e-4 / 2.61e-4 / 2.14e-4 / 1.78e-4
+                #   縮小的顆數同時 6,753 -> 41,660  ⇒ 13.96% 仍 < 1e-4。
+                #   成因：下限綁在 median 上，而**縮小本身會壓低 median** ⇒ 正回饋。
+                #   ⇒ **不可把安全限綁在這個機制自己會破壞的量上。**
+                #
+                # ✅ 第三版：**縮到絕對目標，不做乘法累積**。
+                # 目標由機制本身推出：梯度抵消發生在「footprint 跨越多個像素、
+                # 而殘差在其上正負相消」⇒ 要脫離盲區就是讓**投影半徑降到約 target_px**。
+                # 於是 scale = target_px * z / (3 * fx)（3-sigma 半徑的反解），且**只縮不放**。
+                # 這個運算是**冪等**的：套用兩次與一次相同 ⇒ 不會累積、不需要下限。
+                cam0 = getattr(self, "_last_camera", None)
+                if cam0 is not None:
+                    with torch.no_grad():
+                        pc = gaussian_model.get_xyz @ cam0.R.T + cam0.T
+                        z = pc[:, 2].clamp_min(0.2)
+                        tgt = self.config.ac_shrink_target_px * z / (3.0 * float(cam0.fx))
+                        cur = gaussian_model.get_scales().max(dim=1).values
+                        # 只對「命中且目前比目標大」的做，且直接設到目標（非乘法）
+                        hit = hit & (cur > tgt)
+                        n_hit = int(hit.sum())
+                        if n_hit > 0:
+                            ratio = (tgt[hit] / cur[hit]).clamp(max=1.0)
+                            gaussian_model.scales.data[hit] += torch.log(ratio).unsqueeze(-1)
+                            if global_step % 3000 == 0:
+                                print(f"[ac-shrink] step {global_step}: {n_hit} 顆縮到 "
+                                      f"{self.config.ac_shrink_target_px:.1f}px（AC 前 "
+                                      f"{100 * self.config.ac_shrink_frac:.0f}%，冪等，不累積）")
 
         f = self.config.err_unlock_frac
         e = self._err_score
@@ -788,6 +900,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             gt = image_info[1]
             if render is None or gt is None:
                 return
+            self._last_camera = camera        # ac_shrink 需要它把目標像素半徑反解成 scale
             e = (render.detach() - gt).mean(0, keepdim=True)[None]        # 有號、灰階 [1,1,H,W]
             m1 = torch.nn.functional.avg_pool2d(e, 16, ceil_mode=True)
             m2 = torch.nn.functional.avg_pool2d(e * e, 16, ceil_mode=True)
@@ -1255,6 +1368,16 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return
 
         with torch.no_grad():
+            # ★ 稀疏化（noise_gate_eps）：gate 對高 opacity 粒子本來就 ~0，
+            #   先選出真正會動的那些，後面所有 O(N) 的工作都只對它們做。
+            _eps = getattr(self.config, "noise_gate_eps", 0.0)
+            _sel = None
+            if _eps > 0:
+                _g_all = self.op_sigmoid(1.0 - gaussian_model.get_opacities()).squeeze(-1)
+                _sel = torch.nonzero(_g_all > _eps, as_tuple=True)[0]
+                if _sel.numel() == 0:
+                    return
+
             # Pad the 2D surfel scale with a zero normal component so the 3D covariance has
             # zero normal variance -> noise stays in the tangent plane (no off-surface drift).
             scales = gaussian_model.get_scales()
@@ -1264,15 +1387,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 scales = torch.cat([scales, pad], dim=-1)
 
             _fast = getattr(self.config, "fast_noise", False)
+            _q = gaussian_model.get_rotations()
+            if _sel is not None:
+                _q = _q[_sel]                       # ★ N x 3 x 3 只對會動的那些建
             if not _fast:
                 cov_3d = compute_cov_3d(
-                    scales=scales,
+                    scales=scales[_sel] if _sel is not None else scales,
                     scale_modifier=1.,
-                    quaternions=gaussian_model.get_rotations(),
+                    quaternions=_q,
                 )
             else:
                 from internal.utils.gaussian_projection import build_rotation_matrix
-                _R = build_rotation_matrix(gaussian_model.get_rotations())
+                _R = build_rotation_matrix(_q)
                 cov_3d = None      # 走等價路徑，不 materialize（見 fast_noise docstring）
 
             xyz_lr = -1
@@ -1284,7 +1410,12 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     break
             assert xyz_lr >= 0
 
-            noise = torch.randn_like(gaussian_model.means) * (self.op_sigmoid(1 - gaussian_model.get_opacities())) * self.config.noise_lr * xyz_lr
+            _o = gaussian_model.get_opacities()
+            if _sel is not None:
+                _o = _o[_sel]
+                scales = scales[_sel]
+            noise = torch.randn((_o.shape[0], 3), dtype=scales.dtype, device=scales.device) \
+                * self.op_sigmoid(1 - _o) * self.config.noise_lr * xyz_lr
             if cov_3d is not None:
                 noise = torch.bmm(cov_3d, noise.unsqueeze(-1)).squeeze(-1)
             else:
@@ -1292,4 +1423,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 noise = torch.bmm(_R.transpose(1, 2), noise.unsqueeze(-1)).squeeze(-1)
                 noise = noise * (scales ** 2)
                 noise = torch.bmm(_R, noise.unsqueeze(-1)).squeeze(-1)
-            gaussian_model.means.add_(noise)
+            if _sel is None:
+                gaussian_model.means.add_(noise)
+            else:
+                gaussian_model.means.index_add_(0, _sel, noise)

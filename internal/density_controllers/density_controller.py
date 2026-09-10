@@ -57,14 +57,16 @@ class Utils:
                 stored_state = opt.state.get(group['params'][0], None)
                 if stored_state is not None:
                     # append states for new properties
-                    stored_state["exp_avg"] = torch.cat(
-                        (stored_state["exp_avg"], torch.zeros_like(extension_tensor)),
-                        dim=0,
-                    )
-                    stored_state["exp_avg_sq"] = torch.cat(
-                        (stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)),
-                        dim=0,
-                    )
+                    # ⚠ 2026-09-10：`zeros_like(extension_tensor)` 是 **fp32**，而動量可能是
+                    # bf16/fp16（`LowPrecMomentAdam`）=> torch.cat 會把整個動量**升回 fp32**，
+                    # 在第一次 densify 事件就悄悄抵消掉全部的記憶體節省，而且**不會報錯**。
+                    # 一律沿用動量自己的 dtype。
+                    for _k in ("exp_avg", "exp_avg_sq"):
+                        stored_state[_k] = torch.cat(
+                            (stored_state[_k],
+                             torch.zeros_like(extension_tensor, dtype=stored_state[_k].dtype)),
+                            dim=0,
+                        )
                     # delete old state key by old params from optimizer
                     del opt.state[group['params'][0]]
                     # append new parameters to optimizer

@@ -71,7 +71,12 @@ class _TrainConsoleState:
             vu = f["vram_used"]; vt = f.get("vram_total", 0)
             frac = vu / vt if vt else 0
             mark = " !!HIGH" if frac >= 0.9 else (" !HI" if frac >= 0.8 else "")
-            bits.append(f"VRAM {vu:.2f}/{vt:.1f}G{mark}")
+            # vu = reserved（含配置器快取）；_a = **峰值** allocated（決定 OOM 的量）。
+            # ⚠ 不可改回瞬時 allocated：它在步間取樣 ⇒ 只反映常駐量 ⇒ 會讓人以為有大量浪費
+            #   （§11.86 已因此得出過錯誤結論並撤回）。
+            _a = f.get("vram_alloc")
+            bits.append(f"VRAM {vu:.2f}/{vt:.1f}G{mark}"
+                        + (f" (峰值實佔 {_a:.2f})" if _a else ""))
         if "its" in f: bits.append(f"{f['its']:.2f} it/s")
         if "eta" in f: bits.append(f"ETA {f['eta']}")
         L.append("- progress " + "-" * 28)

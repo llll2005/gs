@@ -203,7 +203,7 @@ bug 做的是「在同樣厚的殼裡把點打亂」。⛔ 我原本說的「35.
 ✅ 程式已修，`depth_init_fix/` 重生中；`scripts/task_fixdepth.sh` 量它值多少 dB。
 ✅ 臂與臂的比較仍成立（同一混淆在每一臂，且監督是對的）；❌ 絕對值要重測。
 
-## 八個踩過的程式陷阱
+## 十個踩過的程式陷阱
 
 1. **⛔⛔ 用 ckpt 當 `initialize_from` 時，所有 `--model.renderer.init_args.*` 都會被丟棄**
    （`gaussian_splatting.py:183` 會用 ckpt 的 renderer 整個取代）。
@@ -235,6 +235,18 @@ bug 做的是「在同樣厚的殼裡把點打亂」。⛔ 我原本說的「35.
    **2026-09-05 第二次踩**：改 `task_fpd_b12.sh` 時它還在跑 ⇒ bash 執行到
    `--model.initia|lize_from` 中間 ⇒ `lize_from: command not found`、rc=127，
    把「中止」偽裝成「腳本壞掉」。⚠ 我在同一個 session 裡才剛把這條寫進 §研究總覽 3924。
+9. **⛔⛔ 手動啟動的跑次可能不是單變數 —— 比較前 `diff` 兩份 resolved config**
+   （`outputs/<run>/blocks/block_*/lightning_logs/version_0/config.yaml`，**不是任務腳本**）。
+   2026-09-11：`speed3_sfminit_b12` 與 `speed3_b12` 差**四項**，其中 `dynamic_strips`
+   false→**true** ⇒ 逐條帶 SSIM 是實作自承的 boundary-window **近似**，
+   而 `dynk_K.log` 顯示 **K>1 佔 77.7%** ⇒ 60k 分數作廢（也解釋了慢 24%、VRAM 低 0.79 GB）。
+   ⚠ 附帶：`predict_num_strips` 的 budget 比硬體實際能吃的**低約 1.1 GB**
+   （同參數下 depth-init 也被判 K=6，而它 K=1 實測峰值 4.87 GB 沒爆）⇒ K 是白付的。
+   ⚠ `strip_safety` 是**預算乘數**（越大越寬鬆），不是折減係數。見 §13.7。
+10. **⛔ `rend_alpha` 會把場外的巨大 floater 算成「有覆蓋」** ⇒ 量「那裡有沒有東西」
+   一定要先濾掉 SfM 盒外的粒子（`tools/novel_view_coverage.py`）。
+   同一個量測我做錯三次；第三次是**改了 `cam.T` 卻沒重算 `world_to_camera`/`full_projection`**
+   ⇒ 五個視角 offset 覆蓋率完全相同（Camera 的矩陣是 `__post_init__` 算好的）。見 §13.8。
 
 ## 破平衡公式（已 4/5 命中）
 

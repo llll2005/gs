@@ -368,12 +368,80 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
             _a = getattr(self, "_ac_score", None)
             if _a is not None and _a.shape[0] == _n and float(_a.sum()) > 0:
                 probs = probs * (1.0 + _aw * _a / _a.mean().clamp_min(1e-30))
+        # ★★ 加法式的成本感知（2026-09-07，§11.108 之後的重做）
+        # 為什麼換形式：冪次式 `(c/med)^-w` 兩個符號都輸（PSNR -4.8sd / -11.6sd），
+        #   而它的動態範圍是 **300x**（實測 0.083~25.0）；同期 `absgrad` 用**加法式**
+        #   `1 + w*ĝ`、範圍僅 ~26x，是現行最佳的一部分 => 疑點在**形式與強度**，不在訊號。
+        # 為什麼換訊號：代理 `_max_radii2D²` 把離散度**誇大 66%**
+        #   （ceiling 15.26x vs 精確 9.19x，§11.109），而精確 c 是 trim **免費**算好的。
+        # w 的校準：令 `1 + w*ceiling(ŝ)` = 25.8（absgrad 已證有效的範圍）
+        #   => 1/c 訊號 ceiling 10.89x => **w = 2.278**（見 tools/cost_proxy_quality.py）
+        # 符號：w > 0 偏好**便宜**（我方命題）／w < 0 偏好**貴**（Taming）
+        _caw = getattr(self.config, "cost_add_densify", 0.0)
+        if _caw != 0:
+            _ec = getattr(self, "_exact_cost", None)
+            if _ec is not None and _ec.shape[0] <= _n and _ec.numel() > 0 and float(_ec.max()) > 0:
+                # 先由**已知的那段**算訊號並正規化，再補 1.0 給新粒子。
+                # ⚠ 不可反過來「補 mean(c) 再算 1/c」：Jensen 不等式讓 mean(1/c) != 1/mean(c)，
+                #   實測那樣補出來的新粒子 ŝ = **0.664**（被壓 34%），不是中性
+                #   —— 我第一版就是這樣寫的，靠數值自檢才抓到。
+                _sig = (1.0 / _ec.float().clamp_min(1.0)) if _caw > 0 else _ec.float()
+                _sig = _sig / _sig.mean().clamp_min(1e-30)
+                # ★★ 2026-09-07：把 ŝ 夾在**它自己的 ceiling（top5% 平均）**。
+                # 沒有這一夾，實測權重範圍是 **1.001~148.7x**，而不是設計的 25.8x ——
+                # 因為 w 是用 ceiling（top5% **平均**）解出來的，而 `1/c` 在 c->1
+                # （幾乎看不見的塵埃）有**無界尾巴**，max 遠大於 ceiling。
+                # 這是真缺陷不只是報告問題：加法式是**乘在 opacity 上**的，
+                #   塵埃 o=0.005 x 148 = 0.74  >  正常 o=0.15 x 1 = 0.15
+                # => 塵埃會壓過正常粒子成為主要分裂父代 —— 正是冪次式失敗的同一種病。
+                # 夾住之後 max(1+w*ŝ) = 1+w*ceiling = 25.8x，與 absgrad 同級（**依構造成立**），
+                # 代價是 top5% 一起飽和 —— 那正是「匹配 ceiling」的字面意思。
+                _k = max(1, int(0.05 * _sig.numel()))
+                _sig = _sig.clamp(max=float(torch.topk(_sig, _k).values.mean()))
+                if _sig.shape[0] < _n:
+                    # trim 每 500 步刷新、densify 每 150 步 => 中間有 add_new_gs append。
+                    # `add_new_gs` 只 append（舊索引穩定），新粒子給 **ŝ=1 = 精確中性**
+                    # （誠實：還不知道它們的成本）。不補的話形狀檢查會失敗
+                    # => 機制三次只生效一次（`blur_score` 就有這個未被發現的問題）。
+                    _sig = torch.cat([_sig, _sig.new_ones(_n - _sig.shape[0])])
+                probs = probs * (1.0 + abs(_caw) * _sig)
+                if not getattr(self, "_cadd_fired", False):
+                    self._cadd_fired = True
+                    _wt = 1.0 + abs(_caw) * _sig
+                    print(f"[cost-add] ✅ 首次觸發：w={_caw}（{'偏好便宜' if _caw>0 else '偏好貴'}）"
+                          f", N={_n:,}, 權重範圍 {float(_wt.min()):.3f}~{float(_wt.max()):.1f}x"
+                          f"（設計 ~25.8x = 1+w*ceiling，已夾住尾巴）")
+            elif not getattr(self, "_cadd_warned", False):
+                self._cadd_warned = True
+                _why = ("_exact_cost 尚未產生（trim 每 500 步才刷新一次；densify_from_iter "
+                        "應 >= 一次 trim）" if _ec is None else
+                        (f"長度 {_ec.shape[0]} > N {_n}（不該發生：add_new_gs 只 append）"
+                         if _ec.shape[0] > _n else "成本全為 0"))
+                print(f"⚠⚠ [cost-add] **設定 w={_caw} 但拿不到精確成本，本機制不會生效**：{_why}")
+
         _cw = getattr(self.config, "cost_aware_densify", 0.0)
         if _cw != 0:
             _r = getattr(self, "_max_radii2D", None)
             if _r is not None and _r.shape[0] == _n and float(_r.max()) > 0:
                 _c = _r.float().clamp_min(1.0) ** 2
                 probs = probs / (_c / _c.median().clamp_min(1e-12)).pow(_cw)
+                if not getattr(self, "_cad_fired", False):
+                    self._cad_fired = True
+                    print(f"[cost-aware] ✅ 首次觸發：w={_cw}, N={_n:,}, "
+                          f"c 中位={float(_c.median()):.1f}px², "
+                          f"權重範圍 {float((_c/_c.median()).pow(-_cw).min()):.3f}"
+                          f"~{float((_c/_c.median()).pow(-_cw).max()):.1f}x")
+            else:
+                # ⚠⚠ 這個 else 是 2026-09-05 加的：`cost_aware_densify` 曾**兩次**靜默 no-op
+                #   （一次守衛不含自己、一次 screen_size_prune 在此之前清掉視窗），
+                #   兩次都燒掉一整個 9.6h 跑次而**完全不會報錯**。稽核清單 §7 的共同形狀。
+                #   ⇒ 設定開著卻拿不到成本訊號時，必須大聲說出來。
+                _why = ("_max_radii2D is None（多半是有其他機制在 add_new_gs 之前清掉了視窗）"
+                        if _r is None else
+                        (f"shape {_r.shape[0]} != N {_n}" if _r.shape[0] != _n else "radii 全為 0"))
+                if not getattr(self, "_cad_warned", False):
+                    self._cad_warned = True
+                    print(f"⚠⚠ [cost-aware] **設定 w={_cw} 但拿不到成本訊號，本機制不會生效**：{_why}")
         # Blur split. MCMC picks hosts by opacity, which is blind to WHERE detail is missing: a
         # primitive that alone explains a large patch is under-reconstructing it, and cloning THAT
         # one is what adds detail. Mini-Splatting (arXiv 2403.14166 Eq. 2) splits on exactly that
@@ -392,7 +460,24 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         share = getattr(self.config, "blur_split_budget", 0.0)
         score = getattr(self, "blur_score", None)
         thr = getattr(self.config, "blur_split_threshold", 288.0)
+        # ★ 2026-09-07：補上「觸發 / 拿不到訊號」的明確 log（§11.101 的模式，已連救兩個跑次）。
+        # ⚠ 這裡有一個**未被察覺的稀釋問題**：`blur_score` 由 trim（每 500 步）產生，
+        #   而 densify 每 150 步；`add_new_gs` 會 append 讓 N 變大 => 形狀檢查失敗
+        #   => 本機制**三次 densify 只生效一次**，且完全不會報錯。
+        #   `cost_add_densify` 已用「補 ŝ=1」解決；這裡先讓它**說出來**，要用時再補。
+        if share > 0 and (score is None or score.shape[0] != probs.shape[0]):
+            if not getattr(self, "_blur_warned", False):
+                self._blur_warned = True
+                _w = ("blur_score 尚未產生（需要 trim 開著）" if score is None
+                      else f"長度 {score.shape[0]} != N {probs.shape[0]}"
+                           "（trim 每 500 步、densify 每 150 步 => 中間 append 造成，"
+                           "**本次事件靜默跳過**）")
+                print(f"⚠⚠ [blur-split] **設定 share={share} 但拿不到訊號，本事件不生效**：{_w}")
         if share > 0 and score is not None and score.shape[0] == probs.shape[0]:
+            if not getattr(self, "_blur_fired", False):
+                self._blur_fired = True
+                print(f"[blur-split] ✅ 首次觸發：share={share}, 門檻={thr}, "
+                      f"超標 {int((score > thr).sum()):,}/{probs.shape[0]:,} 顆")
             over = score > thr
             m_over, m_rest = probs[over].sum(), probs[~over].sum()
             if m_over > 0 and m_rest > 0:

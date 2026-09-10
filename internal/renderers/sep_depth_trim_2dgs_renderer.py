@@ -319,6 +319,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
 
         push, gather = contribution_accumulator(self.K)
         blur = None
+        cost_acc = None                      # ★ 精確渲染成本 c_i 的累積（見迴圈內註解）
         with torch.no_grad():
             # `TRIM_SUBSAMPLE=n` => 週期 trim 只用每 n 台相機算 contribution（n=1 = 原行為）。
             # trim pass 佔 profile 視窗約 80%、約 9h 跑次的 10% => n=4 省約 7.5% 總時間。
@@ -351,6 +352,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 # content -- genuine under-reconstruction, not efficient flat regions.
                 raw = mean * covered.float()
                 blur = raw if blur is None else blur + raw
+                # ★ 2026-09-07：精確渲染成本 c_i（`num_covered_pixels` 跨視角求和）。
+                #   原本算完就 `del`，只有 blur-split（現行配方為 0）用到 mean*covered。
+                #   而 `cost_aware_densify` 卻在用 `_max_radii2D²` 這個代理 ——
+                #   實測代理把離散度**誇大 66%**（ceiling 15.26x vs 精確 9.19x，§11.109）。
+                #   累積它是**零成本**（covered 本來就在手上）。
+                cost_acc = covered.float() if cost_acc is None else cost_acc + covered.float()
                 del mean, covered, raw
 
             contribution = gather()
@@ -368,7 +375,16 @@ class SepDepthTrim2DGSRenderer(Renderer):
             # ⚠⚠ 2026-08-25：我加上面那段診斷時，Edit 把這一行連同 print 一起換掉了，
             # 等於「trim 完全不生效」跑了兩個 probe（probe_t500 / probe_t250，結果已作廢）。
             # 診斷只能「加」，絕對不能碰到會改變狀態的呼叫。
+            # ★ 必須在 `_prune_points` **之前**先套遮罩取出存活者的成本 ——
+            #   剪枝會改變 N，之後再切就對不上了。
+            # ⚠ 2026-09-07：我第一次把這段加到了 `before_training_step`（起始 trim），
+            #   那裡沒有 `cost_acc`/`n_used` => step 1 就 NameError。`_prune_points` 在本檔
+            #   出現**兩次**，替換時必須用「後面的 print 有 step=」來區分週期 trim。
+            _surv_cost = cost_acc[~prune_mask] if cost_acc is not None else None
             module.density_controller._prune_points(prune_mask, module.gaussian_model, module.gaussian_optimizers)
+            if _surv_cost is not None:
+                # 除以視角數 => **每視角平均**的渲染成本，與命題 `(1/K)Σc_i <= B` 同單位。
+                module.density_controller._exact_cost = _surv_cost / max(n_used, 1)
             print(f"Trimming done. step={step} N={n_tot} 剪={n_cut} ({100.0*n_cut/max(n_tot,1):.2f}%, "
                   f"名目 {100.0*self.prune_ratio:.0f}%) 零貢獻={n_zero} ({100.0*n_zero/max(n_tot,1):.2f}%) "
                   f"門檻={float(tile):.3e}")

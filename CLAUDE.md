@@ -52,14 +52,22 @@ Their weight is 0.1 against `∇g`'s 50, i.e. ~0.2% of the score, so **they neve
 that direction either**. The surviving distinction is `c` as **detector** vs `c` as **price**
 (bound to `(1/K)·Σc_i ≤ B`), NOT "who uses `c`". See §3.1.
 
-**★★ 2026-09-10 目前最強的活線 = SfM-init（跑次進行中，尚未完賽）**
-`speed3_sfminit_b12` = `speed3` 配方，**唯一變數 `--model.initialize_from null`**
-（SfM 稀疏點 320,513 顆起步，取代 depth-init PLY 的 1,211,537）：
+**★★ SfM-init（活線）—— ⚠ 2026-09-11：`speed3_sfminit_b12` 完賽但 60k 結果作廢**
+`speed3_sfminit_b12` 是**手動啟動**的，resolved config 與 `speed3_b12` 差**四項**，不是單變數：
 ```
-5,680 +0.72 ／ 11,360 +0.78 ／ 17,040 **+0.61（7.5sd）** ／ 22,720 +0.73 ／ 28,400 +0.37 dB
-PSNR / SSIM / 紋理比 三個指標**每個檢查點同向**
+initialize_from  depth_init.ply -> null          <- 想測的變數
+dynamic_strips   false -> **true**               <- 污染源
+strip_vram_target_gb 5.4 -> 5.2 ／ strip_safety 0.6 -> 0.85 ／ skip_surf_normal false -> true
 ```
-⚠ 未完賽、只有 b12 ⇒ 依鐵律新最佳要 b7 也驗。詳見記憶 `sfm_init_beats_depth_init` 與 §13。
+`dynk_K.log` 600 個採樣點：**K>1 佔 77.7%、K>=6 佔 69.3%**，而 `_strip_forward_backward`
+的 docstring 自承逐條帶 SSIM 是 "boundary-window **approximation**"
+⇒ **77.7% 的訓練步跑在被改過的 loss 上**，且慢 24%（1.85 vs 2.44 it/s）、VRAM 低 0.79 GB。
+❌ 不可引用：25.82@60k、26.21@56.8k、「各項指標都變差」。
+✅ 仍有效（K=1 期間，step < ~12,900）：**5,680 +0.72 ／ 11,360 +0.78 dB，三指標同向**。
+⇒ 重做已排入：`scripts/task_sfminit2_b12.sh`（`sfminit2_b12`，唯一變數 init）。
+⚠ K 是白付的（`tools/strip_k_audit.py`，純 CPU）：兩個 60k 模型在同參數下**都**被判 K=6，
+  而 depth-init 同 N=2.34M 用 K=1 **實測**峰值 4.87 GB 沒 OOM ⇒ 預測器 budget 訂低約 1.1 GB。
+詳見記憶 `sfm_init_beats_depth_init`、`dynamic_strips_confound` 與 §13。
 
 **★ 現行最佳（2026-09-06）= `speed3`**：`sched30` + `absgrad_densify 2.0`
 + **`fast_noise` + `noise_gate_eps 1e-3`**（腳本 `scripts/task_speed3.sh` / `task_speed3_b7.sh`）

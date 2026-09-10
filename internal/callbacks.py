@@ -298,7 +298,9 @@ class TrainConsole(ProgressBar):
         if "its" in f:
             bits.append(f"{f['its']:.2f}it/s")
         if "vram_used" in f:
-            bits.append(f"VRAM={f['vram_used']:.2f}/{f.get('vram_total', 0):.1f}G")
+            _a = f.get("vram_alloc")
+            bits.append(f"VRAM={f['vram_used']:.2f}/{f.get('vram_total', 0):.1f}G"
+                        + (f"(峰值實佔{_a:.2f})" if _a else ""))
         try:
             if self._state.vals:
                 vstep, vm = self._state.vals[-1]
@@ -337,7 +339,16 @@ class TrainConsole(ProgressBar):
         import torch
         if not torch.cuda.is_available():
             return 0.0, 0.0
-        return torch.cuda.memory_reserved() / 1e9, torch.cuda.get_device_properties(0).total_memory / 1e9
+        # 第三個值 = **峰值** allocated（`max_memory_allocated`），前者是 reserved。
+        # ⚠⚠ 2026-09-05 修：原本用 `memory_allocated()`（**瞬時**）。footer 在步與步之間更新，
+        #    暫存已釋放 ⇒ 它顯示的是**常駐量**（參數 0.506 + 梯度 0.506 + Adam 1.011 ≈ 2.02 GB），
+        #    於是看起來「5.53 裡有 3.3 GB 在浪費」—— **那正是 §11.86 已撤回的錯誤結論**
+        #    （真實碎片只有 0.933 GB，且 2.80M 顆直接 OOM）。
+        #    峰值才是決定 OOM 的量：`tools/vram_scale.py` 實測 N=2.34M 時 peak alloc **3.736 GB**。
+        #    `max_memory_allocated` 不重置 ⇒ 是整個跑次的峰值，正是要看的。
+        return (torch.cuda.memory_reserved() / 1e9,
+                torch.cuda.get_device_properties(0).total_memory / 1e9,
+                torch.cuda.max_memory_allocated() / 1e9)
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         super().on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)  # tqdm 記帳（rich 模式 no-op）
@@ -349,7 +360,7 @@ class TrainConsole(ProgressBar):
         if now - (self._t_last or now) >= 1.0:
             self._t_last, self._step_last = now, step
         loss = trainer.callback_metrics.get("train/loss")
-        used, tot = self._vram()
+        used, tot, alloc = self._vram()
         try:
             n = pl_module.gaussian_model.n_gaussians
         except Exception:
@@ -361,7 +372,7 @@ class TrainConsole(ProgressBar):
         self._state.set_footer(
             step=step, max_steps=trainer.max_steps, epoch=trainer.current_epoch,
             loss=float(loss) if loss is not None else None,
-            n_gauss=n, vram_used=used, vram_total=tot, its=its, eta=eta,
+            n_gauss=n, vram_used=used, vram_total=tot, vram_alloc=alloc, its=its, eta=eta,
         )
         if self._rich_ok and self._live is not None:
             try:
