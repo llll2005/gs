@@ -128,7 +128,7 @@ say "7. 單元測試"
 echo "  ⚠ -p 不能省：檔名是 <name>_test.py（後綴），unittest 預設樣式是 test*.py（前綴），"
 echo "    少了 -p 會**發現 0 個測試然後回報 OK**。"
 conda run -n "$ENV_NAME" python -m unittest discover -s tests -p "*_test.py" 2>&1 | grep -E "^(OK|FAILED|Ran )" | tail -3
-echo "  （基準：55 過 / 7 個因缺選用相依而 error —— 那 7 個全是上游測試，不是我方程式）"
+echo "  （基準 2026-09-11：86 collected / 81 過 / 5 error —— 5 個全是缺選用相依的上游測試：\n    tinycudann、gsplat._torch_impl、deformable model，不是我方程式）"
 
 # ── 8. 資料 ───────────────────────────────────────────────────────────────────
 say "8. 資料（**不在 git 裡**，要自己放）"
