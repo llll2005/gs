@@ -81,14 +81,51 @@ class ViewspaceGradConsumersTest(unittest.TestCase):
     declaring it, the skip would silently feed it zeros. This pins the current set.
     """
 
-    def test_mcmc_does_not_read_viewspace_grad(self):
+    def test_mcmc_DOES_read_viewspace_grad_since_absgrad(self):
+        """⚠ 2026-09-11 翻轉：這個測試原本斷言「MCMC 不讀 viewspace grad」，而且一直綠燈 ——
+        因為它用**字串比對**找 `outputs["viewspace_points"].grad`，
+        而 `_absgrad_report` 寫的是 `outputs.get("viewspace_points")` + `getattr(vp, "grad", None)`
+        ⇒ **偵測方式被繞過**。`absgrad_densify`（2026-08-25）確實在讀它。
+
+        後果：`_strip_forward_backward` 的 `outputs = dict(last_outputs)` 讓 K>1 時 absgrad
+        只看得到最後一條帶（見該函式的 docstring）。改成偵測「同一個模組裡同時出現
+        viewspace_points 與 .grad 的取用」，字串換寫法也躲不掉。
+        """
         import inspect
         from internal.density_controllers import mcmc_2dgs_density_controller as m
-        src = inspect.getsource(m)
-        # tolerate the explanatory comment, reject an actual read
-        code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
-        self.assertNotIn('viewspace_points"].grad', code)
-        self.assertNotIn("viewspace_point_tensor.grad", code)
+        code = "\n".join(l for l in inspect.getsource(m).splitlines()
+                          if not l.strip().startswith("#"))
+        reads = ('viewspace_points"].grad' in code
+                 or ('get("viewspace_points")' in code and 'getattr(vp, "grad"' in code)
+                 or "viewspace_point_tensor.grad" in code)
+        self.assertTrue(reads, "偵測失效：改了取用寫法就抓不到，請更新偵測條件")
+
+    def test_strip_path_sums_viewspace_grad_across_strips(self):
+        """因為 MCMC 會讀（上一個測試），條帶路徑就必須把各條帶的梯度加起來。
+
+        條帶是**不相交的像素集合**，且每條的 loss 已乘上 `h/H`
+        ⇒ 加權梯度之和 == 全幀梯度。這裡直接驗算術，並釘住原始碼裡真的有做加總。
+        """
+        import inspect
+        from internal import gaussian_splatting as gsp
+        src = inspect.getsource(gsp.GaussianSplatting._strip_forward_backward)
+        self.assertIn("agg_vsgrad", src)
+        self.assertIn('outputs["viewspace_points"] = vp_agg', src)
+
+        # 算術：三條不相交的貢獻，加總 == 一次算完
+        n = 8
+        full = torch.zeros(n, 3)
+        parts = [torch.zeros(n, 3) for _ in range(3)]
+        g = torch.Generator().manual_seed(0)
+        for i, pt in enumerate(parts):
+            pt[:, 2] = torch.rand(n, generator=g)      # 每條帶各自的 |g|
+            full[:, 2] += pt[:, 2]
+        acc = None
+        for pt in parts:
+            acc = pt.clone() if acc is None else acc + pt
+        self.assertTrue(torch.allclose(acc, full))
+        # 而「只取最後一條」會漏掉多少：這就是修正前的行為
+        self.assertFalse(torch.allclose(parts[-1], full))
 
     def test_vanilla_does_read_viewspace_grad(self):
         """Guards the test itself: if this stops being true the detection above proves nothing."""
@@ -125,7 +162,12 @@ class ReadsViewspaceGradFlagTest(unittest.TestCase):
         mc_code = "\n".join(l for l in inspect.getsource(mc).splitlines()
                             if not l.strip().startswith("#"))
         self.assertIn('viewspace_points"].grad', gg_src)      # declared True, and it does read
-        self.assertNotIn('viewspace_points"].grad', mc_code)  # declared False, and it does not
+        # ⚠ 2026-09-11：MCMC 宣告 False **仍然正確**，但理由不是「它不讀」。
+        # `READS_VIEWSPACE_GRAD` 問的是「要不要**兩次 backward 之間**的那個梯度」
+        # （SSIM-only 的那份，給 gradient-based ADC 用）。MCMC 不要那個。
+        # 而 `absgrad_densify` 讀的是**全部 backward 之後**的總梯度 —— 單次融合 backward
+        # 也拿得到 ⇒ 旗標不必改。兩者是不同的東西，別再把它當成「MCMC 完全不碰 outputs」。
+        self.assertNotIn("retain_graph", mc_code)
 
 
 if __name__ == "__main__":

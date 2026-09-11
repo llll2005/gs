@@ -6,6 +6,13 @@
 # ⚠ 必須連 floater 一起判（opacity_reg 是塵埃的主要抑制者）；★ 特別看終點 N 是否回到 ~2.6M。
 bash scripts/task_oregstop_b12.sh
 
+# ★★★★★ 實機驗證（~6 分）：K-strip 的 viewspace-grad 跨條帶加總真的生效了嗎
+# 2026-09-11 抓到：條帶路徑回傳 dict(last_outputs)，而 absgrad_densify 從
+# outputs["viewspace_points"].grad[:,2] 讀 |g| => K>1 時只看得到最後一條帶、
+# 沒出現在該帶的粒子 |g|=0 退化成 probs=o（等同 absgrad 沒開）。已修為跨條帶加總。
+# 判準：log 要出現 [K-strip] ✅ ... 且「全幀 / 最後一條帶」比值 > 1.0。
+bash scripts/task_stripgrad_check.sh
+
 # ★★★★★ cost_budget 短探針（~30 分）：預算綁不綁得住？省多少 VRAM？
 # ⚠ 天花板已量（§11.66）：**儲存 83% / binning 17%** => 成本預算最多重分配 17% 的 VRAM
 #   => 就算 binning 砍半也只換到約 **+0.06 dB**，低於 3sd 的 0.24 宣稱門檻。

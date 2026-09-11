@@ -572,13 +572,24 @@ class GaussianSplatting(LightningModule):
         approximation, validated equivalent on the gsplat probe line). Notes:
         - density_controller.before_backward is not invoked (no-op for MCMC family);
         - the viewspace grad-rescale dance is skipped (MCMC ignores viewspace grads);
-        - radii / visibility_filter are aggregated (max / or) for after_backward.
+        - radii / visibility_filter / viewspace-grad are aggregated (max / or / SUM).
+
+        ⚠ 2026-09-11：`viewspace_points.grad` 的跨條帶加總是**後來補的**。在那之前
+        `outputs` 只保留最後一條帶，而 `absgrad_densify`（2026-08-25 加入，現行最佳配方的
+        核心機制）正是從 `outputs["viewspace_points"].grad[:, 2]` 讀 `|g|`
+        ⇒ K=6 時取樣權重只由畫面最下面 1/6 的殘差決定，沒出現在該帶的粒子 `|g|=0`、
+        退化成 `probs = o`（等同 absgrad 沒開）。下方的 assert 擋不到，因為它只看
+        `READS_VIEWSPACE_GRAD`，而 MCMC 是 False（那個旗標問的是「**兩次 backward 之間**
+        要不要拿梯度」，absgrad 是在**全部 backward 之後**才讀，兩件事不同）。
+        加總是正確的：條帶是**不相交的像素集合**，且每條的 loss 已乘上 `h/H`
+        ⇒ 加權梯度之和 == 全幀梯度。
         """
         from internal.utils.strip_cameras import make_strip_camera, strip_bounds, crop_batch
 
         H = int(camera.height)
         agg_metrics, prog_bar = {}, {}
         agg_radii, agg_vis, last_outputs = None, None, None
+        agg_vsgrad, last_vsgrad = None, None
         for v0, v1 in strip_bounds(H, K):
             cam_s = make_strip_camera(camera, v0, v1 - v0)
             outputs = self(cam_s)
@@ -604,6 +615,14 @@ class GaussianSplatting(LightningModule):
             vis = outputs.get("visibility_filter", None)
             if vis is not None:
                 agg_vis = vis if agg_vis is None else (agg_vis | vis)
+            # 每條帶的 forward 各自產生一個 means2D（`torch.zeros_like(means, requires_grad=True)`）
+            # => 各有自己的 .grad，條帶之間不共用。條帶是不相交的像素集合且 loss 已乘 h/H
+            # => **相加**就是全幀梯度（.z 的 |g| 同理，它是逐像素 atomicAdd 上去的）。
+            _vp = outputs.get("viewspace_points", None)
+            _vg = getattr(_vp, "grad", None) if _vp is not None else None
+            if _vg is not None:
+                last_vsgrad = _vg.detach()
+                agg_vsgrad = last_vsgrad.clone() if agg_vsgrad is None else agg_vsgrad + last_vsgrad
             last_outputs = outputs
         outputs = dict(last_outputs)
         # `outputs` is the LAST strip's dict; only the two fields that have a meaningful
@@ -620,10 +639,27 @@ class GaussianSplatting(LightningModule):
             outputs["radii"] = agg_radii
         if agg_vis is not None:
             outputs["visibility_filter"] = agg_vis
+        if agg_vsgrad is not None:
+            vp_agg = torch.zeros_like(agg_vsgrad)
+            vp_agg.grad = agg_vsgrad
+            outputs["viewspace_points"] = vp_agg
+            # 可觀測性鐵律：新機制必須印「✅首次觸發」，並出示修正前後的差
+            if not getattr(self, "_strip_vsgrad_reported", False):
+                self._strip_vsgrad_reported = True
+                if getattr(self.hparams["density"], "absgrad_densify", 0) > 0 \
+                        or getattr(self.hparams["density"], "absgrad_report", 0) > 0:
+                    nz_last = int((last_vsgrad[:, 2] != 0).sum())
+                    nz_agg = int((agg_vsgrad[:, 2] != 0).sum())
+                    print(f"[K-strip] ✅ viewspace-grad 跨條帶加總首次觸發 K={K}："
+                          f"|g| 非零粒子 最後一條帶 {nz_last:,} -> 全幀 {nz_agg:,} "
+                          f"({nz_agg / max(nz_last, 1):.2f}x)。"
+                          f"未修正前 absgrad 只看得到前者。", flush=True)
         assert not getattr(self.density_controller, "READS_VIEWSPACE_GRAD", True), (
-            "K-strip training with a viewspace-gradient density controller: `outputs` after the "
-            "strip loop holds only the last strip, so densification would see a fraction of the "
-            "frame. Use K=1 or an MCMC controller."
+            "K-strip training with a controller that needs the viewspace gradient BETWEEN the two "
+            "backwards (READS_VIEWSPACE_GRAD): the strip path runs a single fused backward per "
+            "strip, so that intermediate gradient never exists. Use K=1 or an MCMC controller.\n"
+            "⚠ This assert does NOT cover `absgrad_densify`, which reads the viewspace gradient "
+            "AFTER all backwards -- that case is handled by summing the per-strip grads above."
         )
         return outputs, agg_metrics, prog_bar
 
