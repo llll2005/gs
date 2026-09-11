@@ -7,7 +7,7 @@ layers are stacked with draggable dividers (juxtapose style). Each pane selects
 its source run / checkpoint / GT-or-render independently; the image id is
 shared. Stdlib + PIL only.
 
-Usage:  python tools/compare_server.py [--port 8090] [--root outputs]
+用法:  python tools/compare_server.py [--port 8090] [--root outputs]
 Then open http://localhost:8090
 """
 import argparse

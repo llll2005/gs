@@ -33,4 +33,4 @@
 | 工具 | 事件 |
 |---|---|
 | `reanchor_eval.py` | 2026-07-19 rasterizer 重錨（`pin ≠ 實裝` 事件），已結案 |
-| `compare_server.py` | 本地 web 對照檢視器，沒在用 |
+| ~~`compare_server.py`~~ | **2026-09-11 已取回 `tools/compare_server.py`** —— 並排比較 GT 與多個跑次的 test 圖，實測仍可用（103 個跑次）|
