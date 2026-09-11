@@ -148,7 +148,9 @@ pip install -r requirements/gsplat.txt
 
 **⚠ These are OUR pipeline (depth-init). The upstream CityGS pipeline in the README uses a coarse
 global model and different tools; mixing them silently fails.** Full recipes with all flags:
-`紀錄/完整指令手冊.md`; the ones used daily are in `紀錄/_ctx.md`. Verified 2026-07-29.
+`紀錄/完整指令手冊.md` (rewritten 2026-09-11: §0 daily workflow, §3 the live training line,
+§4 the diagnostic tools, §7 the dynamic-strips warning; the retired Mode A/B/C flows are in its
+appendix H). The ones used daily are also in `紀錄/_ctx.md`.
 
 **Data prep (once per dataset):**
 ```bash
@@ -164,15 +166,16 @@ python utils/depth_init_blocks.py data/matrix_city/aerial/train/block_all --bloc
 - `depth_init_blocks.py` defaults to `<dataset>/depth_init`; pass `--output_dir` when generating a
   different grid or it silently overwrites the PLYs every current experiment initialises from.
 
-**Train one block** (what almost every experiment actually runs):
+**Train one block** (what almost every experiment actually runs). The live config is
+`configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml` — all 37 task scripts use it:
 ```bash
-python -u main.py fit --config configs/mcmc_2dgs_sb_60k_aggr17_aerial.yaml \
-  --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply \
-  --data.parser.block_id 12 \
-  --model.density.init_args.cap_max 1000000 \
-  --model.metric.init_args.opacity_reg 0.0 \
-  -n <run_name>
+conda run -n gspl python -u main.py fit --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply --data.parser.block_id 12 --model.density.init_args.cap_max 2600000 -n <run_name>
 ```
+Don't hand-type the recipe flags — copy `scripts/task_speed3.sh` (b12) / `task_speed3_b7.sh` (b7).
+SfM-init is the same command with `--model.initialize_from null`.
+⚠ The previous example here was stale on three counts and is corrected above: it used the
+**retired SB config** (`mcmc_2dgs_sb_...`), `cap_max 1000000` (now 2.6M), and
+`opacity_reg 0.0` — which contradicts this file's own "**NOT `opacity_reg=0`**" note below.
 All blocks: `python utils/train_citygs_partitions.py -n <name> --config <cfg> --init_mode depth
 --depth_init_dir <dir> [--blocks 0 6 7]`
 
@@ -246,7 +249,8 @@ exposes) — all 7 are upstream tests, none are our code.
 
 For 3DGS (CityGSV1), swap to `VanillaGaussian`, `VanillaRenderer`, `VanillaDensityController`, `VanillaMetrics`.
 
-SB-color variant (DBS port, 2026-07-17): swap model to `internal/models/gaussian_2d_sb.py:Gaussian2DSB` and renderer to `internal/renderers/sep_depth_trim_2dgs_sb_renderer.py:SepDepthTrim2DGSSBRenderer` (config: `configs/mcmc_2dgs_sb_60k_aggr17_aerial.yaml`). Color = SH0 DC + Spherical Beta lobes via `colors_precomp` — 25 floats/point vs 59 (SH3). Per-block cap calibration: `tools/calibrate_block_caps.py` (see `紀錄/完整指令手冊.md` §9).
+SB-color variant (DBS port, 2026-07-17): swap model to `internal/models/gaussian_2d_sb.py:Gaussian2DSB` and renderer to `internal/renderers/sep_depth_trim_2dgs_sb_renderer.py:SepDepthTrim2DGSSBRenderer` (config: `configs/mcmc_2dgs_sb_60k_aggr17_aerial.yaml`). Color = SH0 DC + Spherical Beta lobes via `colors_precomp` — 25 floats/point vs 59 (SH3). Per-block cap calibration: `tools/calibrate_block_caps.py` (see `紀錄/完整指令手冊.md` §6;
+the SB axis itself is retired — appendix S).
 
 ### Config System
 All components are specified in YAML via `class_path` + `init_args` using jsonargparse. Example configs for each scene are in `configs/citygsv2_*.yaml`. CLI args can override any config key at runtime (e.g., `--data.path`, `--model.density.init_args.cap_max`).
