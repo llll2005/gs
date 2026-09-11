@@ -248,6 +248,25 @@ bug 做的是「在同樣厚的殼裡把點打亂」。⛔ 我原本說的「35.
    同一個量測我做錯三次；第三次是**改了 `cam.T` 卻沒重算 `world_to_camera`/`full_projection`**
    ⇒ 五個視角 offset 覆蓋率完全相同（Camera 的矩陣是 `__post_init__` 算好的）。見 §13.8。
 
+## 三個 2026-09-11 的定案（引用 opacity_reg / cap / VRAM 前先看）
+
+```
+1 收割期 opacity L1 **不可關**   oregstop_b12 三光度全輸（-7.1/-7.3/-5.7sd）紋理比 +6.7sd
+                                 ＝第四次「虛假細節」簽名。關掉後同樣 2.34M 顆但
+                                 **總 opacity 質量 +47%、o>=0.9 多 1.82 倍** ⇒ overdraw
+                                 ⚠ 前提 §11.69「純損失」是用**死亡率**判的，判錯了對象
+2 cap 只交付 90% 的真因           = trim 的 `prune_ratio: float = 0.1`（renderer:25），
+                                 且 trim 閘在 `step <= densify_until_iter` ⇒ **收割期不跑**。
+                                 **不是** opacity_reg 續壓（原歸因已更正）。
+                                 ⇒ `prune_ratio` 是一個從沒當旋鈕試過的參數
+3 VRAM 是**硬牆不是慢坡**        N 固定只改餘裕：每步 0.999~1.001x 平到撞牆，retries 全 0
+                                 ⇒ 慢不是配置器在搬。純計算 ≈ 155ms/百萬顆 + **21ms** 固定，
+                                 而全訓練固定項 179ms ⇒ 差額在 dataloader/全解析度 loss/
+                                 Lightning，**不在 render**（要減固定成本往那側找）
+                                 ⚠ `max_split_size_mb:128`（每支腳本都寫死）固定貴 **6.4%**
+                                   換 +0.6GB 餘裕 —— 從沒對照過，裁決已排入佇列
+```
+
 ## 破平衡公式（已 4/5 命中）
 
 ```
