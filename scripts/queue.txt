@@ -13,6 +13,16 @@ bash scripts/task_oregstop_b12.sh
 # 判準：log 要出現 [K-strip] ✅ ... 且「全幀 / 最後一條帶」比值 > 1.0。
 bash scripts/task_stripgrad_check.sh
 
+# ★★★★★ 逼近 VRAM 上限時變慢，是配置器在搬還是計算變多？（教授提的實驗，~35 分）
+# 已知（tools/vram_gap.py）：reserved 4.87G 裡有 2.45G **全是配置器碎片**；
+# 台帳的 VRAM 是 memory_reserved() ⇒ cap_max 長年照著含 40% 碎片的數字調。
+# 沒量過的是**代價**。設計把計算量與壓力分開：
+#   臂 A 餘裕充足掃 N => 純計算基準線；臂 B **N 固定** 用 ballast 吃餘裕直到 OOM
+#   => 計算量逐字相同 ⇒ 時間的變化只能來自配置器。直接證據 = num_alloc_retries。
+#   臂 C 三種 alloc conf（含「完全不設」—— 現行腳本寫死 128 但從沒對照過）。
+# ⚠ expandable_segments 在 torch 2.0.1 不支援（2.1 才有）。
+bash scripts/task_vram_pressure.sh
+
 # ★★★★★ cost_budget 短探針（~30 分）：預算綁不綁得住？省多少 VRAM？
 # ⚠ 天花板已量（§11.66）：**儲存 83% / binning 17%** => 成本預算最多重分配 17% 的 VRAM
 #   => 就算 binning 砍半也只換到約 **+0.06 dB**，低於 3sd 的 0.24 宣稱門檻。
