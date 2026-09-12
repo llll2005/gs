@@ -35,6 +35,15 @@ SLOTS=${RUNNER_SLOTS:-1}
 GPU_RESERVE_MIB=${RUNNER_GPU_RESERVE_MIB:-6800}   # 一個 6GB 信封的跑次要留多少
 STAGGER=${RUNNER_STAGGER:-90}                     # 兩次啟動之間隔多久（避開同時配置尖峰）
 
+# ⚠ 2026-09-13：容器把 TORCH_CUDA_ARCH_LIST 設成含 torch 2.0.1 不支援的 arch
+#   （lab 是 `7.5 8.0 8.6 9.0 10.0 12.0+PTX`）。任何執行期的 CUDA JIT 編譯都會死，
+#   而 gsplat 是**第一次 densify（step ~1,049）**才 JIT => 很晚才報錯。
+#   在 runner 就鎖住，這樣**不管任務用哪支腳本**都會繼承正確的值。
+if command -v nvidia-smi >/dev/null 2>&1; then
+  _ARCH=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' \r')
+  [ -n "$_ARCH" ] && export TORCH_CUDA_ARCH_LIST="$_ARCH"
+fi
+
 mkdir -p logs
 exec 9>"$LOCK"   # 見下方 9>&-：子進程不得繼承這個 fd
 flock -n 9 || { echo "另一個 runner 已在執行（$LOCK）"; exit 1; }

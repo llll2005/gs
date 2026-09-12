@@ -22,13 +22,25 @@ CFG=configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml
 #   用法：RUN_PREFIX= CITYGS_VRAM_CAP_GB= bash scripts/lab/task_speed3.sh 13
 RUN_PREFIX=${RUN_PREFIX-lab/}
 # ⚠⚠ **執行期**也要鎖 TORCH_CUDA_ARCH_LIST，不只建置期（2026-09-13 在 lab 實測）：
-#   容器把它設成含 Blackwell(10.0)，torch 2.0.1 不認識；訓練到 step ~1,049 有東西
-#   即時編譯 CUDA 擴充，一碰到就 `ValueError: Unknown CUDA arch (10.0)` 當場 DIED。
-#   問這台機器的 GPU，不要寫死。
+#   容器把它設成 `7.5 8.0 8.6 9.0 10.0 12.0+PTX`，torch 2.0.1 不認識 10.0/12.0；
+#   而 **gsplat 在第一次 densify（step ~1,049）才 JIT 編譯 CUDA 後端** =>
+#   前 1,048 步完全正常，然後 `ValueError: Unknown CUDA arch (10.0)` 當場 DIED。
+#   用 `nvidia-smi --query-gpu=compute_cap` 直接問（回 `8.6`），不要巢狀 conda run。
 if command -v nvidia-smi >/dev/null 2>&1; then
-  _A=$(conda run -n gspl python -c     "import torch;print('.'.join(map(str,torch.cuda.get_device_capability(0))))" 2>/dev/null | tr -d '\r')
-  [ -n "$_A" ] && export TORCH_CUDA_ARCH_LIST="$_A"
+  _A=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' \r')
+  if [ -n "$_A" ]; then
+    export TORCH_CUDA_ARCH_LIST="$_A"
+  else
+    echo "⚠ 問不到 compute_cap，沿用環境變數"
+  fi
 fi
+# 守門：值裡若還含 torch 2.0.1 不支援的 arch，**立刻失敗**而不是跑到 step 1,049 才死
+case "${TORCH_CUDA_ARCH_LIST:-}" in
+  *10.0*|*11.0*|*12.0*)
+    echo "⛔ TORCH_CUDA_ARCH_LIST=[$TORCH_CUDA_ARCH_LIST] 含 torch 2.0.1 不支援的 arch"
+    echo "   => 會在第一次 densify（gsplat JIT）當場死，現在就停下來"
+    exit 3 ;;
+esac
 echo "TORCH_CUDA_ARCH_LIST=[${TORCH_CUDA_ARCH_LIST:-未設}]"
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
