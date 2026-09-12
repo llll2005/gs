@@ -26,7 +26,7 @@ with torch.no_grad(): d=m.infer_image(np.zeros((518,518,3), np.uint8))
 print('✅ Depth-Anything-V2 可用，輸出', d.shape)
 " || exit 1
 echo "=== 5,621 張深度圖（最貴的一步）==="
-conda run -n gspl --no-capture-output python utils/estimate_dataset_depths.py "$D" --encoder vitl || exit 1
+conda run -n gspl --no-capture-output python utils/estimate_dataset_depths.py "$D" || exit 1
 echo "=== depth-init PLY（25 塊）==="
 conda run -n gspl --no-capture-output python utils/depth_init_blocks.py "$D" \
   --block_dim 5 5 --voxel_min 0.03 --voxel_max 0.7 --chunk_size 75 || exit 1

@@ -285,6 +285,44 @@ if [ "$DO_BUILD" = 1 ]; then
   ok "編好了（--force-reinstall 是必要的，pip 會靜默跳過同版本的本地路徑）"
 fi
 
+# ── 5b. 其餘的 CUDA 擴充（2026-09-13 在 lab 發現：少了它們**任何**跑次都跑不起來）──
+#   `internal/renderers/__init__.py` **無條件** import vanilla_renderer，
+#   而它 import `diff_gaussian_rasterization`（3DGS 的光柵器）=>
+#   即使只跑 2DGS，缺這個也會在 import 階段就死：
+#     ModuleNotFoundError: No module named 'diff_gaussian_rasterization'
+#   `simple_knn` 同理（VanillaGaussian 的尺度初始化用它），而且兩個都**不在 PyPI 上**
+#   => 鎖檔的自我修復會把它們跳過（只印警告）。
+if [ "$DO_BUILD" = 1 ]; then
+  say "5b. 其餘 CUDA 擴充（diff_gaussian_rasterization / simple_knn）"
+  build_ext () {   # build_ext <子目錄> <import 名> <缺檔時的 git url>
+    local dir="submodules/$1" mod="$2" url="$3"
+    if conda run -n "$ENV_NAME" python -c "import $mod" >/dev/null 2>&1; then
+      ok "$mod 已可匯入"; return 0
+    fi
+    if [ ! -f "$dir/setup.py" ]; then
+      warn "$dir 沒有原始碼 => clone $url"
+      rm -rf "$dir"; git clone --depth 1 "$url" "$dir" 2>&1 | tail -1
+    fi
+    [ -f "$dir/setup.py" ] || { warn "$mod 還是沒有原始碼，跳過（之後 import 會失敗）"; return 1; }
+    # glm：與 trim 那支同一個坑（gitlink 但 .gitmodules 沒條目 => submodule update 回傳 0 卻沒做事）
+    if grep -rqs "glm/glm.hpp\|<glm/" "$dir" 2>/dev/null && [ ! -f "$dir/third_party/glm/glm/glm.hpp" ]; then
+      warn "$1 缺 glm => 直接 clone"
+      rm -rf "$dir/third_party/glm"; mkdir -p "$dir/third_party"
+      git clone --depth 1 https://github.com/g-truc/glm.git "$dir/third_party/glm" 2>&1 | tail -1
+    fi
+    rm -rf "$dir/build"
+    conda run -n "$ENV_NAME" --no-capture-output env CUDA_HOME="$PREFIX" CUDA_PATH="$PREFIX" \
+      TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-}" \
+      CC="${CC:-cc}" CXX="${CXX:-c++}" NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:-}" \
+      pip install --no-build-isolation --no-deps --force-reinstall "$dir" 2>&1 | tail -3
+    conda run -n "$ENV_NAME" python -c "import $mod; print('  $mod ->', $mod.__file__)" \
+      && ok "$mod 編好了" || { warn "$mod 編譯後仍不可匯入"; return 1; }
+  }
+  build_ext diff-gaussian-rasterization diff_gaussian_rasterization \
+    https://github.com/DekuLiuTesla/diff-gaussian-rasterization.git
+  build_ext simple-knn simple_knn https://gitlab.inria.fr/bkerbl/simple-knn.git
+fi
+
 # ── 6. 驗證 ───────────────────────────────────────────────────────────────────
 say "6. 驗證（裝好 != 裝對）"
 conda run -n "$ENV_NAME" --no-capture-output python scripts/setup/verify_env.py
@@ -311,7 +349,7 @@ cat <<'TXT'
     data/matrix_city/aerial/test/block_all_test/     官方 741 幀 held-out
 
   後三者可以自己重生（照 紀錄/完整指令手冊.md §2，三行指令）：
-    python utils/estimate_dataset_depths.py data/matrix_city/aerial/train/block_all --encoder vitl
+    python utils/estimate_dataset_depths.py data/matrix_city/aerial/train/block_all
     python utils/partition_from_colmap.py data/matrix_city/aerial/train/block_all --block_dim 5 5 --content_threshold 0.08 --force
     python utils/depth_init_blocks.py data/matrix_city/aerial/train/block_all --block_dim 5 5 --voxel_min 0.03 --voxel_max 0.7 --chunk_size 75
 

@@ -154,7 +154,7 @@ appendix H). The ones used daily are also in `紀錄/_ctx.md`.
 
 **Data prep (once per dataset):**
 ```bash
-python utils/estimate_dataset_depths.py data/matrix_city/aerial/train/block_all --encoder vitl
+python utils/estimate_dataset_depths.py data/matrix_city/aerial/train/block_all
 python utils/partition_from_colmap.py data/matrix_city/aerial/train/block_all --block_dim 5 5 --content_threshold 0.08 --force
 python utils/depth_init_blocks.py data/matrix_city/aerial/train/block_all --block_dim 5 5 --voxel_min 0.03 --voxel_max 0.7 --chunk_size 75
 ```
