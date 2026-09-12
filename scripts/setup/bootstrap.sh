@@ -323,6 +323,27 @@ if [ "$DO_BUILD" = 1 ]; then
   build_ext simple-knn simple_knn https://gitlab.inria.fr/bkerbl/simple-knn.git
 fi
 
+# ── 5c. 預先編 gsplat 的 CUDA 後端（2026-09-13 在 lab 踩到）────────────────────
+#   gsplat **不是** wheel 裡就有 .so，它在**第一次被用到時**才 JIT 編譯。
+#   而 MCMC 的 `compute_relocation` 是第一個碰到它的地方 => 第一次 densify 事件
+#   （speed3 配方是 step ~1,049）才觸發，前 1,048 步完全正常 =>
+#     `ValueError: Unknown CUDA arch (10.0) or GPU not supported` 當場 DIED。
+#   在這裡先編好（用正確的 arch），訓練時就直接命中 ~/.cache/torch_extensions。
+#   ⚠ 不要在有其他行程正在 JIT 同一個目錄時 `rm -rf` 那個快取 —— 我這樣做過，
+#     把建置中的目錄刪掉，錯誤變成 "can't create *.cuda.o: No such file or directory"。
+if [ "$DO_BUILD" = 1 ]; then
+  say "5c. 預先編 gsplat 的 CUDA 後端"
+  if conda run -n "$ENV_NAME" python -c "import gsplat" >/dev/null 2>&1; then
+    conda run -n "$ENV_NAME" --no-capture-output env CUDA_HOME="$PREFIX" CUDA_PATH="$PREFIX" \
+      TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-}" \
+      CC="${CC:-cc}" CXX="${CXX:-c++}" NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:-}" \
+      python -c "from gsplat.cuda._backend import _C; print('  gsplat 後端 OK')" 2>&1 | tail -3 \
+      && ok "gsplat 後端已編好並快取" || warn "gsplat 後端編不起來 —— 訓練到第一次 densify 會死"
+  else
+    warn "沒有 gsplat（MCMC 的 relocation 需要它）"
+  fi
+fi
+
 # ── 6. 驗證 ───────────────────────────────────────────────────────────────────
 say "6. 驗證（裝好 != 裝對）"
 conda run -n "$ENV_NAME" --no-capture-output python scripts/setup/verify_env.py
