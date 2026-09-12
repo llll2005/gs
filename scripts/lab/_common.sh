@@ -10,7 +10,12 @@
 #   同時這也是「3 個平行槽」能安全共存的前提（3 x 6.8GB < 24GB）。
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
-export CITYGS_VRAM_CAP_GB=${CITYGS_VRAM_CAP_GB:-5.66}
+# ⚠ 用 ${VAR-default}（**沒有冒號**）：這樣「明確設成空字串」會被尊重
+#   => 本機（原生 6GB）可以用 `CITYGS_VRAM_CAP_GB= bash ...` 關掉上限，
+#      而 lab 不帶這個變數時仍然自動鎖 5.66。
+export CITYGS_VRAM_CAP_GB=${CITYGS_VRAM_CAP_GB-5.66}
+[ -z "${CITYGS_VRAM_CAP_GB:-}" ] && unset CITYGS_VRAM_CAP_GB
+echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制（本機原生 6GB）}]"
 CFG=configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
