@@ -1,9 +1,11 @@
-# ★★★★★★ 失敗區在「零機制」下也失敗嗎 —— normal_b12 / armB_sfm / armA_baseline 逐 tile 交集
-# normal_b12 已完賽（PSNR 21.50、0.61M 顆）。但全幅 PSNR 答不了這題（失敗區被正常區稀釋），
-# 要存 val 影像再取三臂的糊掉遮罩交集。交集 ~100% => 病灶在輸入、與我方機制無關。
-# ★★★★★★ 最原始基準線：vanilla 2DGS 1500 步（第三次；前兩次各抓到一個 bug）
-# 第一次 18:50 死在 ColmapBlock 靜默 bug（載入 5,621 張 => RAM 爆，0 步 0 ckpt，台帳卻寫 rc=0）
-# 第二次 19:03 跑到 step 600 的第一個 densify 才炸：VanillaDensityController 是 3DGS 專用
-#   （scale 2 維 vs means 3 維），已改用 GS2DDensityController（＝2DGS 論文的 ADC，
-#   上游 configs/vanilla_2dgs.yaml 用的也是它）。已掃過該控制器其餘「假設 3 維」處：
-#   只有第 163 行那一個，而它正是被覆寫的那個 => 這次應該能跑完。
+# ★★★★★★★ held-out 四方對照（官方 741 幀）—— 今天的發現讓它從「待辦」變成「必須」
+# 今天量到：我方 val 評分的面積有 63% 在本塊 AABB 之外，而失敗率在那裡是 34% vs 盒內 19%。
+# 也就是說**我們一直用整張畫面評分一個只負責一小塊的模型** —— 與 eval_protocol 記的
+# 「逐塊評官方 test 無效（單塊只佔畫面一小部分）」是同一個稀釋效應，只是沒人想到它對 val 也成立。
+# ⇒ 「val⊂train 的排序」與「真 held-out 的排序」到底差多少，現在是主線問題不是旁支。
+# 約 10~20 分（四個模型 x 官方 741 幀裡落在 b12 相機範圍內的那些）。
+
+# ★★★★★ 命題唯一沒測過的一側：cost_budget 取代 cap_max
+# max Q s.t. (1/K)Σc_i <= B 的字面形式。取樣端三變體全輸（cost_aware_sampling_refuted），
+# 只剩約束端沒測。這是論文命題存活與否的最後一個實驗。
+bash scripts/task_costbudget_b12.sh
