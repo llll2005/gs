@@ -203,6 +203,21 @@ bug 做的是「在同樣厚的殼裡把點打亂」。⛔ 我原本說的「35.
 ✅ 程式已修，`depth_init_fix/` 重生中；`scripts/task_fixdepth.sh` 量它值多少 dB。
 ✅ 臂與臂的比較仍成立（同一混淆在每一臂，且監督是對的）；❌ 絕對值要重測。
 
+## ⛔⛔ depth_init 已於 2026-09-12 就地替換為正確版（引用分數前必看）
+
+```
+舊 depth_init/*.ply（2026-05-29，每顆點用鄰幀深度擺位）**已刪除**
+現 depth_init/*.ply = 原 depth_init_fix/（2026-08-22，位置對應正確），md5 64a9873b…
+```
+1. **所有既有 depth-init 跑次都是汙染起點**（speed3_b12 26.6957 等全部）。
+   但 `fixdepth_b12` 實測差異 **PSNR −0.2sd 平／SSIM −10.7sd LOSE／殼只薄 2.6%**
+   ⇒ **不作廢**，臂間比較仍成立，絕對值偏差在噪音級。
+2. ⚠ **`task_speed3.sh` 不再能複現 `speed3_b12`** —— 路徑沒變但底下的 PLY 換了。
+   要對照舊基準請用 `tools/cmp_runs.py` 比既有跑次，**不要重跑基準**。
+3. 衍生變體（op05／sub05／uniform25m／graded_k4）已隨之刪除；那四條線都已退役，
+   需要時可用 `reopacity_ply.py` / `make_uniform_init.py` / `make_graded_init.py` 從正確版重生。
+詳見 `紀錄/研究總覽.md §16.7`、刪除清單 `紀錄/已刪除_汙染depth_init_2026-09-12.txt`。
+
 ## 十個踩過的程式陷阱
 
 1. **⛔⛔ 用 ckpt 當 `initialize_from` 時，所有 `--model.renderer.init_args.*` 都會被丟棄**
