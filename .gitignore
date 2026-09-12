@@ -22,7 +22,12 @@ clusters
 segments
 **/__pycache__
 upload.sh
-*video*
+# ⚠ 原本是 `*video*`，那會連**原始碼**一起擋（blender/generate_video.py、doc/render_video.md）。
+# 只擋影片檔本身。
+*.mp4
+*.mov
+*.avi
+videos/
 *png*
 
 # ── 2026-08-06：建立 git 安全網時補上 ──────────────────────────────

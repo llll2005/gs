@@ -6,3 +6,6 @@
 !dataset
 !.gitignore
 !*_test.py
+# ⚠ 2026-09-12：`!*_test.py` 只涵蓋**後綴**命名，而 test_weighted_admm_precond.py
+#   是**前綴**命名 => 一直被忽略。兩種都放行。
+!test_*.py

@@ -1,0 +1,68 @@
+model:
+  initialize_from: null
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 30_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.001
+        max_steps: 15_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.rtg_stable_density_controller.RTGStableDensityController
+    init_args:
+      stable_threshold: 10
+      depth_init_immune: true
+      densify_grad_threshold: 0.0002
+      densification_interval: 500
+      opacity_reset_interval: 2000
+      densify_from_iter: 1000
+      densify_until_iter: 15_000
+      # ── B1：freeze_opacity=True（lifecycle 由 B4+B5 接管）─────────────────
+      freeze_opacity: true
+      # ── B3：mc_enabled=False（隔離 B3 的影響）──────────────────────────────
+      mc_enabled: false
+      # ── B4：stable→unstable reversion ────────────────────────────────────
+      stable_revert_enabled: true
+      stable_revert_threshold: 0.1
+      stable_revert_count: 5
+      # ── B5：長期 unstable 剔除（10 × 500 = 5000 steps）──────────────────
+      max_unstable_intervals: 10
+trainer:
+  check_val_every_n_epoch: 15
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000

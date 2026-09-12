@@ -1,0 +1,239 @@
+seed_everything: 42
+trainer:
+  accelerator: gpu
+  strategy: auto
+  devices: 1
+  num_nodes: 1
+  precision: 32-true
+  callbacks: null
+  fast_dev_run: false
+  max_epochs: null
+  min_epochs: null
+  max_steps: 12000
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0
+  val_check_interval: null
+  check_val_every_n_epoch: 4
+  num_sanity_val_steps: 1
+  log_every_n_steps: null
+  enable_checkpointing: false
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 1
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: false
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+model:
+  light_gaussian:
+    prune_steps: []
+    prune_decay: 1.0
+    prune_percent: 0.66
+    prune_type: v_important_score
+    v_pow: 0.1
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 3
+      optimization:
+        means_lr_init: 6.4e-05
+        means_lr_scheduler:
+          class_path: internal.schedulers.ExponentialDecayScheduler
+          init_args:
+            lr_pre_warmup: 1.0e-08
+            lr_final: 6.4e-07
+            warmup_steps: 0
+            max_steps: 12000
+            ramp: cosine
+        spatial_lr_scale: -1.0
+        shs_dc_lr: 0.0025
+        shs_rest_lr: 0.000125
+        opacities_lr: 0.05
+        scales_lr: 0.004
+        rotations_lr: 0.001
+        sh_degree_up_interval: 200
+        optimizer:
+          class_path: internal.optimizers.Adam
+  background_color:
+  - 0.0
+  - 0.0
+  - 0.0
+  random_background: false
+  correct_color: false
+  test_speed: false
+  save_val_output: false
+  save_val_metrics: null
+  max_save_val_output: -1
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      K: 5
+      v_pow: 0.1
+      prune_ratio: 0.1
+      contribution_prune_from_iter: 200
+      contribution_prune_interval: 100
+      contribution_prune_until_iter: -1
+      start_prune_ratio: 0.0
+      diable_start_trimming: false
+      diable_trimming: false
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_dssim: 0.2
+      rgb_diff_loss: l1
+      lpips_net_type: alex
+      fused_ssim: false
+      lambda_normal: 0.0
+      normal_regularization_from_iter: 0
+      lambda_dist: 0.0
+      dist_regularization_from_iter: 600
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.0
+        final_factor: 0.05
+        max_steps: 12000
+      depth_normalized: false
+      depth_output_key: inverse_depth
+      coarse_l1_weight: 0.0
+      coarse_l1_levels: 3
+      depth_coverage_eps: 0.0001
+      opacity_reg: 0.002
+      scale_reg: 0.007
+      immune_opacity_threshold: 0.9
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      cap_max: 2600000
+      noise_lr: 500000.0
+      densify_from_iter: 200
+      densify_until_iter: 8400
+      densification_interval: 30
+      min_opacity: 0.005
+      N_max: 51
+      blur_split_budget: 0.0
+      blur_split_threshold: 288.0
+      blur_split_weight: 0.0
+      long_axis_spread: 0.0
+      screen_size_prune_px: 300
+      densify_grad_scaler: 0.0
+      min_opacity_final: -1.0
+      min_opacity_anneal_end_iter: 3000
+      min_opacity_anneal_start_iter: -1
+      harvest_dust_trim_interval: -1
+      harvest_dust_opacity: 0.05
+      harvest_dust_px: 0.00155
+      err_guided_densify: 0.0
+      dar_lambda: 0.0
+      dar_cost_storage: 0.1
+      dar_eps: 1.0e-08
+      dar_clip: 0.25
+      max_relocate_frac: 0.0
+      vpc_prune_frac: 0.0
+      vpc_interval: 300
+      screen_prune_emergency_px: -1
+      freeze_opacity_after_densify: false
+  save_ply: false
+  web_viewer: false
+  initialize_from: data/matrix_city/aerial/train/block_all/depth_init/block_12.ply
+  overwrite_config: false
+  initializer: null
+  renderer_output_types: null
+  train_strips: 1
+  dynamic_strips: false
+  strip_vram_target_gb: 5.4
+  strip_v_os_gb: 0.8
+  strip_safety: 0.6
+  strip_max: 8
+  grad_checkpoint: false
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: internal.dataparsers.EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      mask_dir: null
+      split_mode: reconstruction
+      eval_image_select_mode: step
+      eval_step: 8
+      eval_ratio: 0.01
+      eval_list: null
+      scene_scale: 1.0
+      reorient: false
+      normalize: false
+      appearance_groups: null
+      image_list: null
+      down_sample_factor: 1.2
+      down_sample_rounding_mode: round
+      points_from: sfm
+      ply_file: null
+      n_random_points: 100000
+      force_pinhole: false
+      same_camera: false
+      train_on_test: false
+      block_id: 12
+      block_dim:
+      - 5
+      - 5
+      partition_subdir: null
+      aabb: null
+      num_threshold: 25000
+      content_threshold: 0.08
+      min_images_per_block: 10
+      depth_dir: estimated_depths
+      depth_rescaling: true
+      depth_scale_name: estimated_depth_scales
+      depth_scale_lower_bound: 0.2
+      depth_scale_upper_bound: 5.0
+  distributed: false
+  undistort_image: false
+  val_on_train: false
+  image_scale_factor: 1.0
+  train_max_num_images_to_cache: -1
+  val_max_num_images_to_cache: -1
+  test_max_num_images_to_cache: -1
+  num_workers: 8
+  add_background_sphere: false
+  background_sphere_center: points
+  background_sphere_distance: 2.2
+  background_sphere_points: 204800
+  background_sphere_color: random
+  background_sphere_min_altitude: -.inf
+  camera_on_cpu: false
+  image_on_cpu: true
+  image_uint8: false
+  async_caching: false
+max_steps: null
+max_epochs: null
+save_iterations:
+- 100
+- 300
+- 3000
+- 6000
+- 8400
+- 12000
+logger: tensorboard
+project: Gaussian-Splatting
+output: /home/LnoArch/Projects/專題/CityGaussian/outputs
+float32_matmul_precision: null
+viewer: false
+test_speed: false
+save_val: false
+val_train: false
+cache_all_images: false
+pbar_rate: null

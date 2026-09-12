@@ -2,6 +2,11 @@
 # —— 現行主線唯一在用的 config 就是這樣差點沒上傳。改成白名單 PATTERN。
 # `*` 仍然擋住 __pycache__、.pyc 與丟進來的資料/輸出。
 *
+# ⚠ `*` 連**目錄**一起擋 => 不放行目錄的話，`!*.yaml` 進不去子目錄
+#   （configs/proxy/probe_ctrl.yaml 就是這樣漏掉的）
+# ⚠⚠ 註解一定要自己一行：.gitignore 的 `#` **只有行首才算註解**，
+#    寫成 `!*/   # 說明` 會讓整行變成一個 match 不到任何東西的 pattern。
+!*/
 !.gitignore
 !*.py
 !*.yaml
