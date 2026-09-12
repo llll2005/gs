@@ -23,6 +23,10 @@ export PIP_CONSTRAINT=""
 unset PIP_CONSTRAINT
 # ⚠ lab 的 conda 26.5.3 / CPython 3.14 / libmamba 在**任何** conda 子指令上都可能丟
 #   「An unexpected error has occurred」並自己建議關插件 => 整支腳本都關掉。
+#   ⚠⚠ 用**環境變數**而不是 `--no-plugins` 旗標：那個旗標必須放在**子指令之前**
+#   （`conda --no-plugins install`），放成 `conda install --no-plugins` 會變成
+#   「unrecognized arguments」直接失敗 —— 2026-09-12 我這樣寫，害 cuda-toolkit 與
+#   gcc 11 兩個安裝都「失敗」而錯誤訊息被 2>/dev/null 吞掉，追了兩輪。
 export CONDA_NO_PLUGINS=true
 _sanitize_ld() {
   local out="" p
@@ -96,7 +100,7 @@ if [ "$DO_ENV" = 1 ]; then
   else
     # ⚠ 2026-09-12：lab 的容器是 conda 26.5.3 / CPython 3.14 / libmamba，
     #   這行會丟「unexpected error」並自己建議 --no-plugins => 直接帶上。
-    conda install -y --no-plugins -n "$ENV_NAME" -c nvidia/label/cuda-11.8.0 cuda-toolkit=11.8 \
+    conda install -y -n "$ENV_NAME" -c nvidia/label/cuda-11.8.0 cuda-toolkit=11.8 \
       || die "CUDA 11.8 工具鏈安裝失敗（沒有它就編不出光柵器）"
     # 後援：conda 整條掛掉時用 pip 的 nvcc 輪子（只要 nvcc 能跑就夠編光柵器）
     if ! conda run -n "$ENV_NAME" bash -lc 'command -v nvcc' >/dev/null 2>&1; then
@@ -240,7 +244,7 @@ if [ "$DO_BUILD" = 1 ]; then
   _GCCV=$(gcc -dumpfullversion 2>/dev/null | cut -d. -f1)
   if [ -n "$_GCCV" ] && [ "$_GCCV" -gt 11 ] 2>/dev/null; then
     warn "系統 gcc 是 $_GCCV，CUDA 11.8 只吃 <=11 => 裝 conda-forge 的 gcc 11 到環境裡"
-    conda install -y --no-plugins -n "$ENV_NAME" -c conda-forge \
+    conda install -y -n "$ENV_NAME" -c conda-forge \
       gcc_linux-64=11 gxx_linux-64=11 >/dev/null 2>&1 || warn "conda 裝 gcc 11 失敗"
     _CC=$(ls "$PREFIX"/bin/*-linux-gnu-gcc 2>/dev/null | head -1)
     _CXX=$(ls "$PREFIX"/bin/*-linux-gnu-g++ 2>/dev/null | head -1)
