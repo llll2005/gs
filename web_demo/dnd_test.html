@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-TW"><head><meta charset="UTF-8"><title>拖放診斷</title>
+<style>
+ body{background:#111;color:#eee;font:14px/1.6 system-ui,sans-serif;margin:0;padding:20px}
+ #zone{border:3px dashed #555;border-radius:10px;padding:60px;text-align:center;
+       font-size:20px;color:#8ac;margin-bottom:16px}
+ #zone.over{border-color:#4af;background:#12202c}
+ #log{background:#000;padding:12px;border-radius:8px;white-space:pre-wrap;
+      font-family:ui-monospace,monospace;font-size:12px;max-height:60vh;overflow:auto}
+ .ok{color:#6d6}.bad{color:#f66}.dim{opacity:.55}
+ b{color:#fff}
+</style></head><body>
+<h2>拖放診斷（不碰 WebGL、不碰 three.js）</h2>
+<p class="dim">把 .ckpt 從 Dolphin 拖到下面的框。這頁只記錄事件，不上傳也不渲染
+ —— 它能分清楚「合成器根本沒把拖放送進瀏覽器」跟「送到了但我們的頁面處理錯了」。</p>
+<div id="zone">把檔案拖到這裡</div>
+<div id="log">等待事件…
+</div>
+<script>
+const log = document.getElementById("log"), zone = document.getElementById("zone");
+let n = 0;
+function say(msg, cls){ log.innerHTML += `\n<span class="${cls||''}">${msg}</span>`; log.scrollTop = 1e9; }
+for (const ev of ["dragenter","dragover","dragleave","drop"]) {
+  document.addEventListener(ev, e => {
+    e.preventDefault();                       // drop 要能觸發，dragover 一定要 preventDefault
+    if (ev === "dragenter") zone.classList.add("over");
+    if (ev === "dragleave" || ev === "drop") zone.classList.remove("over");
+    if (ev === "dragover" && ++n % 20 !== 1) return;   // dragover 每秒幾十次，抽樣印
+    const dt = e.dataTransfer;
+    const types = dt ? [...dt.types] : [];
+    const nfiles = dt && dt.files ? dt.files.length : -1;
+    const items  = dt && dt.items ? [...dt.items].map(i => `${i.kind}:${i.type||"?"}`) : [];
+    say(`[${ev}] types=[${types.join(", ")||"（空）"}]  files=${nfiles}  items=[${items.join(", ")||"（空）"}]`);
+    if (ev === "drop") {
+      if (nfiles > 0) {
+        const f = dt.files[0];
+        say(`  ✅ <b>拿到 File</b>：${f.name}  ${(f.size/1e6).toFixed(1)} MB  type="${f.type||"（空）"}"`, "ok");
+        f.slice(0,4).arrayBuffer().then(b=>{
+          const m = new Uint8Array(b);
+          const magic = String.fromCharCode(...m).replace(/[^\x20-\x7e]/g,".");
+          say(`  前 4 bytes = ${[...m].map(x=>x.toString(16).padStart(2,"0")).join(" ")}  ("${magic}")`
+              + (m[0]===0x50&&m[1]===0x4b ? "  => 是 .ckpt（zip）" :
+                 m[0]===0x70&&m[1]===0x6c&&m[2]===0x79 ? "  => 是 .ply" : "  => 不認得"), "ok");
+        }).catch(err => say(`  ❌ 讀不到內容：${err}`, "bad"));
+      } else {
+        say(`  ❌ <b>drop 有觸發，但 files 是空的</b>`, "bad");
+        if (dt) for (const t of types) {
+          try { say(`     ${t} = ${JSON.stringify(dt.getData(t)).slice(0,300)}`, "dim"); } catch(_){}
+        }
+        say(`     => 合成器只送了 URI/文字，沒送檔案內容（Wayland -> XWayland 橋接的典型症狀）`, "bad");
+      }
+    }
+  });
+}
+say("已註冊 dragenter / dragover / dragleave / drop", "ok");
+say("若把檔案拖進來**完全沒有任何一行新訊息** => 拖放根本沒進到瀏覽器（合成器/XWayland 層）", "dim");
+</script></body></html>

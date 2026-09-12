@@ -100,6 +100,12 @@
       <option disabled selected>— 尚無 .ply 檔案 —</option>
     </select>
   </div>
+  <div class="pane-ctl" style="display:flex;gap:4px;align-items:center">
+    <span class="tag">本機 ckpt</span>
+    <select id="ckptSel" style="max-width:32em">
+      <option disabled selected>— 載入中 —</option>
+    </select>
+  </div>
   <label class="btn">
     開啟 .ply / .ckpt
     <input id="filePicker" type="file" accept=".ply,.ckpt" style="display:none"
@@ -318,6 +324,48 @@ document.addEventListener("drop", e => {
   handleFile(e.dataTransfer.files[0]);
 });
 
+// ── 本機 ckpt：不上傳、不拖放 ─────────────────────────────────────────────
+// 檔案本來就在同一台機器上（60k 的 ckpt 是 1.6 GB），走瀏覽器上傳是繞遠路，
+// 而且在這台機器上 Wayland 的拖放送不出 dataTransfer（types 全空）=> 這條完全繞開兩者。
+const ckptSel = document.getElementById("ckptSel");
+async function refreshCkptList() {
+  const cks = await fetch("/ckpts.json").then(r => r.json()).catch(() => []);
+  ckptSel.innerHTML = "";
+  if (!cks.length) {
+    ckptSel.innerHTML = '<option disabled selected>— 找不到 outputs/**/checkpoints/*.ckpt —</option>';
+    return;
+  }
+  const head = document.createElement("option");
+  head.disabled = true; head.selected = true;
+  head.textContent = `— 選一個 ckpt（${cks.length} 個，最新的在最上面）—`;
+  ckptSel.appendChild(head);
+  for (const c of cks) {
+    const o = document.createElement("option");
+    o.value = c.path;
+    o.textContent = `${c.path.replace(/^outputs\//, "")}  (${c.mb} MB)`;
+    ckptSel.appendChild(o);
+  }
+}
+ckptSel.addEventListener("change", async () => {
+  const path = ckptSel.value;
+  if (!path) return;
+  setProgress(null, `伺服器轉檔中（不上傳）：${path}`, "indeterminate");
+  try {
+    const r = await fetch("/convert_local", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }).then(r => r.json());
+    if (!r.ok) { setProgress(100, `轉檔失敗：${r.error}`, "error"); return; }
+    setProgress(100, r.cached ? `已有快取：${r.file}` : `轉檔完成：${r.file}`, "done");
+    await refreshFileList();
+    sel.value = r.file;
+    currentFile = null;
+    await loadSplat(r.file, r.file);
+  } catch (e) {
+    setProgress(100, `轉檔失敗：${e}`, "error");
+  }
+});
+
 // ── Server file list ──────────────────────────────────────────────────────
 async function refreshFileList() {
   const files = await fetch("/files.json").then(r => r.json()).catch(() => []);
@@ -346,6 +394,7 @@ async function pollCurrent() {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 await refreshFileList();
+refreshCkptList();          // 不 await：掃 outputs/ 不該擋住第一個檔的顯示
 if (sel.options.length && !sel.options[0].disabled) {
   await loadByName(sel.options[0].value);
 } else {
