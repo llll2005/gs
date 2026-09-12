@@ -162,7 +162,7 @@ if [ "$DO_ENV" = 1 ]; then
       #   （lab 實測：uninstall opencv-python 之後 ModuleNotFoundError: No module named 'cv2'）
       #   => 移除後要**重裝 headless**。
       conda run -n "$ENV_NAME" --no-capture-output pip uninstall -y opencv-python opencv-python-headless >/dev/null 2>&1
-      conda run -n "$ENV_NAME" --no-capture-output pip install -q "opencv-python-headless==4.10.0.84" >/dev/null 2>&1
+      conda run -n "$ENV_NAME" --no-capture-output pip install -q --force-reinstall --no-deps "opencv-python-headless==4.10.0.84" >/dev/null 2>&1
       conda run -n "$ENV_NAME" python -c "import cv2;print('  cv2', cv2.__version__)" \
         && ok "cv2 可用" || warn "cv2 仍不可用 —— 手動 pip install opencv-python-headless"
     fi
