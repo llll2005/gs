@@ -9,6 +9,10 @@
 #
 # 官方流程（scripts/citygs/run_citygs_mc_aerial.sh）第 1 步：全域 coarse、sh2、30k 步。
 set -u
+# ★ 明確**不鎖** VRAM（使用者 2026-09-13 確認）：這支要答的是「官方數字長什麼樣」，
+#   不是 6GB 可行性。萬一環境裡有殘留就清掉，並印出來確認。
+unset CITYGS_VRAM_CAP_GB
+echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制}]"
 ORIG=/workspace/data/hdd/11213/cityGS_origin
 GS=/workspace/data/hdd/11213/gs
 [ -d "$ORIG" ] || { echo "❌ 找不到 $ORIG"; exit 2; }

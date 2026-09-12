@@ -101,6 +101,7 @@ if [ "$SLOTS" -gt 1 ]; then
   for i in $(seq 1 "$SLOTS"); do FREE_SLOTS+=("$i"); done
   nrun=0
   stopping=0
+  solo_running=0
 
   reap () {   # 收割已結束的子行程；回傳收了幾個
     local got=0 pid rc dur
@@ -119,6 +120,7 @@ if [ "$SLOTS" -gt 1 ]; then
       FREE_SLOTS+=("${P_SLOT[$pid]}")
       unset "P_LABEL[$pid]" "P_CMD[$pid]" "P_START[$pid]" "P_SHORT[$pid]" "P_SLOT[$pid]"
       nrun=$((nrun - 1)); got=$((got + 1))
+      solo_running=0
     done
     return "$got"
   }
@@ -129,11 +131,20 @@ if [ "$SLOTS" -gt 1 ]; then
       rm -f scripts/queue.stop; stopping=1
     fi
     # ── 有空槽就啟動 ──
-    while [ "$stopping" -eq 0 ] && [ "$nrun" -lt "$SLOTS" ] && [ "${#FREE_SLOTS[@]}" -gt 0 ]; do
+    while [ "$stopping" -eq 0 ] && [ "$solo_running" -eq 0 ] \
+          && [ "$nrun" -lt "$SLOTS" ] && [ "${#FREE_SLOTS[@]}" -gt 0 ]; do
       task=$(head_task); [ -z "$task" ] && break
-      cmd="$task"; needs_gpu=1
-      case "$task" in \[cpu\]*) cmd="${task#\[cpu\]}"; needs_gpu=0 ;; esac
-      if [ "$needs_gpu" -eq 1 ] && ! gpu_room; then
+      cmd="$task"; needs_gpu=1; solo=0
+      case "$task" in
+        \[cpu\]*)  cmd="${task#\[cpu\]}";  needs_gpu=0 ;;
+        \[solo\]*) cmd="${task#\[solo\]}"; solo=1 ;;
+      esac
+      # [solo] 要獨佔整張卡：等到沒有別的任務在跑
+      if [ "$solo" -eq 1 ] && [ "$nrun" -gt 0 ]; then
+        log "   ⏳ 下一個是 [solo]（獨佔整張卡），等現有 $nrun 個跑完"
+        break
+      fi
+      if [ "$needs_gpu" -eq 1 ] && [ "$solo" -eq 0 ] && ! gpu_room; then
         used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
         log "   ⏳ VRAM 不足以再開一個（目前 ${used}MiB，需留 ${GPU_RESERVE_MIB}MiB）；執行中 $nrun"
         break
@@ -151,11 +162,21 @@ if [ "$SLOTS" -gt 1 ]; then
       P_LABEL[$pid]="$lbl"; P_CMD[$pid]="$cmd"; P_START[$pid]=$(date +%s)
       P_SHORT[$pid]=$(short_of "$cmd"); P_SLOT[$pid]="$slot"
       nrun=$((nrun + 1))
+      if [ "$solo" -eq 1 ]; then
+        solo_running=1
+        log "   🔒 [solo] 獨佔中：在它跑完之前不開新任務"
+        break
+      fi
       sleep "$STAGGER"
     done
     reap
     if [ "$stopping" -eq 1 ] && [ "$nrun" -eq 0 ]; then break; fi
-    if [ "$nrun" -eq 0 ]; then sleep "$IDLE"; else sleep 10; fi
+    # ⚠ 佇列非空時不要睡滿 IDLE：乾跑實測 [solo] 等前面跑完後又空等了 60 秒才啟動
+    if [ "$nrun" -eq 0 ]; then
+      if [ -n "$(head_task)" ]; then sleep 5; else sleep "$IDLE"; fi
+    else
+      sleep 10
+    fi
   done
   log "runner 結束（平行模式）"
   exit 0
