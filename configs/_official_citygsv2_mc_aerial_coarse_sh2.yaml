@@ -1,0 +1,75 @@
+# VERBATIM copy of the upstream config, fetched 2026-08-04 from
+#   raw.githubusercontent.com/Linketic/CityGaussian/main/configs/citygsv2_mc_aerial_coarse_sh2.yaml
+#
+# The repo's own configs/citygsv2_*.yaml have been edited locally to fit 6GB (coarse was changed to
+# sh_degree 0 with three aggressive densify overrides), so they cannot be cited as "the official
+# settings". This file is kept unmodified so the diagnostic below tests the upstream mechanism
+# rather than our adaptation of it. Do not tune this file -- copy it if you need variants.
+#
+# WHY THIS RUNS AT ALL ON 6GB: gradient-driven densification has no cap, which is the usual reason
+# to expect an OOM, but on this scene it self-limits -- three past global coarse runs on this
+# machine converged to 1.05M / 1.12M / 1.21M primitives at 1.2x / 2x / 3x downsample, and those used
+# a densify_grad_threshold 4x MORE aggressive than the 0.0002 default below. At 1.1M with sh_degree 2
+# the model plus Adam state is ~490 MB. Growth stops at densify_until_iter (default 15000),
+# percent_dense 0.01 limits which primitives may split, and opacity_reset_interval 3000 culls the
+# faint ones. The stage that would genuinely OOM is per-block fine-tuning (no cap, 60k steps,
+# denser gradient signal per unit area) -- the diagnostic deliberately stops before it.
+#
+# KNOWN DEVIATION: our trim rasterizer is built with EXACT_SUPPORT, which drops primitives with
+# o <= 1/255 from binning. That is bit-identical for rendering a fixed model but does change
+# training dynamics. Reverting it would mean a rebuild; for a gross geometry question (is the
+# rendered surface at the right depth?) it is not worth the risk, so it is recorded rather than
+# removed.
+model:
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.005
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      diable_trimming: true
+  density: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      # DEVIATION 2 (2026-08-04, second attempt): upstream uses 1.2, we use 2.
+      # The first run with 1.2 died at step 731 with CUDA OOM at N=3.85M / 5.58 GiB. That is not a
+      # densification blow-up -- the upstream coarse has no `initialize_from`, so it starts from the
+      # SfM cloud, and sparse/0 holds 3.83M points. At sh_degree 2 that is ~444 B/primitive including
+      # Adam, i.e. 1.7 GB of model state before a single split, and the rasterizer buffers at
+      # 1600x900 take the rest.
+      # Resolution was chosen over the two alternatives on purpose:
+      #   - sh_degree 2 -> 0 would fit easily, but our own models carry view-dependent colour (SB),
+      #     so a coarse without it that showed no blanket would not distinguish "global optimisation
+      #     fixed it" from "removing view-dependent colour fixed it".
+      #   - subsampling the init changes the starting state, and "start at 3.83M and get culled down
+      #     to ~1M" is part of the trajectory being tested.
+      # Resolution only touches the data side, and it is empirically benign here: three past global
+      # coarse runs on this machine at 1.2x / 2x / 3x converged to 1.05M / 1.12M / 1.21M primitives.
+      # The depth-bias measurement is a ratio, so it is unaffected by sampling density.
+      down_sample_factor: 2
+  # INFRASTRUCTURE-ONLY deviation from upstream, added 2026-08-04 after the first attempt was
+  # killed by the kernel OOM killer (rc=137, anon-rss 36 GB) at 22% of caching 5620 images.
+  # `train_max_num_images_to_cache` defaults to -1 = cache everything; at ~23 MB per image
+  # (float32 RGB 17.3 MB + depth 5.76 MB) the full set needs 130-165 GB against this machine's 46 GB.
+  # Upstream omits it because their machines have the RAM. This bounds the decoded-image cache and
+  # touches nothing the algorithm sees -- unlike sh_degree, the densify thresholds or the loss
+  # weights, which stay verbatim so the mechanism under test is still theirs.
+  train_max_num_images_to_cache: 512
+  num_workers: 8

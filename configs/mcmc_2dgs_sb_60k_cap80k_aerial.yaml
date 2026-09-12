@@ -1,0 +1,104 @@
+# 顆數消融：同 60k 排程下，把顆數釘在 ~80k。
+#
+# 【要回答的問題】「少而準」成不成立。
+#
+# 2026-08-06 量到：v1 用 77,616 顆拿到整體 val 22.070，只比 1.8M 顆的 23.39 低 1.3 dB，
+# 看起來像一條極便宜的效率前緣。但那是整體指標的假象——b12 有一半是平坦水面，
+# 渲染成均勻色塊也能拿 32-40 dB。改用建築區的紋理比（唯一驗證過有鑑別力的尺）：
+#
+#            step        N        建築PSNR  建築LPIPS  紋理比
+#   v1      24,000     77,616     18.32     0.797     0.170
+#   oreg    29,999  1,000,000     18.90     0.695     0.263
+#   reg000  29,999  2,000,000     18.93     0.629     0.302
+#   oreg    60,000    900,000     20.42     0.565     0.392
+#   reg000  60,000  1,799,999     19.83     0.563     0.397
+#
+# 顆數效應（同 ~30k）：77.6k→1M 是 +0.093，1M→2M 只有 +0.039（邊際遞減快）
+# 步數效應（同顆數）：1M 的 30k→60k 是 +0.129，2M 的是 +0.095
+# ⇒ 邊際上步數比顆數值錢約 3 倍。
+#
+# 【但 v1 的 0.170 有 confound】它是 24k 排程，密集模型是 60k。而 24k 與 60k 不只是
+# 「步數多寡」，是**完全不同的 LR 軌跡**（v1 的位置 lr 在 24,000 步就衰減到 5e-7）。
+# 所以要判「少而準」，必須讓稀疏模型也跑完整的 60k 排程。這就是本 config。
+#
+# 【怎麼把顆數釘在 80k】`add_new_gs` 是 `num_gs = max(0, min(cap, 1.05N) - N)`
+# ⇒ cap 低於現有顆數時只是**不增加**，不會強制剪到 cap。所以需要兩件事一起：
+#   cap_max = 80,000            上限
+#   densification_interval 150  低於破平衡點 231.5 ⇒ 成長 > 剪枝，會把顆數頂回 cap
+# 起始 338k（trim 後）→ 以 10%/500 步衰減到 80k 約需 6,840 步 → 之後釘在 cap。
+#   break-even = contribution_prune_interval x ln(1.05) / (-ln(1-prune_ratio))
+#              = 500 x 0.04879 / 0.10536 = 231.5
+#
+# 【對照】同為 60k、同 kernel、同 metric，只差 cap_max：
+#   oreg_0p002_b12  cap 1M   → 900,000 顆，val 23.848，建築紋理比 0.392
+#   b12_cap2m_...   cap 2M   → 1,799,999 顆，val 23.39，建築紋理比 0.397
+#   本臂           cap 80k  → 預期 ~80,000 顆
+# 判準是**建築區紋理比**，不是整體 PSNR（整體 PSNR 被水面稀釋，已知無鑑別力）。
+model:
+  initialize_from: null          # 由 CLI 指定 depth_init/block_12.ply
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d_sb.Gaussian2DSB
+    init_args:
+      sh_degree: 0
+      sb_number: 3
+      sb_params_lr: 0.009
+      optimization:
+        means_lr_init: 0.0002
+        means_lr_scheduler:
+          lr_final: 0.0000005
+          max_steps: 60_000      # ⚠ 必須等於 trainer.max_steps
+        scales_lr: 0.006
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0095
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 0.7
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 60_000        # ⚠ 必須等於 trainer.max_steps
+      opacity_reg: 0.002         # 三臂掃描的最佳值（0.007→23.31 / 0.002→23.85 / 0→23.11）
+      scale_reg: 0.006
+      immune_opacity_threshold: 0.85
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_sb_renderer.SepDepthTrim2DGSSBRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      cap_max: 80000             # ★本實驗的唯一變數
+      noise_lr: 550000.0
+      densify_from_iter: 1000
+      densify_until_iter: 42000  # 70% of 60k，對齊 oreg_0p002_b12
+      densification_interval: 150  # ⚠ 低於破平衡點 231.5，否則顆數會一路衰減到零
+      min_opacity: 0.007
+      N_max: 44
+      screen_size_prune_px: 250
+trainer:
+  check_val_every_n_epoch: 20    # b12 每 epoch 284 步 → 每 5,680 步一次 val
+  max_steps: 60000               # ⚠ 改這個要同步改上面兩個 max_steps
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  train_max_num_images_to_cache: 512
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000
+- 42000
+- 60000

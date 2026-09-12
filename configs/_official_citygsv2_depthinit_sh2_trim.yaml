@@ -1,0 +1,103 @@
+# ★init 方法的單變數 A/B：官方 CityGSV2 微調配方，只把 coarse-init 換成 depth-init。
+#
+# 【對照組（已完成，不必重跑）】outputs/official_ft_blk5
+#   完全相同的 config，block_dim [4,4]、block 5、當前資料、60k、coarse init
+#     step 13,959  21.331 / 0.586 / 0.724      N @29,999 = 1,176,688
+#     step 27,919  22.171 / 0.600 / 0.698      （densify 在 30k 停，之後 N 凍結）
+#     step 41,879  23.079 / 0.613 / 0.677
+#     step 55,839  23.301 / 0.618 / 0.667
+#     step 60,000  【23.342 / 0.619 / 0.665】
+#
+# 【本臂】同 config、同塊、同資料，唯一差異是 initialize_from 指向
+#   depth_init_4x4/block_5.ply（約 1.7M 顆）而非 coarse ckpt。
+#
+# 【填的是這格】
+#                    coarse init      depth-init
+#   官方 config       23.342 ✓        ← 本臂
+#   我方 config       （沒跑過）        22.90（b4x4_blk5_reg000）
+#   ⇒ 官方 config 這一列是乾淨的單變數 init 比較。
+#
+# 【已知的內在差異，不是 bug 是 init 方法本身的性質】
+#   coarse ckpt 帶著訓練好的 sh2 外觀；depth-init 是 PLY，`gaussian_splatting.py:163` 只載
+#   DC 色、`shs_rest` 留零重學。所以 depth-init 臂在外觀上從零開始——這正是「用 coarse 當 init」
+#   買到的東西之一，屬於要被量的差異，不該補償掉。
+#
+# 【⚠ ckpt vs PLY 路徑不同，但此處無害】ckpt 路徑（`gaussian_splatting.py:180-215`）會用 ckpt 裡的
+#   模型與 renderer 取代設定好的那組；本 config 指定的就是 Gaussian2D + SepDepthTrim2DGSRenderer，
+#   與 coarse ckpt 內容一致，所以兩臂的模型/renderer 相同。
+#
+# 【判讀】主要看 step 13,959 / 27,919 / 41,879 / 55,839 / 60,000 五個點的整條曲線，
+#   不要用單點下判斷——實測 oreg_0p002 在 step 34,079（走完 57%）都還落後，最終反超 +0.46。
+# Upstream per-block fine-tuning config, fetched 2026-08-04 from
+#   raw.githubusercontent.com/Linketic/CityGaussian/main/configs/citygsv2_mc_aerial_sh2_trim.yaml
+# Kept verbatim except for the three marked deviations, so the mechanism under test is theirs:
+# gradient-driven densification starting from a globally jointly-optimised coarse model, which is
+# the one structural difference from our pipeline that survived every measurement (we replaced the
+# coarse with per-block depth-init, deliberately, and that assumption is what this tests).
+#
+# THE QUESTION: our per-block models place the rendered surface at ~0.75x the true depth -- a
+# blanket at rooftop height that never resolves the streets. Does the upstream path avoid it?
+# Measure with tools/measure_depth_bias.py and compare against our 3x3 merged model's slope 0.713.
+#
+# NOT a reproduction of the published 27.23 -- the coarse it initialises from was trained at 2x
+# instead of 1.2x to fit 6GB. Do not quote these numbers against the paper.
+model:
+  # DEVIATION 1: upstream points at their own coarse run; ours is the local one.
+  initialize_from: data/matrix_city/aerial/train/block_all/depth_init_4x4/block_5.ply
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 60_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densification_interval: 200
+      opacity_reset_interval: 6000
+      densify_from_iter: 1000
+      densify_until_iter: 30_000
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+      # DEVIATION 2: upstream uses 0.05; our partitions were built at 0.08 and rebuilding them is a
+      # separate step with its own failure modes. This changes which images each block owns, not how
+      # the block is optimised, so the mechanism under test is unaffected.
+      content_threshold: 0.08
+      block_dim:
+      - 4
+      - 4
+  # DEVIATION 3: infrastructure only. Upstream omits this, so it defaults to -1 = cache every image;
+  # at ~23 MB each that is 130-165 GB against this machine's 46 GB, and it killed the first coarse
+  # attempt via the kernel OOM killer (rc=137). Bounds RAM, invisible to the algorithm.
+  train_max_num_images_to_cache: 512
+  num_workers: 8
+save_iterations:
+- 30000
+- 60000

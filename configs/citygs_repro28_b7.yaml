@@ -1,0 +1,62 @@
+# 忠實複現舊本機 28.9（block_7）。= 28.9 那次的「真實 recipe」，不是 user 貼的 github 60k 版。
+# 對照 outputs/citygsv2_mc_aerial_sh0_trim/blocks/block_7 的 resolved config 抄出來：
+#   init = 4.39M 全解析度 coarse（aerial_train_block_all_3x, down_sample 1.2，不是低解析度 3x）
+#   density = interval 300 / reset 2100 / from 1200 / until 12000 / thr 0.0002（短 densify + 狠剪枝 → 乾淨 3.97M）
+#   24000 步、sh0（28.9 的 ckpt 實測 shs_rest=(N,0,3)）
+# 我們之前 citygs_ft60k 用「3x 低解析度 coarse + until 30000 + reset 6000 + 60k 步」→ 4.96M floater → 只有 24.16。
+model:
+  initialize_from: outputs/aerial_train_block_all_3x/checkpoints/epoch=6-step=30000.ckpt   # 4.39M 全解析度 coarse（28.9 init 本尊）
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 0
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 24_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 24_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densification_interval: 300
+      opacity_reset_interval: 2100
+      densify_from_iter: 1200
+      densify_until_iter: 12000
+      densify_grad_threshold: 0.0002
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 24000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+      block_id: 7
+      partition_subdir: citygs_repro28
+      content_threshold: 0.08
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 6000
+- 12000
+- 24000

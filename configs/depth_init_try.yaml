@@ -1,0 +1,180 @@
+# =============================================================================================
+#  REFERENCE / 參考用 master config — 原版 CityGSV2 (MatrixCity aerial fine-tune) + 全參數註解
+# ---------------------------------------------------------------------------------------------
+#  基底 = 原版 CityGSV2 微調 recipe（可直接跑）。每個參數標註【用途 / 影響 / 選項或值域 / 預設】。
+#  我們自己加的功能/參數依「來源」分類，全部【預設關閉】，需要時才打開（見檔尾「我們的擴充」區）。
+#  注意：此檔僅供查閱與複製，真要跑請另存並填好 initialize_from / block_id 等。
+# =============================================================================================
+
+model:
+  # 從已訓練 ckpt 初始化。給「ckpt 檔」或「輸出目錄」(會 search_load_file 自動找最新)。
+  #   值域: 路徑字串 / null。  null = 從 SfM 點雲冷啟動(coarse 訓練用)。
+  initialize_from: null
+  # True = 用 ckpt 內存的 config 覆蓋本檔(載 coarse 常用)；False = 用本檔設定，只取 ckpt 的權重。
+  #   值域: true / false。  影響: 若 coarse=sh0 而本檔 sh_degree>0，False 會自動把 SH padding 上去。
+  overwrite_config: False
+
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D   # 2D Gaussian surfel(CityGSV2)。3DGS 改 VanillaGaussian。
+    init_args:
+      # 球諧階數 = 每顆顏色的「視角相依」容量。每通道係數=(L+1)^2，總顏色 floats=3*(L+1)^2。
+      #   值域: 0..3(int)。 0=純漫反射(最省，aerial 最優)；3=完整 view-dependent(標準3DGS，最重)。
+      #   影響記憶體: 每顆 sh0=13 / sh1=22 / sh2=37 / sh3=58 floats。6GB 上 sh0→~4M、sh2→~1.4M 顆。
+      sh_degree: 0
+      optimization:
+        means_lr_init: 0.00016        # 位置(xyz)初始學習率。值域>0。太大→飄移/floater，太小→幾何收斂慢。
+        means_lr_scheduler:           # 位置 LR 排程(指數衰減)。
+          lr_final: 0.0000016         #   末段 LR。一般 = init 的 1/100。值域>0 且 < init。
+          max_steps: 30_000           #   衰減對齊的總步數。應 = trainer.max_steps。
+        spatial_lr_scale: -1          # 位置 LR 的場景尺度縮放。<=0 = 由相機分布自動算(建議)。
+        shs_dc_lr: 0.0025             # SH DC(基礎顏色)學習率。值域>0。
+        shs_rest_lr: 0.000125         # SH 高階(視角相依)學習率，慣例 = dc/20。sh0 時無作用。
+        opacities_lr: 0.05            # 不透明度學習率。值域>0。
+        scales_lr: 0.005              # 尺度(surfel 大小)學習率。值域>0。太大→爆球。
+        rotations_lr: 0.001           # 旋轉(法線方向)學習率。值域>0。
+        sh_degree_up_interval: 1000   # 每幾步把 active SH 階數 +1(0→max 暖身)。值域>0(int)。sh0 時無作用。
+
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125           # 法線一致性 loss 權重。值域>=0。大→表面更平、幾何更硬，但可能過度平滑。
+      normal_regularization_from_iter: 0   # 第幾步開始加法線 loss。值域>=0(int)。原版預設 7000(暖身後才加)。
+      depth_loss_type: l1+ssim        # 深度監督 loss 型。選項: l1 / l1+ssim / l2 / kl。l1+ssim=兼顧值與結構。
+      depth_loss_ssim_weight: 1.0     # depth loss 裡 ssim 比重。值域 0..1。
+      depth_loss_weight:              # 深度 loss 權重排程(隨步數衰減)。
+        init: 0.5                     #   初始權重。值域>=0。0=完全不用深度監督。
+        final_factor: 0.05            #   末段 = init * final_factor。值域 0..1。
+        max_steps: 30_000             #   衰減對齊步數。應 = trainer.max_steps。
+      # depth_normalized: false       # 深度是否正規化後再算 loss。選項 true/false。預設 false。
+      # depth_output_key: inverse_depth  # 取哪個渲染深度輸出。選項: inverse_depth / depth ...。
+
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0                # mesh/深度的精度↔召回權衡。值域 0..1。0=精度(街景);1=召回/完整(空拍建議)。
+      # --- 以下為 Trim2DGS 修剪(低貢獻高斯)相關，預設值即原版 ---
+      # K: 5                          # 每像素取前 K 個高斯算貢獻。值域>=1(int)。
+      # v_pow: 0.1                    # 重要度分數的面積次方。值域 0..1。
+      # prune_ratio: 0.1              # 每次 trim 修掉的低貢獻比例。值域 0..1。
+      # contribution_prune_from_iter: 1000   # 第幾步開始 trim。值域>=0(int)。
+      # contribution_prune_interval: 500     # 每幾步 trim 一次。值域>0(int)。
+      # start_prune_ratio: 0.0        # 初期 trim 比例。值域 0..1。
+      # diable_start_trimming: false  # 關閉初期 trim。選項 true/false。
+      # diable_trimming: false        # 關閉全部 trim(coarse 訓練設 true)。選項 true/false。
+
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      # 「分裂 vs 複製」門檻：尺度 > percent_dense*場景尺度 → split(大球切兩半)，否則 clone。
+      #   值域 ~0.001..0.05。 大→傾向 clone、球偏大；小→傾向 split、球偏小。
+      percent_dense: 0.01
+      densification_interval: 200     # 每幾步做一次 densify+prune。值域>0(int)。小→生長/剪枝更頻繁。
+      opacity_reset_interval: 6000    # 每幾步把 opacity 重置(逼低貢獻球重新證明存在)。值域>0(int)。
+                                      #   ★ 強力剪枝旋鈕：小(如2100)→剪很兇、顆數收斂小且乾淨；大→floater 易殘留。
+      densify_from_iter: 1000         # 第幾步開始 densify。值域>=0(int)。之前持有 init 全量。
+      densify_until_iter: 30_000      # 第幾步停止 densify(之後顆數凍結)。值域>0(int)。
+                                      #   ★ 生長期長度：太長→過度增生成 floater；28.9 用 12000。
+      densify_grad_threshold: 0.0002  # 視角空間位置梯度 > 此值才 densify。值域 ~5e-5..5e-4。
+                                      #   ★ 越小→越多球被分裂/複製(更密、更吃記憶體)。
+      # cull_opacity_threshold: 0.005 # opacity 低於此值即剪掉。值域 0..1。
+      # camera_extent_factor: 1.0     # 場景尺度縮放。值域>0。
+      # scene_extent_override: -1     # 手動指定場景尺度。<=0 = 自動。
+      # absgrad: false                # 用絕對值梯度累積(AbsGS)。選項 true/false。被 rasterizer 限制，慎用。
+      # densify_grad_scaler: 0.0      # (CityGSV2)有 extra_loss(硬深度)時重新平衡 densify 梯度。值域>=0。
+      # axis_ratio_threshold: 0.01    # (CityGSV2)長寬比過扁的 surfel 處理門檻。值域 0..1。
+
+trainer:
+  max_steps: 60000                    # 總訓練步數。值域>0(int)。coarse 慣用 30000，微調 24000~60000。
+  check_val_every_n_epoch: 20         # 每幾個 epoch 跑一次驗證(算 val PSNR/SSIM/LPIPS)。值域>0(int)。
+
+data:
+  path: data/matrix_city/aerial/train/block_all   # COLMAP 資料根目錄(含 sparse/ + input 或 images_N/)。
+  parser:
+    class_path: EstimatedDepthBlockColmap          # 含「分塊相機指派」+「深度監督」的 COLMAP parser。
+    init_args:
+      down_sample_factor: 1.2         # 影像下採樣倍率(影像自動 resize)。值域>=1(float)。3=低解析快、1.2=高解析。
+                                      #   ★ 換此值需有對應解析度的深度圖(見 depth_dir)。
+      # down_sample_rounding_mode: round  # 尺寸取整法。選項: floor/round/round_half_up/ceil。
+      block_id: null                  # 只訓練第幾塊的相機。值域: 0..(N*M-1) / null。null=全場景(不切塊)。
+                                      #   block_id_y=id//dim[0], block_id_x=id%dim[0] → 找 {x:03d}_{y:03d}.txt。
+      block_dim:                      # 分塊網格 N×M(僅 block_id 非 null 時用，須對齊 partition 目錄名)。
+      - 5                             #   值域: 正整數 list[2]。我們資料 = 5x5。
+      - 5
+      content_threshold: 0.08         # partition 可見度門檻(僅 block_id 非 null 時用，對齊目錄名 visibility_0.08)。
+      # num_threshold: 25000          # 分塊用的點數門檻。值域>0(int)。
+      # min_images_per_block: 10      # 一塊少於此圖數則報錯。值域>=0(int)。
+      # --- 深度監督相關(EstimatedDepthBlockColmap) ---
+      # depth_dir: estimated_depths   # 深度 .npy 目錄。值域: 路徑字串。★ ds2/ds3 要用 estimated_depths_2/_3。
+      # depth_rescaling: true         # 是否用 per-image scale/offset 校正深度。選項 true/false。test 集無 json 會自動跳過。
+      # depth_scale_name: estimated_depth_scales  # scale json 檔名(不含副檔)。
+      # depth_scale_lower_bound: 0.2  # 深度 scale 下界(中位數的倍數)。值域>0。超界該圖深度被丟。
+      # depth_scale_upper_bound: 5.0  # 深度 scale 上界。值域>下界。
+  # train_max_num_images_to_cache: 512  # 訓練影像快取上限。值域>0(int)。OOM/RAM 不足時調低。
+  num_workers: 8                      # DataLoader 工作進程數。值域>=0(int)。
+
+save_iterations:                      # 在這些步數存「可續跑 .ckpt(含 optimizer)+ PLY」。值域: list[int]。
+- 30000
+- 60000
+
+# =============================================================================================
+#  我們的擴充（依來源分類，全部【預設關閉】= 上面用標準元件，這裡只列「要開時怎麼填」）
+# =============================================================================================
+#
+# 【來源 A：我們的 pipeline 工具】---------------------------------------------------------------
+#   ● partition_subdir  (data.parser.init_args 下)
+#     功能: partition 寫到 partition/<subdir>/partitions-dim_..._... ，避免不同 coarse/分塊互相覆蓋。
+#     值域: 字串 / null(預設)。需與 partition_citygs.py 同時讀同一值(寫入/讀取兩端一致)。
+#     開啟範例:
+#         data: { parser: { init_args: { partition_subdir: my_run_name } } }
+#
+# 【來源 B：2DGS 原生 distortion 正則(我們在 CityGSV2Metrics 重新開放)】------------------------
+#   ● lambda_dist / dist_regularization_from_iter  (metric.init_args 下)
+#     功能: 2DGS distortion loss，壓深度分佈集中、減 floater/提升幾何。
+#     值域: lambda_dist>=0(預設 0=關)；from_iter>=0(int，預設 3000)。典型 lambda_dist ~100~1000(2DGS 原文尺度)。
+#     開啟範例:
+#         metric: { init_args: { lambda_dist: 100.0, dist_regularization_from_iter: 3000 } }
+#
+# 【來源 C：3DGS-MCMC(2405，我們適配 2DGS)】---------------------------------------------------
+#   ● 換 density 元件為 MCMC：不看梯度、靠 relocate dead + add_new 強制長到 cap、Langevin noise。
+#     功能: 6GB 上「保證長到指定顆數」的唯一可靠方式(grad-densify 在低梯度 init 長不起來時用)。
+#     開啟範例(取代上面 density 整段):
+#         density:
+#           class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+#           init_args:
+#             cap_max: 1500000        # ★必填，最大顆數。值域>0(int)。6GB sh0 可到數百萬；sh2 約 1.4M。
+#             noise_lr: 500000.0      # Langevin 噪聲強度(=5e5)。值域>=0。alpha=0.99 點自動豁免。
+#             densify_from_iter: 500  # 值域>=0(int)。
+#             densify_until_iter: 25000  # 值域>0(int)。
+#             densification_interval: 100  # 值域>0(int)。
+#             min_opacity: 0.005      # 低於此 opacity 視為 dead → 被 relocate。值域 0..1。
+#             N_max: 51               # relocation 二項式上限(對齊原始 MCMC)。值域>0(int)。
+#   ● 搭配 MCMC 的兩個 L1 reg(換 metric 元件)：
+#         metric:
+#           class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+#           init_args: { opacity_reg: 0.01, scale_reg: 0.01, immune_opacity_threshold: 0.9, ...CityGSV2 同上 }
+#     功能: opacity_reg(取代 opacity-prune，餵 dead_mask)、scale_reg(控球小)。
+#     值域: 兩 reg >=0(預設 0.01)；immune_opacity_threshold 0..1(高於此 opacity 豁免 opacity_reg，護 alpha=0.99)。
+#
+# 【來源 D：LightGaussian importance-prune(線上回收)】------------------------------------------
+#   ● light_gaussian  (頂層，與 model 同級)
+#     功能: 在指定步數依重要度(transmittance×area^v)剪掉一定比例高斯，回收預算。
+#     值域: prune_steps list[int](預設 [] = 關)；prune_percent 0..1(預設0.66)；prune_decay 0..1(每次衰減)；
+#           v_pow 0..1(預設0.1)；prune_type: v_important_score。
+#     開啟範例(頂層):
+#         light_gaussian: { prune_steps: [45000], prune_percent: 0.5, prune_decay: 1.0, v_pow: 0.1 }
+#
+# 【來源 E：我們的 DBP(DGD + cap + importance-prune 線上回收)】---------------------------------
+#   ● 換 density 元件為 DBPDensityController(internal/density_controllers/dbp_density_controller.py)。
+#     功能: 在 grad-densify(DGD,SSIM梯度)上加「cap 上限 + 超限剪最低重要度」。
+#     注意: 紀錄指出在 6GB 上 grad-densify 本身長不起來，DBP 有此先天限制(見 dbp 檔頭註解)。
+#
+# 【來源 F：RTG-SLAM depth-init(不是 config 旗標，是 init 方式)】--------------------------------
+#   ● 用 utils/depth_init_blocks.py 產生的 per-block 深度反投影 PLY(alpha=0.99 不透明 surfel)當 init：
+#         model: { initialize_from: data/.../depth_init/block_7.ply }
+#     功能: 稀疏但貼合表面的點雲，alpha=0.99 → 同品質用更少顆。但點已擬合→梯度低→grad-densify 長不起來(配 MCMC 用)。
+#
+# 【來源 G：其他實驗性 metric/density(視需要再查對應檔)】---------------------------------------
+#   ● edge_aware_density_controller / atom_normal_metrics(AtomGS 邊緣-曲率 loss) /
+#     edge_mcmc_2dgs_density_controller / sgl_mcmc_citygsv2_metrics(SGL) / scaffold_*（已出局，顯式約束）。
+#     需要時讀對應檔頭註解，皆預設不在本基底啟用。
+# =============================================================================================

@@ -1,0 +1,59 @@
+# E1: 驗證舊本機 CityGSV2 28.9/4M 在 6GB 可複現。
+# = 我的 faithful config，但 density 換成舊本機那個「會長到 4M」的 24000 regime
+#   (interval 300 / opacity_reset 2100 / densify_until 12000 / max 24000)。
+# init 用裁切 coarse（full coarse 在 6GB step-1 OOM；258k = step-1 trim 後等價狀態）。
+# grad-densify 無 cap → 衝向 4M 時可能 OOM，那本身告訴我們 6GB 撐不撐得住 4M。
+model:
+  initialize_from: outputs/aerial_train_block_all_3x/checkpoints/coarse_block7_viscrop_sh2.ckpt
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 24_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 24_000
+  renderer:   # .ckpt init 用 ckpt 內 renderer（已 patch：trim on / prune_ratio 0.1）
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      prune_ratio: 0.1
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densification_interval: 300
+      opacity_reset_interval: 2100
+      densify_from_iter: 1200
+      densify_until_iter: 12_000
+      densify_grad_threshold: 0.0002
+trainer:
+  check_val_every_n_epoch: 15
+  max_steps: 24000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 12000
+- 24000

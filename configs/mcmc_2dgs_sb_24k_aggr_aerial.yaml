@@ -1,0 +1,97 @@
+# 我方配方（depth-init + MCMC + SB + trim/EXACT_SUPPORT），排程從 60k 壓縮到 24k。
+#
+# 【要測的東西】24k 能不能取代 60k。所以除了步數與 cap，其餘一律對齊拿到 23.39 的參照
+# （b12_cap2m_reg000_exact：60k / cap 2M / opacity_reg 0 / interval 150），不要多改。
+#
+# 【第一次嘗試失敗的教訓，2026-08-05】我一次改了四樣（步數、cap、interval 150→60、reg 0→0.002），
+# step 12k 時 N 只有 873,988（參照在 15k 是 1,653,164），不透明度中位 0.0059、87.9% 低於 0.05、
+# 沒有任何一顆超過 0.9。成因是 interval 與 opacity_reg 的交互作用：
+#     opacity_reg 壓低不透明度 → 沒粒子達到 immune 門檻 0.9 → 繼續被壓
+#              ↑                                                    ↓
+#              └─── interval 60 每 60 步就 relocation 重置一次 ←──────┘
+# ⇒ densification_interval 是「relocation 之間的恢復時間」，**不是訓練長度的比例，不該按比例縮**。
+#
+# 【參照基準】同一塊 b12：val 23.39 / SSIM 0.667 / LPIPS 0.491，深度 slope 1.082 / corr 0.903。
+# 中途對照點：60k 那次在 step 5,680 是 psnr 21.26；低於這個就是有問題。
+model:
+  initialize_from: null          # 由 CLI 指定 depth_init/block_N.ply
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d_sb.Gaussian2DSB
+    init_args:
+      sh_degree: 0               # 基色的 SH 階數。0=純漫射，視角依賴全交給下面的 SB lobe。
+                                 # 調高→視角依賴能力↑、每顆記憶體↑（SH3=59 floats/顆 vs SB=25）
+      sb_number: 3               # Spherical Beta lobe 數＝視角依賴容量。每個 lobe 6 floats/顆。
+                                 # 調高→能表現鏡面/金屬，但也更容易「用顏色記住訓練視角」
+      sb_params_lr: 0.009       # SB lobe 的學習率（DBS 原始預設）
+      optimization:
+        means_lr_init: 0.0002  # 位置的初始學習率。調高→幾何動得快，但容易震盪/長針
+        means_lr_scheduler:
+          lr_final: 0.0000005   # 位置學習率的終點（衰減到這個值）
+          max_steps: 24_000      # ⚠ 必須等於 trainer.max_steps，否則衰減會提早結束或跑不完
+        scales_lr: 0.006         # 尺寸的學習率。調高→顆粒大小變化快，易出現過大/過扁的顆粒
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0095      # 法向一致性損失的權重（2DGS）。調高→表面更平整、幾何更「像面」，
+                                 # 但過高會抹掉細節。CityGaussianV2 把 2DGS 原值降到 1/4 就是這個數
+      normal_regularization_from_iter: 0   # 從第幾步開始施加法向損失。0=一開始就加
+      depth_loss_type: l1+ssim   # 深度損失的形式（l1 / l1+ssim / l2）
+      depth_loss_ssim_weight: 0.7  # 深度損失中 SSIM 項的比重。1.0=純 SSIM，0=純 L1。
+                                 # SSIM 看結構、L1 看絕對值；偏 SSIM 對「深度圖的形狀」較敏感
+      depth_loss_weight:
+        init: 0.5                # 深度損失的起始權重
+        final_factor: 0.05       # 衰減到 init 的這個倍率（0.5×0.05 = 0.025 收尾）
+        max_steps: 24_000        # ⚠ 必須等於 trainer.max_steps
+      opacity_reg: 0.002           # 不透明度的 L1 懲罰。>0 會把用不到的顆粒推向透明以便回收。
+                                 # ⚠ 與 densification_interval 有交互作用：太頻繁 relocation +
+                                 # 此值 >0 會讓整個族群被壓到透明而長不起來（2026-08-05 實測）。
+                                 # 0 = 對齊拿到 23.39 的參照。要測它請單獨開一臂
+      scale_reg: 0.006           # 尺寸的 L1 懲罰。壓小顆粒；由 AM-GM 也間接抑制過扁的針狀物
+      immune_opacity_threshold: 0.85  # 不透明度超過此值的顆粒免受 opacity_reg 影響。
+                                 # 本意是保護已收斂的顆粒；但若沒人達得到 0.9 就形同虛設
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_sb_renderer.SepDepthTrim2DGSSBRenderer
+    init_args:
+      depth_ratio: 1.0           # 1.0=中位深度（有界場景，官方航拍用這個）、0.0=期望(平均)深度。
+                                 # 決定 surf_depth 是什麼，也就決定深度損失在管哪個量
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      cap_max: 3000000           # 顆數硬上限＝主要的 VRAM 槓桿。參照用 2M（實得 1.80M）。
+                                 # 3M 是刻意去撞牆找真正的天花板（3×3 曾達 2.7M 而未爆）
+      noise_lr: 550000.0         # MCMC 加在位置上的布朗噪音強度。調高→探索更多但更churn
+      densify_from_iter: 600     # 第幾步開始 densify（參照 1000/60k ＝ 1.67%，此處同比例）
+      densify_until_iter: 16000 # 第幾步停止 densify，之後只精修（參照 42000/60k ＝ 70%）
+      densification_interval: 350  # ⚠ 兩次 densify/relocation 之間的**恢復時間**（步）。
+                                 # 不是訓練長度的比例，不要按比例縮。太小→新搬過去的顆粒
+                                 # 還沒收斂就又被重排（第一次嘗試設 60 就是壞在這）
+      min_opacity: 0.007         # 低於此不透明度視為死亡，會被 relocation 搬走回收
+      N_max: 44                  # MCMC relocation 的上限參數（一顆死亡顆粒最多分裂成幾份）
+      screen_size_prune_px: 250  # 螢幕半徑超過此像素數的顆粒直接剪掉（防「怪物」佔滿畫面）
+trainer:
+  check_val_every_n_epoch: 20    # 每幾個 epoch 跑一次 val。b12 每 epoch 284 步 → 每 5,680 步一次
+  max_steps: 24000               # ⚠ 改這個要同步改上面兩個 max_steps（位置 lr、深度權重）
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2    # 影像縮小倍率。⚠ estimated_depths 的 .npy 是烘在 1.2× 上的；
+                                 # 改這個現在不會壞（已加自動 resize），但會改變梯度尺度，
+                                 # 連帶影響 densify 的行為
+      content_threshold: 0.08    # 分區的可見度門檻，決定每塊擁有哪些影像。官方用 0.05（更寬鬆）
+      min_images_per_block: 10   # 少於此數量的塊會被跳過
+      block_dim:
+      - 5                        # 分區格線。5×5=25 塊，每塊 1/25 城市。
+      - 5                        # 3×3 密度只有 5×5 的 54%，幾何會壞掉（2026-08-05 實測）
+  train_max_num_images_to_cache: 512   # RAM 裡快取幾張解碼後的影像。設 -1=全載會吃掉 130GB+
+  num_workers: 8                 # 資料載入執行緒數
+save_iterations:                 # 在這些步數存 checkpoint
+- 500
+- 1500
+- 6000
+- 12000
+- 18000
+- 24000

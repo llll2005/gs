@@ -1,0 +1,69 @@
+# 原版 CityGSV2 微調 recipe（你貼的 GitHub 原版，60000 步）於 block_7，整顆 coarse 不裁。
+# 官方流程（doc/run&eval.md + scripts/citygs/run_citygs_mc_aerial.sh），換 coarse 必重跑 partition：
+#   A. 訓練 coarse：configs/coarse_mc_aerial_1.2x.yaml
+#   B. partition：python utils/partition_citygs.py --config_path 本檔 --force
+#        ↑ 會讀本檔 initialize_from 載入「這顆」coarse 做 projection-based 相機指派；換 coarse 必重跑。
+#   C. 微調 block_7：python main.py fit --config 本檔 -n citygs_ft60k_coarse1.2x
+# 重點：
+#   - initialize_from 給「目錄」即可（partition_citygs.py 與 fit 都用 search_load_file 自動找最新 ckpt）。
+#   - sh0：coarse=sh0、fine-tune 也 sh0（與 28.9 一致；4M sh0 才塞得進 6GB，sh2 4M 會 OOM）。同 degree 不 padding。
+#   - block_dim/content_threshold 必須對齊我們 partition 的 5x5 / 0.08（非原版 4x4 / 0.05）。
+#   - block_id 7 → 只訓練 block_7 的相機；coarse 整顆載入不裁切（=「不切割」）。
+model:
+  initialize_from: outputs/coarse_mc_aerial_1.2x
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 0
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 60_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densification_interval: 200
+      opacity_reset_interval: 6000
+      densify_from_iter: 1000
+      densify_until_iter: 30_000
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+      block_id: 7               # 只訓練 block_7 的相機（整顆 coarse 不裁）
+      partition_subdir: citygs_ft60k_coarse1.2x  # partition 寫到 partition/<此名>/... 避免換 coarse 互相覆蓋
+      content_threshold: 0.08   # 對齊 partitions-dim_5_5_visibility_0.08
+      block_dim:                # 對齊我們的 5x5 partition
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 5000
+- 10000
+- 15000
+- 30000
+- 45000
+- 60000

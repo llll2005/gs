@@ -29,7 +29,10 @@ upload.sh
 # 沒有這些規則的話 `git add -A` 會吞掉 455G 的 outputs 與 1.3G 的 DA2 權重。
 outputs/
 logs/
-參考論文/          # 下載的論文 PDF，779M，且非我方著作
+# 下載的論文 PDF，841M（47 檔，最大單檔 60.5MB），且非我方著作
+# ⚠ 原本寫成 `參考論文/   # 註解` —— .gitignore 的 `#` **只有行首才是註解**，
+#   所以那個 pattern 是整行字串、match 不到任何東西 => 它們一直被追蹤著。
+參考論文/
 *.ckpt
 *.ply
 *.pth
@@ -39,4 +42,6 @@ utils/Depth-Anything-V2/checkpoints/
 __pycache__/
 *.pyc
 build/
+*.egg-info/
+submodules/.rasterizer_upstream_git/
 *.egg-info/

@@ -1,0 +1,61 @@
+# DBP 正式版:DGD(CityGSV2 的 SSIM-梯度 densify)+ depth-init + importance-prune 線上 cap。
+# 用 24k 激進 regime(DGD+reset 衝點數)→ DBP cap 把點數封在 2M、保留最高貢獻點(線上 explore-then-prune)。
+# 預期:繼承 DGD 高截距 + 我們 prune 的點效率 → 在 2M 達 ~28-29(贏 CityGSV2 4M/28.9 的效率)。
+model:
+  initialize_from: data/matrix_city/aerial/train/block_all/depth_init/block_7.ply
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 24_000
+        scales_lr: 0.004
+  metric:   # CityGSV2Metrics 提供 loss=SSIM / extra_loss=L1 拆分 → 啟用 DGD
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 24_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      prune_ratio: 0.1
+  density:
+    class_path: internal.density_controllers.dbp_density_controller.DBPDensityController
+    init_args:
+      densification_interval: 300
+      opacity_reset_interval: 2100
+      densify_from_iter: 1200
+      densify_until_iter: 12_000
+      densify_grad_threshold: 0.0002
+      densify_grad_scaler: 0.9        # 開 DGD 的 magnitude 對齊(論文 ω=0.9,舊 run 是 0)
+      cap_max: 2000000
+      cap_v_pow: 0.1
+      disable_opacity_reset: False
+trainer:
+  check_val_every_n_epoch: 15
+  max_steps: 24000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 12000
+- 24000

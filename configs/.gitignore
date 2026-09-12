@@ -1,5 +1,12 @@
+# 上游把這裡設成白名單（`*` 然後一行一個 `!檔名`），所以**後來新增的每個檔都被靜默忽略**
+# —— 現行主線唯一在用的 config 就是這樣差點沒上傳。改成白名單 PATTERN。
+# `*` 仍然擋住 __pycache__、.pyc 與丟進來的資料/輸出。
 *
 !.gitignore
+!*.py
+!*.yaml
+!*.yml
+!*.md
 !ddp.yaml
 !ddp_not_find_unused.yaml
 !image_on_gpu.yaml
@@ -37,10 +44,8 @@
 !gsplat-absgrad.yaml
 !gsplat-absgrad-experiment.yaml
 !vanilla_2dgs.yaml
-
 !citygs_lfls_coarse_sh2.yaml
 !citygs_lfls_sh2_trim.yaml
-
 !citygsv2_smbu_coarse.yaml
 !citygsv2_smbu.yaml
 !citygsv2_smbu_coarse_sh2.yaml
@@ -63,7 +68,6 @@
 !citygsv2_mc_aerial_sh2_trim.yaml
 !colmap_pose_opt_mcmc.yaml
 !colmap_pose_opt_mcmc_test.yaml
-
 !segany_splatting.yaml
 !appearance_embedding_renderer
 !appearance_embedding_renderer/view_dependent.yaml

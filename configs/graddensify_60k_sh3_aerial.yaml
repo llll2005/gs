@@ -1,0 +1,85 @@
+# CityGaussianV2 的密度控制（梯度門檻 ADC + DGD），其餘與我方現行最佳逐項相同。
+#
+# 目的（2026-09-03，使用者提議）：做一個**乾淨的方法比較**。
+# 記憶 `citygsv2_baseline_repro` 的「MCMC +1.457 勝 grad-densify」跑於 2026-06-26，
+# 而 GT 錯位 2026-08-12 才修 => **作廢**（且該次 coarse 另被 viscrop 裁切、densify config 選錯）。
+# ⇒ 當前資料上，我方從未有過任何有效的 grad-densify 數字。
+#
+# ★ 為何這次不會像當初那樣 OOM：那次的 OOM 來自載入**全域 coarse 4.39M** 後在 step-1
+#   forward+backward 爆掉。本 config 用**我方的 depth-init PLY（約 33.8 萬顆）**起步，
+#   族群自己長大 => 不需要一次吃下 4.39M。（記憶同檔：訓練中 6GB 從未綁住 CityGSV2，
+#   峰值 3.4GB、自然長到 973k。）
+#
+# 與 `mcmc_2dgs_60k_sh3_aggr17_aerial.yaml` 的差異**只有兩個元件**，且它們是一整包：
+#   density  MCMC2DGSDensityController  ->  CityGSV2DensityController（梯度門檻 + 依大小分裂）
+#   metric   MCMCCityGSV2Metrics        ->  CityGSV2Metrics
+#            （拿掉 opacity_reg / scale_reg 這兩個 L1 —— 它們存在的目的是餵 MCMC 的死亡通道，
+#              而 grad-densify 用的是 opacity reset，兩者是替代關係，不能混）
+# 其餘（模型 sh3 / renderer + trim / 資料 5x5 0.08 / down_sample 1.2 / 60k 步 / LR 排程）逐項相同。
+#
+# density 參數採**官方 aerial recipe**（記憶 `citygsv2_baseline_repro` 逐項確認過的上游值）：
+#   interval 200 / opacity_reset 6000 / densify_from 1000 / densify_until 30k / grad 0.0002 / 無 cap
+# ⚠ **無 cap** => 族群大小由方法自己決定，這正是要量的東西之一；但也代表有 OOM 風險，要盯。
+model:
+  initialize_from: null          # 由 CLI 指定 depth-init PLY
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 3
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 60_000
+      fused_ssim: false
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densification_interval: 200
+      opacity_reset_interval: 6000
+      densify_from_iter: 1000
+      densify_until_iter: 30_000
+      densify_grad_threshold: 0.0002
+      percent_dense: 0.01
+      cull_opacity_threshold: 0.005
+      absgrad: false             # 官方基準；AbsGS 本尊留作對稱的第二臂
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000
+- 42000
+- 60000

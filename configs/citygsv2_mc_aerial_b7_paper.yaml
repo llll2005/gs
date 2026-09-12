@@ -1,0 +1,53 @@
+# 忠實重跑 CityGSV2 原文 recipe 於 block_7，對齊我們 24.30 的 eval（down_sample 1.2 / content 0.08 / 5x5）。
+# 演算法超參 = 使用者貼的 GitHub 原文（非被閹割的 citygsv2_mc_aerial_sh2_trim.yaml）。
+# init = 3x 全域 coarse（已 padding 成 sh2）。grad-densify 無 cap，預期長到 ~4M、step15k VRAM 峰值（6GB 壓線）。
+model:
+  initialize_from: outputs/aerial_train_block_all_3x/checkpoints/coarse_block7_crop_sh2.ckpt  # 全域 4.39M 裁到 block_7 252k(保留sh2);renderer 已 patch 成 fine 設定
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 30_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 30_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      prune_ratio: 0.05
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densify_grad_threshold: 0.0003
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 15000
+- 30000

@@ -1,0 +1,74 @@
+model:
+  initialize_from: null
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 3              # 保留 SH3（表徵能力優於點數）
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0         # 徹底關閉法線損失
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.0                # 徹底關閉深度損失
+        final_factor: 0.05
+        max_steps: 60_000
+      fused_ssim: false          # 嚴禁開啟：防範 SSIM -4.06 sd 離群潰敗
+      opacity_reg: 0.002         # 保留 0.002 最優動態平衡點
+      scale_reg: 0.007
+      immune_opacity_threshold: 0.9
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      screen_size_prune_px: 300  # 安全的大尺寸剪枝
+      skip_surf_normal: true     # ✅【進階無損】當 lambda_normal=0 時跳過 CUDA 反投影叉積 (+1% 加速)
+      dynamic_strips: true       # 動態 K 條帶
+      strip_max: 8
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      cap_max: 3000000           # 2.6M 容量標定
+      absgrad_densify: 2.0       # AbsGS 2.0 宿主抽樣
+      fast_noise: true           # Fast Noise 代數簡化
+      noise_gate_eps: 0.001      # Noise Gate 過濾門檻
+      densify_blind_report: false # 跳過零權重錯誤分數報告
+      harvest_dust_trim_interval: 5000 # ✅【進階無損】收割期每 5k 步移除 o<0.05 次像素塵埃，大幅減輕後端負載
+      noise_lr: 500000.0
+      densify_from_iter: 1000
+      densify_until_iter: 30000  # sched30 排程
+      densification_interval: 150
+      min_opacity: 0.005
+      N_max: 51
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000
+- 42000
+- 60000

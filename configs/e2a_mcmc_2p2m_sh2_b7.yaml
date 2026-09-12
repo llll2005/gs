@@ -1,0 +1,61 @@
+# E2-A-sh2: 我們的 MCMC pipeline + depth-init 推到 ~4M（cap 4M），sh2，24000 步。
+# 測 MCMC 在高點數 regime 能否逼近/超過 CityGSV2 的 28.9。
+# ⚠ cap 4M 在 6GB 可能 OOM（尤其密度衝高時）→ 若 OOM 代表 6GB 撐不住 4M MCMC。
+model:
+  initialize_from: data/matrix_city/aerial/train/block_all/depth_init/block_7.ply
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 24_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 24_000
+      opacity_reg: 0.007
+      scale_reg: 0.007
+      immune_opacity_threshold: 0.9
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      cap_max: 2200000
+      noise_lr: 500000.0
+      densify_from_iter: 1000
+      densify_until_iter: 18_000
+      densification_interval: 100
+      min_opacity: 0.005
+      N_max: 51
+trainer:
+  check_val_every_n_epoch: 15
+  max_steps: 24000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 12000
+- 24000

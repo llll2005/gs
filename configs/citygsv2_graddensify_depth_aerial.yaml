@@ -1,0 +1,62 @@
+# 「原版 CityGSV2 方法」對照 = aggr17 的設定，只把 density 換成官方 grad-densify、metric 換回 CityGSV2Metrics。
+# 目的：與 mcmc_2dgs_60k_sh3_aggr17_aerial（我們最優）做「唯一差異=密度控制器」的公平對照。
+#   兩邊皆 sh3 / 60k / 各塊 depth-init（當前資料）/ depth_ratio 1.0 / trim on / 同 depth+normal loss。
+#   ⚠ sh 用 sh3（對齊我們，非官方 sh2）以隔離密度控制器；要 authentic sh2 把 sh_degree 改 2 即可。
+#   ⚠ 原版 grad-densify 在 depth-init 上常長不起來（低梯度）→ 分數可能偏低，那正是要量的對照。
+#   init 靠 launcher/CLI 注入 --model.initialize_from block_<id>.ply（與我們最優相同注入方式）。
+model:
+  initialize_from: null
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 3
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 60_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    # 官方 CityGSV2 aerial 的 grad-densify 密度控制（無 cap，靠 grad_threshold + opacity_reset）
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densification_interval: 200
+      opacity_reset_interval: 6000
+      densify_from_iter: 1000
+      densify_until_iter: 30000
+      densify_grad_threshold: 0.0002
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 30000
+- 60000

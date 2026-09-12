@@ -1,0 +1,101 @@
+model:
+  # 新範式：用可換模組 initializer 明確指定初始化（取代 CLI --model.initialize_from）。
+  initializer:
+    class_path: internal.initializers.gaussian_initializer.CheckpointInitializer
+    init_args:
+      path: data/matrix_city/aerial/train/block_all/depth_init/block_7.ply   # RTG depth-init PLY（α=0.99）
+      overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 3              # sh3: +0.295 dB measured on 30k run
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    # ★ v2 用 MCMCCityGSV2Metrics 只為了借 scale_reg（純 loss 項，與 density 無關，配 RTG 也生效）。
+    #   opacity_reg 設 0 明確關閉（RTG freeze_opacity 下它本來就 inert）；其餘欄位繼承 CityGSV2Metrics。
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      lambda_dist: 200                     # v1 的 distortion（注意：v1 實測它讓 MCMC 變糊；保留=你要求的對照）
+      dist_regularization_from_iter: 4000  # v1
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 60_000
+      scale_reg: 0.007                      # ★ 借用：抑制 surfel 過大（RTG grad-densify 無 cap，控球尺寸幫助銳利/省點）
+      opacity_reg: 0.007                     # 關閉：freeze_opacity 下 opacity lr=0，此項對任何參數皆零梯度
+      immune_opacity_threshold: 0.9        # opacity_reg=0 時不生效，留預設
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    # ★ v2 改用 RTG 演算法：B1 凍結α + B3 M_c補點 + B4 翻轉 + B5 長期unstable剪枝。
+    #   取代 MCMC（grad-densify 系，無 cap_max）。
+    class_path: internal.density_controllers.rtg_stable_density_controller.RTGStableDensityController
+    init_args:
+      # --- grad-densify 基礎（更激烈、更頻繁） ---
+      percent_dense: 0.01
+      densification_interval: 200       # 模板 500 -> 200：更頻繁
+      densify_from_iter: 1000
+      densify_until_iter: 42000         # 模板 15000 -> 42000：長更久（對齊 aggr17 積極成長）
+      densify_grad_threshold: 0.00015   # 0.0002 -> 0.00015：更激烈分裂/複製。★RTG 無 cap，別再往下調以免 OOM
+      opacity_reset_interval: 2000      # 註：freeze_opacity=True 時 opacity-reset 被停用，此值不生效
+      cull_opacity_threshold: 0.005
+      # --- B1：凍結不透明度（α∈{0.99,0.1}, lr_α=0；停用 opacity-based prune，改用 B4+B5） ---
+      freeze_opacity: True
+      depth_init_immune: True           # depth-init 點開局即 stable、免於 reset/opacity-prune
+      stable_threshold: 10
+      # --- B3：M_c 透明高斯補點（色誤差高的像素回投影，加 α=0.1 透明點） ---
+      mc_enabled: True
+      mc_color_threshold: 0.1
+      mc_sample_ratio: 0.05
+      mc_transparent_alpha: 0.1
+      mc_scale_factor: 0.01
+      # --- B4：stable->unstable 翻轉（誤差計數，更激烈） ---
+      stable_revert_enabled: True
+      stable_revert_threshold: 0.1
+      stable_revert_count: 3            # 5 -> 3：更激烈翻轉
+      # --- B5：長期 unstable 剪枝（更激烈） ---
+      max_unstable_intervals: 20        # 50 -> 20：更快剪掉長期沒用的點
+      # --- Hybrid soft-cap（硬天花板防 OOM + 軟帶重分配；解 ver2 那次無 cap 爆掉）---
+      cap_max: 1500000                  # ★硬上限，防 OOM。6GB sh3 已知 ~1.5M 安全（aggr17）。有 cap 後上面 grad 0.00015 也安全。
+      soft_cap_enabled: True            # 開軟帶（cap 之下重分配）
+      soft_cap_band: 200000             # 軟區 = [1.30M, 1.50M]
+      soft_densify_scale: 0.3           # 軟區內增生保留降到 0.3（源頭少加，非 add-then-prune）
+      soft_prune_scale: 1.5             # 軟區內 B5 剪枝加強 ×1.5（等效 max_unstable 20→~13）
+      # soft_from_iter: -1              # 預設 = densify_from_iter
+      # soft_until_iter: -1             # 預設 = densify_until_iter（軟節流關進 densify 窗口 → 精修期固定 → 不傷收斂）
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+  # 進度條 = 預設 TrainConsole（entrypoint 注入）：TTY+rich → 固定底欄面板 + 寫 train_status.txt；
+  # 非 TTY → fallback tqdm。不用在此列 callback（列了會變兩個進度條而衝突）。
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000
+- 42000
+- 60000

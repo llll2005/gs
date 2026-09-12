@@ -1,0 +1,45 @@
+# 目標：做一顆 ~4M 的 coarse（對齊舊 4.39M / 28.9 的起步規模），之後 fine-tune 主要剪枝精修、
+# 避開「小 coarse 邊長邊背傳撐爆 densify 期」的 6GB OOM。
+# 與 coarse_mc_aerial_1.2x.yaml 唯一差異 = opacity_reset_interval 3000 -> 12000。
+#   依動力學分析：每個 reset 週期淨乘 ~0.79（剪枝壓過生長）；3000→生長期 ~4.8 波 → 1.05M。
+#   拉到 12000 → 生長期內只剩 1 波剪枝 → 預測 ~3.6–4M。若不足可再往 15000/關閉推（→ ~4.9M）。
+# save_iterations 15000 = densify 結束點，顆數此時已定，可提早驗證是否到 4M 再決定是否續用。
+model:
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 0
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.005
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      diable_trimming: true
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    init_args:
+      densify_grad_threshold: 0.00005
+      densify_until_iter: 15000
+      opacity_reset_interval: 12000   # 3000 -> 12000：減少剪枝波數，把 coarse 推到 ~4M
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+  train_max_num_images_to_cache: 512
+  num_workers: 8
+save_iterations:
+- 15000
+- 30000

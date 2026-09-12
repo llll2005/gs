@@ -1,0 +1,78 @@
+# = aggr17 冠軍 recipe（MCMC sh3 60k cap1.7M）+ 「軟限制」的實用實作 = light_gaussian importance-prune。
+# 目的：near-cap 重分配（砍最低重要度冗餘點，MCMC 在 densify 窗口內 refill 到高 opacity 區）。
+# ⚠ 預期：count 槓桿在 6GB 已見頂 ~24.3（cheap_lever 結論）→ 這是「驗證重分配有沒有用」的便宜檢查，別期待大跳。
+# 已驗證錨點：sh3 60k explore-then-prune vs native-low-cap 同點數 = +0.28dB。
+# init 用新範式 initializer；進度條=預設 TrainConsole（會寫 train_status.txt）。
+model:
+  initializer:
+    class_path: internal.initializers.gaussian_initializer.CheckpointInitializer
+    init_args:
+      path: data/matrix_city/aerial/train/block_all/depth_init/block_7.ply
+      overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 3
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.05
+        max_steps: 60_000
+      opacity_reg: 0.007
+      scale_reg: 0.007
+      immune_opacity_threshold: 0.9
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      cap_max: 1700000
+      noise_lr: 500000.0
+      densify_from_iter: 1000
+      densify_until_iter: 42_000
+      densification_interval: 150
+      min_opacity: 0.005
+      N_max: 51
+  # ★ 軟限制（近 cap 重分配）：densify 窗口內(<42000)砍最低重要度點，MCMC 隨後 refill。是 model 層 key（非頂層）。
+  light_gaussian:
+    prune_steps: [30000]        # < densify_until 42000 → 砍完 MCMC 還會 refill = 真重分配（非純砍點）
+    prune_percent: 0.2          # 砍最低重要度 20%（transmittance×area^v_pow）
+    prune_decay: 1.0
+    v_pow: 0.1
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000
+- 42000
+- 60000

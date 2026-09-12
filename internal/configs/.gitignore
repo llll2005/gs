@@ -1,5 +1,12 @@
+# 上游把這裡設成白名單（`*` 然後一行一個 `!檔名`），所以**後來新增的每個檔都被靜默忽略**
+# —— 現行主線唯一在用的 config 就是這樣差點沒上傳。改成白名單 PATTERN。
+# `*` 仍然擋住 __pycache__、.pyc 與丟進來的資料/輸出。
 *
 !.gitignore
+!*.py
+!*.yaml
+!*.yml
+!*.md
 !__init__.py
 !appearance.py
 !dataset.py

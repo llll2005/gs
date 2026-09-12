@@ -1,0 +1,68 @@
+model:
+  initialize_from: null
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 30_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.001
+        max_steps: 15_000
+      opacity_reg: 0.01
+      scale_reg: 0.01
+      immune_opacity_threshold: 0.9
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    # Gradient-Guided MCMC for 2D surfels: same as MCMC-2DGS but relocation/add_new sample
+    # ∝ f(opacity, view-space gradient) instead of ∝ opacity. See gg_mcmc_2dgs_density_controller.py
+    # and 紀錄/gradient_guided_mcmc_spec.md. relocation_weight_mode switches the ablation variant.
+    class_path: internal.density_controllers.gg_mcmc_2dgs_density_controller.GGMCMC2DGSDensityController
+    init_args:
+      cap_max: 600000
+      noise_lr: 500000.0
+      densify_from_iter: 1000
+      densify_until_iter: 15_000
+      densification_interval: 100
+      min_opacity: 0.005
+      N_max: 51
+      relocation_weight_mode: grad_op   # opacity (=base) | grad | grad_op (main) | powered
+      grad_floor: 0.1
+      grad_alpha: 1.0
+      grad_beta: 1.0
+trainer:
+  check_val_every_n_epoch: 15
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000

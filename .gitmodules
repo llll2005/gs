@@ -10,3 +10,6 @@
 [submodule "submodules/diff-trim-surfel-rasterization"]
 	path = submodules/diff-trim-surfel-rasterization
 	url = https://github.com/YuxueYang1204/diff-surfel-rasterization
+[submodule "submodules/diff-surfel-rasterization-trim-pp/third_party/glm"]
+	path = submodules/diff-surfel-rasterization-trim-pp/third_party/glm
+	url = https://github.com/g-truc/glm.git

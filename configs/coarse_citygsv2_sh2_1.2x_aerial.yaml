@@ -1,0 +1,41 @@
+# authentic 原版 CityGSV2 全域 coarse（給原版 fine-tune 當 initialize_from 用）。
+# = 你貼的原廠 coarse（sh2 / 預設 grad-densify / trim off / depth final_factor 0.005 / 30k / 全域無分塊）
+#   + 適配我們的形式（train cache / num_workers / 明確 save）。冷啟動：從 SfM 點雲開始，不需 init。
+# ⚠ 註1：CLAUDE.md 記原版 coarse 慣用 sh0；你這裡指定 sh2（較重）。若 6GB 上 OOM，改 sh_degree:0
+#         再讓 fine-tune sh2 + overwrite_config:False 自動 padding SH（標準做法，較省）。
+# ⚠ 註2：全域 coarse 吃整個 block_all 的相機，6GB 上盯 VRAM；OOM 就降 cache 或 down_sample。
+model:
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.005
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      diable_trimming: true          # coarse 不修剪
+  density:
+    class_path: internal.density_controllers.citygsv2_density_controller.CityGSV2DensityController
+    # 原廠預設 grad-densify（interval 100 / reset 3000 / from 500 / until 15000 / grad 0.0002），不魔改
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      down_sample_factor: 1.2
+  train_max_num_images_to_cache: 512
+  num_workers: 8
+save_iterations:
+- 30000

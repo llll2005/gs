@@ -1,0 +1,64 @@
+model:
+  initialize_from: null          # dense depth-init PLY via CLI (--model.initialize_from .../block_7_ds120k.ply)
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 30_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.005
+        max_steps: 30_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    # Result B: edge-aware densification (unifies the densify-score family via a free
+    # GT-Laplacian edge boost on the screenspace gradient). See merge_math_new_algo.
+    class_path: internal.density_controllers.edge_aware_density_controller.EdgeAwareDensityController
+    init_args:
+      percent_dense: 0.01
+      densification_interval: 300
+      opacity_reset_interval: 2100
+      densify_from_iter: 1200
+      densify_until_iter: 12000
+      densify_grad_threshold: 0.0002
+      cull_opacity_threshold: 0.005
+      axis_ratio_threshold: 0.01
+      edge_weight_beta: 2.0
+      edge_norm_percentile: 0.98
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000

@@ -1,0 +1,65 @@
+model:
+  # initialize_from: provided at runtime via --model.initialize_from or train_citygs_partitions.py --depth_init_dir
+  initialize_from: null
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 2
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 30_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.citygsv2_metrics.CityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.5
+        final_factor: 0.001
+        max_steps: 15_000
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.rtg_stable_density_controller.RTGStableDensityController
+    init_args:
+      stable_threshold: 10
+      depth_init_immune: true
+      densify_grad_threshold: 0.0002
+      densification_interval: 500
+      # RESET-OFF 實驗（2026-06-07）：opacity_reset_interval 設成 > max_steps(30000) → 週期 reset
+      # 永不觸發。背景是黑底(0,0,0) 故 vanilla 的「白底在 densify_from_iter 觸發一次」那條也為 False
+      # → opacity-reset 完全關閉。目的：驗證 depth/normal 正則是否足以抑制 floater（reset 對我們冗餘?），
+      # 這是換 MCMC（無 reset）的前置零成本實驗。對照組 = RTG_mc_no_ADDM_aerial_sh2_trim（reset=2000）。
+      # 註：depth_init_immune=true 本就讓 alpha=0.99 初始 Gaussian 免疫 reset，故本實驗實際測的是
+      # 「densify 出來的子 Gaussian 在沒有 reset 下會不會長出 floater」。
+      opacity_reset_interval: 999999
+      densify_from_iter: 1000
+      densify_until_iter: 15_000
+trainer:
+  check_val_every_n_epoch: 15
+  max_steps: 30000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000

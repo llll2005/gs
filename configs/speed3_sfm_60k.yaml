@@ -1,0 +1,78 @@
+model:
+  initialize_from: null          # ✅ Input B: 完全採用 COLMAP SfM 稀疏點雲 (0 厚殼)
+  overwrite_config: False
+
+  # 動態條帶 VRAM 優化 (將 6GB 利用率拉回 4.8~5.2GB，減少切條耗時)
+  dynamic_strips: true
+  strip_max: 8
+  strip_vram_target_gb: 5.2
+  strip_safety: 0.85
+
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+    init_args:
+      sh_degree: 3              # 保留 SH3 最強視角表徵
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0         # 關閉法線損失，觸發零權重計算門檻
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 0.0                # 關閉深度損失，觸發零權重計算門檻
+        final_factor: 0.05
+        max_steps: 60_000
+      fused_ssim: false          # 嚴禁開啟 (避開離群落差)
+      opacity_reg: 0.002         # 溫和不透明度正則
+      scale_reg: 0.007
+      immune_opacity_threshold: 0.9
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      depth_ratio: 1.0
+      skip_surf_normal: true     # 無損跳過 CUDA 反投影叉積
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      cap_max: 2600000           # 2.6M 容量標定 (收割期掉 10% 後精確交付 ~2.34M 顆)
+      absgrad_densify: 2.0       # AbsGS 2.0 (|g| 宿主抽樣，長點填洞主力)
+      screen_size_prune_px: 300  # 大尺寸高斯剪枝
+      fast_noise: true           # 2D 切平面加噪代數簡化
+      noise_gate_eps: 0.001      # Noise Gate 過濾門檻
+      densify_blind_report: false
+      noise_lr: 500000.0
+      densify_from_iter: 1000
+      densify_until_iter: 30000  # sched30 排程 (30k 截止增生，留 30k 步收割凝結)
+      densification_interval: 150
+      min_opacity: 0.005
+      N_max: 51
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:
+      - 5
+      - 5
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000
+- 42000
+- 60000

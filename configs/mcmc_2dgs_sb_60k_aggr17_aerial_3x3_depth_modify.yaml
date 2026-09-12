@@ -1,0 +1,74 @@
+# SB-color variant of mcmc_2dgs_60k_sh3_aggr17_aerial.yaml (DBS port).
+# Color = diffuse DC (SH0) + 2 Spherical Beta lobes -> 25 floats/point vs 59 (SH3).
+# F lever in budget formula: model state per point 944B -> 400B, so the same
+# VRAM fits ~2.4x more points on the model-state side.
+# Everything else (metric/density/trim renderer pipeline) inherited from aggr17.
+model:
+  initialize_from: null          # depth-init via CLI: --model.initialize_from .../depth_init/block_7.ply
+  overwrite_config: False
+  gaussian:
+    class_path: internal.models.gaussian_2d_sb.Gaussian2DSB
+    init_args:
+      sh_degree: 0              # diffuse base only; view dependence comes from SB lobes
+      sb_number: 2
+      sb_params_lr: 0.0025      # DBS default
+      optimization:
+        means_lr_init: 0.000064
+        means_lr_scheduler:
+          lr_final: 0.00000064
+          max_steps: 60_000
+        scales_lr: 0.004
+  metric:
+    class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
+    init_args:
+      lambda_normal: 0.0125
+      normal_regularization_from_iter: 0
+      depth_loss_type: l1+ssim
+      depth_loss_ssim_weight: 1.0
+      depth_loss_weight:
+        init: 1.0
+        final_factor: 0.2
+        max_steps: 60_000
+      opacity_reg: 0.0
+      scale_reg: 0.0
+      immune_opacity_threshold: 0.9
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_sb_renderer.SepDepthTrim2DGSSBRenderer
+    init_args:
+      depth_ratio: 1.0
+  density:
+    class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
+    init_args:
+      cap_max: 1700000           # smoke parity with aggr17; count-ablation runs override via CLI
+      noise_lr: 500000.0
+      densify_from_iter: 1000
+      densify_until_iter: 42_000
+      densification_interval: 150
+      min_opacity: 0.005
+      N_max: 51
+trainer:
+  check_val_every_n_epoch: 20
+  max_steps: 60000
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: EstimatedDepthBlockColmap
+    init_args:
+      image_dir: input
+      down_sample_factor: 1.2
+      content_threshold: 0.08
+      min_images_per_block: 10
+      block_dim:          # 3x3 = 9 blocks. Fewer, bigger blocks than our 5x5. VRAM tracks primitive count and count tracks area, so a
+                          # 3x3 block covers 16/9 = 1.78x a 4x4 one (~3.4M primitives at equal density, right at
+                          # the measured ceiling). The real prize is seams: merged quality measured 7.0 dB below
+                          # single-block, and 25 -> 9 blocks cuts seam count from 40 to 12.
+      - 3
+      - 3
+  num_workers: 8
+save_iterations:
+- 500
+- 1500
+- 15000
+- 30000
+- 42000
+- 60000
