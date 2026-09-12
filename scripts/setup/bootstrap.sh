@@ -158,7 +158,11 @@ if [ "$DO_ENV" = 1 ]; then
   if ! conda run -n "$ENV_NAME" python -c "import cv2" >/dev/null 2>&1; then
     if conda run -n "$ENV_NAME" python -c "import cv2" 2>&1 | grep -q "libGL"; then
       warn "cv2 缺 libGL（headless 容器）=> 移除 opencv-python，保留 opencv-python-headless"
-      conda run -n "$ENV_NAME" --no-capture-output pip uninstall -y opencv-python >/dev/null 2>&1
+      # ⚠ 兩個 wheel 裝在**同一個** cv2/ 目錄 => 移除一個會把目錄整個帶走
+      #   （lab 實測：uninstall opencv-python 之後 ModuleNotFoundError: No module named 'cv2'）
+      #   => 移除後要**重裝 headless**。
+      conda run -n "$ENV_NAME" --no-capture-output pip uninstall -y opencv-python opencv-python-headless >/dev/null 2>&1
+      conda run -n "$ENV_NAME" --no-capture-output pip install -q "opencv-python-headless==4.10.0.84" >/dev/null 2>&1
       conda run -n "$ENV_NAME" python -c "import cv2;print('  cv2', cv2.__version__)" \
         && ok "cv2 可用" || warn "cv2 仍不可用 —— 手動 pip install opencv-python-headless"
     fi
