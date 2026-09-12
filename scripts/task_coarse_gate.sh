@@ -1,5 +1,5 @@
 #!/bin/bash
-# ★★★★★★ 殼層問題：coarse 幾何閘門（1M 顆 sh0，~2.5h，只看幾何）
+# ★★★★★★ 殼層問題：coarse 幾何閘門（1M 顆 sh0，**1500 步約 5 分**，只看幾何）
 #
 # 這**不是**在測殼有沒有消失，是在測「coarse 的幾何值不值得當先驗」。
 # 若閘門沒過，§15 的 ①③④ 整組放棄，不必再投基建。
@@ -10,7 +10,8 @@
 #   （p7_depth_coverage_bug：interval 350 會讓顆數**衰減**並製造覆蓋破洞）=> 用 150。
 # ⚠ 用 depth-init 當起點會把偽深度的殼帶進來 => **用 SfM-init**（initialize_from null），
 #   這樣 coarse 的幾何完全由影像決定，才是我們想測的東西。
-# ⚠ 本機 3 小時上限（使用者 2026-09-12）=> 24,000 步（實測約 2.44 it/s 時約 2.7h）。
+# ⚠ 使用者 2026-09-12：殼層優先，**1500 步即可** —— 殼在 step 1 的起始 trim 之後就定型了
+#   （80% 偏差在第一步就存在），不需要跑到收斂才能看幾何。約 5 分鐘。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 [ -n "${CITYGS_ALLOC_CONF:-}" ] && export PYTORCH_CUDA_ALLOC_CONF="$CITYGS_ALLOC_CONF"
@@ -22,15 +23,15 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --model.gaussian.init_args.sh_degree 0 \
   --model.density.init_args.cap_max 1100000 \
   --model.density.init_args.absgrad_densify 2.0 \
-  --model.density.init_args.densify_until_iter 12000 \
-  --model.density.init_args.densification_interval 150 \
+  --model.density.init_args.densify_until_iter 1500 \
+  --model.density.init_args.densification_interval 100 \
   --model.density.init_args.screen_size_prune_px 300 \
   --model.density.init_args.fast_noise true \
   --model.density.init_args.noise_gate_eps 1e-3 \
   --model.metric.init_args.opacity_reg 0.002 \
   --model.metric.init_args.lambda_normal 0.0 \
   --model.metric.init_args.depth_loss_weight.init 0.0 \
-  --trainer.max_steps 24000 \
+  --trainer.max_steps 1500 \
   -n coarsegate_b12
 echo "===== 閘門：只看幾何 ====="
 conda run -n gspl python tools/audit_geometry.py coarsegate_b12 --block 12 2>&1 | tail -25

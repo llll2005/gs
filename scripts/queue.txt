@@ -5,7 +5,7 @@ bash scripts/task_cropbox_eval.sh
 # ★★★★★ ② binning 外接盒浪費（精確版）+ trim 改成本感知判準
 bash scripts/task_binning_trim_probe.sh
 
-# ★★★★★★ 殼層：④ 的閘門 —— 1M 顆 sh0 coarse，**只看幾何不看 PSNR**（~2.5h，符合 3h 上限）
+# ★★★★★★ 殼層：④ 的閘門 —— 1M 顆 sh0 coarse，**只看幾何不看 PSNR**（1500 步，約 5 分）
 # 為什麼現在做（2026-09-12 使用者定為最優先）：
 #   殼的根因已定量 —— 偽深度自身誤差 0.633 世界單位 = **174x 表面解析度**（8.57% x 典型深度 7.39）
 #   而 depth_init 自承 "RTG-SLAM style"，但 **RTG 用 RGB-D 感測器，我們用單目估計**。
