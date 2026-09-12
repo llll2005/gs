@@ -219,8 +219,20 @@ if [ "$DO_BUILD" = 1 ]; then
   PREFIX=$(conda run -n "$ENV_NAME" python -c "import sys,os;print(sys.prefix)" 2>/dev/null | tr -d '\r')
   [ -n "$PREFIX" ] || die "拿不到 conda prefix"
   ok "CUDA_HOME 強制指向 $PREFIX"
+  # 坑二點五（2026-09-12 在 lab 撞到）：容器把 TORCH_CUDA_ARCH_LIST 設成含 Blackwell（10.0），
+  #   而 torch 2.0.1 不認識 => `ValueError: Unknown CUDA arch (10.0) or GPU not supported`。
+  #   不要猜，直接問**這台機器的 GPU**（在任何裝置上都對）。
+  _ARCH=$(conda run -n "$ENV_NAME" python -c \
+    "import torch;print('.'.join(map(str,torch.cuda.get_device_capability(0))))" 2>/dev/null | tr -d '\r')
+  if [ -n "$_ARCH" ]; then
+    export TORCH_CUDA_ARCH_LIST="$_ARCH"
+    ok "TORCH_CUDA_ARCH_LIST=$_ARCH（問 GPU 問出來的，覆蓋容器設的值）"
+  else
+    warn "問不到 GPU 的 compute capability => 沿用環境變數 TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-未設}"
+  fi
   # 坑三：pip 會**靜默跳過**同版本的本地路徑 => 一定要 --force-reinstall
   conda run -n "$ENV_NAME" --no-capture-output env CUDA_HOME="$PREFIX" CUDA_PATH="$PREFIX" \
+    TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-}" \
     pip install --no-build-isolation --no-deps --force-reinstall "$RAST" || die "編譯失敗"
   ok "編好了（--force-reinstall 是必要的，pip 會靜默跳過同版本的本地路徑）"
 fi
