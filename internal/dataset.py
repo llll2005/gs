@@ -222,6 +222,20 @@ class CacheDataLoader(torch.utils.data.DataLoader):
 
     def _cache_data(self, indices: list, pbar_leave: bool = True):
         cached = []
+        # 把快取進度推到 train_status.txt。這一步在 284 張全解析度時約 90 秒，
+        # 而 `block_id` 失效載入 5,621 張時它會吃掉約 35 GB RAM 後被 OOM killer 殺掉
+        # —— 沒有這個進度，那種情況從外面看起來和「正常但慢」完全一樣。
+        def _phase(k, n):
+            try:
+                from internal.utils.train_console import get_state
+                st = get_state()
+                st.set_footer(phase=f"快取影像 {k:,}/{n:,}（尚未開始訓練）")
+                st.write_status_file()
+            except Exception:
+                pass
+
+        _n = len(indices)
+        _phase(0, _n)
         if self.num_workers > 0:
             with ThreadPoolExecutor(max_workers=self.num_workers) as e:
                 for i in tqdm(
@@ -231,10 +245,15 @@ class CacheDataLoader(torch.utils.data.DataLoader):
                         leave=pbar_leave,
                 ):
                     cached.append(i)
+                    if len(cached) % 16 == 0:
+                        _phase(len(cached), _n)
         else:
             for i in tqdm(indices, desc="#{} loading images (1st: {})".format(os.getpid(), indices[0]), leave=pbar_leave):
                 cached.append(self.dataset.__getitem__(i))
+                if len(cached) % 16 == 0:
+                    _phase(len(cached), _n)
 
+        _phase(_n, _n)
         return cached
 
     def __len__(self) -> int:

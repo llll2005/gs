@@ -80,6 +80,13 @@ class _TrainConsoleState:
         if "its" in f: bits.append(f"{f['its']:.2f} it/s")
         if "eta" in f: bits.append(f"ETA {f['eta']}")
         L.append("- progress " + "-" * 28)
+        # ⚠ 訓練開始**之前**（建資料集、快取影像）也要看得到在幹什麼：
+        #   2026-09-12 使用者在 `normal.yaml` 的跑次上看到「step 0/0」就以為狀態壞了，
+        #   其實那是還在 `cache all images`（284 張全解析度約 90 秒；而 block_id 失效
+        #   載入 5,621 張那次，這一步吃掉 35 GB RAM 後被 OOM killer 殺掉）。
+        ph = f.get("phase")
+        if ph:
+            L.append(f"⏳ {ph}")
         L.append(prog + (" │ " + " │ ".join(bits) if bits else ""))
         # 最近 val
         L.append("- latest val " + "-" * 26)
@@ -144,6 +151,15 @@ class _TrainConsoleState:
             vram_s = f"[yellow]VRAM {vu:.2f}/{vt:.1f}G[/]"
         else:
             vram_s = f"VRAM {vu:.2f}/{vt:.1f}G"
+        ph = f.get("phase")
+        if ph:
+            prog = f"[yellow]⏳ {ph}[/]  │  [bold]step {step:,}/{mx:,}[/]"
+            footer = Group(Text.from_markup(vline), Text.from_markup(prog))
+            return Group(
+                Panel(head, title=f"[b]{name}[/]", title_align="left", border_style="dim", padding=(0, 1)),
+                Panel(ev, title="recent events", title_align="left", border_style="dim", padding=(0, 1)),
+                Panel(footer, title="latest val · progress", title_align="left", border_style="yellow", padding=(0, 1)),
+            )
         prog = (f"[bold]step {step:,}/{mx:,}[/] ({pct})  ep {f.get('epoch','-')}  │  "
                 f"{f.get('n_gauss',0)/1e6:.2f}M顆  │  {vram_s}  │  "
                 f"{f.get('its',0):.2f} it/s  │  ETA {f.get('eta','-')}")

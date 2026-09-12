@@ -193,6 +193,11 @@ class TrainConsole(ProgressBar):
         if self.status_file:
             base = pl_module.hparams.get("output_path") or trainer.default_root_dir or "."
             st.status_path = os.path.join(base, "train_status.txt")
+            # 立刻寫一份：從這裡到第一個訓練步之間會經過「建資料集 + 快取全部影像」，
+            # 那段時間以前完全沒有輸出（使用者 2026-09-12：「沒這個我都不知道訓練到哪了」）。
+            st.set_footer(step=0, max_steps=trainer.max_steps,
+                          phase="準備中：建立資料集 / 快取影像（尚未開始訓練）")
+            st.write_status_file()
         try:
             h = pl_module.hparams
             cap = None
@@ -231,6 +236,7 @@ class TrainConsole(ProgressBar):
         # 此時 gaussian_model 已被 initializer 灌點 → 重建 header 才有正確 init 顆數（修 setup 期顯示 0）
         name = os.path.basename(str(trainer.default_root_dir or "run"))
         self._state.set_header(name, self._build_header(trainer, pl_module))
+        self._state.set_footer(phase=None)        # 準備階段結束 => 讓底欄回到正常進度顯示
         self._rich_ok = self._try_start_rich()
         self._state.active = self._rich_ok        # 只在 rich 模式緩衝事件；fallback 保留原 print 行為
         if self._rich_ok:

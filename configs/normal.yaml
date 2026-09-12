@@ -17,14 +17,32 @@
 #  model.gaussian             預設是 `VanillaGaussian`（**3DGS**）=> 要 2DGS 必須指定。
 #  model.renderer             預設是 `VanillaRenderer`（**3DGS**）=> 同上。
 #  trainer.max_steps          預設 30,000；本實驗要 1500。
+#  model.density              預設 `VanillaDensityController` 是 **3DGS 專用**，而且它
+#                             **跑到第一個 densify 事件（step 600）才炸** ——
+#                             `vanilla_density_controller.py:164`
+#                               stds  = scales[mask]           # 2DGS 的 scale 只有 **2 維**
+#                               means = torch.zeros((M, 3))    # 位置是 3 維
+#                               torch.normal(mean=means, std=stds)
+#                             `RuntimeError: The size of tensor a (3) must match the size of
+#                              tensor b (2) at non-singleton dimension 1`
+#                             （2026-09-12 實測，燒掉 460 秒）。
+#                             `GS2DDensityController` 只做一件事：把 2 維 scale 補上第三個 0
+#                             再抽樣 —— 那就是 2DGS 論文的 ADC，上游的
+#                             `configs/vanilla_2dgs.yaml` 用的也是它。
+#                             ⇒ 這是「不給就跑不起來」，不是選配。
 #
 # ── 刻意**不寫**（吃預設 = 全部關閉） ─────────────────────────────────────────
-#  model.density   -> `VanillaDensityController`（3DGS/2DGS 論文原版的梯度式 ADC）
+#  density 的參數  -> 全吃 `VanillaDensityController` 的預設（densify_from_iter 500 /
+#                     densification_interval 100 / densify_until_iter 15,000 / 無顆數上限）
 #                     ⇒ 沒有 MCMC、沒有 cap_max、沒有 absgrad_densify、沒有 noise、
 #                       沒有 screen_size_prune、沒有 value-per-cost、沒有 harvest-dust
+#                     ⚠ 上游 `vanilla_2dgs.yaml` 另設 `cull_opacity_threshold: 0.05`，
+#                       這裡不設 ⇒ 吃預設（更不介入）
 #  model.metric    -> `VanillaMetrics`（純 L1 + SSIM）
-#                     ⇒ 沒有 normal/dist 正則（那是 2DGS 論文的，但屬「算法」）、
-#                       沒有 opacity_reg、沒有 scale_reg、沒有深度損失
+#                     ⇒ 沒有 opacity_reg、沒有 scale_reg、沒有深度損失
+#                     ⚠ 上游 `vanilla_2dgs.yaml` 用的是 `GS2DMetrics`，那裡面有 2DGS 論文的
+#                       **normal + dist 正則**。本組態刻意吃預設 ⇒ 這條線比「論文原版
+#                       2DGS」**還要更原始**（少了那兩個正則）。
 #  model.initialize_from -> null ⇒ 用 dataparser 的 **SfM 稀疏點**
 #                     ⇒ depth-init 是我方的機制，不在這條基準線裡
 #  strips / dynamic_strips -> 預設 1 / False ⇒ 不切條帶
@@ -55,6 +73,10 @@ model:
     init_args:
       diable_trimming: true          # 關掉週期性 trim（CityGSV2 的機制）
       diable_start_trimming: true    # 關掉 step 1 的起始 trim（會砍掉 72% 初始化）
+  density:
+    # 2DGS 論文原版的梯度式 ADC。預設的 `VanillaDensityController` 是 3DGS 專用，
+    # 會在 step 600 的第一個 split 當場炸（原因見檔頭）。這支唯一的差別是把 2 維 scale 補 0。
+    class_path: internal.density_controllers.gs2d_density_controller.GS2DDensityController
 
 data:
   path: data/matrix_city/aerial/train/block_all
