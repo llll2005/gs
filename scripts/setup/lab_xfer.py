@@ -97,7 +97,10 @@ def main():
     ap.add_argument("--name", required=True, help="tar 檔名（不含 .tar）")
     ap.add_argument("--dest", default="data/matrix_city/aerial/train/block_all",
                     help="遠端解開的目標（相對 hdd/11213）")
-    ap.add_argument("--stage", default="/tmp/labx/stage")
+    # ⚠⚠ 預設**不可**用 /tmp：本機 /tmp 是 **tmpfs（16 GB，而且吃的是 RAM）**。
+    #   20 GB 的 input.tar 會塞爆它，並擠壓正在跑的訓練 —— 2026-09-12 差點發生，
+    #   打包才開始就被我攔下（當時 /tmp 只剩 8.3 GB）。用真實磁碟。
+    ap.add_argument("--stage", default=os.path.expanduser("~/labstage"))
     a = ap.parse_args()
     parent, subs = a.src.split(":", 1)
     os.makedirs(a.stage, exist_ok=True)
