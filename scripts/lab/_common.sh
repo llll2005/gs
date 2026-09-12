@@ -19,7 +19,7 @@ echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制（本機原�
 CFG=configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
-  echo "=== $name / block $blk / cap ${CITYGS_VRAM_CAP_GB}GB / $(date) ==="
+  echo "=== $name / block $blk / cap ${CITYGS_VRAM_CAP_GB:-不限制} / $(date) ==="
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config "$CFG" \
     --data.parser.block_id "$blk" \
