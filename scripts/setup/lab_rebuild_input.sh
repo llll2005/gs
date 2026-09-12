@@ -33,6 +33,8 @@ step "2 依映射建 input/（**4 位數 = SfM 相機名**，hardlink）"
 #   `colmap_dataparser.py:350` 是**名稱優先** —— 先 `os.path.join(image_dir, extrinsics.name)`，
 #   找不到才退到「位置對應」。而位置對應正是藏住 §16.14 那個錯開 bug 的路徑。
 #   檔名 == 相機名 ⇒ 名稱對名稱，無從出錯，那條 fallback 永遠不會觸發。
+# 先清掉舊的 6 位數版面（同一個目錄不要混兩種命名，否則位置對應的數量檢查會看到 11,242 張）
+find "$D/train/block_all/input" -maxdepth 1 -name "??????.png" -delete 2>/dev/null
 mkdir -p "$D/train/block_all/input"
 PY - <<'PYEOF2'
 import json, os

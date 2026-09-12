@@ -110,6 +110,7 @@ def main():
     else:
         print(f"  ✅ 全部 {len(names):,} 台的位置與朝向都在 {args.tol:g} 內")
 
+    rc = 0 if nbad == 0 else 1
     # ── C 段：SfM 自己的 2D 對應上，兩視角的亮度一致度（**唯一能抓到錯開的關卡**）──
     print(f"\nC SfM 對應點的亮度一致度（獨立於姿態；門檻 {args.corr_min}）")
     try:
