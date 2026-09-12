@@ -34,6 +34,137 @@ from internal.utils.sh_utils import eval_sh
 from internal.utils.graphics_utils import store_ply
 
 
+# ── 逐段成本計時（預設關閉；`CITYGS_STEP_PROFILE=1` 開啟）────────────────────────
+# 為什麼要在**真實迴圈**裡量，而不是再寫一個微基準：
+#   `tools/vram_pressure.py` 臂 A 量到 render+backward+optimizer ≈ 155 ms/百萬顆 + **21 ms**
+#   固定成本，而 ledger 68 個跑次擬合的全訓練是 `178.9 + 100.5*N`（§11.18）
+#   => 那 **158 ms 的固定成本活在微基準涵蓋不到的地方**，只能在真實迴圈裡抓。
+# 三個踩過的坑（`tools/step_breakdown.py` 的 docstring 有完整版）：
+#   1 cProfile 把非同步工作記到下一個同步點 => `.to()` 看起來 0.17 秒，其實在等光柵化
+#   2 40 步的視窗被「只跑一次」的 trim pass 佔掉 80% => 週期性事件必須按頻率攤平
+#   3 跨跑次比 wall time 的噪音約 5% => 小於 10% 的差異量不出來
+# 做法：**CUDA event 記時間戳（不強制同步、不破壞重疊）+ 同時記 wall clock**。
+#   兩者的差就是 CPU 側的阻塞（dataloader、H2D 搬運）—— 那正是「是不是搬運」的答案。
+class _StepProfiler:
+    def __init__(self):
+        self.on = os.environ.get("CITYGS_STEP_PROFILE", "") not in ("", "0")
+        self.gpu = {}          # 段落 -> 累計 GPU ms
+        self.cpu = {}          # 段落 -> 累計 wall ms
+        self.count = {}        # 段落 -> 觸發次數（週期性事件要用它攤平）
+        self.steps = 0
+        self.warm = None
+        self.real_step_ms = 0.0
+        self._step_t0 = None
+        self._marks = []       # [(名稱, cuda_event, perf_counter)]
+        self._prev_end = None  # 上一步結束的 wall 時間 => 迴圈外的開銷
+
+    WARMUP = int(os.environ.get("CITYGS_STEP_PROFILE_WARMUP", "20"))
+
+    def start_step(self):
+        if not self.on:
+            return
+        import time
+        now = time.perf_counter()
+        self._step_t0 = self._prev_end if self._prev_end is not None else now
+        if self._prev_end is not None:
+            self._acc("0 迴圈外（dataloader/Lightning）", None, (now - self._prev_end) * 1e3)
+        self._marks = []
+        self.mark("__begin__")
+
+    def mark(self, name):
+        """⚠ 這裡**必須同步**，否則歸屬是歪的。
+
+        CUDA 呼叫是非同步的：CPU 會跑在 GPU 前面，所以早期段落的 event 差很小
+        （GPU 還沒開始做），後面的段落把前面的等待全部吸走。實測（N=338k，不同步）：
+            forward  GPU 25.93 / wall 23.37      backward GPU 110.75 / wall **3.46**
+        backward 的 wall 只有 3.46 ms 是因為它只是把工作排進佇列就回來了，
+        而它的 GPU 110.75 ms 其實含了 forward 與 loss 還沒做完的部分。
+        這正是 cProfile 把 48 秒記在 `.to()` 上的同一個機制。
+        => 每個標記點同步，換到正確的逐段歸屬。
+        代價：**消除了 CPU/GPU 重疊**，所以各段之和會略高於真實步時間（報告裡另外印真實步時間）。
+        """
+        if not self.on:
+            return
+        import time
+        torch.cuda.synchronize()
+        ev = torch.cuda.Event(enable_timing=True)
+        ev.record()
+        self._marks.append((name, ev, time.perf_counter()))
+
+    def end_step(self):
+        if not self.on:
+            return
+        import time
+        self.mark("__end__")
+        torch.cuda.synchronize()                       # 每步只同步一次
+        for i in range(1, len(self._marks)):
+            name, ev, t = self._marks[i]
+            _pn, pev, pt = self._marks[i - 1]
+            if name.startswith("__"):
+                continue
+            self._acc(name, pev.elapsed_time(ev), (t - pt) * 1e3)
+        self.steps += 1
+        _now = time.perf_counter()
+        if self._step_t0 is not None:
+            self.real_step_ms += (_now - self._step_t0) * 1e3
+        self._prev_end = _now
+        if self.warm is None and self.steps == self.WARMUP:   # ⚠ 只能做一次：
+        # 重置後 steps 歸零，少了 `self.warm is None` 就會每 WARMUP 步再重置一遍，
+        # steps 永遠到不了報告門檻（實測 250 次迴圈後 steps 只有 10）。
+            # 前 WARMUP 步含一次性成本（起始 trim 掃全部 284 台相機、CUDA/cuDNN 初始化）。
+            # 記憶 `feedback_measure_before_explaining`：40 步的視窗被只跑一次的 trim 佔掉 80%
+            # => 把它們單獨留一份，然後歸零重算穩態。
+            self.warm = {"gpu": dict(self.gpu), "cpu": dict(self.cpu),
+                         "count": dict(self.count), "steps": self.steps}
+            self.gpu, self.cpu, self.count, self.steps = {}, {}, {}, 0
+            self.real_step_ms = 0.0
+
+    def _acc(self, name, gpu_ms, cpu_ms):
+        if gpu_ms is not None:
+            self.gpu[name] = self.gpu.get(name, 0.0) + gpu_ms
+        self.cpu[name] = self.cpu.get(name, 0.0) + cpu_ms
+        self.count[name] = self.count.get(name, 0) + 1
+
+    def report(self, out_path, n_gaussians):
+        if not self.on or self.steps == 0:
+            return
+        lines = []
+        A = lines.append
+        A(f"逐段成本（真實訓練迴圈，CUDA event + wall clock）")
+        A(f"  穩態取樣 {self.steps:,} 步（已排除前 {self.WARMUP} 步的一次性成本）"
+          f"   N = {n_gaussians:,}")
+        if self.warm:
+            w = sum(self.warm["cpu"].values())
+            A(f"  暖機 {self.warm['steps']} 步共 {w/1e3:.2f} s"
+              f"（含起始 trim 掃全部相機 + CUDA 初始化）=> 攤到 60,000 步是 {w/60000:.2f} ms/步")
+        A("")
+        A(f"{'段落':<34} {'GPU ms/步':>10} {'wall ms/步':>11} {'觸發次數':>9} "
+          f"{'每次 wall ms':>12} {'佔 wall':>8}")
+        tot_cpu = sum(self.cpu.values()) / self.steps
+        for k in sorted(self.cpu, key=lambda x: -self.cpu[x]):
+            g = self.gpu.get(k, 0.0) / self.steps
+            c = self.cpu[k] / self.steps
+            n = self.count[k]
+            A(f"{k:<34} {g:>10.2f} {c:>11.2f} {n:>9,} "
+              f"{self.cpu[k]/max(n,1):>12.2f} {100*c/max(tot_cpu,1e-9):>7.1f}%")
+        A(f"{'（各段之和·序列化）':<34} {sum(self.gpu.values())/self.steps:>10.2f} {tot_cpu:>11.2f}")
+        A(f"{'（真實步時間·含重疊）':<34} {'':>10} {self.real_step_ms/self.steps:>11.2f}"
+          f"   = {1000*self.steps/max(self.real_step_ms,1e-9):.2f} it/s")
+        A("")
+        A("判讀：")
+        A("  wall >> GPU 的段落 = **CPU 側阻塞**（dataloader、H2D 搬運、Python 開銷）")
+        A("  wall ~= GPU 的段落 = 真的在算")
+        A("  『觸發次數』遠小於步數的是**週期性事件**（trim 每 500 步、densify 每 150 步）")
+        A("    => 它的『每次 wall ms』很大不代表它是瓶頸，要看『wall ms/步』那一欄（已攤平）")
+        txt = "\n".join(lines)
+        print("\n" + txt, flush=True)
+        try:
+            with open(out_path, "w") as f:
+                f.write(txt + "\n")
+        except Exception:
+            pass
+
+
 class GaussianSplatting(LightningModule):
     def __init__(
             self,
@@ -452,22 +583,36 @@ class GaussianSplatting(LightningModule):
             self.save_gaussians()
 
         # call renderer hook
+        _prof = getattr(self, "_step_prof", None)
+        if _prof is None:
+            _prof = self._step_prof = _StepProfiler()
+        _prof.start_step()
         self.renderer.before_training_step(global_step, self)
+        # ⚠ 這裡**只有起始 trim**（`if step != 1: return`）。週期性的 trim pass 在
+        #   `after_training_step`（每 `contribution_prune_interval` 步、僅 densify 期），
+        #   它不在 training_step 裡 => 另外標記，見 on_train_batch_end。
+        _prof.mark("1 起始 trim（僅 step 1，一次性）")
 
         n_strips = self._decide_num_strips(camera, global_step)
+        _prof.mark("2 decide_num_strips")
         if n_strips > 1:
             # K-strip tiled step: per-strip forward + backward bounds the rasterizer
             # buffers to ~1/K (budget-formula supply lever on the main-line kernel).
             outputs, metrics, prog_bar = self._strip_forward_backward(camera, batch, global_step, n_strips)
+            _prof.mark("3-6 條帶 forward+loss+backward")
             self.log_metrics(metrics, prog_bar, prefix="train", on_step=True, on_epoch=False)
             self._finish_training_step(optimizers, schedulers, outputs, batch, global_step)
+            _prof.end_step()
             return
 
         # forward
         outputs = self(camera)
+        _prof.mark("3 forward（光柵化）")
         # metrics
         metrics, prog_bar = self.metric.get_train_metrics(self, self.gaussian_model, global_step, batch, outputs)
+        _prof.mark("4 loss（L1+SSIM+正則）")
         self.log_metrics(metrics, prog_bar, prefix="train", on_step=True, on_epoch=False)
+        _prof.mark("5 log_metrics")
 
         # invoke `before_backward` interface of density controller
         self.density_controller.before_backward(
@@ -490,8 +635,13 @@ class GaussianSplatting(LightningModule):
             self.manual_backward(metrics["loss"] + metrics["extra_loss"])
         else:
             self.manual_backward(metrics["loss"])
+        _prof.mark("6 backward")
 
         self._finish_training_step(optimizers, schedulers, outputs, batch, global_step)
+        _prof.end_step()
+        if _prof.on and _prof.steps % 200 == 0:
+            _prof.report(os.path.join(self.hparams["output_path"], "step_cost.txt"),
+                         self.gaussian_model.get_xyz.shape[0])
 
     def _split_backward_needed(self, metrics) -> bool:
         """Does anything downstream read the viewspace gradient this step?
@@ -680,6 +830,7 @@ class GaussianSplatting(LightningModule):
                 step=self.trainer.global_step,
             )
 
+        _prof = getattr(self, "_step_prof", None)
         # invoke `after_backward` interface of density controller
         self.density_controller.after_backward(
             outputs=outputs,
@@ -690,16 +841,27 @@ class GaussianSplatting(LightningModule):
             pl_module=self,
         )
         # invoke other hooks
+        if _prof is not None:
+            # density controller 的 after_backward：densify 事件（每 densification_interval 步）
+            # 與每步都跑的累積（absgrad |g|、screen-size prune 的 _max_radii2D 等）都在這裡
+            _prof.mark("7 density_controller.after_backward")
+
         for i in self.on_after_backward_hooks:
             i(outputs, batch, self.gaussian_model, global_step, self)
+        if _prof is not None:
+            _prof.mark("8 on_after_backward_hooks")
 
         # optimize
         for optimizer in optimizers:
             optimizer.step()
+        if _prof is not None:
+            _prof.mark("9 optimizer.step")
 
         # schedule lr
         for scheduler in schedulers:
             scheduler.step()
+        if _prof is not None:
+            _prof.mark("10 scheduler.step")
 
     def light_gaussian_prune(self, global_step):
         # TODO: move elsewhere
@@ -769,7 +931,20 @@ class GaussianSplatting(LightningModule):
 
         self.gaussian_model.on_train_batch_end(global_step, self)
 
-        self.renderer.after_training_step(self.trainer.global_step, self)
+        _prof = getattr(self, "_step_prof", None)
+        if _prof is not None and _prof.on:
+            import time as _t
+            _e0 = torch.cuda.Event(enable_timing=True); _e0.record(); _c0 = _t.perf_counter()
+            self.renderer.after_training_step(self.trainer.global_step, self)
+            _e1 = torch.cuda.Event(enable_timing=True); _e1.record()
+            torch.cuda.synchronize()
+            _dt = (_t.perf_counter() - _c0) * 1e3
+            # 只在它真的做事的步數上累計（其餘步是 early-return，~0 ms）=> 觸發次數才有意義
+            if _dt > 1.0:
+                _prof._acc("11 週期性 trim pass（after_training_step）", _e0.elapsed_time(_e1), _dt)
+            _prof._prev_end = _t.perf_counter()
+        else:
+            self.renderer.after_training_step(self.trainer.global_step, self)
 
         self.light_gaussian_prune(global_step)
 

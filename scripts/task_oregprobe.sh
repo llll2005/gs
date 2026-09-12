@@ -49,7 +49,11 @@
 #   ✅ 收尾 ckpt           Lightning 在 max_steps 結束時會存（A/B 臂實測有 step=32500.ckpt）
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+# 2026-09-12 實測（tools/vram_pressure.py）：max_split_size_mb:128 固定貴 6.4~10.3%，
+# 而在真實峰值 N=2.6M + 0.6G ballast 下「完全不設」也沒 OOM => 預設不開（使用者決定）。
+# ⚠ 微基準沒有 Lightning/dataloader/長跑碎片，是樂觀估計 => 若真的 OOM，一個變數就復原：
+#     CITYGS_ALLOC_CONF=max_split_size_mb:128 bash scripts/task_xxx.sh
+[ -n "${CITYGS_ALLOC_CONF:-}" ] && export PYTORCH_CUDA_ALLOC_CONF="$CITYGS_ALLOC_CONF"
 CKPT="outputs/agd2_b12/blocks/block_12/checkpoints/epoch=105-step=29999.ckpt"
 [ -f "$CKPT" ] || { echo "找不到 30k ckpt: $CKPT"; exit 1; }
 

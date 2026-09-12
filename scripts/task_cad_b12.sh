@@ -30,7 +30,11 @@
 #    => **<0.3 dB 一律不可宣稱**，要看多指標是否同向。
 set -u
 cd "$(dirname "$0")/.." || exit 1
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
+# 2026-09-12 實測（tools/vram_pressure.py）：max_split_size_mb:128 固定貴 6.4~10.3%，
+# 而在真實峰值 N=2.6M + 0.6G ballast 下「完全不設」也沒 OOM => 預設不開（使用者決定）。
+# ⚠ 微基準沒有 Lightning/dataloader/長跑碎片，是樂觀估計 => 若真的 OOM，一個變數就復原：
+#     CITYGS_ALLOC_CONF=max_split_size_mb:128 bash scripts/task_xxx.sh
+[ -n "${CITYGS_ALLOC_CONF:-}" ] && export PYTORCH_CUDA_ALLOC_CONF="$CITYGS_ALLOC_CONF"
 rm -rf outputs/cad_b12
 conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml \
