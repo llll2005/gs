@@ -11,6 +11,29 @@
 # 本專案最貴的教訓是七個「看起來正常但沒作用」的機制，全都不報錯；環境層同一個形狀。
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
+
+# ── 容器環境的兩個坑（2026-09-12 在 lab 的 NVIDIA NGC 容器上實測撞到）────────────
+#  ① `PIP_CONSTRAINT` 指向容器的 constraint 檔，把 torch 釘在 2.7.0a0+...nv25.4
+#     => `pip install torch==2.0.1` 直接 ResolutionImpossible
+#  ② `LD_LIBRARY_PATH` 第一項是 `/usr/local/lib/python3.12/dist-packages/torch/lib`
+#     => torch 2.0.1 **裝成功了**，但 `torch._C` 載到系統 torch 的 libtorch_python.so
+#        `ImportError: undefined symbol: _PyThreadState_GetCurrent`
+#     兩個都不會在安裝階段報錯，是「看起來裝好了但不能用」的形狀。
+export PIP_CONSTRAINT=""
+unset PIP_CONSTRAINT
+_sanitize_ld() {
+  local out="" p
+  IFS=: read -ra _ps <<< "${LD_LIBRARY_PATH:-}"
+  for p in "${_ps[@]:-}"; do
+    case "$p" in
+      *dist-packages/torch/lib|*dist-packages/torch_tensorrt/lib) ;;   # 丟掉系統 torch
+      "") ;;
+      *) out="${out:+$out:}$p";;
+    esac
+  done
+  export LD_LIBRARY_PATH="$out"
+}
+_sanitize_ld
 ROOT="$PWD"
 ENV_NAME=gspl
 DO_ENV=1; DO_BUILD=1; VERIFY_ONLY=0
@@ -88,6 +111,25 @@ if [ "$DO_ENV" = 1 ]; then
   say "3. 其餘套件（版本鎖 = 這個環境實際跑出過所有 outputs/ 的那一組）"
   [ -f "$LOCK" ] || die "找不到 $LOCK"
   conda run -n "$ENV_NAME" --no-capture-output pip install -r "$LOCK" || die "套件安裝失敗"
+
+  # 讓「清掉系統 torch 的 lib」對之後每一次 `conda run -n gspl` 都生效，
+  # 否則使用者自己敲指令時會再撞一次同樣的 ImportError（而它不在安裝階段報錯）。
+  _ACT="$(conda run -n "$ENV_NAME" python -c 'import sys,os;print(os.path.dirname(os.path.dirname(sys.executable)))')/etc/conda/activate.d"
+  mkdir -p "$_ACT"
+  cat > "$_ACT/00_sanitize_ld.sh" <<'ACTEOF'
+# 由 scripts/setup/bootstrap.sh 產生。容器（NVIDIA NGC）把系統 torch 的 lib 目錄
+# 放在 LD_LIBRARY_PATH 最前面，會讓本環境的 torch._C 載到錯的 libtorch_python.so。
+_out=""; IFS=: read -ra _ps <<< "${LD_LIBRARY_PATH:-}"
+for _p in "${_ps[@]:-}"; do
+  case "$_p" in
+    *dist-packages/torch/lib|*dist-packages/torch_tensorrt/lib|"") ;;
+    *) _out="${_out:+$_out:}$_p";;
+  esac
+done
+export LD_LIBRARY_PATH="$_out"
+unset _out _ps _p
+ACTEOF
+  echo "  已寫入 $_ACT/00_sanitize_ld.sh"
   ok "裝完 $(grep -c '==' "$LOCK") 個套件"
   warn "repo 裡的 requirements.txt / requirements/lightning23.txt 會裝 lightning 2.3 + bitsandbytes 0.45，"
   warn "  那**不是**能跑的組合（0.45 的優化器 state key 與 density controller 對不上）=> 用 lock 檔。"
