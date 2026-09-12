@@ -44,6 +44,19 @@ esac
 echo "TORCH_CUDA_ARCH_LIST=[${TORCH_CUDA_ARCH_LIST:-未設}]"
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
+  # ⚠ 2026-09-13：前幾輪死在 step 1,049 的跑次留下**空的**輸出目錄，而
+  #   `internal/cli.py:101` 會斷言輸出不存在 => 重排同一個任務時
+  #   `AssertionError: checkpoint or point cloud output already exists`。
+  #   判準用「**有沒有 ckpt**」而不是無條件 rm —— 免得誤刪一個已經跑完的跑次。
+  local out="outputs/$name/blocks/block_$blk"
+  if [ -d "$out" ]; then
+    if ls "$out"/checkpoints/*.ckpt >/dev/null 2>&1; then
+      echo "⛔ $out **已經有 ckpt** => 不覆蓋。要重跑請先自己搬走或改 -n 的名字。"
+      return 4
+    fi
+    echo "  清掉沒有 ckpt 的失敗殘留：$out"
+    rm -rf "$out"
+  fi
   echo "=== $name / block $blk / cap ${CITYGS_VRAM_CAP_GB:-不限制} / $(date) ==="
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config "$CFG" \
