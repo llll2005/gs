@@ -322,12 +322,20 @@ class SepDepthTrim2DGSRenderer(Renderer):
         cost_acc = None                      # ★ 精確渲染成本 c_i 的累積（見迴圈內註解）
         with torch.no_grad():
             # `TRIM_SUBSAMPLE=n` => 週期 trim 只用每 n 台相機算 contribution（n=1 = 原行為）。
-            # trim pass 佔 profile 視窗約 80%、約 9h 跑次的 10% => n=4 省約 7.5% 總時間。
-            # 前提（§11.52，`TRIM_SUBSAMPLE_PROBE`）：71 台 vs 284 台，
-            #   **底部 10% 遮罩重疊 99.8%** —— trim 只用到這個集合（`contribution <= quantile`），
-            #   全排序的 Spearman(0.951) 沒有被任何程式碼讀到。
-            # ⚠ 但只在 step=1 量過**一個時點**，而一次跑次有約 120 次 trim ⇒ 誤差可能累積
-            #   ⇒ **必須端到端驗分數才可採用**，不可只憑探針。
+            #
+            # ⛔⛔ 2026-09-12 定案：**這個旋鈕不要開。** 已在訓練後的幾何上量過
+            #   （`tools/trim_subsample_probe.py`），判準（底部遮罩重疊 > 95%）**沒過**：
+            #       同樣 71 台（n=4）的底部 10% 遮罩重疊
+            #         step 1（下面那個舊探針）  99.8%   <- 未訓練的均勻殼，視角可互換
+            #         step 14,999              85.56%  （誤剪 18,952 顆）
+            #         step 29,999              81.41%  （誤剪 48,329 顆）
+            #       n=2 也不過：94.78% / 92.32%
+            #   ⇒ **舊的 99.8% 是在「最容易通過的那一刻」量的，不可引用。**
+            #   根因是結構性的：`contribution_accumulator` 預設 `reduce="max"`（跨視角取最大）
+            #   ⇒ 少看相機只會讓值變小 ⇒ 最佳視角被抽掉的粒子往底部掉、被誤剪。
+            #   step 1 的殼粒子尺度全同、視角可互換；訓練後粒子對視角特化 ⇒ 那個時點測不到。
+            # ⚠ 下面 `before_training_step` 裡的 `TRIM_SUBSAMPLE_PROBE` 只量 step==1
+            #   （那裡第一行就是 `if step != 1: return`）⇒ 它**永遠**只會給出樂觀的數字。
             # ⚠ 只作用在**週期** trim。起始 trim（step==1，另一處）維持全視角：
             #   它只跑一次、不佔時間，但會砍掉 73~90% 的初始化，是被記錄的關鍵機制。
             # ⚠ 用環境變數而非 config：ckpt-init 會把 renderer 整個換掉（同 §11.52 的坑）。
