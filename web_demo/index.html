@@ -130,24 +130,7 @@ const scene    = new THREE.Scene();
 const camera   = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 5000);
 camera.position.set(0, -30, 80);
 
-// ⚠ 2026-09-12：這一行是整頁的單點故障。WebGL context 拿不到時它會 **throw**，
-// 而 throw 發生在 module 頂層 => 後面註冊 UI 的程式碼（填下拉選單的 refreshFileList、
-// 檔案選擇器與拖曳的 handler）**一行都不會執行** => 症狀是「選單空的、也不能傳檔案」，
-// 而且畫面上完全沒有錯誤訊息。
-// 實際觸發點：**GPU 被訓練佔滿**（9 小時的跑次全程 5.8/6.1 GB，瀏覽器要不到 GL context）。
-// 已驗證：GPU 忙 -> Edge 報 "Uncaught Error: Error creating WebGL context." 且選單空白；
-//         GPU 空 -> 同一個 Edge 正常。
-let renderer;
-try {
-  renderer = new THREE.WebGLRenderer({ antialias: true });
-} catch (e) {
-  document.getElementById("status").innerHTML =
-    "❌ 拿不到 WebGL context —— <b>多半是 GPU 正被訓練佔滿</b>（nvidia-smi 看剩多少）。<br>" +
-    "等跑次結束、或關掉其他吃 GPU 的分頁再重新整理。<br>" +
-    "<small style='opacity:.7'>" + (e && e.message ? e.message : e) + "</small>";
-  document.getElementById("status").style.maxWidth = "42em";
-  throw e;   // 仍然中止：沒有 renderer 就沒有可看的東西，但至少訊息是看得見的
-}
+const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(devicePixelRatio);
 document.body.appendChild(renderer.domElement);
@@ -363,16 +346,8 @@ async function pollCurrent() {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 await refreshFileList();
-// ⚠ 原本是無條件載入清單第一個（字母序），而第一個是 block_9.ply_1612mb.ply。
-// 每次開頁都硬吞一個超大檔 => 看起來像卡死。改成只有小檔才自動載入，其餘等人選。
-const AUTOLOAD_MB_MAX = 400;
-const _first = sel.options[0];
-const _firstMB = _first && !_first.disabled
-  ? parseInt((_first.value.match(/_(\d+)mb\.ply$/) || [0, 0])[1], 10) : 0;
-if (_first && !_first.disabled && _firstMB && _firstMB <= AUTOLOAD_MB_MAX) {
-  await loadByName(_first.value);
-} else if (_first && !_first.disabled) {
-  statusEl.textContent = `就緒 —— 清單第一個是 ${_first.value}（約 ${_firstMB} MB），太大不自動載入，請自己選`;
+if (sel.options.length && !sel.options[0].disabled) {
+  await loadByName(sel.options[0].value);
 } else {
   statusEl.textContent = "拖曳 .ply 或 .ckpt 進來開始";
 }
