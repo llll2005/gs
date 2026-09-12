@@ -19,6 +19,22 @@
 # Idle cost is one `head` on a small file every 60s.
 set -u
 cd "$(dirname "$0")/.." || exit 1
+
+# ⚠⚠ 2026-09-13：**bash 是逐段讀取腳本檔的**。任務跑到一半若腳本被原地覆寫
+#   （`git pull`、編輯器、甚至重寫成同樣內容都算），bash 會從錯的位元組偏移繼續讀。
+#   實測（scripts/_noedit.sh 檔頭有完整記錄）：直跑會**靜默吃掉腳本剩下的部分且 rc=0**，
+#   或執行到半行殘段（今天的實例：16 行的 task_speed3.sh 報「列 17: .init: command not found」
+#   rc=127，而那支訓練已經跑了 1h42m）。lab 上 3 個槽跑長跑次時 git pull 是常態 ⇒ 會重演。
+#   ⇒ 啟動前把「bash scripts/X.sh」改寫成「bash scripts/_noedit.sh scripts/X.sh」，
+#     由包裝器把腳本內容讀進記憶體再執行（`$0` 會設回原路徑，自我定位的 cd 仍正確）。
+#   ⚠ 只用於**執行**；台帳與標籤一律用原始 $cmd，否則 short_of 會抓到 _noedit.sh。
+harden_cmd() {
+  case "$1" in *_noedit.sh*) printf '%s' "$1"; return 0 ;; esac
+  [ -r scripts/_noedit.sh ] || { printf '%s' "$1"; return 0; }
+  printf '%s' "$1" | sed -E \
+    -e 's#(^|[[:space:]])bash[[:space:]]+(scripts/[A-Za-z0-9_./-]+\.sh)#\1bash scripts/_noedit.sh \2#g' \
+    -e 's#(^|[[:space:]])\./(scripts/[A-Za-z0-9_./-]+\.sh)#\1bash scripts/_noedit.sh \2#g'
+}
 Q=${RUNNER_QUEUE:-scripts/queue.txt}   # 可用 RUNNER_QUEUE 指向別的檔（測試用）
 LOG=logs/runner.log
 LEDGER=logs/quad_progress.log
@@ -165,8 +181,9 @@ if [ "$SLOTS" -gt 1 ]; then
       log "▶ START  [槽 $slot] $lbl"
       log "         $cmd   （輸出 -> $slog）"
       ledger "TASK START  [$(short_of "$cmd")] $lbl"
+      xcmd=$(harden_cmd "$cmd")
       { printf '\n===== %s | 槽 %s | %s =====\n' "$(date '+%m-%d %H:%M:%S')" "$slot" "$lbl" >> "$slog"
-        bash -c "$cmd" >> "$slog" 2>&1 9>&- ; } &
+        bash -c "$xcmd" >> "$slog" 2>&1 9>&- ; } &
       pid=$!
       P_LABEL[$pid]="$lbl"; P_CMD[$pid]="$cmd"; P_START[$pid]=$(date +%s)
       P_SHORT[$pid]=$(short_of "$cmd"); P_SLOT[$pid]="$slot"
@@ -230,7 +247,7 @@ while true; do
   # 9>&- : the lock fd must NOT be inherited by the task. flock holds as long as ANY process has
   # the fd open, so an orphaned child (e.g. a training run that outlived a killed runner) would
   # keep the lock forever and no new runner could ever start (observed 2026-07-31).
-  bash -c "$cmd" >> "$LOG" 2>&1 9>&-
+  bash -c "$(harden_cmd "$cmd")" >> "$LOG" 2>&1 9>&-
   rc=$?
   dur=$(( $(date +%s) - start ))
   if [ $rc -eq 0 ]; then
