@@ -16,6 +16,17 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 export CITYGS_VRAM_CAP_GB=${CITYGS_VRAM_CAP_GB-5.66}
 [ -z "${CITYGS_VRAM_CAP_GB:-}" ] && unset CITYGS_VRAM_CAP_GB
 echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制（本機原生 6GB）}]"
+# ⚠⚠ 2026-09-13：配置器碎片是**新年代的真瓶頸**。lab 的 speed3/block_13 在
+#   Epoch 21（約 step 14,000、N 頂到 cap 2.60M）真 OOM 死掉：
+#     Tried to allocate 478 MiB | 3.61 GiB allocated | 5.66 GiB allowed | **5.25 GiB reserved**
+#   配置 3.61 而保留 5.25 ⇒ **1.64 GiB 卡在碎片裡**，torch 自己的訊息就叫你設 max_split_size_mb。
+#   記憶 vram_wall_is_hard 量過：`max_split_size_mb:128` 固定貴 **6.4%** 換 **+0.6 GB 餘裕**
+#   —— 「每支腳本都寫死卻從沒對照過」，現在對照組出現了，而且是死掉的那一邊。
+#   ⇒ 新年代**一律開**，讓所有跑次的時間與 VRAM 在同一個配置器設定下可比
+#     （混著用會讓 it/s 差 6.4% 而看起來像配方差異）。要關：CITYGS_ALLOC_CONF= 明確設空。
+export PYTORCH_CUDA_ALLOC_CONF=${CITYGS_ALLOC_CONF-max_split_size_mb:128}
+[ -z "${PYTORCH_CUDA_ALLOC_CONF:-}" ] && unset PYTORCH_CUDA_ALLOC_CONF
+echo "PYTORCH_CUDA_ALLOC_CONF=[${PYTORCH_CUDA_ALLOC_CONF:-未設}]"
 CFG=configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml
 # ★ 跑次名的前綴。lab 用 `lab/` 讓產物收在 outputs/lab/ 底下（那裡不適用
 #   「都是 6GB 跑的」鐵律）；本機必須是空的 => outputs/<配方>/blocks/block_N/
