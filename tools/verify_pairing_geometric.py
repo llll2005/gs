@@ -143,7 +143,10 @@ def main():
                 continue
             ua = np.array([ra.xys[ma[q]][0] for q in com]); va = np.array([ra.xys[ma[q]][1] for q in com])
             ub = np.array([rb.xys[mb[q]][0] for q in com]); vb = np.array([rb.xys[mb[q]][1] for q in com])
-            A = pat(ld(bn[i]), ua, va); B = pat(ld(bn[i + 1]), ub, vb)
+            # 檔名優先用**相機名**（4 位數的乾淨版面），找不到才退到 transforms.json 的檔名
+            def pick(t):
+                return names[t] if os.path.exists(os.path.join(IN, names[t])) else bn[t]
+            A = pat(ld(pick(i)), ua, va); B = pat(ld(pick(i + 1)), ub, vb)
             r = float(np.corrcoef(A, B)[0, 1])
             rs.append(r)
             print(f"  {names[i]}->{names[i+1]}  共同點 {len(com):>5,}  相關 **{r:.4f}**"

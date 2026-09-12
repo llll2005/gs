@@ -28,31 +28,34 @@ step "1 解開 10 個 block 的 tar"
     echo "  block_$n -> $(ls "block_$n/input" | wc -l) 張"
   done )
 
-step "2 依映射建 input/（hardlink）"
+step "2 依映射建 input/（**4 位數 = SfM 相機名**，hardlink）"
+# ★ 為什麼用 4 位數而不是 transforms.json 裡的 6 位數：
+#   `colmap_dataparser.py:350` 是**名稱優先** —— 先 `os.path.join(image_dir, extrinsics.name)`，
+#   找不到才退到「位置對應」。而位置對應正是藏住 §16.14 那個錯開 bug 的路徑。
+#   檔名 == 相機名 ⇒ 名稱對名稱，無從出錯，那條 fallback 永遠不會觸發。
 mkdir -p "$D/train/block_all/input"
-PY - <<'PYEOF'
+PY - <<'PYEOF2'
 import json, os
 D = "data/matrix_city/aerial"
-m = json.load(open(f"{D}/global_frame_map.json"))
+m = json.load(open(f"{D}/global_frame_map_correct.json"))
 dst = f"{D}/train/block_all/input"
+# global_frame_map_correct.json 的 key 是 transforms.json 的 6 位數檔名，順序 == 相機名順序
+keys = sorted(m)
 made = miss = have = 0
-for gname, v in sorted(m.items()):
-    t = os.path.join(dst, gname)
+for k, gname in enumerate(keys):
+    v = m[gname]
+    t = os.path.join(dst, f"{k:04d}.png")          # ★ 相機名就是 {k:04d}.png
     if os.path.exists(t):
         have += 1; continue
-    # ★ frame_index **就是檔案編號**（block_N/transforms_origin.json 的幀數 == input/ 檔案數，
-    #   frame_index 連續 0..N-1）=> 不要 -1。2026-09-13 §16.14：現行本機資料放的是
-    #   「該 block 的第 k 個檔案」而不是 frame_index 指的那張，86.6% 的影像因此錯開。
     src = os.path.join(D, "train", f"block_{v['block']}", "input", f"{v['frame_index']:04d}.png")
     if not os.path.exists(src):
         miss += 1
-        if miss <= 5:
-            print(f"  ⚠ 缺來源 {src}（給 {gname}）")
+        if miss <= 5: print(f"  ⚠ 缺來源 {src}（給 {k:04d}.png）")
         continue
     os.link(src, t); made += 1
 print(f"  新建 {made:,} ／ 已存在 {have:,} ／ 缺來源 {miss:,}")
-PYEOF
-echo "  input/ 現有 $(ls "$D/train/block_all/input" 2>/dev/null | wc -l) 張"
+PYEOF2
+echo "  input/ 現有 $(ls "$D/train/block_all/input" 2>/dev/null | wc -l) 張，前三：$(ls "$D/train/block_all/input" | head -3 | tr '\n' ' ')"
 
 step "3 sparse（預算 COLMAP）"
 if [ -d "$D/train/block_all/sparse/0" ]; then
