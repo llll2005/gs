@@ -44,8 +44,8 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --model.strip_max 8 \
   --model.strip_vram_target_gb 5.4 \
   --model.strip_v_os_gb 0.8 \
-  --model.strip_safety 0.6
--n cbcal 2>&1 | tee logs/cbcal.txt
+  --model.strip_safety 0.6 \
+  -n cbcal 2>&1 | tee logs/cbcal.txt
 LOAD=$(grep -o "Load(區間最壞視角)=[0-9,]*" logs/cbcal.txt | tail -1 | tr -d ',' | cut -d= -f2)
 N_VAL=$(grep -o "N=[0-9,]*" logs/cbcal.txt | tail -1 | tr -d ',' | cut -d= -f2)
 
