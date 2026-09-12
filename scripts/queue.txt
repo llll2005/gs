@@ -1,10 +1,4 @@
-# ★★★★★★★ held-out 四方對照（官方 741 幀）—— 今天的發現讓它從「待辦」變成「必須」
-# 今天量到：我方 val 評分的面積有 63% 在本塊 AABB 之外，而失敗率在那裡是 34% vs 盒內 19%。
-# 也就是說**我們一直用整張畫面評分一個只負責一小塊的模型** —— 與 eval_protocol 記的
-# 「逐塊評官方 test 無效（單塊只佔畫面一小部分）」是同一個稀釋效應，只是沒人想到它對 val 也成立。
-# ⇒ 「val⊂train 的排序」與「真 held-out 的排序」到底差多少，現在是主線問題不是旁支。
-# 約 10~20 分（四個模型 x 官方 741 幀裡落在 b12 相機範圍內的那些）。
-
-# ★★★★★ 命題唯一沒測過的一側：cost_budget 取代 cap_max
-# max Q s.t. (1/K)Σc_i <= B 的字面形式。取樣端三變體全輸（cost_aware_sampling_refuted），
-# 只剩約束端沒測。這是論文命題存活與否的最後一個實驗。
+# ★★★★★ 命題唯一沒測過的一側：cost_budget 取代 cap_max（腳本 bug 已修，重排）
+# 前一次 11 秒 FAIL：第 47 行反斜線斷掉 => `-n cbcal` 變成獨立指令 => 標定跑次沒有 -n、
+# 用了 config 預設名 aerial_train_block_all 撞到既有輸出。已修。
+bash scripts/task_costbudget_b12.sh

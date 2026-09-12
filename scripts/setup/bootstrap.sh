@@ -21,6 +21,9 @@ cd "$(dirname "$0")/../.." || exit 1
 #     兩個都不會在安裝階段報錯，是「看起來裝好了但不能用」的形狀。
 export PIP_CONSTRAINT=""
 unset PIP_CONSTRAINT
+# ⚠ lab 的 conda 26.5.3 / CPython 3.14 / libmamba 在**任何** conda 子指令上都可能丟
+#   「An unexpected error has occurred」並自己建議關插件 => 整支腳本都關掉。
+export CONDA_NO_PLUGINS=true
 _sanitize_ld() {
   local out="" p
   IFS=: read -ra _ps <<< "${LD_LIBRARY_PATH:-}"
