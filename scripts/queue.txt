@@ -27,7 +27,6 @@
 # cap 用基準的 2.6M（不放寬 => 不可能 OOM），B=3.0M 強迫綁住。
 # 判準：Load 達到 B 且 N<cap => 有綁住，量 VRAM 差額再決定跑不跑 9.6h；
 #       Load 從未接近 B => 量級不對，重新標定，**別跑 9.6h**。
-bash scripts/task_cb_probe.sh
 
 
 # ★★★★ max_split_size_mb:128 該不該繼續付？（~15 分）
@@ -35,7 +34,6 @@ bash scripts/task_cb_probe.sh
 # 6.4% 對 8.8h 的跑次 = 34 分鐘。用真實峰值 N=2.6M（densify 期頂到 cap 的那一刻）判：
 #   不設也能在 ballast >= 0.3G 存活 => 白付的，排一次真實無旗標跑次確認
 #   不設在 0.3G 之前就 OOM          => 是保險費，繼續付
-bash scripts/task_maxsplit_verdict.sh
 
 # ★★★★★ SfM-init **重做**（~9h）：唯一變數 `initialize_from null`，對照 speed3_b12
 # 2026-09-11：`speed3_sfminit_b12` 是手動啟動的，resolved config 與 speed3_b12 差四項，
@@ -46,7 +44,6 @@ bash scripts/task_maxsplit_verdict.sh
 # K 是白付的（tools/strip_k_audit.py，純 CPU）：兩個 60k 模型在同參數下**都**被判 K=6，
 # 而 depth-init 同 N=2.34M 用 K=1 實測峰值 4.87 GB 沒 OOM ⇒ budget 訂低約 1.1 GB。
 # 未受污染的部分（K=1 期間）：5,680 +0.72 / 11,360 +0.78 dB ⇒ 早期領先是真的。
-bash scripts/task_sfminit2_b12.sh
 
 # ★★★★★ 壓縮**優化器狀態**（不是模型）：Adam 動量 bf16 + cap 2.6M -> 3.2M
 # VRAM 拆解：逐顆儲存 928 B（**83%**）／binning 191 B（17%）；而動量佔儲存**一半**且
@@ -55,4 +52,3 @@ bash scripts/task_sfminit2_b12.sh
 #    （`cat_tensors_to_optimizers_` 原本會**靜默**升回 fp32，已修）。
 # ⚠ 預估只有 **+0.16 dB**（低於 0.24 門檻）=> 本臂的主要價值是**當 8-bit 的前置測試**：
 #   低精度動量若本身就傷品質，8-bit（+0.29 dB）只會更傷，那個狀態手術就不必做。
-bash scripts/task_bf16mom_b12.sh
