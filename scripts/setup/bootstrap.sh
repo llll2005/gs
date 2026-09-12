@@ -57,6 +57,24 @@ if [ "$DO_ENV" = 1 ]; then
     ok "建好了"
   fi
 
+  # ── 1b. CUDA 11.8 工具鏈（編光柵器用）──────────────────────────────────────
+  say "1b. CUDA 11.8 工具鏈（進 conda env，不動系統）"
+  # ⚠ 2026-09-12 補：原本漏了這步。我方的 nvcc 11.8 是從 conda 的
+  #   `nvidia/label/cuda-11.8.0` 頻道來的（本機 `conda list` 可見 cuda-compiler 11.8.0 等）。
+  #   只做 `conda create python=3.9 pip` + pip 安裝**不會**帶 nvcc
+  #   => 在系統 CUDA 是 12.x 的機器上（例如 lab 主機是 12.9），
+  #      步驟 5 的光柵器編譯會拿到 12.x 或找不到 nvcc 而失敗。
+  #   torch 是 cu118，所以工具鏈必須也是 11.8，不能用系統的 12.x。
+  if conda run -n "$ENV_NAME" bash -c '[ -x "$CONDA_PREFIX/bin/nvcc" ]' 2>/dev/null; then
+    ok "env 裡已有 nvcc（$(conda run -n "$ENV_NAME" bash -c '$CONDA_PREFIX/bin/nvcc --version' 2>/dev/null | tail -2 | head -1 | sed 's/.*release //;s/,.*//'))"
+  else
+    conda install -y -n "$ENV_NAME" -c nvidia/label/cuda-11.8.0 cuda-toolkit=11.8 \
+      || die "CUDA 11.8 工具鏈安裝失敗（沒有它就編不出光柵器）"
+    conda run -n "$ENV_NAME" bash -c '[ -x "$CONDA_PREFIX/bin/nvcc" ]' \
+      || die "裝完還是沒有 $CONDA_PREFIX/bin/nvcc"
+    ok "nvcc 11.8 就位"
+  fi
+
   # ── 2. torch 必須先裝，且走 CUDA 專屬索引 ──────────────────────────────────
   say "2. torch 2.0.1 + cu118（走 PyTorch 專屬索引，不能從 lock 檔裝）"
   conda run -n "$ENV_NAME" --no-capture-output pip install \
