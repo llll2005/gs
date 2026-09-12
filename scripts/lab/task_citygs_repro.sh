@@ -9,6 +9,10 @@
 #
 # 官方流程（scripts/citygs/run_citygs_mc_aerial.sh）第 1 步：全域 coarse、sh2、30k 步。
 set -u
+# ⚠ 執行期也要鎖 arch（容器設成含 10.0，torch 2.0.1 不認識 => JIT 編譯時當場炸）
+_A=$(conda run -n gspl python -c "import torch;print('.'.join(map(str,torch.cuda.get_device_capability(0))))" 2>/dev/null | tr -d '\r')
+[ -n "$_A" ] && export TORCH_CUDA_ARCH_LIST="$_A"
+echo "TORCH_CUDA_ARCH_LIST=[${TORCH_CUDA_ARCH_LIST:-未設}]"
 # ★ 明確**不鎖** VRAM（使用者 2026-09-13 確認）：這支要答的是「官方數字長什麼樣」，
 #   不是 6GB 可行性。萬一環境裡有殘留就清掉，並印出來確認。
 unset CITYGS_VRAM_CAP_GB

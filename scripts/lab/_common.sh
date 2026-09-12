@@ -21,6 +21,15 @@ CFG=configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml
 #   「都是 6GB 跑的」鐵律）；**本機要設成空的** => outputs/<配方>/blocks/block_N/
 #   用法：RUN_PREFIX= CITYGS_VRAM_CAP_GB= bash scripts/lab/task_speed3.sh 13
 RUN_PREFIX=${RUN_PREFIX-lab/}
+# ⚠⚠ **執行期**也要鎖 TORCH_CUDA_ARCH_LIST，不只建置期（2026-09-13 在 lab 實測）：
+#   容器把它設成含 Blackwell(10.0)，torch 2.0.1 不認識；訓練到 step ~1,049 有東西
+#   即時編譯 CUDA 擴充，一碰到就 `ValueError: Unknown CUDA arch (10.0)` 當場 DIED。
+#   問這台機器的 GPU，不要寫死。
+if command -v nvidia-smi >/dev/null 2>&1; then
+  _A=$(conda run -n gspl python -c     "import torch;print('.'.join(map(str,torch.cuda.get_device_capability(0))))" 2>/dev/null | tr -d '\r')
+  [ -n "$_A" ] && export TORCH_CUDA_ARCH_LIST="$_A"
+fi
+echo "TORCH_CUDA_ARCH_LIST=[${TORCH_CUDA_ARCH_LIST:-未設}]"
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
   echo "=== $name / block $blk / cap ${CITYGS_VRAM_CAP_GB:-不限制} / $(date) ==="
