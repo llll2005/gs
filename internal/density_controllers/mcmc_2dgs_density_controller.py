@@ -317,6 +317,40 @@ class MCMC2DGSDensityController(MCMCDensityController):
       比值 ~1  => 退化成立，選子集沒有自由度 => 這條線收掉，出口只剩「改變集合」
       比值 >>1 => 有自由度 => `vpc_prune_frac` 值得跑一臂"""
 
+    elongation_prune: float = 0.0
+    """★ Elongation Filter（路徑 a：**硬剪**）。>0 時在每個 densify 事件把
+    `s_max/s_min > 此值` 的粒子**直接刪除**（`_prune_points`），這是 CityGaussian V2 的做法。
+
+    為什麼值得做（`tools/elongation_ceiling.py` + `binning_and_trim_probe.py` 實測）：
+    `forward.cu:281` 的 tile 數是 `max(extent.x, extent.y)` 撐出的**正方形外接盒**
+    ⇒ 長寬比 k 的粒子有 `1 - 1/k` 的 binning 是空白。speed3_b12 @60k：
+    ```
+    長寬比 p50=3.17  p90=13.28  p99=40.93          <- 拉長是**常態**不是罕見病理
+    Σs_max² vs Σs_max·s_min => 浪費 76.5%
+    剔除 >10（15.3% 顆）=> binning -31.6%，真覆蓋只 -7.3%   （4.3:1）
+    剔除 >20（ 4.8% 顆）=> binning -14.0%，真覆蓋只 -1.8%   （7.9:1）
+    ```
+    而逐段計時量到 backward 佔 37~47%、逐顆項佔 77% ⇒ 打的是最大宗。
+    ⚠ 但被剔除的那批帶著 15.8% 的不透明度質量 ⇒ 刪掉會改變畫面，不是免費的。
+    ⚠ 我方是 MCMC，**沒有** CityGSV2 的 elongation filter（那在 `CityGSV2DensityController`）。
+      現有的替代品是 `screen_size_prune_px`（看螢幕半徑）與 `scale_reg`（壓**平均**尺度），
+      兩者都不直接看長寬比。訊號本身早就實作在
+      `internal/metrics/scale_regularization_metrics.py:58`，但那個 mixin 掛在
+      `VanillaMetrics` 上、我們用 `MCMCCityGSV2Metrics` ⇒ 接不到。
+    """
+
+    elongation_relocate: float = 0.0
+    """★ Elongation Filter（路徑 b：**併入死亡判準、由 MCMC 搬移**）。>0 時把
+    `s_max/s_min > 此值` 的粒子 OR 進 `dead_mask` ⇒ 走 relocation（搬到抽中的宿主）而非刪除。
+
+    ⚠⚠ **這條路有一個既有的反證**：`vpc_prune_frac` 用的就是同一個機制（OR 進 dead_mask），
+    實測 **-2.34 dB**（§11.34）。當時的結論是「把低 v/c 的粒子搬走會**破壞它們原本在做的事**；
+    『改變集合』有效、『破壞集合』無效」。
+    ⇒ 先驗上 (a) 硬剪比 (b) 搬移更有機會（(a) 有 CityGSV2 的外部先例，(b) 有我方的內部反證）。
+    兩者都測是使用者 2026-09-12 的決定，但報告時必須帶上這個先驗。
+    ⚠ 不要與 `elongation_prune` 同時開 —— 那會變成兩個變數。
+    """
+
     absgrad_densify: float = 0.0
     """>0 時把 AbsGS 的 `|g|` 當**增生取樣權重**：`probs *= (1 + w * |g|/mean|g|)`。
     需要光柵器以 `ABSGRAD 1` 編譯（`|g|` 累加在 `viewspace_points.grad[:,2]`）。
@@ -680,6 +714,28 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return
 
         with torch.no_grad():
+            # ★ 路徑 a：Elongation Filter 硬剪（CityGaussian V2 的做法）。
+            #   必須在建 dead_mask **之前**做 —— `_prune_points` 會改變 N，
+            #   而後面所有 mask 都是按當下的 N 建的（這是本檔踩過的形狀：
+            #   `_max_radii2D` 與 dead_mask 長度不一致就靜默跳過）。
+            if self.config.elongation_prune > 0:
+                _sc = gaussian_model.get_scales()
+                _el = _sc.max(dim=-1).values / _sc.min(dim=-1).values.clamp_min(1e-12)
+                _em = _el > self.config.elongation_prune
+                _n = int(_em.sum())
+                if not getattr(self, "_elong_reported", False):
+                    self._elong_reported = True
+                    print(f"[elongation-prune] ✅ 首次觸發 step {global_step}："
+                          f"門檻 {self.config.elongation_prune}，命中 {_n:,} 顆 "
+                          f"({100*_n/max(_el.numel(),1):.2f}%)，長寬比中位 "
+                          f"{float(_el.median()):.2f}／p99 {float(_el.quantile(0.99)):.1f}", flush=True)
+                if _n > 0:
+                    self._prune_points(_em, gaussian_model, optimizers)
+                    if global_step % 3000 == 0:
+                        print(f"[elongation-prune] step {global_step}: -{_n:,} => "
+                              f"N={gaussian_model.n_gaussians:,}", flush=True)
+                if self._max_radii2D is not None:
+                    self._max_radii2D = None      # N 變了，舊視窗長度對不上
             death_line = self._current_min_opacity(global_step)
             dead_mask = (gaussian_model.get_opacities() <= death_line).squeeze(-1)
             if self.config.min_opacity_final > 0 and global_step % 1500 == 0:
@@ -698,6 +754,23 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 dead_mask = dead_mask | vpc_mask
                 if n_vpc > 0:
                     print(f"[value-per-cost] step {global_step}: +{n_vpc} recycled (v/c bottom {self.config.vpc_prune_frac:.1%})")
+            # ★ 路徑 b：長寬比併入死亡判準 => 由 MCMC relocate（搬移）而非刪除。
+            #   ⚠ 與 `vpc_prune_frac`（-2.34 dB）是同一個機制，先驗不利，見 config docstring。
+            if self.config.elongation_relocate > 0:
+                _sc = gaussian_model.get_scales()
+                _el = _sc.max(dim=-1).values / _sc.min(dim=-1).values.clamp_min(1e-12)
+                _em = _el > self.config.elongation_relocate
+                _n_new = int((_em & ~dead_mask).sum())
+                if _n_new > 0:
+                    dead_mask = dead_mask | _em
+                if not getattr(self, "_elong_reported", False):
+                    self._elong_reported = True
+                    print(f"[elongation-relocate] ✅ 首次觸發 step {global_step}："
+                          f"門檻 {self.config.elongation_relocate}，命中 {int(_em.sum()):,} 顆"
+                          f"（新增 {_n_new:,}，長寬比中位 {float(_el.median()):.2f}"
+                          f"／p99 {float(_el.quantile(0.99)):.1f}）", flush=True)
+                elif global_step % 3000 == 0:
+                    print(f"[elongation-relocate] step {global_step}: +{_n_new:,} 搬移", flush=True)
             if self.config.screen_size_prune_px > 0 and self._max_radii2D is not None \
                     and self._max_radii2D.shape[0] == dead_mask.shape[0]:
                 big_mask = self._max_radii2D > self.config.screen_size_prune_px

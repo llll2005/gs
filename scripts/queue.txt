@@ -63,3 +63,13 @@ bash scripts/task_binning_trim_probe.sh
 #    （`cat_tensors_to_optimizers_` 原本會**靜默**升回 fp32，已修）。
 # ⚠ 預估只有 **+0.16 dB**（低於 0.24 門檻）=> 本臂的主要價值是**當 8-bit 的前置測試**：
 #   低精度動量若本身就傷品質，8-bit（+0.29 dB）只會更傷，那個狀態手術就不必做。
+# ★★★★ Elongation Filter 路徑 (a)：硬剪（~8.8h）—— 門檻 20，待探針確認後可調
+# 代理量測：剔除 >20（4.85% 顆）=> binning -14.0%，真覆蓋只 -1.8%（7.9:1）
+# 先驗：有 CityGSV2 的外部先例，預期比 (b) 有機會。
+bash scripts/task_elongprune_b12.sh
+
+# ★★★ Elongation Filter 路徑 (b)：併入死亡判準、由 relocate 搬移（~8.8h）—— 同門檻 20
+# ⚠⚠ 既有反證：vpc_prune_frac 用同一機制（OR 進 dead_mask）實測 -2.34 dB
+#   （「搬走會破壞它們原本在做的事」）=> 先驗不看好，但使用者決定兩路都測。
+bash scripts/task_elongrelocate_b12.sh
+
