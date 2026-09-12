@@ -169,7 +169,13 @@ class Jup:
             out = txt[:m.start()] if m else txt
             return int(m.group(1)) if m else 1, _clean(out, cmd, tag)
         finally:
-            s.delete(f"{self.base}/api/terminals/{name}", timeout=30)
+            # ⚠ 2026-09-12：這裡原本是裸的 `s.delete(..., timeout=30)`，逾時就把
+            #   **已經成功的指令**變成例外（第一次連 lab 的 `check` 就這樣掛掉）。
+            #   清理失敗不該影響結果 => 包起來並放寬逾時。
+            try:
+                s.delete(f"{self.base}/api/terminals/{name}", timeout=60)
+            except Exception:
+                pass
 
     def put_tree(self, parent, subs, dest, stage=None):
         """contents API **沒有 append** => 打包成 tar、切 16MB 片上傳、遠端 cat 回去。
