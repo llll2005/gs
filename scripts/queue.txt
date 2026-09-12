@@ -6,4 +6,3 @@
 
 # ★★★★★★★ 新年代的第一個本機跑次：speed3 / block 13（667 台相機）
 # ⚠ 與舊的 26.6957 等數字**完全不可比**：資料修正了（§16.14）、相機數也變了。
-CITYGS_VRAM_CAP_GB= bash scripts/lab/task_speed3.sh 13
