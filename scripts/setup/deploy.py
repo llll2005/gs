@@ -328,9 +328,83 @@ def cmd_verify(be):
     return 0 if rc == 0 else 1
 
 
+def cmd_status(be, names):
+    """傳輸進度 —— **直接問遠端**，不依賴本機 log。
+
+    ⚠ 為什麼不看 log：背景上傳是用 `conda run` 起的，而它**會緩衝 stdout**
+      （本專案記過這個坑：`[dynamic-K]` 的列印在跑動中完全看不到）=> log 可能是空的。
+      問遠端「有幾片、多大」才是可信的進度。
+    """
+    print("\n=== 傳輸進度（直接問遠端）===")
+    stage = os.path.expanduser("~/labstage")
+    rc, out = be.sh(f"cd {shlex.quote(be.root)}/xfer 2>/dev/null && "
+                    f"for f in *.tar.part0000; do b=${{f%.tar.part0000}}; "
+                    f"n=$(ls $b.tar.part* 2>/dev/null | wc -l); "
+                    f"echo \"$b $n\"; done", timeout=300)
+    remote = {}
+    for ln in out.split("\n"):
+        q = ln.strip().split()
+        if len(q) == 2 and q[1].isdigit():
+            remote[q[0]] = int(q[1])
+    if not remote:
+        print("  xfer/ 目前沒有進行中的切片")
+    for base, got in sorted(remote.items()):
+        tar = os.path.join(stage, base + ".tar")
+        if os.path.isfile(tar):
+            sz = os.path.getsize(tar)
+            exp = (sz + CHUNK - 1) // CHUNK
+            print(f"  {base:<16} {got:>5}/{exp:<5} 片  "
+                  f"{got*CHUNK/1e9:>6.2f}/{sz/1e9:.2f} GB  {100*got/exp:>5.1f}%")
+        else:
+            print(f"  {base:<16} {got:>5} 片（本機的 tar 已刪或在別處，算不出總數）")
+    print("\n=== 遠端已就位的資料 ===")
+    rc, out = be.sh(f"du -sh {shlex.quote(be.root)}/{DEST}/* 2>/dev/null; "
+                    f"du -sh {shlex.quote(be.root)}/data/matrix_city/aerial/test 2>/dev/null", timeout=300)
+    print("  " + (out.replace("\n", "\n  ") if out else "（還沒有）"))
+    return 0
+
+
+def cmd_pull(be, remote_path, out_path):
+    """從遠端**抓**檔案回來（Jupyter 的 `/files/` 端點吃 range => 可續傳）。
+
+    ⚠ 只有 Jupyter 後端需要這個；ssh 後端直接用 `rsync`/`scp` 更快。
+    ⚠ 路徑是**相對 --root**，例如 `outputs/lab_xxx/blocks/block_12/results.txt`。
+    """
+    if be.kind != "jupyter":
+        print(f"  ssh 後端請直接用： rsync -a {be.host}:{be.root}/{remote_path} {out_path}")
+        return 0
+    import requests
+    url = f"{be.base}/files/{be.root.lstrip('/')}/{remote_path}"
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    have = os.path.getsize(out_path) if os.path.isfile(out_path) else 0
+    h = {"Authorization": f"token {be.tok}"}
+    if have:
+        h["Range"] = f"bytes={have}-"
+        print(f"  已有 {have:,} bytes => 續傳")
+    t0 = time.time()
+    with requests.get(url, headers=h, stream=True, timeout=1800) as r:
+        if r.status_code not in (200, 206):
+            print(f"  ⛔ HTTP {r.status_code}  {url}")
+            return 1
+        mode = "ab" if r.status_code == 206 else "wb"
+        got = have if r.status_code == 206 else 0
+        with open(out_path, mode) as f:
+            for ch in r.iter_content(1 << 20):
+                f.write(ch); got += len(ch)
+                if got % (64 << 20) < (1 << 20):
+                    print(f"    {got/1e6:.0f} MB  {got/1e6/max(time.time()-t0,1e-9):.2f} MB/s",
+                          flush=True)
+    print(f"  ✅ {out_path}  {os.path.getsize(out_path):,} bytes  "
+          f"{time.time()-t0:.0f}s")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["check", "code", "data", "bootstrap", "verify", "all"])
+    ap.add_argument("cmd", choices=["check", "code", "data", "bootstrap", "verify",
+                                "all", "status", "pull"])
+    ap.add_argument("--remote", default="", help="pull：遠端路徑（相對 --root）")
+    ap.add_argument("--out", default="", help="pull：本機輸出路徑")
     ap.add_argument("--jupyter"); ap.add_argument("--ssh")
     ap.add_argument("--root", required=True)
     ap.add_argument("--data", default="sfm,depthmin,input")
@@ -347,9 +421,13 @@ def main():
                 print("⛔ 中止（上一步失敗）"); return 1
         print("\n✅ 部署完成")
         return 0
+    if a.cmd == "pull":
+        if not a.remote:
+            sys.exit("⛔ pull 需要 --remote <遠端路徑>（相對 --root）")
+        return cmd_pull(be, a.remote, a.out or os.path.basename(a.remote))
     return {"check": lambda: cmd_check(be), "code": lambda: cmd_code(be),
             "data": lambda: cmd_data(be, names), "bootstrap": lambda: cmd_bootstrap(be),
-            "verify": lambda: cmd_verify(be)}[a.cmd]()
+            "verify": lambda: cmd_verify(be), "status": lambda: cmd_status(be, names)}[a.cmd]()
 
 
 if __name__ == "__main__":
