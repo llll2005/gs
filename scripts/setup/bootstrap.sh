@@ -120,7 +120,33 @@ if [ "$DO_ENV" = 1 ]; then
   # ── 3. 其餘套件 ────────────────────────────────────────────────────────────
   say "3. 其餘套件（版本鎖 = 這個環境實際跑出過所有 outputs/ 的那一組）"
   [ -f "$LOCK" ] || die "找不到 $LOCK"
-  conda run -n "$ENV_NAME" --no-capture-output pip install -r "$LOCK" || die "套件安裝失敗"
+  # ⚠ 鎖檔是 `pip freeze` 產的，會包含**不在 PyPI 上的**條目（從 git/本地裝的套件，
+  #   freeze 只留 `name==version`、URL 丟了）。2026-09-12 在 lab 上撞到兩個：
+  #     dataclasses==0.8（Python 3.7+ 的標準庫，已直接從鎖檔移除）
+  #     plas==0.1（PyPI 上沒有；本機是從 git 裝的）
+  #   ⇒ 不能讓一個裝不到的條目擋住整個部署。改成**自我修復**：
+  #     解析 pip 的 "No matching distribution found for X"，把 X 移出後重試，
+  #     最後把跳過的清單印出來（讓使用者知道少了什麼，而不是靜默少裝）。
+  _WORK=$(mktemp); cp "$LOCK" "$_WORK"; _SKIPPED=""
+  for _try in $(seq 1 12); do
+    _LOG=$(mktemp)
+    if conda run -n "$ENV_NAME" --no-capture-output pip install -r "$_WORK" 2>&1 | tee "$_LOG"; then
+      rm -f "$_LOG"; break
+    fi
+    _MISS=$(grep -oE "No matching distribution found for [A-Za-z0-9_.-]+" "$_LOG" \
+            | tail -1 | awk '{print $NF}' | sed 's/[=<>!].*//')
+    rm -f "$_LOG"
+    if [ -z "$_MISS" ]; then die "套件安裝失敗（不是「找不到套件」，看上面的錯誤）"; fi
+    echo "  ⚠ PyPI 上沒有 $_MISS => 移出鎖檔後重試（第 $_try 次）"
+    _SKIPPED="$_SKIPPED $_MISS"
+    grep -viE "^${_MISS}([=<>!\[]|$)" "$_WORK" > "$_WORK.n" && mv "$_WORK.n" "$_WORK"
+  done
+  rm -f "$_WORK"
+  if [ -n "$_SKIPPED" ]; then
+    echo "  ⚠⚠ 這些套件**沒有裝**（PyPI 上找不到，鎖檔是 pip freeze 產的所以丟了來源）："
+    for _m in $_SKIPPED; do echo "       $_m"; done
+    echo "     若之後 import 失敗就是它們 —— 到原專案找安裝來源。"
+  fi
 
   # 讓「清掉系統 torch 的 lib」對之後每一次 `conda run -n gspl` 都生效，
   # 否則使用者自己敲指令時會再撞一次同樣的 ImportError（而它不在安裝階段報錯）。
