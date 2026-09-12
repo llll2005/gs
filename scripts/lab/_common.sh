@@ -17,6 +17,10 @@ export CITYGS_VRAM_CAP_GB=${CITYGS_VRAM_CAP_GB-5.66}
 [ -z "${CITYGS_VRAM_CAP_GB:-}" ] && unset CITYGS_VRAM_CAP_GB
 echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制（本機原生 6GB）}]"
 CFG=configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml
+# ★ 跑次名的前綴。lab 用 `lab/` 讓產物收在 outputs/lab/ 底下（那裡不適用
+#   「都是 6GB 跑的」鐵律）；**本機要設成空的** => outputs/<配方>/blocks/block_N/
+#   用法：RUN_PREFIX= CITYGS_VRAM_CAP_GB= bash scripts/lab/task_speed3.sh 13
+RUN_PREFIX=${RUN_PREFIX-lab/}
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
   echo "=== $name / block $blk / cap ${CITYGS_VRAM_CAP_GB:-不限制} / $(date) ==="

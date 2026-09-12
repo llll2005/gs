@@ -18,11 +18,11 @@ COMMON=(--trainer.max_steps 20000
         --model.metric.init_args.lambda_normal 0.0
         --model.metric.init_args.depth_loss_weight.init 0.0)
 case "$ARM" in
-  sfm)    run_fit "lab/init_sfm"    "$BLK" --model.initialize_from null "${COMMON[@]}" ;;
+  sfm)    run_fit "${RUN_PREFIX}init_sfm"    "$BLK" --model.initialize_from null "${COMMON[@]}" ;;
   depth)  P="data/matrix_city/aerial/train/block_all/depth_init/block_$BLK.ply"
           [ -f "$P" ] || { echo "❌ 缺 $P —— 先跑 scripts/lab/task_depthprep.sh"; exit 2; }
-          run_fit "lab/init_depth"  "$BLK" --model.initialize_from "$P" "${COMMON[@]}" ;;
-  random) run_fit "lab/init_random" "$BLK" --model.initialize_from null \
+          run_fit "${RUN_PREFIX}init_depth"  "$BLK" --model.initialize_from "$P" "${COMMON[@]}" ;;
+  random) run_fit "${RUN_PREFIX}init_random" "$BLK" --model.initialize_from null \
             --data.parser.points_from random --data.parser.n_random_points 100000 "${COMMON[@]}" ;;
   *) echo "❌ 不認得的 arm：$ARM（sfm/depth/random）"; exit 2 ;;
 esac

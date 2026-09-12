@@ -5,7 +5,7 @@
 # 用法：task_costbudget.sh <block_id>
 source "$(dirname "$0")/_common.sh"
 BLK=${1:?}
-run_fit lab/costbudget "$BLK" \
+run_fit "${RUN_PREFIX}costbudget" "$BLK" \
   --model.initialize_from null \
   --model.density.init_args.cap_max 2600000 \
   --model.density.init_args.cost_budget_report 2000 \

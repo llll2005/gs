@@ -10,7 +10,7 @@ case "$MODE" in
   relocate) FLAG=(--model.density.init_args.elongation_relocate 20.0) ;;
   *) echo "❌ 不認得 $MODE"; exit 2 ;;
 esac
-run_fit "lab/elong_$MODE" "$BLK" \
+run_fit "${RUN_PREFIX}elong_$MODE" "$BLK" \
   --model.initialize_from null \
   --model.density.init_args.cap_max 2600000 \
   --model.density.init_args.densify_until_iter 30000 \

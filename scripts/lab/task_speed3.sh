@@ -4,7 +4,7 @@
 #   （b12 284 -> 653）。這是新年代的第一個基準。
 source "$(dirname "$0")/_common.sh"
 BLK=${1:?用法: task_speed3.sh <block_id>}
-run_fit lab/speed3 "$BLK" \
+run_fit "${RUN_PREFIX}speed3" "$BLK" \
   --model.initialize_from null \
   --model.density.init_args.cap_max 2600000 \
   --model.density.init_args.densify_until_iter 30000 \
