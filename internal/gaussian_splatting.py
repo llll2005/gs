@@ -155,7 +155,12 @@ class _StepProfiler:
         A("  wall >> GPU 的段落 = **CPU 側阻塞**（dataloader、H2D 搬運、Python 開銷）")
         A("  wall ~= GPU 的段落 = 真的在算")
         A("  『觸發次數』遠小於步數的是**週期性事件**（trim 每 500 步、densify 每 150 步）")
-        A("    => 它的『每次 wall ms』很大不代表它是瓶頸，要看『wall ms/步』那一欄（已攤平）")
+        A("  ⚠⚠ 週期性事件的『wall ms/步』是按**取樣視窗**攤平的，**不是按真實週期** ——")
+        A("     取樣視窗不是週期的整數倍時會低估。正確的攤平要自己算：")
+        A("       該事件的每步成本 = 『每次 wall ms』 / 真實週期（trim = contribution_prune_interval）")
+        A("       全跑次佔比       = 每次成本 x 觸發總次數 / 總跑次時間")
+        A("     例：本工具量到 trim 一次 50.9 s、視窗 1,000 步只抓到 1 次 => 印出 50.91 ms/步，")
+        A("        但週期是 500 步 => 真實是 **101.8 ms/步**（densify 期間），差 2 倍。")
         txt = "\n".join(lines)
         print("\n" + txt, flush=True)
         try:
