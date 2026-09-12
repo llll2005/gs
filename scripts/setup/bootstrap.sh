@@ -91,8 +91,15 @@ if [ "$DO_ENV" = 1 ]; then
   if conda run -n "$ENV_NAME" bash -c '[ -x "$CONDA_PREFIX/bin/nvcc" ]' 2>/dev/null; then
     ok "env 裡已有 nvcc（$(conda run -n "$ENV_NAME" bash -c '$CONDA_PREFIX/bin/nvcc --version' 2>/dev/null | tail -2 | head -1 | sed 's/.*release //;s/,.*//'))"
   else
-    conda install -y -n "$ENV_NAME" -c nvidia/label/cuda-11.8.0 cuda-toolkit=11.8 \
+    # ⚠ 2026-09-12：lab 的容器是 conda 26.5.3 / CPython 3.14 / libmamba，
+    #   這行會丟「unexpected error」並自己建議 --no-plugins => 直接帶上。
+    conda install -y --no-plugins -n "$ENV_NAME" -c nvidia/label/cuda-11.8.0 cuda-toolkit=11.8 \
       || die "CUDA 11.8 工具鏈安裝失敗（沒有它就編不出光柵器）"
+    # 後援：conda 整條掛掉時用 pip 的 nvcc 輪子（只要 nvcc 能跑就夠編光柵器）
+    if ! conda run -n "$ENV_NAME" bash -lc 'command -v nvcc' >/dev/null 2>&1; then
+      echo "  conda 裝不起來 => 改用 pip 的 nvidia-cuda-nvcc-cu11"
+      conda run -n "$ENV_NAME" --no-capture-output pip install -q nvidia-cuda-nvcc-cu11 || true
+    fi
     conda run -n "$ENV_NAME" bash -c '[ -x "$CONDA_PREFIX/bin/nvcc" ]' \
       || die "裝完還是沒有 $CONDA_PREFIX/bin/nvcc"
     ok "nvcc 11.8 就位"
