@@ -151,6 +151,18 @@ if [ "$DO_ENV" = 1 ]; then
     grep -viE "^${_MISS}([=<>!\[]|$)" "$_WORK" > "$_WORK.n" && mv "$_WORK.n" "$_WORK"
   done
   rm -f "$_WORK"
+  # 坑四（2026-09-12 lab）：容器是 headless，沒有 libGL.so.1，而鎖檔同時裝了
+  #   opencv-python 與 opencv-python-headless —— 前者遮住後者 =>
+  #   `import cv2` 丟 `ImportError: libGL.so.1: cannot open shared object file`。
+  #   移掉非 headless 的那個即可（不需要動系統套件）。
+  if ! conda run -n "$ENV_NAME" python -c "import cv2" >/dev/null 2>&1; then
+    if conda run -n "$ENV_NAME" python -c "import cv2" 2>&1 | grep -q "libGL"; then
+      warn "cv2 缺 libGL（headless 容器）=> 移除 opencv-python，保留 opencv-python-headless"
+      conda run -n "$ENV_NAME" --no-capture-output pip uninstall -y opencv-python >/dev/null 2>&1
+      conda run -n "$ENV_NAME" python -c "import cv2;print('  cv2', cv2.__version__)" \
+        && ok "cv2 可用" || warn "cv2 仍不可用 —— 手動 pip install opencv-python-headless"
+    fi
+  fi
   if [ -n "$_SKIPPED" ]; then
     echo "  ⚠⚠ 這些套件**沒有裝**（PyPI 上找不到，鎖檔是 pip freeze 產的所以丟了來源）："
     for _m in $_SKIPPED; do echo "       $_m"; done
