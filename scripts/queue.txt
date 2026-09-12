@@ -8,4 +8,3 @@
 # ★★★★★ 命題唯一沒測過的一側：cost_budget 取代 cap_max
 # max Q s.t. (1/K)Σc_i <= B 的字面形式。取樣端三變體全輸（cost_aware_sampling_refuted），
 # 只剩約束端沒測。這是論文命題存活與否的最後一個實驗。
-bash scripts/task_costbudget_b12.sh
