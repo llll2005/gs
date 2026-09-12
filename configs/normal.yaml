@@ -1,0 +1,66 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# 最原始的可跑組態（2026-09-12，使用者要求）
+#
+# 目的：建立一條「完全沒有我方任何機制」的基準線，用來回答一個問題 ——
+#       **失敗區在 vanilla 2DGS 底下也失敗嗎？**
+#       若也失敗 => 那不是我們疊加出來的，是 2DGS/資料本身的性質。
+#
+# 原則：**只設定「不給就跑不起來」的參數**，其餘一律吃程式預設。
+#
+# ── 為什麼這幾項是必填（其餘都沒寫） ───────────────────────────────────────────
+#  data.path                  無預設。
+#  data.parser                預設是整個場景；單塊訓練必須用 block parser，
+#                             而 `block_dim` 預設 None => 設了 block_id 就會在
+#                             `block_dim[0]` 當場 TypeError。
+#                             ⚠ 用 `ColmapBlock` 而**不是** `EstimatedDepthBlockColmap`：
+#                               後者會載入偽深度並開深度監督，那是我方的機制之一。
+#  model.gaussian             預設是 `VanillaGaussian`（**3DGS**）=> 要 2DGS 必須指定。
+#  model.renderer             預設是 `VanillaRenderer`（**3DGS**）=> 同上。
+#  trainer.max_steps          預設 30,000；本實驗要 1500。
+#
+# ── 刻意**不寫**（吃預設 = 全部關閉） ─────────────────────────────────────────
+#  model.density   -> `VanillaDensityController`（3DGS/2DGS 論文原版的梯度式 ADC）
+#                     ⇒ 沒有 MCMC、沒有 cap_max、沒有 absgrad_densify、沒有 noise、
+#                       沒有 screen_size_prune、沒有 value-per-cost、沒有 harvest-dust
+#  model.metric    -> `VanillaMetrics`（純 L1 + SSIM）
+#                     ⇒ 沒有 normal/dist 正則（那是 2DGS 論文的，但屬「算法」）、
+#                       沒有 opacity_reg、沒有 scale_reg、沒有深度損失
+#  model.initialize_from -> null ⇒ 用 dataparser 的 **SfM 稀疏點**
+#                     ⇒ depth-init 是我方的機制，不在這條基準線裡
+#  strips / dynamic_strips -> 預設 1 / False ⇒ 不切條帶
+#  down_sample_factor      -> 預設 1（**全解析度 1920x1080**，比我方的 1.2 更重）
+#
+# ── 一個無法避免的殘差（必須誠實記下） ───────────────────────────────────────
+#  ⚠ 真正的 vanilla 渲染器 `Vanilla2DGSRenderer` 需要 `diff_surfel_rasterization`，
+#    **本機沒裝**（只有我方改過的 `diff_trim_surfel_rasterization`）。
+#    ⇒ 這裡用 `SepDepthTrim2DGSRenderer` 但把 trim **全部關掉**
+#      （`diable_trimming` + `diable_start_trimming`），行為等於原版 2DGS。
+#    ⚠ 殘差：`EXACT_SUPPORT=1` 與 `ABSGRAD=1` 是**編譯期**寫死在 kernel 裡的。
+#      兩者都已驗證為位元級無損（EXACT_SUPPORT maxdiff 0；ABSGRAD 只寫從不被讀的
+#      `dL_dmean2D.z`）=> 不影響渲染與梯度。
+#    要完全排除這個殘差：`pip install -r requirements/2DGS.txt` 後把 renderer 換成
+#    `internal.renderers.vanilla_2dgs_renderer.Vanilla2DGSRenderer`。
+#
+# 用法：
+#   python main.py fit --config configs/normal.yaml --data.parser.block_id 12 -n normal_b12
+# ══════════════════════════════════════════════════════════════════════════════
+trainer:
+  max_steps: 1500
+
+model:
+  gaussian:
+    class_path: internal.models.gaussian_2d.Gaussian2D
+  renderer:
+    class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
+    init_args:
+      diable_trimming: true          # 關掉週期性 trim（CityGSV2 的機制）
+      diable_start_trimming: true    # 關掉 step 1 的起始 trim（會砍掉 72% 初始化）
+
+data:
+  path: data/matrix_city/aerial/train/block_all
+  parser:
+    class_path: ColmapBlock
+    init_args:
+      block_dim:
+      - 5
+      - 5

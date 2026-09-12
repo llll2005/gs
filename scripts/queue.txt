@@ -4,14 +4,19 @@
 # ⚠ 判準看**幾何**（z 中位／離表面倍數／起始 trim 砍多少／真表面覆蓋率），不是 1500 步的 PSNR。
 # 為什麼 fixdepth_b12 平了還值得跑：那量的是 60k 的光度分數，而殼是 step 1 的起始 trim
 # 就定型的（80% 偏差第一步就存在）—— 1500 步的幾何差異可能比 60k 的分數清楚。
-bash scripts/task_probe_armA_fixinit.sh
+
+# ★★★★★★ 最原始基準線：vanilla 2DGS 1500 步（使用者 2026-09-12）
+# 問題：**失敗區在「完全沒有我方任何機制」下也失敗嗎？**
+#   也失敗 => 不是我們疊加出來的，是 2DGS/資料本身的性質 => 殼層調查要換方向
+#   不失敗 => 是我們某個機制造成的 => 逐一加回去就能二分定位
+# configs/normal.yaml 只設 9 個必填值；density/metric/init/trim/解析度全吃預設（= 全關）。
+# ⚠ 判準看幾何（z 中位、懸空%、懸空且不透明%），1500 步的 PSNR 沒意義。
+bash scripts/task_normal_b12.sh
 
 # ★★★★★ 兩個短診斷（各 6~8 分，純診斷）—— 留著是因為便宜且已寫好
 # ① 盒外 2.11% 的粒子扛 51.6% binning，裁掉畫面掉多少
-bash scripts/task_cropbox_eval.sh
 
 # ★★★★★ ② binning 外接盒浪費（精確版）+ trim 改成本感知判準
-bash scripts/task_binning_trim_probe.sh
 
 # ★★★★★★ 殼層：④ 的閘門 —— 1M 顆 sh0 coarse，**只看幾何不看 PSNR**（1500 步，約 5 分）
 # 為什麼現在做（2026-09-12 使用者定為最優先）：
@@ -26,4 +31,3 @@ bash scripts/task_binning_trim_probe.sh
 #   slope 仍 0.1~0.3                      => 與（汙染期的）官方 coarse 同病，整條放棄
 # ⚠ 舊的「官方 coarse slope 0.158」是 2026-08-05 量的、被量的 coarse 建於 6~7 月
 #   => 在 zfill 錯位期訓練，幾何本身被污染 => 那個反證已降級為「未知」。
-bash scripts/task_coarse_gate.sh
