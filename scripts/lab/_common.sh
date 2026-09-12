@@ -56,9 +56,6 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
     mv "$out" "$moved" || { echo "⛔ 搬不動 $out"; return 4; }
     echo "  舊輸出搬到 $moved（$(du -sh "$moved" 2>/dev/null | cut -f1)）"
   fi
-    echo "  清掉沒有 ckpt 的失敗殘留：$out"
-    rm -rf "$out"
-  fi
   echo "=== $name / block $blk / cap ${CITYGS_VRAM_CAP_GB:-不限制} / $(date) ==="
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config "$CFG" \
