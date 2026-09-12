@@ -26,6 +26,14 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --config configs/normal.yaml \
   --data.parser.block_id 12 \
   -n normal_b12
+RC=$?
+# ⚠ 台帳的 rc 是**腳本最後一個指令**的 rc。下面還有稽核迴圈，若不在這裡擋住，
+#   訓練崩掉也會顯示「✔ DONE (rc=0)」—— 2026-09-12 第一次跑就這樣：RAM 被吃爆、
+#   一張 ckpt 都沒存，台帳卻是 DONE。
+if [ "$RC" -ne 0 ]; then
+  echo "❌ 訓練失敗 rc=$RC —— 不做稽核，直接以此 rc 結束"
+  exit "$RC"
+fi
 echo "===== 幾何：vanilla 基準線 vs 我方各臂 ====="
 for R in normal_b12 probe_armA_fixinit probe_armA_baseline probe_armB_sfm; do
   echo "--- $R ---"

@@ -49,7 +49,13 @@ class ColmapBlock(Colmap):
     min_images_per_block: int = 10
 
     def instantiate(self, path: str, output_path: str, global_rank: int) -> DataParser:
-        return ColmapDataParser(path, output_path, global_rank, self)
+        # ⚠ 這裡原本回傳 `ColmapDataParser`（**基底**類別），於是 `block_id` / `block_dim` /
+        #   `content_threshold` 這些欄位**全部被靜默忽略** —— 設了 `--data.parser.block_id 12`
+        #   不會報錯，卻載入全部 5,621 張影像與整場景 SfM 點雲（221M 參數）。
+        #   我方所有跑次都用 `EstimatedDepthBlockColmap`（它的 instantiate 是對的），
+        #   所以這個 bug 藏到 2026-09-12 才被 `configs/normal.yaml` 踩到（RAM 被吃爆、
+        #   台帳卻顯示 rc=0 DONE）。第 7 個「看起來正常但沒作用」。
+        return ColmapBlockDataParser(path, output_path, global_rank, self)
 
 class ColmapBlockDataParser(ColmapDataParser):
     def __init__(self, path: str, output_path: str, global_rank: int, params: ColmapBlock) -> None:

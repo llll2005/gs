@@ -1,3 +1,8 @@
+# ★★★★★★ 最原始基準線：vanilla 2DGS 1500 步（重跑；第一次踩到 ColmapBlock 的靜默 bug）
+# 第一次（18:50）載入了全部 5,621 張影像 + 整場景 SfM（221M 參數）=> RAM 爆、0 步、0 ckpt，
+# 而台帳顯示 rc=0 DONE。根因＝ColmapBlock.instantiate 回傳基底 parser，block_id 被靜默忽略。
+# 已修（一行）並 CPU 驗證：284 train / 36 val / 320,513 SfM 點。腳本也已改為傳遞訓練 rc。
+bash scripts/task_normal_b12.sh
 # ★★★★★★ 殼層最優先：depth-init 1500 步，參數同四臂測試，唯一變數＝**正確的 init PLY**
 # 對照組 probe_armA_baseline 用的是 2026-05-29 的汙染 PLY（每顆點用鄰幀深度擺位），
 # 2026-09-12 已就地換成正確版（md5 64a9873b…）=> 單變數對照。
@@ -11,7 +16,6 @@
 #   不失敗 => 是我們某個機制造成的 => 逐一加回去就能二分定位
 # configs/normal.yaml 只設 9 個必填值；density/metric/init/trim/解析度全吃預設（= 全關）。
 # ⚠ 判準看幾何（z 中位、懸空%、懸空且不透明%），1500 步的 PSNR 沒意義。
-bash scripts/task_normal_b12.sh
 
 # ★★★★★ 兩個短診斷（各 6~8 分，純診斷）—— 留著是因為便宜且已寫好
 # ① 盒外 2.11% 的粒子扛 51.6% binning，裁掉畫面掉多少
