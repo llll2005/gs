@@ -54,3 +54,6 @@ submodules/.rasterizer_upstream_git/
 # 2026-09-13：它被追蹤時，我從 Jupyter API 改 lab 的佇列 => 每次 git pull 都
 # 「Your local changes would be overwritten」而中止（而我還把那個錯誤靜音過一次）。
 scripts/queue.txt
+
+# 機器標記檔（scripts/lab/_common.sh 用它判 lab vs 本機）—— 每台機器自己建，不進 git
+.lab_machine
