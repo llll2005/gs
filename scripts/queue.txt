@@ -1,3 +1,14 @@
+# ★★★★★ 兩個診斷一次做完（~6 分，純診斷不介入）：binning 外接盒浪費 + trim 改成本感知
+# ① forward.cu:281 的 tile 數是「較長軸」撐出的正方形外接盒 => 長寬比 k 有 1-1/k 是空白。
+#    純 CPU 代理已量到 speed3_b12 中位長寬比 3.17、>10 佔 15.3%、Σs_max² 對 Σs_max·s_min
+#    浪費 76.5%、剔除 >10 可省 31.6% binning 而真覆蓋只掉 7.3%。這裡用光柵器回傳的
+#    精確 radii 與 num_covered_pixels 重算（代理忽略了 truncated_R 與 FilterSize 下限）。
+#    => 這正是 CityGSV2 的 Elongation Filter 針對的機制，而我們換成 MCMC 後就沒有它。
+# ② trim 已經在算精確 c_i 卻丟掉；判準改成 contribution/c_i 是一行。
+#    成本感知命題的第三個位置（取樣端已否證、約束端未測、剪枝端從沒想過）。
+# 判準：① 浪費>50% 且交換比>3:1 => 值得做；② 遮罩重疊>95% => 關掉這條線。
+bash scripts/task_binning_trim_probe.sh
+
 # ★★★★★ 收割期關掉 opacity L1（`opacity_reg_until_iter 30000`）—— 前提已量、旗標已有、從沒跑過
 # §11.69 受控三臂：移除 L1 使判死率變化從 +3.57pp -> **-0.06pp**、確信 o>0.5 +8.24pp（對照 +2.91）
 # => opacity_reg 在收割期是**純損耗**。同時打中兩個損失：
