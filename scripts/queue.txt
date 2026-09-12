@@ -1,7 +1,14 @@
+# ★★★★★★★ 最高優先：val⊂train 排序 vs 真 held-out 排序（官方 741 幀，四個模型）
+# 使用者目視：1500 步的 vanilla 看起來比我們 60k 的好；幾何稽核三個判準同向確認。
+# 而 val PSNR 排序幾乎完全相反 => 需要真 held-out 的數字才能定案。
+bash scripts/task_heldout_4way.sh
+# ★★★★★★ 失敗區在「零機制」下也失敗嗎 —— normal_b12 / armB_sfm / armA_baseline 逐 tile 交集
+# normal_b12 已完賽（PSNR 21.50、0.61M 顆）。但全幅 PSNR 答不了這題（失敗區被正常區稀釋），
+# 要存 val 影像再取三臂的糊掉遮罩交集。交集 ~100% => 病灶在輸入、與我方機制無關。
+bash scripts/task_blur_region_1500.sh
 # ★★★★★★ 最原始基準線：vanilla 2DGS 1500 步（第三次；前兩次各抓到一個 bug）
 # 第一次 18:50 死在 ColmapBlock 靜默 bug（載入 5,621 張 => RAM 爆，0 步 0 ckpt，台帳卻寫 rc=0）
 # 第二次 19:03 跑到 step 600 的第一個 densify 才炸：VanillaDensityController 是 3DGS 專用
 #   （scale 2 維 vs means 3 維），已改用 GS2DDensityController（＝2DGS 論文的 ADC，
 #   上游 configs/vanilla_2dgs.yaml 用的也是它）。已掃過該控制器其餘「假設 3 維」處：
 #   只有第 163 行那一個，而它正是被覆寫的那個 => 這次應該能跑完。
-bash scripts/task_normal_b12.sh
