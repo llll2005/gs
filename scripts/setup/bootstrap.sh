@@ -189,11 +189,22 @@ if [ ! -f "$RAST/cuda_rasterizer/auxiliary.h" ]; then
   die "缺少光柵器原始碼，無法繼續"
 fi
 ok "原始碼在（$(ls "$RAST"/cuda_rasterizer/*.cu "$RAST"/cuda_rasterizer/*.h 2>/dev/null | wc -l) 個 cuda_rasterizer 檔）"
-if [ ! -f "$RAST/third_party/glm/glm/glm.hpp" ]; then
+# ⚠ 2026-09-12：原本這裡是 `A || B || C` 的鏈，而 **A 成功但什麼都沒做** ——
+#   `.gitmodules` 裡沒有光柵器的條目（見記憶 repo_not_clone_ready），
+#   `git submodule update` 就回傳 0 => `||` 短路 => clone 從來沒被執行 => 建置必失敗。
+#   改成**每一步都驗標頭檔在不在**（回傳碼不可信，這是本專案最貴的那類 bug 的形狀）。
+_GLM="$RAST/third_party/glm"
+if [ ! -f "$_GLM/glm/glm.hpp" ]; then
   warn "third_party/glm 是空的，抓它（建置必需）"
-  git submodule update --init --recursive "$RAST" 2>/dev/null \
-    || git -C "$RAST" submodule update --init --recursive 2>/dev/null \
-    || git clone --depth 1 https://github.com/g-truc/glm.git "$RAST/third_party/glm"
+  git submodule update --init --recursive "$RAST" >/dev/null 2>&1 || true
+  if [ ! -f "$_GLM/glm/glm.hpp" ]; then
+    git -C "$RAST" submodule update --init --recursive >/dev/null 2>&1 || true
+  fi
+  if [ ! -f "$_GLM/glm/glm.hpp" ]; then
+    warn "submodule 抓不到（.gitmodules 沒條目）=> 直接 clone glm"
+    rm -rf "$_GLM"; mkdir -p "$(dirname "$_GLM")"
+    git clone --depth 1 https://github.com/g-truc/glm.git "$_GLM" 2>&1 | tail -2
+  fi
 fi
 [ -f "$RAST/third_party/glm/glm/glm.hpp" ] && ok "glm 在" || die "glm 還是缺 —— 手動 clone https://github.com/g-truc/glm.git 到 $RAST/third_party/glm"
 
