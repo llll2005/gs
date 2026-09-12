@@ -230,9 +230,32 @@ if [ "$DO_BUILD" = 1 ]; then
   else
     warn "問不到 GPU 的 compute capability => 沿用環境變數 TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-未設}"
   fi
+  # 坑二點七五（2026-09-12 在 lab 撞到）：容器是 Ubuntu 24.04，gcc 13；
+  #   而 **CUDA 11.8 的 nvcc 只支援 gcc <= 11**：
+  #     crt/host_config.h:132: error: unsupported GNU version! gcc versions later than 11
+  #   ⛔ 不用 nvcc 的 `-allow-unsupported-compiler`：它自己警告
+  #      "may cause incorrect run time execution" —— 這是算梯度的 kernel，
+  #      不能冒「編得過但數值錯」的風險（本專案最貴的 bug 全是這種形狀）。
+  #   正解：把 gcc 11 裝進 conda 環境，用 -ccbin 指給 nvcc。
+  _GCCV=$(gcc -dumpfullversion 2>/dev/null | cut -d. -f1)
+  if [ -n "$_GCCV" ] && [ "$_GCCV" -gt 11 ] 2>/dev/null; then
+    warn "系統 gcc 是 $_GCCV，CUDA 11.8 只吃 <=11 => 裝 conda-forge 的 gcc 11 到環境裡"
+    conda install -y --no-plugins -n "$ENV_NAME" -c conda-forge \
+      gcc_linux-64=11 gxx_linux-64=11 >/dev/null 2>&1 || warn "conda 裝 gcc 11 失敗"
+    _CC=$(ls "$PREFIX"/bin/*-linux-gnu-gcc 2>/dev/null | head -1)
+    _CXX=$(ls "$PREFIX"/bin/*-linux-gnu-g++ 2>/dev/null | head -1)
+    if [ -n "$_CC" ] && [ -n "$_CXX" ]; then
+      export CC="$_CC" CXX="$_CXX"
+      export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:-} -ccbin $_CXX"
+      ok "CC=$(basename "$_CC") $("$_CC" -dumpfullversion)  且 nvcc -ccbin 已指給它"
+    else
+      die "環境裡找不到 gcc 11（$PREFIX/bin/*-linux-gnu-gcc）—— 手動 conda install -c conda-forge gxx_linux-64=11"
+    fi
+  fi
   # 坑三：pip 會**靜默跳過**同版本的本地路徑 => 一定要 --force-reinstall
   conda run -n "$ENV_NAME" --no-capture-output env CUDA_HOME="$PREFIX" CUDA_PATH="$PREFIX" \
     TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-}" \
+    CC="${CC:-cc}" CXX="${CXX:-c++}" NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:-}" \
     pip install --no-build-isolation --no-deps --force-reinstall "$RAST" || die "編譯失敗"
   ok "編好了（--force-reinstall 是必要的，pip 會靜默跳過同版本的本地路徑）"
 fi
