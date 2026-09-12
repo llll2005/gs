@@ -126,5 +126,5 @@ print('✅ Depth-Anything-V2 可用，輸出', d.shape, d.dtype)
 
 step "完成"
 echo "下一步（訓練）："
-echo "  python utils/estimate_dataset_depths.py $D/train/block_all   # 要開深度損失才需要"
+echo "  python utils/estimate_dataset_depths.py $D/train/block_all --image_dir input   # 要開深度損失才需要"
 echo "  bash scripts/task_speed3.sh                                                  # 我方配方"

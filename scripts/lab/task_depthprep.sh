@@ -25,8 +25,12 @@ m.load_state_dict(torch.load('$CK', map_location='cpu')); m=m.cuda().eval()
 with torch.no_grad(): d=m.infer_image(np.zeros((518,518,3), np.uint8))
 print('✅ Depth-Anything-V2 可用，輸出', d.shape)
 " || exit 1
+# ⚠ `--image_dir input` 不可省：run_depth_anything_v2.py 預設找 `<dataset>/images`，
+#   而我方的影像在 `input/` => 否則
+#   `AssertionError: not an image ... can be found in '.../block_all/images'`
+#   （2026-09-13 在 lab 實測；CLAUDE.md 的舊指令也沒有這個參數）
 echo "=== 5,621 張深度圖（最貴的一步）==="
-conda run -n gspl --no-capture-output python utils/estimate_dataset_depths.py "$D" || exit 1
+conda run -n gspl --no-capture-output python utils/estimate_dataset_depths.py "$D" --image_dir input || exit 1
 echo "=== depth-init PLY（25 塊）==="
 conda run -n gspl --no-capture-output python utils/depth_init_blocks.py "$D" \
   --block_dim 5 5 --voxel_min 0.03 --voxel_max 0.7 --chunk_size 75 || exit 1

@@ -72,6 +72,6 @@ cat <<'NEXT'
   # 深度（現行配方 depth_loss_weight=0，只有要開深度損失才需要）
   git clone https://github.com/DepthAnything/Depth-Anything-V2 utils/Depth-Anything-V2
   wget -O utils/Depth-Anything-V2/checkpoints/depth_anything_v2_vitl.pth "https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/depth_anything_v2_vitl.pth?download=true"
-  python utils/estimate_dataset_depths.py data/matrix_city/aerial/train/block_all
+  python utils/estimate_dataset_depths.py data/matrix_city/aerial/train/block_all --image_dir input
   python utils/depth_init_blocks.py data/matrix_city/aerial/train/block_all --block_dim 5 5 --voxel_min 0.03 --voxel_max 0.7 --chunk_size 75
 NEXT
