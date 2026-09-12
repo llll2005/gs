@@ -9,6 +9,9 @@ dataparser 在「SfM 名稱 != 檔名」時走**位置對應**（名稱排序第
 
 ⛔ **不可以用「模型重建得好」來驗配對**：全專案是 `split_mode=reconstruction`（val ⊂ train），
    模型可以把錯的影像背下來。使用者 2026-09-12 指出這個循環論證，記在研究總覽 §16.11。
+⛔⛔ **A 段抓不到 2026-09-13 定案的那一類錯**（研究總覽 §16.14）：
+   它比的是 sparse 與 transforms.json，而**兩者共用同一組姿態** ⇒ 錯開時兩邊仍然「一致」。
+   真正有效的關卡是下面的 C 段（SfM 自己的 2D 對應，獨立於姿態）。
 ⛔ 已證**無鑑別力**、不要再用的判準：
    · SIFT 特徵點落在高梯度像素（正確配對 1.0x、故意配錯 +1/+2/-1 也都 1.0x）
    · 單像素顏色相關（|r| < 0.18、margin 0.005）
@@ -54,6 +57,9 @@ def main():
     ap.add_argument("--data", default="data/matrix_city/aerial/train/block_all")
     ap.add_argument("--tol", type=float, default=1e-4, help="位置與朝向殘差的容許值")
     ap.add_argument("--skip-epipolar", action="store_true")
+    ap.add_argument("--corr-min", type=float, default=0.95,
+                    help="C 段：SfM 對應點上的亮度相關度門檻。"
+                         "2026-09-13 實測：正確配對 0.988~0.995，錯開的 0.34~0.65")
     ap.add_argument("--n-epipolar", type=int, default=4)
     args = ap.parse_args()
 
@@ -104,7 +110,56 @@ def main():
     else:
         print(f"  ✅ 全部 {len(names):,} 台的位置與朝向都在 {args.tol:g} 內")
 
-    rc = 0 if nbad == 0 else 1
+    # ── C 段：SfM 自己的 2D 對應上，兩視角的亮度一致度（**唯一能抓到錯開的關卡**）──
+    print(f"\nC SfM 對應點的亮度一致度（獨立於姿態；門檻 {args.corr_min}）")
+    try:
+        from PIL import Image
+        p3 = cu.read_points3D_binary(os.path.join(sd, "points3D.bin"))
+        IN = os.path.join(args.data, "input")
+
+        def ld(fn):
+            return np.asarray(Image.open(os.path.join(IN, fn)).convert("L"), np.float32) / 255.
+
+        def pat(g, u, v, r=4):
+            H, W = g.shape
+            uu = np.clip(np.round(u).astype(int), r, W - 1 - r)
+            vv = np.clip(np.round(v).astype(int), r, H - 1 - r)
+            a = np.zeros(len(u), np.float32)
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    a += g[vv + dy, uu + dx]
+            return a / (2 * r + 1) ** 2
+
+        byname = {v.name: v for v in imb.values()}
+        rs = []
+        step = max(1, len(names) // 6)
+        for k in range(1, 6):
+            i = min(k * step, len(names) - 2)
+            ra, rb = byname[names[i]], byname[names[i + 1]]
+            ma = {q: t for t, q in enumerate(ra.point3D_ids) if q != -1}
+            mb = {q: t for t, q in enumerate(rb.point3D_ids) if q != -1}
+            com = [q for q in (set(ma) & set(mb)) if q in p3]
+            if len(com) < 80:
+                continue
+            ua = np.array([ra.xys[ma[q]][0] for q in com]); va = np.array([ra.xys[ma[q]][1] for q in com])
+            ub = np.array([rb.xys[mb[q]][0] for q in com]); vb = np.array([rb.xys[mb[q]][1] for q in com])
+            A = pat(ld(bn[i]), ua, va); B = pat(ld(bn[i + 1]), ub, vb)
+            r = float(np.corrcoef(A, B)[0, 1])
+            rs.append(r)
+            print(f"  {names[i]}->{names[i+1]}  共同點 {len(com):>5,}  相關 **{r:.4f}**"
+                  + ("  ✅" if r >= args.corr_min else "  ⛔"))
+        if rs:
+            m = float(np.median(rs))
+            if m < args.corr_min:
+                print(f"  ⛔⛔ 中位 {m:.4f} < {args.corr_min} ⇒ **影像與姿態錯開**，不要訓練")
+                rc = 1
+            else:
+                print(f"  ✅ 中位 {m:.4f} >= {args.corr_min} ⇒ 配對正確")
+        else:
+            print("  ⚠ 抽到的相機對共同點都太少 ⇒ 這關沒驗到")
+    except Exception as e:
+        print(f"  ⚠ C 段跑不起來：{type(e).__name__}: {e}")
+
     if args.skip_epipolar:
         return rc
 

@@ -10,7 +10,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 D=data/matrix_city/aerial
-MAP="$D/global_frame_map.json"
+MAP="$D/global_frame_map_correct.json"
 PY() { conda run -n gspl --no-capture-output python "$@"; }
 step() { echo; echo "=========== $* ==========="; date; }
 
@@ -40,8 +40,10 @@ for gname, v in sorted(m.items()):
     t = os.path.join(dst, gname)
     if os.path.exists(t):
         have += 1; continue
-    # per-block 影像是 4 位數、從 0000 起算；frame_index 從 1 起算
-    src = os.path.join(D, "train", f"block_{v['block']}", "input", f"{v['frame_index']-1:04d}.png")
+    # ★ frame_index **就是檔案編號**（block_N/transforms_origin.json 的幀數 == input/ 檔案數，
+    #   frame_index 連續 0..N-1）=> 不要 -1。2026-09-13 §16.14：現行本機資料放的是
+    #   「該 block 的第 k 個檔案」而不是 frame_index 指的那張，86.6% 的影像因此錯開。
+    src = os.path.join(D, "train", f"block_{v['block']}", "input", f"{v['frame_index']:04d}.png")
     if not os.path.exists(src):
         miss += 1
         if miss <= 5:
@@ -74,7 +76,7 @@ step "4 transforms.json（映射的來源，本機已驗證那份）"
 [ -s "$D/train/block_all/transforms.json" ] && echo "  已存在" || echo "  ⛔ 缺 —— 從本機上傳"
 
 step "5 ★ 配對驗證（模型無關；沒過就不要訓練）"
-PY tools/verify_pairing_geometric.py --data "$D/train/block_all" --n-epipolar 3 \
+PY tools/verify_pairing_geometric.py --data "$D/train/block_all" --skip-epipolar \
   || { echo "⛔⛔ 沒過，停在這裡"; exit 9; }
 
 step "6 partition"
