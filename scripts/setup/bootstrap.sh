@@ -28,6 +28,11 @@ unset PIP_CONSTRAINT
 #   「unrecognized arguments」直接失敗 —— 2026-09-12 我這樣寫，害 cuda-toolkit 與
 #   gcc 11 兩個安裝都「失敗」而錯誤訊息被 2>/dev/null 吞掉，追了兩輪。
 export CONDA_NO_PLUGINS=true
+# ⚠ 關掉插件會連 **libmamba solver 也關掉**（它本身是插件），而設定檔還要求用它 =>
+#   `CondaValueError: You have chosen a non-default solver backend (libmamba) but it was
+#    not recognized. Choose one of: classic` ⇒ 必須同時指定 classic。
+#   ⚠ classic solver 在 conda-forge 上**很慢**（實測 >12 分鐘），不是卡住。
+export CONDA_SOLVER=classic
 _sanitize_ld() {
   local out="" p
   IFS=: read -ra _ps <<< "${LD_LIBRARY_PATH:-}"
