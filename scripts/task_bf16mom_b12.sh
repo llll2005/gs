@@ -52,7 +52,7 @@ conda run -n gspl --no-capture-output python -u main.py fit \
   --model.gaussian.init_args.optimization.optimizer.class_path LowPrecMomentAdam \
   --model.gaussian.init_args.optimization.optimizer.init_args.moment_dtype bfloat16 \
   --model.gaussian.init_args.optimization.optimizer.init_args.stochastic_rounding true \
-  --model.density.init_args.cap_max 3200000 \
+  --model.density.init_args.cap_max 2820000 \
   --model.density.init_args.absgrad_densify 2.0 \
   --model.density.init_args.fast_noise true \
   --model.density.init_args.noise_gate_eps 1e-3 \

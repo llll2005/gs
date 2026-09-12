@@ -1,75 +1,28 @@
 # ★★★★★ 兩個診斷一次做完（~6 分，純診斷不介入）：binning 外接盒浪費 + trim 改成本感知
 # ① forward.cu:281 的 tile 數是「較長軸」撐出的正方形外接盒 => 長寬比 k 有 1-1/k 是空白。
-#    純 CPU 代理已量到 speed3_b12 中位長寬比 3.17、>10 佔 15.3%、Σs_max² 對 Σs_max·s_min
-#    浪費 76.5%、剔除 >10 可省 31.6% binning 而真覆蓋只掉 7.3%。這裡用光柵器回傳的
-#    精確 radii 與 num_covered_pixels 重算（代理忽略了 truncated_R 與 FilterSize 下限）。
-#    => 這正是 CityGSV2 的 Elongation Filter 針對的機制，而我們換成 MCMC 後就沒有它。
+#    純 CPU 代理已量到 speed3_b12 中位長寬比 3.17、>10 佔 15.3%、浪費 76.5%、
+#    剔除 >10 可省 31.6% binning 而真覆蓋只掉 7.3%。這裡用精確 radii/num_covered_pixels 重算
+#    （代理忽略 truncated_R 與 FilterSize 下限，會高估可回收比例）。
+#    => 這正是 CityGSV2 的 Elongation Filter 針對的機制，我們換成 MCMC 後就沒有它。
 # ② trim 已經在算精確 c_i 卻丟掉；判準改成 contribution/c_i 是一行。
 #    成本感知命題的第三個位置（取樣端已否證、約束端未測、剪枝端從沒想過）。
 # 判準：① 浪費>50% 且交換比>3:1 => 值得做；② 遮罩重疊>95% => 關掉這條線。
+# ★ 這支決定下面兩個 elongation 跑次的門檻，所以排在它們前面。
 bash scripts/task_binning_trim_probe.sh
 
-# ★★★★★ 收割期關掉 opacity L1（`opacity_reg_until_iter 30000`）—— 前提已量、旗標已有、從沒跑過
-# §11.69 受控三臂：移除 L1 使判死率變化從 +3.57pp -> **-0.06pp**、確信 o>0.5 +8.24pp（對照 +2.91）
-# => opacity_reg 在收割期是**純損耗**。同時打中兩個損失：
-#   ① cap 只交付 90%，那 10% 全掉在收割期 => 回收 ≈ +11% 顆數 ≈ +0.08 dB
-#   ② **106 個跑次有 60 個在 56,800 見頂、60,000 更低**（-0.02~-0.20 dB）—— 同源
-# ⚠ 必須連 floater 一起判（opacity_reg 是塵埃的主要抑制者）；★ 特別看終點 N 是否回到 ~2.6M。
-
-# ★★★★★ 實機驗證（~6 分）：K-strip 的 viewspace-grad 跨條帶加總真的生效了嗎
-# 2026-09-11 抓到：條帶路徑回傳 dict(last_outputs)，而 absgrad_densify 從
-# outputs["viewspace_points"].grad[:,2] 讀 |g| => K>1 時只看得到最後一條帶、
-# 沒出現在該帶的粒子 |g|=0 退化成 probs=o（等同 absgrad 沒開）。已修為跨條帶加總。
-# 判準：log 要出現 [K-strip] ✅ ... 且「全幀 / 最後一條帶」比值 > 1.0。
-
-# ★★★★★ 逼近 VRAM 上限時變慢，是配置器在搬還是計算變多？（教授提的實驗，~35 分）
-# 已知（tools/vram_gap.py）：reserved 4.87G 裡有 2.45G **全是配置器碎片**；
-# 台帳的 VRAM 是 memory_reserved() ⇒ cap_max 長年照著含 40% 碎片的數字調。
-# 沒量過的是**代價**。設計把計算量與壓力分開：
-#   臂 A 餘裕充足掃 N => 純計算基準線；臂 B **N 固定** 用 ballast 吃餘裕直到 OOM
-#   => 計算量逐字相同 ⇒ 時間的變化只能來自配置器。直接證據 = num_alloc_retries。
-#   臂 C 三種 alloc conf（含「完全不設」—— 現行腳本寫死 128 但從沒對照過）。
-# ⚠ expandable_segments 在 torch 2.0.1 不支援（2.1 才有）。
-
-# ★★★★★ cost_budget 短探針（~30 分）：預算綁不綁得住？省多少 VRAM？
-# ⚠ 天花板已量（§11.66）：**儲存 83% / binning 17%** => 成本預算最多重分配 17% 的 VRAM
-#   => 就算 binning 砍半也只換到約 **+0.06 dB**，低於 3sd 的 0.24 宣稱門檻。
-# ⚠ 09-07 首次 OOM 是因為**預算從未綁住**（B 太高），不是我當時說的「B 太緊」。
-# cap 用基準的 2.6M（不放寬 => 不可能 OOM），B=3.0M 強迫綁住。
-# 判準：Load 達到 B 且 N<cap => 有綁住，量 VRAM 差額再決定跑不跑 9.6h；
-#       Load 從未接近 B => 量級不對，重新標定，**別跑 9.6h**。
-
-
-# ★★★★ max_split_size_mb:128 該不該繼續付？（~15 分）
-# 實測它固定貴 6.4%（383.0 -> 407.4 ms）換約 +0.6GB 餘裕；所有 task_*.sh 都寫死卻從沒對照過。
-# 6.4% 對 8.8h 的跑次 = 34 分鐘。用真實峰值 N=2.6M（densify 期頂到 cap 的那一刻）判：
-#   不設也能在 ballast >= 0.3G 存活 => 白付的，排一次真實無旗標跑次確認
-#   不設在 0.3G 之前就 OOM          => 是保險費，繼續付
-
-# ★★★★★ SfM-init **重做**（~9h）：唯一變數 `initialize_from null`，對照 speed3_b12
-# 2026-09-11：`speed3_sfminit_b12` 是手動啟動的，resolved config 與 speed3_b12 差四項，
-# **不是單變數**：dynamic_strips false->true（+ target 5.4->5.2、safety 0.6->0.85）、
-# skip_surf_normal false->true。`dynk_K.log` 600 點：**K>1 佔 77.7%、K>=6 佔 69.3%**，
-# 而 `_strip_forward_backward` 自承逐條帶 SSIM 是 boundary-window 近似
-# ⇒ 那次的 25.82@60k / 26.21@56.8k **不可用來判定 SfM-init**（也解釋了為何慢 24%）。
-# K 是白付的（tools/strip_k_audit.py，純 CPU）：兩個 60k 模型在同參數下**都**被判 K=6，
-# 而 depth-init 同 N=2.34M 用 K=1 實測峰值 4.87 GB 沒 OOM ⇒ budget 訂低約 1.1 GB。
-# 未受污染的部分（K=1 期間）：5,680 +0.72 / 11,360 +0.78 dB ⇒ 早期領先是真的。
-
-# ★★★★★ 壓縮**優化器狀態**（不是模型）：Adam 動量 bf16 + cap 2.6M -> 3.2M
-# VRAM 拆解：逐顆儲存 928 B（**83%**）／binning 191 B（17%）；而動量佔儲存**一半**且
-# **完全不影響模型表達力** —— 這是 sh2(-16.4sd)/SB-4(六項全輸) 失敗後唯一還活著的儲存槓桿。
-# ✅ 已驗：200 步對 fp32 相對差 1.2e-4；state 8.00->4.00 B/元素；densify 後 dtype 仍是 bf16
-#    （`cat_tensors_to_optimizers_` 原本會**靜默**升回 fp32，已修）。
-# ⚠ 預估只有 **+0.16 dB**（低於 0.24 門檻）=> 本臂的主要價值是**當 8-bit 的前置測試**：
-#   低精度動量若本身就傷品質，8-bit（+0.29 dB）只會更傷，那個狀態手術就不必做。
-# ★★★★ Elongation Filter 路徑 (a)：硬剪（~8.8h）—— 門檻 20，待探針確認後可調
+# ★★★★ Elongation Filter 路徑 (a)：硬剪（~8.8h）—— 門檻 20，待上面探針確認後可調
 # 代理量測：剔除 >20（4.85% 顆）=> binning -14.0%，真覆蓋只 -1.8%（7.9:1）
-# 先驗：有 CityGSV2 的外部先例，預期比 (b) 有機會。
+# 先驗：有 CityGaussian V2 的外部先例，預期比 (b) 有機會。
 bash scripts/task_elongprune_b12.sh
 
 # ★★★ Elongation Filter 路徑 (b)：併入死亡判準、由 relocate 搬移（~8.8h）—— 同門檻 20
 # ⚠⚠ 既有反證：vpc_prune_frac 用同一機制（OR 進 dead_mask）實測 -2.34 dB
-#   （「搬走會破壞它們原本在做的事」）=> 先驗不看好，但使用者決定兩路都測。
+#   （「搬走會破壞它們原本在做的事；改變集合有效、破壞集合無效」）
+#   => 先驗不看好，但使用者 2026-09-12 決定兩路都測。
 bash scripts/task_elongrelocate_b12.sh
 
+# ★★★★★ bf16 動量**重做**：cap 2.82M（上次設 3.2M 而 OOM，我算錯了）
+# 錯在只用「儲存省下多少」推 cap：bf16 動量省 232 B/顆，但**邊際成本是
+# 696（儲存）+ 2050（渲染 A_RENDER+B_RENDER）= 2746 B/顆** => 0.54 GB 只夠多約
+# 197k 顆（+8.4%），不是 +23%。正確的 cap ≈ 2.82M。
+bash scripts/task_bf16mom_b12.sh
