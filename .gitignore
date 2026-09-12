@@ -50,3 +50,7 @@ build/
 *.egg-info/
 submodules/.rasterizer_upstream_git/
 *.egg-info/
+# 佇列是**每台機器的執行期狀態**，不是原始碼。
+# 2026-09-13：它被追蹤時，我從 Jupyter API 改 lab 的佇列 => 每次 git pull 都
+# 「Your local changes would be overwritten」而中止（而我還把那個錯誤靜音過一次）。
+scripts/queue.txt

@@ -44,16 +44,18 @@ esac
 echo "TORCH_CUDA_ARCH_LIST=[${TORCH_CUDA_ARCH_LIST:-未設}]"
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
-  # ⚠ 2026-09-13：前幾輪死在 step 1,049 的跑次留下**空的**輸出目錄，而
-  #   `internal/cli.py:101` 會斷言輸出不存在 => 重排同一個任務時
+  # ⚠ 2026-09-13：`internal/cli.py:101` 斷言輸出目錄不存在，而前幾輪失敗的跑次
+  #   留下了殘留（都有 step=499 的 ckpt）=> 重排同一個任務會
   #   `AssertionError: checkpoint or point cloud output already exists`。
-  #   判準用「**有沒有 ckpt**」而不是無條件 rm —— 免得誤刪一個已經跑完的跑次。
+  #   ⛔ 判準**不能**用「有沒有 ckpt」——失敗的殘留也有（499 步就存一次）。
+  #   ⇒ **永不刪除，一律搬走**：舊的改名成 `<dir>.aborted_<時間>`，
+  #     這樣失敗殘留與跑完的跑次都不會丟，而斷言也過得去。
   local out="outputs/$name/blocks/block_$blk"
   if [ -d "$out" ]; then
-    if ls "$out"/checkpoints/*.ckpt >/dev/null 2>&1; then
-      echo "⛔ $out **已經有 ckpt** => 不覆蓋。要重跑請先自己搬走或改 -n 的名字。"
-      return 4
-    fi
+    local moved="${out}.aborted_$(date +%m%d_%H%M%S)"
+    mv "$out" "$moved" || { echo "⛔ 搬不動 $out"; return 4; }
+    echo "  舊輸出搬到 $moved（$(du -sh "$moved" 2>/dev/null | cut -f1)）"
+  fi
     echo "  清掉沒有 ckpt 的失敗殘留：$out"
     rm -rf "$out"
   fi
