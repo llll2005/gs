@@ -24,10 +24,6 @@ from tqdm import tqdm
 from plyfile import PlyData, PlyElement
 from internal.utils.colmap import read_model, qvec2rotmat
 
-try:
-    import open3d as o3d
-except ImportError:
-    raise RuntimeError("open3d not installed — run: pip install open3d")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLI
@@ -96,6 +92,37 @@ assert os.path.exists(partition_dir), (
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── voxel_down_sample：不用 open3d 的等價實作 ────────────────────────────────
+# ⚠ 為什麼要自己寫：lab 的容器**沒有 libX11.so.6**，而 open3d 即使不顯示也連結 X11
+#   => `import open3d` 直接 OSError，depthprep 跑完 49 分鐘的深度圖之後死在這一行。
+#   而使用者的限制是「只能在此資料夾做事、不准更新系統」=> 不能 apt install libx11-6，
+#   也不該動 /root/miniconda3（在允許資料夾外；記憶記過 pip --user 弄壞 conda 那次）。
+# ⚠ open3d 只被用來做 voxel_down_sample（兩處），那是定義明確的操作：
+#   把空間切成邊長 voxel_size 的體素，每個被佔用的體素輸出其中所有點的**平均**。
+# ✅ 已對 open3d 0.18.0 驗證**逐位元等價**（本機有 open3d）：
+#   三組（5 萬/0.03、20 萬/0.1、3 萬/0.7）點數完全相同，座標與法線最大差都是 0.000e+00。
+#   => 兩台機器一律走這條路徑，不做「有 open3d 就用 open3d」的分支，
+#      否則兩邊會產出不同的 PLY 而無法比較。
+def voxel_down_sample_np(xyz, nrm, voxel_size):
+    xyz = np.asarray(xyz, np.float64)
+    nrm = np.asarray(nrm, np.float64)
+    origin = xyz.min(0) - voxel_size * 0.5        # open3d 的預設原點
+    key = np.floor((xyz - origin) / voxel_size).astype(np.int64)
+    key -= key.min(0)
+    dim = key.max(0) + 1
+    # 攤平成一維鍵會快很多；極端離群點可能讓維度乘積爆掉，那時退回逐列比對
+    if float(dim[0]) * float(dim[1]) * float(dim[2]) < 2.0 ** 62:
+        flat = (key[:, 0] * dim[1] + key[:, 1]) * dim[2] + key[:, 2]
+        _, inv, cnt = np.unique(flat, return_inverse=True, return_counts=True)
+    else:
+        _, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    n = len(cnt)
+    sx = np.zeros((n, 3)); sn = np.zeros((n, 3))
+    np.add.at(sx, inv, xyz)
+    np.add.at(sn, inv, nrm)
+    return (sx / cnt[:, None]).astype(np.float32), (sn / cnt[:, None]).astype(np.float32)
 
 def get_intrinsics(cam, depth_h, depth_w):
     """Return (fx, fy, cx, cy) scaled to the depth map resolution."""
@@ -316,12 +343,9 @@ for block_id in range(num_blocks):
             return
         cxyz = np.concatenate(chunk_xyz, axis=0)
         cnrm = np.concatenate(chunk_normals, axis=0)
-        pcd_c = o3d.geometry.PointCloud()
-        pcd_c.points  = o3d.utility.Vector3dVector(cxyz.astype(np.float64))
-        pcd_c.normals = o3d.utility.Vector3dVector(cnrm.astype(np.float64))
-        pcd_c_down    = pcd_c.voxel_down_sample(voxel_size)
-        all_xyz.append(np.asarray(pcd_c_down.points,  dtype=np.float32))
-        all_normals.append(np.asarray(pcd_c_down.normals, dtype=np.float32))
+        _dx, _dn = voxel_down_sample_np(cxyz, cnrm, voxel_size)
+        all_xyz.append(_dx)
+        all_normals.append(_dn)
 
     for img_name in tqdm(block_imgs, desc=f"  block {block_id}", leave=False):
         img_meta = name_to_image.get(img_name)
@@ -443,13 +467,7 @@ for block_id in range(num_blocks):
         cam_centroid = xyz_all.mean(0)
         focal_mean = None
 
-    pcd = o3d.geometry.PointCloud()
-    pcd.points  = o3d.utility.Vector3dVector(xyz_all.astype(np.float64))
-    pcd.normals = o3d.utility.Vector3dVector(nrm_all.astype(np.float64))
-    pcd_down = pcd.voxel_down_sample(voxel_size)
-
-    xyz_d = np.asarray(pcd_down.points,  dtype=np.float32)
-    nrm_d = np.asarray(pcd_down.normals, dtype=np.float32)
+    xyz_d, nrm_d = voxel_down_sample_np(xyz_all, nrm_all, voxel_size)
     nrm_d /= (np.linalg.norm(nrm_d, axis=-1, keepdims=True) + 1e-8)
     print(f"  after voxel (size={voxel_size:.3f}m): {len(xyz_d):,}")
 
