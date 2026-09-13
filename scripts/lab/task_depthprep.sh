@@ -30,7 +30,18 @@ print('✅ Depth-Anything-V2 可用，輸出', d.shape)
 #   `AssertionError: not an image ... can be found in '.../block_all/images'`
 #   （2026-09-13 在 lab 實測；CLAUDE.md 的舊指令也沒有這個參數）
 echo "=== 5,621 張深度圖（最貴的一步）==="
-conda run -n gspl --no-capture-output python utils/estimate_dataset_depths.py "$D" --image_dir input || exit 1
+# ⚠ 2026-09-13：`estimate_dataset_depths.py` **沒有跳過既有檔案的邏輯** ⇒ 重跑會白做 49 分鐘。
+#   而第一次執行已經把這一步做完（5,621 張、四位數命名正確），是死在下一步的 open3d。
+#   ⇒ 數量已達影像數就跳過。判準用**檔案數**，不依賴那支 python 的行為。
+_NIMG=$(ls "$D/input" 2>/dev/null | wc -l)
+_NDEP=$(ls "$D/estimated_depths" 2>/dev/null | wc -l)
+if [ "$_NDEP" -ge "$_NIMG" ] && [ "$_NIMG" -gt 0 ]; then
+  echo "  已有 $_NDEP 張深度圖（影像 $_NIMG 張）=> 跳過這一步"
+  echo "  （要強制重做：rm -rf $D/estimated_depths）"
+else
+  echo "  深度圖 $_NDEP / 影像 $_NIMG => 執行"
+  conda run -n gspl --no-capture-output python utils/estimate_dataset_depths.py "$D" --image_dir input || exit 1
+fi
 echo "=== depth-init PLY（25 塊）==="
 conda run -n gspl --no-capture-output python utils/depth_init_blocks.py "$D" \
   --block_dim 5 5 --voxel_min 0.03 --voxel_max 0.7 --chunk_size 75 || exit 1
