@@ -173,21 +173,48 @@ def main():
         import re as _re
         s_ = sess()
 
-        def _fetch(rel, dest):
-            """走 /files/ 端點抓原始位元組（不經 base64），邊下載邊報進度。"""
+        def _fetch(rel, dest, expect=None):
+            """走 /files/ 端點抓原始位元組（不經 base64），邊下載邊報進度。
+
+            ⚠⚠ 2026-09-13：先寫 `<dest>.part`，**比對大小通過才改名**。
+              原本直接寫最終檔名 => 傳輸被中斷（我 kill 了 pull）就把半個檔案留在
+              最終檔名下，而且事後沒有任何東西比對大小 => 載入時才炸
+              `PytorchStreamReader failed reading zip archive`。實際發生過 1 次
+              （772.0 MiB vs 應有的 1,725.8 MiB，缺 55.3%）。這是本專案一再出現的
+              「靜默壞掉」形狀，而這次是我自己造的。
+            """
             url = f"{BASE}/files/{ROOT}/{REPO}/{rel}"
             t0, got = time.time(), 0
             os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
-            with s_.get(url, stream=True, timeout=1800) as rr:
-                if rr.status_code != 200:
-                    print(f"  ⛔ HTTP {rr.status_code}  {rel}")
-                    return False
-                with open(dest, "wb") as f:
-                    for chunk in rr.iter_content(1 << 22):
-                        f.write(chunk); got += len(chunk)
-                        el = time.time() - t0
-                        print(f"\r  {got/2**20:8.1f} MiB  {got/2**20/max(el,1e-9):6.2f} MiB/s",
-                              end="", flush=True)
+            part = dest + ".part"
+            try:
+                with s_.get(url, stream=True, timeout=1800) as rr:
+                    if rr.status_code != 200:
+                        print(f"  ⛔ HTTP {rr.status_code}  {rel}")
+                        return False
+                    if expect is None:
+                        cl = rr.headers.get("Content-Length")
+                        expect = int(cl) if cl and cl.isdigit() else None
+                    with open(part, "wb") as f:
+                        nxt = 1 << 26          # 每 64 MiB 才報一次，不要洗版
+                        for chunk in rr.iter_content(1 << 22):
+                            f.write(chunk); got += len(chunk)
+                            if got >= nxt:
+                                nxt += 1 << 26
+                                el = time.time() - t0
+                                pct = f" {100*got/expect:5.1f}%" if expect else ""
+                                print(f"\r  {got/2**20:8.0f} MiB{pct}  "
+                                      f"{got/2**20/max(el,1e-9):6.2f} MiB/s", end="", flush=True)
+            except Exception as e:
+                print(f"\r  ⛔ 傳輸中斷：{type(e).__name__} {str(e)[:80]}")
+                if os.path.exists(part): os.remove(part)
+                return False
+            if expect is not None and got != expect:
+                print(f"\r  ⛔ 大小不符：收到 {got:,} 應為 {expect:,}（缺 "
+                      f"{100*(1-got/max(expect,1)):.1f}%）=> 丟棄，不寫成最終檔名")
+                os.remove(part)
+                return False
+            os.replace(part, dest)
             el = time.time() - t0
             print(f"\r  ✔ {dest}  {got/2**20:.1f} MiB / {el:.1f}s "
                   f"({got/2**20/max(el,1e-9):.2f} MiB/s)")
@@ -225,7 +252,7 @@ def main():
             ok = 0
             for i, (rel, dest, sz) in enumerate(todo, 1):
                 print(f"[{i}/{len(todo)}] {dest}  {sz/2**20:.0f} MiB")
-                if _fetch(rel, dest):
+                if _fetch(rel, dest, expect=sz):
                     ok += 1
             print(f"\n完成 {ok}/{len(todo)}")
             return 0 if ok == len(todo) else 1
