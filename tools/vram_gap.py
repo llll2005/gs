@@ -65,8 +65,17 @@ def main():
     ap.add_argument("--run", default="agd2_b12")
     ap.add_argument("--step", type=int, default=60000)
     ap.add_argument("--trim-cams", type=int, default=284,
-                    help="trim pass 用幾台相機（284 = 與訓練時相同）")
+                    help="trim pass 用幾台相機（舊資料 284；新資料 b6=548 / b12=653 / b13=667）")
+    ap.add_argument("--frag", type=int, default=0, metavar="輪數",
+                    help="碎片模式：跑 N 輪 trim pass 而**不清快取**，每輪報 "
+                         "allocated/reserved/num_alloc_retries。0 = 不跑（預設走原本的逐階段量測）")
     args = ap.parse_args()
+
+    # ★ 套用與訓練相同的 VRAM 上限。**不套就量不到碎片** ——
+    #   lab 是 24 GiB，沒有上限就永遠有餘裕、retries 恆為 0，整個量測沒有意義。
+    #   直接複用 main.py 那條路徑，不重寫（同一個環境變數 CITYGS_VRAM_CAP_GB）。
+    from internal.entrypoints.gspl import _apply_vram_cap
+    _apply_vram_cap()
 
     if not torch.cuda.is_available():
         raise SystemExit("需要 GPU")
@@ -133,6 +142,38 @@ def main():
                               bg_color=bg, record_transmittance=True))
             gather()
     peak(trim_pass, f"E trim pass（{args.trim_cams} 台）", res)
+
+    # ── 碎片模式 ──
+    # ⚠ 為什麼要獨立一段：上面的 `peak()` 每段前都會 `empty_cache()` +
+    #   `reset_peak_memory_stats()` —— 那正好把「配置器手上留了多少、留成什麼形狀」
+    #   清掉，也就是把要量的東西清掉了。docstring 裡的「F 加總 vs reserved」
+    #   因此一直量不到真東西。這裡改成**連續跑、不清快取**，看它怎麼累積。
+    # 要答的問題（2026-09-13）：同一個 N、同一個上限下，
+    #   **相機數**是不是碎片的來源？trim pass 每輪走全部相機，而每台的 binning
+    #   緩衝大小隨視角變動 ⇒ 相機愈多，進出配置器的「不同尺寸大塊」愈多。
+    #   對照訊號：b6（548 台）gap 0.11G vs b13（667 台）gap 0.74G，而實佔幾乎相同。
+    if args.frag > 0:
+        ncam = min(args.trim_cams, len(train_cams))
+        torch.cuda.empty_cache()
+        torch.cuda.reset_accumulated_memory_stats()
+        print(f"\n★ 碎片模式：{ncam} 台相機 x {args.frag} 輪（不清快取）"
+              f"   上限={os.environ.get('CITYGS_VRAM_CAP_GB') or '未設'}")
+        print(f"{'輪':>4} {'allocated':>11} {'reserved':>11} {'gap':>9} "
+              f"{'retries':>8} {'ooms':>6}")
+        for r in range(args.frag):
+            trim_pass()
+            torch.cuda.synchronize()
+            stt = torch.cuda.memory_stats()
+            a = torch.cuda.memory_allocated() / GB
+            rs = torch.cuda.memory_reserved() / GB
+            print(f"{r + 1:>4} {a:>10.3f}G {rs:>10.3f}G {rs - a:>8.3f}G "
+                  f"{stt.get('num_alloc_retries', 0):>8} {stt.get('num_ooms', 0):>6}")
+        print("""
+判讀（碎片模式）：
+  retries 隨相機數上升        => **相機數確實在製造碎片**（配置器要先釋放快取才配得到）
+  retries 恆為 0 而 gap 也平  => 相機數不是來源，回頭查 N 與間歇峰值
+  gap 逐輪單調上升            => 累積型碎片（愈跑愈糟），與「跑到 step 14,000 才死」相符
+⚠ 沒設 CITYGS_VRAM_CAP_GB 就不要解讀：24 GiB 上永遠有餘裕，retries 必為 0。""")
 
     for k, v in res:
         print(f"{k:>26} {v:>13.3f}")
