@@ -84,6 +84,13 @@ case "$ARM" in
   costdir)    EXTRA=(--model.density.init_args.cost_add_densify 2.278);         EXP=1 ;;
   costdir_cal) EXTRA=(--model.density.init_args.cost_add_densify 4.0);          EXP=1 ;;
   costtaming) EXTRA=(--model.density.init_args.cost_add_densify -2.8);          EXP=1 ;;
+  # ★★ 把**週期 trim 的剪枝判準**從價值 v 換成每單位成本的價值 v/c（零額外成本，c 本來就在算）
+  #   依據：rho(v,c)≈0（三個模型）=> 兩種排序選出**不同**的一批（top10% 重疊 54~67%）；
+  #        按 v/c 貪婪在同成本預算下多拿到 +48~57%（10% 預算）；
+  #        而按 contribution 排序剪枝只比**隨機**好 1.27 倍 => 現行判準本身很弱。
+  #   ⚠ 這是「破壞集合」那一側；vpc_prune_frac 的 -2.34 dB 是「把低 v/c 的粒子**搬走**」，
+  #     移除與搬移不同，但先驗要謹慎 => 判準看四個指標的正負號模式，不是單看 PSNR。
+  trimvpc)    EXTRA=(--model.renderer.init_args.trim_by_value_per_cost true);      EXP=1 ;;
   dssim05)    EXTRA=(--model.metric.init_args.lambda_dssim 0.5);                EXP=1 ;;
   both)       EXTRA=(--model.density.init_args.cost_add_densify 4.0
                      --model.metric.init_args.lambda_dssim 0.5);                EXP=2 ;;
@@ -99,7 +106,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 2)));         EXP=1 ;;
   cb25)       [ "${B0:-0}" -gt 0 ] || { echo "⛔ block $BLK 沒有標定過的 B0"; exit 2; }
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4)));         EXP=1 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|trimvpc）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 export CITYGS_DIFF_VS="${RUN_PREFIX}cs_base"

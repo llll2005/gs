@@ -31,6 +31,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             diable_trimming: bool = False,
             skip_surf_normal: bool = False,
             trim_subsample_probe: int = 0,
+            trim_by_value_per_cost: bool = False,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -63,6 +64,19 @@ class SepDepthTrim2DGSRenderer(Renderer):
         self.diable_start_trimming = diable_start_trimming
         self.diable_trimming = diable_trimming
         self.skip_surf_normal = skip_surf_normal
+        # ★★ 2026-09-13：週期 trim 的剪枝判準從**價值** v 換成**每單位成本的價值** v/c。
+        #   依據（全部在修正後的資料上量的）：
+        #     ① rho(v,c)≈0（三個模型：-0.006/+0.030/-0.050）=> v 與 c **解耦**
+        #        => 按 v/c 排序選出與按 v **不同**的一批（top10% 重疊只有 54~67%）
+        #     ② 按 v/c 貪婪比按 v 貪婪，在同成本預算下多拿到的總價值：
+        #        預算 10% => +48~57%／25% => +21~27%／50% => +5~9%／75% => +1~2%
+        #     ③ 按 contribution 排序剪枝只比**隨機**剪枝好 **1.27 倍**（MSE@50%）
+        #        => 現行判準本身就很弱
+        #   ⇒ c_i 本來就在同一個 pass 裡算好（`cost_acc`）=> **零額外成本**的判準替換。
+        #   ⚠ 這是「破壞集合」那一側；記憶記著 vpc_prune_frac 的 -2.34 dB 是把低 v/c 的粒子
+        #     **搬走**（relocate）——移除與搬移不是同一件事，但先驗要謹慎。
+        self.trim_by_value_per_cost = trim_by_value_per_cost
+        self._vpc_announced = False
         # >0 時，每次 trim 事件**額外**用「每 N 台取一台」再算一次 contribution，
         # 報告與全視角版的 Spearman 與底部 10% 遮罩重疊。只讀，不改變剪枝結果。
         # 目的（§11.48）：trim pass 佔 profile 視窗 80%、約 9 小時跑次的 10%，
@@ -371,8 +385,22 @@ class SepDepthTrim2DGSRenderer(Renderer):
             contribution = gather()
             if blur is not None:
                 module.density_controller.blur_score = blur / max(len(cameras), 1)
-            tile = torch.quantile(contribution, self.prune_ratio)
-            prune_mask = (contribution <= tile)
+            score = contribution
+            if self.trim_by_value_per_cost:
+                if cost_acc is None:
+                    print("⚠⚠ [trim-vpc] **設了 trim_by_value_per_cost 但拿不到 c_i，本機制不會生效**")
+                else:
+                    score = contribution / torch.clamp_min(cost_acc, 1.0)
+                    if not self._vpc_announced:
+                        self._vpc_announced = True
+                        _v, _c, _s = contribution, cost_acc, score
+                        def _ceil(x):
+                            k = max(1, int(x.numel() * 0.05))
+                            return float(torch.topk(x, k).values.mean() / torch.clamp_min(x.mean(), 1e-30))
+                        print(f"[trim-vpc] ✅ 首次觸發：判準 v -> v/c   "
+                              f"ceiling(top5%)/mean  v={_ceil(_v):.2f}x  c={_ceil(_c):.2f}x  v/c={_ceil(_s):.2f}x")
+            tile = torch.quantile(score, self.prune_ratio)
+            prune_mask = (score <= tile)
             # 診斷（2026-08-25）：`<=` 在有並列時會超剪。零貢獻的來源是 EXACT_SUPPORT ——
             # opacity <= 1/255 的粒子根本不進 binning，貢獻恆為 0。若零貢獻佔比 > prune_ratio，
             # 這一刀就會把它們**全部**剪掉，遠超過名目比例，破平衡公式的 0.9x 假設隨之失效。
