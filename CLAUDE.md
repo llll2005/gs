@@ -172,6 +172,11 @@ python utils/depth_init_blocks.py data/matrix_city/aerial/train/block_all --bloc
 conda run -n gspl python -u main.py fit --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply --data.parser.block_id 12 --model.density.init_args.cap_max 2600000 -n <run_name>
 ```
 Don't hand-type the recipe flags — copy `scripts/task_speed3.sh` (b12) / `task_speed3_b7.sh` (b7).
+⚠ **`down_sample_factor: 1.2` 是全域設定，而且一直都是。** 影像以全解析度存在
+`input/`，1.2 倍是 **dataparser 載入時**算的（`configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml`
+的 `image_dir: input` + `down_sample_factor: 1.2`）；`images_1.2` 只是 `-> input` 的別名
+（官方 test 集那份是 4 位數改名層）。⇒ **沒有「1.2 版」與「全解析度版」兩種跑次**，
+跑次名不需要、也不該加 `1.2x` 這類後綴（2026-09-13 與使用者確認）。
 SfM-init is the same command with `--model.initialize_from null`.
 ⚠ The previous example here was stale on three counts and is corrected above: it used the
 **retired SB config** (`mcmc_2dgs_sb_...`), `cap_max 1000000` (now 2.6M), and
