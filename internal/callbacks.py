@@ -118,7 +118,9 @@ class StopDataLoaderCacheThread(Callback):
 
 class TrainConsole(ProgressBar):
     """統一訓練輸出（預設進度條，取代 tqdm）。TTY+rich → 底部固定 rich 面板（最近 val/進度/VRAM，>90% 紅字）；
-    非 TTY / rich 不可用 / live=false → 安全 fallback 成一般 tqdm 進度條（與原 ProgressBar 相同行為）。
+    非 TTY / rich 不可用 / live=false → **靜音 tqdm**，改每 plain_every_n_steps 步印一次精簡快照
+    （2026-09-13 改；原本退回 tqdm，但非 TTY 沒有原地更新 => 每次 refresh 都是新的一行，
+     lab 的 slot log 曾長到 267,581 行）。
     兩種模式都寫 outputs/<run>/train_status.txt（可 cat/貼 AI）+ 收 RTG 事件。任何 rich 失敗都不影響訓練。"""
 
     def __init__(self, refresh_rate: int = 1, process_position: int = 0,
@@ -241,6 +243,17 @@ class TrainConsole(ProgressBar):
         self._state.active = self._rich_ok        # 只在 rich 模式緩衝事件；fallback 保留原 print 行為
         if self._rich_ok:
             self.disable()                         # 靜音 tqdm（所有 bar no-op），改由 rich 驅動
+        else:
+            # ⚠⚠ 2026-09-13：非 TTY **也要**靜音 tqdm。
+            #   原本只在 rich 模式 disable，非 TTY 就退回 tqdm —— 但非 TTY 正是最不該用進度條的
+            #   場合：沒有 TTY 就沒有原地更新，每次 refresh 都變成新的一行。
+            #   實測 lab 的 logs/runner.slot2.log 長到 **267,581 行**，幾乎全是進度條，
+            #   要找一段錯誤得掃過幾十萬行，而且透過 API 讀很慢。
+            #   資訊沒有損失：`train_status.txt` 每 2 秒就寫一次完整快照。
+            #   ⇒ 關掉 tqdm，改成每 N 步印一次同一份精簡快照（沿用既有的 plain 路徑）。
+            self.disable()
+            if self.plain_every_n_steps <= 0:
+                self.plain_every_n_steps = 500
         super().on_train_start(trainer, pl_module)
         self._t_last = time.time()
         self._step_last = trainer.global_step
