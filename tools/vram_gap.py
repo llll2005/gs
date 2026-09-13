@@ -108,7 +108,10 @@ def main():
         initialize_model_and_renderer_from_checkpoint_file(ck[0], device=dev,
                                                            eval_mode=False, pre_activate=False)
     n = model.n_gaussians
-    print(f"{args.run} @ step={args.step}   N = {n:,}")
+    # ⚠ 用 --ckpt 時 args.run/args.step 還是預設值 => 原本這行會印出**錯的來源**
+    #   （實際 b6@29999 卻標成 agd2_b12@60000）。標籤錯位在本專案已經害過多次，
+    #   所以一律以真正載入的 ckpt 路徑為準。
+    print(f"來源 {ck[0]}   N = {n:,}")
 
     ckpt = torch.load(ck[0], map_location="cpu")
     dmh = ckpt["datamodule_hyper_parameters"]
