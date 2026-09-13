@@ -40,6 +40,17 @@
 # ```
 # 取「不少於 20,000 的最小整數期」=> 每塊都剛好停在 val 點上，兩個觀測點可直接對齊。
 # 要覆寫用 `STEPS=<n>`。
+#
+# ## ★ w 的校準值（2026-09-13 在**新資料**上實測，兩塊一致）
+# 目標：令 `1 + w*ceiling(訊號)` = 25.8，與 absgrad（已證有效那個）同動態範圍。
+# ```
+#            ceiling(top5%)/mean      w = 24.8/ceiling
+#   1/c      b12 6.32 / b13 6.14      3.92 / 4.04   => 取 **4.0**
+#   c        b12 8.97 / b13 8.58      2.76 / 2.89   => 取 **2.8**
+# ```
+# ⚠ 旗標 docstring 建議的 **2.278** 是用**舊資料**（ceiling(1/ĉ)=10.89x）算的
+#   ⇒ 在新資料上只有目標強度的 0.57 倍。而「強度沒對齊」正是我指認為原始否證主因的東西
+#   ⇒ 沿用舊值等於用相反方向重蹈同一個錯。**校準值要跟著資料重算。**
 set -u
 source "$(dirname "$0")/_common.sh"
 BLK=${1:?用法: task_cmp.sh <block_id> <arm>}
@@ -58,10 +69,10 @@ echo "block $BLK：$NCAM 台相機 / val 每 $PERIOD 步 => 全長 $STEPS 步、
 
 case "$ARM" in
   base)       EXTRA=();                                                        EXP=0 ;;
-  costdir)    EXTRA=(--model.density.init_args.cost_add_densify 2.278);         EXP=1 ;;
-  costtaming) EXTRA=(--model.density.init_args.cost_add_densify -2.278);        EXP=1 ;;
+  costdir)    EXTRA=(--model.density.init_args.cost_add_densify 4.0);           EXP=1 ;;
+  costtaming) EXTRA=(--model.density.init_args.cost_add_densify -2.8);          EXP=1 ;;
   dssim05)    EXTRA=(--model.metric.init_args.lambda_dssim 0.5);                EXP=1 ;;
-  both)       EXTRA=(--model.density.init_args.cost_add_densify 2.278
+  both)       EXTRA=(--model.density.init_args.cost_add_densify 4.0
                      --model.metric.init_args.lambda_dssim 0.5);                EXP=2 ;;
   *) echo "⛔ 未知的 arm：$ARM（base|costdir|costtaming|dssim05|both）"; exit 2 ;;
 esac
