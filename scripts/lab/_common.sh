@@ -110,5 +110,23 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   [ "$rc" -ne 0 ] && { echo "❌ $name block $blk 失敗 rc=$rc"; return "$rc"; }
   echo "=== $name / block $blk 完成 $(date) ==="
   conda run -n gspl python tools/audit_geometry.py "$name" --block "$blk" 2>&1 | tail -6
+  # ★★ 比分數之前 diff 兩份 resolved config（使用者 2026-09-13 要求加進腳本）
+  #   為什麼：`speed3_sfminit_b12` 以為唯一變數是 init，實際 resolved config 差**四項**，
+  #   其中 `dynamic_strips=true` 讓 77.7% 的訓練步跑在被改過的 loss 上
+  #   => 一整趟 9 小時 GPU 的分數全部作廢，而這個檢查是**秒級**的。
+  #   （記憶 dynamic_strips_confound）
+  #   基準預設是同一塊的 `speed3`（本專案的任務腳本幾乎都是「speed3 配方 + 一個改動」）；
+  #   要換基準用 CITYGS_DIFF_VS，要守門用 CITYGS_DIFF_EXPECT=<宣稱的變數個數>。
+  #   ⚠ 只印不擋 —— 跑次已經完賽了，這時把任務標成失敗只會誤導台帳。
+  local base="${CITYGS_DIFF_VS-${RUN_PREFIX}speed3}"
+  if [ -n "$base" ] && [ "$base" != "$name" ] \
+     && ls "outputs/$base/blocks/block_$blk/lightning_logs/version_"*/config.yaml >/dev/null 2>&1; then
+    echo "=== resolved config diff：$name vs $base（block $blk）==="
+    conda run -n gspl python tools/diff_resolved_config.py \
+      "$base:$blk" "$name:$blk" ${CITYGS_DIFF_EXPECT:+--expect "$CITYGS_DIFF_EXPECT"} 2>&1 \
+      | grep -vE "pkg_resources|declare"
+  else
+    echo "（略過 resolved config diff：基準 [${base:-未設}] 不存在或就是自己）"
+  fi
   return 0
 }
