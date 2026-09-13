@@ -56,11 +56,16 @@ source "$(dirname "$0")/_common.sh"
 BLK=${1:?用法: task_cmp.sh <block_id> <arm>}
 ARM=${2:?同上}
 
+# ★ B0 = 當前操作點的 Load（`max_view Σ (2r/16)^2`），由 tools/cost_budget_calibrate.py
+#   在**已訓練好的 ckpt** 上一次前向量出來（不需要訓練，見該工具檔頭）。
+#   b6  speed3@14999   N≈2.60M  B0 = 17,987,534  (B/N 6.92)
+#   b12 gate15000@15000 N=2.34M B0 = 14,177,821  (B/N 6.06)
+#   ⚠ 不可沿用 tools/cost_budget_probe.py 的 23.1M —— 那支用解析投影，而生效的是光柵器 radii。
 case "$BLK" in
-  6)  NCAM=548 ;;
-  12) NCAM=653 ;;
-  13) NCAM=667 ;;
-  *)  NCAM=${NCAM:?未知的 block，請用 NCAM=<相機數> 指定} ;;
+  6)  NCAM=548; B0=17987534 ;;
+  12) NCAM=653; B0=14177821 ;;
+  13) NCAM=667; B0=0 ;;
+  *)  NCAM=${NCAM:?未知的 block，請用 NCAM=<相機數> 指定}; B0=${B0:-0} ;;
 esac
 PERIOD=$((NCAM * 20))
 STEPS=${STEPS:-$(( ( (20000 + PERIOD - 1) / PERIOD ) * PERIOD ))}
@@ -74,7 +79,19 @@ case "$ARM" in
   dssim05)    EXTRA=(--model.metric.init_args.lambda_dssim 0.5);                EXP=1 ;;
   both)       EXTRA=(--model.density.init_args.cost_add_densify 4.0
                      --model.metric.init_args.lambda_dssim 0.5);                EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|costdir|costtaming|dssim05|both）"; exit 2 ;;
+  # ★★ 命題的**約束端**：把生長條件從顆數 `N<=cap_max` 換成渲染成本 `Load<=cost_budget`
+  #   => N 不再是我設的定值，而是**從場景長出來**（使用者 2026-09-13 指出固定 N 會隨場景複雜度失準）。
+  #   為什麼排在**緊預算**：tools/rho_value_cost.py 量到背包天花板是預算鬆緊的函數 ——
+  #     預算佔總成本 10% => +57%／25% => +22~27%／50% => +6~9%／75% => +1~2%（b12/b13 一致）
+  #   而被否證的三個成本感知變體跑在 cap 2.6M ＝**寬鬆端**，天花板只有 2~9%
+  #   ⇒ 「它們輸」與「這方向沒用」是兩回事。
+  #   ⚠ `cap_max` 保留當安全閥：VRAM = 逐顆儲存（只看 N）＋ binning（只看成本），
+  #     本旗標只約束後者（旗標 docstring 明文要求）。
+  cb50)       [ "${B0:-0}" -gt 0 ] || { echo "⛔ block $BLK 沒有標定過的 B0"; exit 2; }
+              EXTRA=(--model.density.init_args.cost_budget $((B0 / 2)));         EXP=1 ;;
+  cb25)       [ "${B0:-0}" -gt 0 ] || { echo "⛔ block $BLK 沒有標定過的 B0"; exit 2; }
+              EXTRA=(--model.density.init_args.cost_budget $((B0 / 4)));         EXP=1 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|costdir|costtaming|dssim05|both|cb50|cb25）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 export CITYGS_DIFF_VS="${RUN_PREFIX}cs_base"
