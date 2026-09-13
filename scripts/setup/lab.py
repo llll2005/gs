@@ -24,6 +24,7 @@ ls   <相對路徑>            列目錄（contents API）
 put  <本機檔> <遠端相對路徑>  上傳單一小檔（contents API，<10MB）
 ckpts <run>                看某個跑次有哪些 block / step / 大小
 get  <run> <block> <step> [本機目錄]   抓某個跑次的特定 ckpt（含同名 PLY）
+pull [run|*]               把 lab 上所有 ckpt 抓回 outputs/lab/（跳過 aborted 與已存在的）
 getfile <repo相對路徑> [本機路徑]       抓任意單一檔案
 ```
 ⚠ **web view 要 ckpt，不是 PLY** —— `-xyz_rgb.ply` 只有 x/y/z + 法線 + RGB，沒有
@@ -168,7 +169,7 @@ def main():
                         key=lambda y: (y["type"], y["name"])):
             print(f"  {x['type']:>9}  {x.get('size') or '':>12}  {x['name']}")
         return 0
-    if c in ("ckpts", "get", "getfile"):
+    if c in ("ckpts", "get", "getfile", "pull"):
         import re as _re
         s_ = sess()
 
@@ -196,6 +197,38 @@ def main():
             rel = sys.argv[2]
             dest = sys.argv[3] if len(sys.argv) > 3 else os.path.basename(rel)
             return 0 if _fetch(rel, dest) else 1
+
+        if c == "pull":
+            # 把 lab 上**所有**（或指定 run 的）ckpt 抓回 outputs/lab/ 供本機分析。
+            # 跳過 `.aborted_*` 殘留，也跳過本機已存在且大小相同的（可續傳、可重跑）。
+            import re as _re2
+            what = sys.argv[2] if len(sys.argv) > 2 else "*"
+            rc, out = sh(f"cd {REPO} && stat -c '@CK %s %n' "
+                         f"outputs/lab/{what}/blocks/*/checkpoints/*.ckpt 2>/dev/null || true",
+                         timeout=300, stream=False)
+            todo, skip_n, skip_b, ab_n = [], 0, 0, 0
+            for ln in out.split("\n"):
+                m = _re2.match(r"@CK (\d+) (\S+\.ckpt)\s*$", ln.strip())
+                if not m:
+                    continue
+                sz, rel = int(m.group(1)), m.group(2)
+                if ".aborted_" in rel:
+                    ab_n += 1
+                    continue
+                dest = rel                      # 遠端路徑就是本機要放的相對路徑
+                if os.path.exists(dest) and os.path.getsize(dest) == sz:
+                    skip_n += 1; skip_b += sz; continue
+                todo.append((rel, dest, sz))
+            tot = sum(x[2] for x in todo)
+            print(f"要抓 {len(todo)} 個 / {tot/2**30:.2f} GiB"
+                  f"（已有 {skip_n} 個跳過 {skip_b/2**30:.2f} GiB；aborted 殘留 {ab_n} 個不抓）")
+            ok = 0
+            for i, (rel, dest, sz) in enumerate(todo, 1):
+                print(f"[{i}/{len(todo)}] {dest}  {sz/2**20:.0f} MiB")
+                if _fetch(rel, dest):
+                    ok += 1
+            print(f"\n完成 {ok}/{len(todo)}")
+            return 0 if ok == len(todo) else 1
 
         run = sys.argv[2]
         base = f"outputs/{run}/blocks"
