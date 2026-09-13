@@ -26,6 +26,8 @@ ckpts <run>                看某個跑次有哪些 block / step / 大小
 get  <run> <block> <step> [本機目錄]   抓某個跑次的特定 ckpt（含同名 PLY）
 getfile <repo相對路徑> [本機路徑]       抓任意單一檔案
 ```
+⚠ **web view 要 ckpt，不是 PLY** —— `-xyz_rgb.ply` 只有 x/y/z + 法線 + RGB，沒有
+  opacity/scale/rotation/SH，不是 Gaussian splat 模型（2026-09-13 使用者指出並查證）。
 ⚠ `get`/`getfile` 走 **`/files/` 端點（原始位元組）**，不是 contents API
   —— contents API 會 base64，多 33% 流量，大檔還可能讓 Jupyter 記憶體爆掉。
   實測我們的下行 **10.18 MiB/s（81 Mbps）**，一個 1.7 GB 的 ckpt 約 2.9 分鐘。
@@ -222,7 +224,8 @@ def main():
             for (b, st), (nm, sz) in sorted(found.items()):
                 print(f"  {b:>22}  step={st:<7} {sz/2**20:8.1f} MiB  {nm}")
             print("\n抓其中一個：lab.py get <run> <block編號> <step> [本機目錄]")
-            print("★ 只要 web view 的話抓 PLY 就好（get 會連同名 PLY 一起抓，小 100 倍）")
+            print("⚠ web view 要用 **ckpt**；同名的 -xyz_rgb.ply 只有位置/法線/顏色，"
+                  "沒有 opacity/scale/SH，進 viewer 不會有反應")
             return 0
 
         blk, step = sys.argv[3], int(sys.argv[4])
@@ -236,7 +239,10 @@ def main():
         nm, sz = found[key]
         print(f"抓 {run} / block_{blk} / step={step}   {sz/2**20:.1f} MiB -> {outdir}/")
         ok = _fetch(f"{base}/block_{blk}/checkpoints/{nm}", os.path.join(outdir, nm))
-        # 同名的 PLY（web view 只要這個，比 ckpt 小約 100 倍）；沒有就跳過
+        # 同名的 PLY 也抓一份。⚠⚠ **它不能當 web view 用** —— 2026-09-13 使用者指出
+        #   「.ply 進 web view 沒反應，一直以來都是給 ckpt」，查證屬實：那是
+        #   `-xyz_rgb.ply`，只有 x/y/z + 法線 + RGB，**沒有 opacity/scale/rotation/SH**
+        #   => 純點雲，不是 Gaussian splat 模型，只適合幾何檢視。web view 一律用 ckpt。
         ply = nm.replace(".ckpt", "-xyz_rgb.ply")
         _fetch(f"{base}/block_{blk}/checkpoints/{ply}", os.path.join(outdir, ply))
         return 0 if ok else 1
