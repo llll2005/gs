@@ -66,6 +66,10 @@ def main():
     ap.add_argument("--step", type=int, default=60000)
     ap.add_argument("--trim-cams", type=int, default=284,
                     help="trim pass 用幾台相機（舊資料 284；新資料 b6=548 / b12=653 / b13=667）")
+    ap.add_argument("--ckpt", default=None,
+                    help="直接指定 ckpt 路徑。★ --run/--step 是用 glob 找的，"
+                         "同一個 run 下多個 block 都有同一步數時會挑到錯的那個"
+                         "（2026-09-13 踩到：lab/speed3 的 b6 與 b13 都會有 step=29999）")
     ap.add_argument("--frag", type=int, default=0, metavar="輪數",
                     help="碎片模式：跑 N 輪 trim pass 而**不清快取**，每輪報 "
                          "allocated/reserved/num_alloc_retries。0 = 不跑（預設走原本的逐階段量測）")
@@ -80,9 +84,23 @@ def main():
     if not torch.cuda.is_available():
         raise SystemExit("需要 GPU")
     dev = torch.device("cuda")
-    ck = sorted(glob.glob(f"outputs/{args.run}/**/*step={args.step}.ckpt", recursive=True))
-    if not ck:
-        raise SystemExit(f"找不到 {args.run} 的 step={args.step} ckpt")
+    if args.ckpt:
+        ck = sorted(glob.glob(args.ckpt))
+        if not ck:
+            raise SystemExit(f"--ckpt 指定的路徑找不到檔案：{args.ckpt}")
+        if len(ck) > 1:
+            raise SystemExit(f"--ckpt 展開成 {len(ck)} 個檔案，請指定到唯一一個：\n  "
+                             + "\n  ".join(ck))
+    else:
+        ck = sorted(glob.glob(f"outputs/{args.run}/**/*step={args.step}.ckpt", recursive=True))
+        if not ck:
+            raise SystemExit(f"找不到 {args.run} 的 step={args.step} ckpt")
+        if len(ck) > 1:
+            print(f"⚠⚠ glob 找到 {len(ck)} 個 ckpt，用第一個 —— 這**可能是錯的那一個**，"
+                  f"請改用 --ckpt 指定：")
+            for c in ck:
+                print(f"     {c}")
+    print(f"  ckpt = {ck[0]}")
 
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     from internal.utils.ssim import ssim as ssim_fn

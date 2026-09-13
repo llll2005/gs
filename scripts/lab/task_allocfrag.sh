@@ -13,10 +13,13 @@
 # 這支腳本把相機數當唯一變數（同 ckpt => N 固定），並同時對照 max_split_size_mb 的效果。
 # ⚠ 一定要套 CITYGS_VRAM_CAP_GB：lab 是 24 GiB，沒有上限就永遠有餘裕、retries 恆為 0。
 #   _common.sh 已經幫我們鎖 5.66 並開 max_split_size_mb:128。
-# ⚠ vram_gap.py 用 glob 找 ckpt，沒有 --block 參數 => 靠「只有 b6 有 step=29999」來唯一指定。
-#   若之後 b13 也存了 29999，這支要改成指定路徑。
+# ⚠ 2026-09-13 踩到：--run/--step 是 glob，而 b13 重跑約 3 小時後也會存 step=29999
+#   => 會挑到錯的 block（sorted 之下 block_13 排在 block_6 前面）。
+#   已給 vram_gap.py 加 --ckpt，這裡直接把路徑釘死。
 source "$(dirname "$0")/_common.sh"
-RUN=${1:-lab/speed3}; STEP=${2:-29999}
+CKPT=${1:-"outputs/lab/speed3/blocks/block_6/checkpoints/*step=29999.ckpt"}
+ls $CKPT >/dev/null 2>&1 || { echo "⛔ 找不到 ckpt：$CKPT"; exit 1; }
+echo "ckpt = $(ls $CKPT)"
 CAMS=${CAMS:-"64 137 274 548"}
 for AC in "max_split_size_mb:128" ""; do
   echo
@@ -27,11 +30,11 @@ for AC in "max_split_size_mb:128" ""; do
     echo "──────── trim-cams=$NC ────────"
     if [ -n "$AC" ]; then
       conda run -n gspl env PYTORCH_CUDA_ALLOC_CONF="$AC" \
-        python tools/vram_gap.py --run "$RUN" --step "$STEP" --trim-cams "$NC" --frag 4 \
+        python tools/vram_gap.py --ckpt "$CKPT" --trim-cams "$NC" --frag 4 \
         2>&1 | grep -vE "pkg_resources|declare|down sample|loading|appearance|dataparser|found "
     else
       conda run -n gspl env -u PYTORCH_CUDA_ALLOC_CONF \
-        python tools/vram_gap.py --run "$RUN" --step "$STEP" --trim-cams "$NC" --frag 4 \
+        python tools/vram_gap.py --ckpt "$CKPT" --trim-cams "$NC" --frag 4 \
         2>&1 | grep -vE "pkg_resources|declare|down sample|loading|appearance|dataparser|found "
     fi
   done
