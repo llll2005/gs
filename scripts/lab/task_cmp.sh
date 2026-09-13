@@ -74,7 +74,15 @@ echo "block $BLK：$NCAM 台相機 / val 每 $PERIOD 步 => 全長 $STEPS 步、
 
 case "$ARM" in
   base)       EXTRA=();                                                        EXP=0 ;;
-  costdir)    EXTRA=(--model.density.init_args.cost_add_densify 4.0);           EXP=1 ;;
+  # ⚠⚠ 2026-09-13 時序：`cs_costdir` 這個**已經在跑的**跑次是 03:15 啟動的，當時腳本寫的還是
+  #   w=2.278（旗標 docstring 依**舊資料** ceiling=10.89x 算的）。我在 04:2x 才依新資料重算成 4.0。
+  #   ⇒ **磁碟上的 `cs_costdir` = w 2.278**，不是這一行現在寫的值。
+  #   不重跑它，改成把兩個強度都留著當**強度掃描**（記憶 observability_saves_runs 記過
+  #   「加權過猛」害過一次：權重實現 148.7x 而非設計 25.8x）：
+  #     cs_costdir      w 2.278  = 校準目標的 0.57 倍（已跑）
+  #     cs_costdir_cal  w 4.0    = 依新資料校準（ceiling(1/c) b12 6.32 / b13 6.14 => 24.8/c）
+  costdir)    EXTRA=(--model.density.init_args.cost_add_densify 2.278);         EXP=1 ;;
+  costdir_cal) EXTRA=(--model.density.init_args.cost_add_densify 4.0);          EXP=1 ;;
   costtaming) EXTRA=(--model.density.init_args.cost_add_densify -2.8);          EXP=1 ;;
   dssim05)    EXTRA=(--model.metric.init_args.lambda_dssim 0.5);                EXP=1 ;;
   both)       EXTRA=(--model.density.init_args.cost_add_densify 4.0
@@ -91,7 +99,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 2)));         EXP=1 ;;
   cb25)       [ "${B0:-0}" -gt 0 ] || { echo "⛔ block $BLK 沒有標定過的 B0"; exit 2; }
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4)));         EXP=1 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|costdir|costtaming|dssim05|both|cb50|cb25）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 export CITYGS_DIFF_VS="${RUN_PREFIX}cs_base"
