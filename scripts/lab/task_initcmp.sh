@@ -9,8 +9,11 @@
 #   —— 這是本機 `configs/normal.yaml` 那條線的 lab 版。
 source "$(dirname "$0")/_common.sh"
 BLK=${1:?用法: task_initcmp.sh <block_id> <arm>}; ARM=${2:?}
-COMMON=(--trainer.max_steps 20000
-        --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.max_steps 20000
+# ⚠ STEPS 可覆寫，用來當**閘門**（例：STEPS=1500 先驗 PLY 載入正確再上 lab 跑全長）。
+#   LR 排程跟著一起縮放，否則閘門跑的是另一個 regime（v2 §7 的教訓）。
+STEPS=${STEPS:-20000}
+COMMON=(--trainer.max_steps "$STEPS"
+        --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.max_steps "$STEPS"
         --model.density.init_args.cap_max 2600000
         --model.density.init_args.densify_until_iter 10000
         --model.density.init_args.absgrad_densify 0.0
