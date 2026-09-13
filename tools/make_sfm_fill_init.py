@@ -76,9 +76,19 @@ def main():
     ap.add_argument("--verify", action="store_true", help="只印統計不寫檔")
     args = ap.parse_args()
 
+    from internal.utils.outlock import exclusive
+    # ⚠ 2026-09-13：兩個本工具的行程同時寫 sfmfill_init/ ⇒ 產出的是**舊參數**的結果，
+    #   而檔案大小一模一樣，差點被當成新的（沒有錯誤、沒有崩潰，只是內容不是你以為的那個）。
+    #   ★ 鎖要在**載入任何東西之前**取 —— 放在讀 5,621 張 images.bin 之後的話，
+    #     要等兩分鐘才拒絕，那就失去「快速失敗」的意義了（2026-09-13 實測）。
+    out_dir = args.out_dir or os.path.join(args.dataset_dir, "sfmfill_init")
+    _lock = None
+    if not args.verify:
+        _lock = exclusive(os.path.basename(out_dir), hint=f"目標目錄 {out_dir}")
+        _lock.__enter__()
+
     from internal.dataparsers.colmap_dataparser import ColmapDataParser
     from internal.utils.colmap import read_images_binary
-    from internal.utils.outlock import exclusive
 
     sparse = os.path.join(args.dataset_dir, "sparse", "0")
     part = os.path.join(args.dataset_dir, "partition",
@@ -88,81 +98,76 @@ def main():
         raise SystemExit(f"⛔ 找不到 partition：{part}\n  先跑 utils/partition_from_colmap.py")
     images = read_images_binary(os.path.join(sparse, "images.bin"))
     name_to_id = {im.name: i for i, im in images.items()}
-    out_dir = args.out_dir or os.path.join(args.dataset_dir, "sfmfill_init")
 
     rng = np.random.default_rng(42)
-    # ⚠ 2026-09-13：兩個本工具的行程同時寫 sfmfill_init/ ⇒ 產出的是**舊參數**的結果，
-    #   而檔案大小一模一樣，差點被當成新的（沒有錯誤、沒有崩潰，只是內容不是你以為的那個）。
-    lock = "none" if args.verify else os.path.basename(out_dir)
-    with exclusive(lock, hint=f"目標目錄 {out_dir}"):
-     for blk in args.blocks:
-         bx, by = blk % args.block_dim[0], blk // args.block_dim[0]
-         pf = os.path.join(part, f"{bx:03d}_{by:03d}.txt")
-         if not os.path.exists(pf):
-             print(f"[block {blk}] ⛔ 缺 {pf}，跳過"); continue
-         names = [ln.strip() for ln in open(pf) if ln.strip()]
-         sel = [name_to_id[n] for n in names if n in name_to_id]
-         # ★ 與 sfm 臂呼叫同一個函式、同一組相機 => Tier A 逐點相同
-         xyz, rgb, _ = ColmapDataParser.read_points3D_binary(
-             os.path.join(sparse, "points3D.bin"), selected_image_ids=sel)
-         xyz = np.asarray(xyz, np.float64); rgb = np.asarray(rgb)
-         nA = len(xyz)
+    for blk in args.blocks:
+        bx, by = blk % args.block_dim[0], blk // args.block_dim[0]
+        pf = os.path.join(part, f"{bx:03d}_{by:03d}.txt")
+        if not os.path.exists(pf):
+            print(f"[block {blk}] ⛔ 缺 {pf}，跳過"); continue
+        names = [ln.strip() for ln in open(pf) if ln.strip()]
+        sel = [name_to_id[n] for n in names if n in name_to_id]
+        # ★ 與 sfm 臂呼叫同一個函式、同一組相機 => Tier A 逐點相同
+        xyz, rgb, _ = ColmapDataParser.read_points3D_binary(
+            os.path.join(sparse, "points3D.bin"), selected_image_ids=sel)
+        xyz = np.asarray(xyz, np.float64); rgb = np.asarray(rgb)
+        nA = len(xyz)
 
-         lo = np.percentile(xyz, args.pct, axis=0)
-         hi = np.percentile(xyz, 100 - args.pct, axis=0)
-         inb = np.all((xyz >= lo) & (xyz <= hi), axis=1)
-         vol = float(np.prod(hi - lo))
-         dens = int(inb.sum()) / max(vol, 1e-9)          # SfM 區的點密度
+        lo = np.percentile(xyz, args.pct, axis=0)
+        hi = np.percentile(xyz, 100 - args.pct, axis=0)
+        inb = np.all((xyz >= lo) & (xyz <= hi), axis=1)
+        vol = float(np.prod(hi - lo))
+        dens = int(inb.sum()) / max(vol, 1e-9)          # SfM 區的點密度
 
-         parts_xyz, parts_rgb = [xyz], [rgb]
-         if args.dup > 1:
-             sub = xyz[rng.choice(nA, size=min(20000, nA), replace=False)]
-             d = np.sort(np.linalg.norm(sub[:2000, None] - sub[None], axis=-1), axis=1)[:, 1]
-             nn = float(np.median(d))
-             for _ in range(args.dup - 1):
-                 parts_xyz.append(xyz + rng.normal(0, nn * args.jitter, xyz.shape))
-                 parts_rgb.append(rgb)
-         else:
-             nn = float("nan")
+        parts_xyz, parts_rgb = [xyz], [rgb]
+        if args.dup > 1:
+            sub = xyz[rng.choice(nA, size=min(20000, nA), replace=False)]
+            d = np.sort(np.linalg.norm(sub[:2000, None] - sub[None], axis=-1), axis=1)[:, 1]
+            nn = float(np.median(d))
+            for _ in range(args.dup - 1):
+                parts_xyz.append(xyz + rng.normal(0, nn * args.jitter, xyz.shape))
+                parts_rgb.append(rgb)
+        else:
+            nn = float("nan")
 
-         nB = 0
-         if args.fill_ratio > 0:
-             vs = args.fill_voxel
-             key = np.floor((xyz - lo) / vs).astype(np.int64)
-             dim = np.maximum(np.floor((hi - lo) / vs).astype(np.int64) + 1, 1)
-             ok = np.all((key >= 0) & (key < dim), axis=1)
-             occupied = set(map(int, (key[ok, 0] * dim[1] + key[ok, 1]) * dim[2] + key[ok, 2]))
-             n_vox = int(np.prod(dim)); n_empty = n_vox - len(occupied)
-             nB = int(dens * args.fill_ratio * n_empty * vs ** 3)
-             if nB > 0 and n_empty > 0:
-                 # 在空體素裡撒點：先過取樣再丟掉落在已佔用體素的
-                 need, got = nB, []
-                 while need > 0 and len(got) < nB:
-                     c = rng.random((max(need * 3, 10000), 3)) * (hi - lo) + lo
-                     k = np.floor((c - lo) / vs).astype(np.int64)
-                     k = np.clip(k, 0, dim - 1)
-                     f = (k[:, 0] * dim[1] + k[:, 1]) * dim[2] + k[:, 2]
-                     keep = np.fromiter((int(v) not in occupied for v in f), bool, len(f))
-                     got.append(c[keep]); need = nB - sum(len(g) for g in got)
-                 fill = np.concatenate(got)[:nB]
-                 parts_xyz.append(fill)
-                 parts_rgb.append(np.tile(rgb.mean(0).astype(np.uint8), (len(fill), 1)))
-                 nB = len(fill)
-             print(f"[block {blk}] 體素 {vs}：共 {n_vox:,} 格、已佔 {len(occupied):,}、空 {n_empty:,}")
+        nB = 0
+        if args.fill_ratio > 0:
+            vs = args.fill_voxel
+            key = np.floor((xyz - lo) / vs).astype(np.int64)
+            dim = np.maximum(np.floor((hi - lo) / vs).astype(np.int64) + 1, 1)
+            ok = np.all((key >= 0) & (key < dim), axis=1)
+            occupied = set(map(int, (key[ok, 0] * dim[1] + key[ok, 1]) * dim[2] + key[ok, 2]))
+            n_vox = int(np.prod(dim)); n_empty = n_vox - len(occupied)
+            nB = int(dens * args.fill_ratio * n_empty * vs ** 3)
+            if nB > 0 and n_empty > 0:
+                # 在空體素裡撒點：先過取樣再丟掉落在已佔用體素的
+                need, got = nB, []
+                while need > 0 and len(got) < nB:
+                    c = rng.random((max(need * 3, 10000), 3)) * (hi - lo) + lo
+                    k = np.floor((c - lo) / vs).astype(np.int64)
+                    k = np.clip(k, 0, dim - 1)
+                    f = (k[:, 0] * dim[1] + k[:, 1]) * dim[2] + k[:, 2]
+                    keep = np.fromiter((int(v) not in occupied for v in f), bool, len(f))
+                    got.append(c[keep]); need = nB - sum(len(g) for g in got)
+                fill = np.concatenate(got)[:nB]
+                parts_xyz.append(fill)
+                parts_rgb.append(np.tile(rgb.mean(0).astype(np.uint8), (len(fill), 1)))
+                nB = len(fill)
+            print(f"[block {blk}] 體素 {vs}：共 {n_vox:,} 格、已佔 {len(occupied):,}、空 {n_empty:,}")
 
-         all_xyz = np.concatenate(parts_xyz).astype(np.float32)
-         all_rgb = np.concatenate(parts_rgb).astype(np.uint8)
-         print(f"[block {blk}] 相機 {len(sel)}／Tier A {nA:,}（x{args.dup}）"
-               f"／Tier B {nB:,}／合計 **{len(all_xyz):,}**"
-               f"   SfM 區密度 {dens:,.0f} 點/單位³   最近鄰 {nn:.4f}")
-         if args.verify:
-             print(f"           ★ 關卡：--fill-ratio 0 --dup 1 時應等於 sfm 臂的點數 {nA:,}")
-             continue
-         p = os.path.join(out_dir, f"block_{blk}.ply")
-         write_xyzrgb_ply(p, all_xyz, all_rgb)
-         rel = os.path.relpath(p, args.dataset_dir)
-         print(f"           -> {p}\n"
-               f"           用法：--data.parser.points_from ply --data.parser.ply_file {rel}")
+        all_xyz = np.concatenate(parts_xyz).astype(np.float32)
+        all_rgb = np.concatenate(parts_rgb).astype(np.uint8)
+        print(f"[block {blk}] 相機 {len(sel)}／Tier A {nA:,}（x{args.dup}）"
+              f"／Tier B {nB:,}／合計 **{len(all_xyz):,}**"
+              f"   SfM 區密度 {dens:,.0f} 點/單位³   最近鄰 {nn:.4f}")
+        if args.verify:
+            print(f"           ★ 關卡：--fill-ratio 0 --dup 1 時應等於 sfm 臂的點數 {nA:,}")
+            continue
+        p = os.path.join(out_dir, f"block_{blk}.ply")
+        write_xyzrgb_ply(p, all_xyz, all_rgb)
+        rel = os.path.relpath(p, args.dataset_dir)
+        print(f"           -> {p}\n"
+              f"           用法：--data.parser.points_from ply --data.parser.ply_file {rel}")
 
 
 if __name__ == "__main__":
