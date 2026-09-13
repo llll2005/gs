@@ -3,6 +3,7 @@
 #   arm = sfm      SfM 稀疏點（--model.initialize_from null）
 #         depth    depth-init PLY（需要先跑 task_depthprep.sh）
 #         random   100k 隨機點（對照「起點到底重不重要」的下界）
+#         sfmfill  SfM 點 + 空處低密度補點（需先跑 tools/make_sfm_fill_init.py）
 # 設計：除了 init 之外**所有參數相同**，而且刻意用**最少的機制**
 #   （cap 固定、不 absgrad、不 noise、無正則）以免機制與 init 交互作用
 #   —— 這是本機 `configs/normal.yaml` 那條線的 lab 版。
@@ -24,5 +25,15 @@ case "$ARM" in
           run_fit "${RUN_PREFIX}init_depth"  "$BLK" --model.initialize_from "$P" "${COMMON[@]}" ;;
   random) run_fit "${RUN_PREFIX}init_random" "$BLK" --model.initialize_from null \
             --data.parser.points_from random --data.parser.n_random_points 100000 "${COMMON[@]}" ;;
-  *) echo "❌ 不認得的 arm：$ARM（sfm/depth/random）"; exit 2 ;;
+  # ★ SfM 點 + 空處低密度補點（使用者 2026-09-13 提案；tools/make_sfm_fill_init.py 產生）
+  # ⚠ 走 `points_from ply` 而**不是** `--model.initialize_from` —— 後者載入已存好的
+  #   Gaussian 模型（scale 由檔案決定），而 sfm 臂走 setup_from_pcd（scale 從點雲算）
+  #   => 用 initialize_from 會多出「scale 初始化」這個變數，就不是單變數了。
+  # ⚠ ply_file 的路徑是**相對於 dataset 目錄**（internal/dataparsers 用 os.path.join(self.path, ...)）
+  sfmfill) P="sfmfill_init/block_$BLK.ply"
+           F="data/matrix_city/aerial/train/block_all/$P"
+           [ -f "$F" ] || { echo "❌ 缺 $F —— 先跑 tools/make_sfm_fill_init.py"; exit 2; }
+           run_fit "${RUN_PREFIX}init_sfmfill" "$BLK" --model.initialize_from null \
+             --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" ;;
+  *) echo "❌ 不認得的 arm：$ARM（sfm/depth/random/sfmfill）"; exit 2 ;;
 esac
