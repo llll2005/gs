@@ -17,6 +17,11 @@
 # ⚠ 微基準沒有 Lightning/dataloader/長跑碎片 ⇒ **樂觀**，真實訓練只會更早撞牆。
 set -u
 cd "$(dirname "$0")/.." || exit 1
+# ⚠ 2026-09-13 新資料實測：ballast 只掃到 0.6G **兩臂都沒 OOM** => 沒測到邊界，
+#   而 max_split 換到的正是「大塊連續請求不會失敗」，那只在邊界才看得出來。
+#   => ballast 列表改成可覆寫，用來找邊界：
+#        BALLAST="0.6 0.8 1.0 1.2 1.5" bash scripts/task_maxsplit_verdict.sh
+BALLAST=${BALLAST:-"0.0 0.2 0.3 0.4 0.6"}
 R=logs/maxsplit_verdict_$(date +%m%d_%H%M).log
 {
   for CONF in "" "max_split_size_mb:128"; do
@@ -24,10 +29,10 @@ R=logs/maxsplit_verdict_$(date +%m%d_%H%M).log
     echo "===== PYTORCH_CUDA_ALLOC_CONF = ${CONF:-（完全不設）} ／ N = 2.6M（真實峰值）====="
     if [ -z "$CONF" ]; then
       env -u PYTORCH_CUDA_ALLOC_CONF conda run -n gspl --no-capture-output \
-        python tools/vram_pressure.py --arm b --n 2.6 --ballast 0.0 0.2 0.3 0.4 0.6
+        python tools/vram_pressure.py --arm b --n 2.6 --ballast $BALLAST
     else
       PYTORCH_CUDA_ALLOC_CONF="$CONF" conda run -n gspl --no-capture-output \
-        python tools/vram_pressure.py --arm b --n 2.6 --ballast 0.0 0.2 0.3 0.4 0.6
+        python tools/vram_pressure.py --arm b --n 2.6 --ballast $BALLAST
     fi
   done
 } 2>&1 | grep -vE "pkg_resources|declare_namespace" | tee "$R"

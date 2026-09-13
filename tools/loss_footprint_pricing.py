@@ -18,8 +18,15 @@ how it is spread: one big blob versus many small ones of the same combined area 
   the empirical test.
 """
 import argparse, glob
+import os
+import sys
+
 import numpy as np
 import torch
+
+# ⚠ 2026-09-13：少了這兩行 => `ModuleNotFoundError: No module named 'internal'`
+#   （其他 tools/*.py 都有做這件事，只有這支漏了 ⇒ 它從來沒被跑過）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from internal.utils.ssim import ssim as ssim_fn
 
