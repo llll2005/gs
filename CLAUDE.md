@@ -251,6 +251,30 @@ written instead of using this file; one sat blocked 2.5 h behind a 151 MiB zombi
 from `internal/callbacks.py` (step/N/it-s/VRAM/PSNR, and for DIED the exception plus where it
 died). Wrapper scripts must not write those lines themselves.
 
+**⚠⚠ Two-machine sync — lab pulls from GitHub, never file-by-file (2026-09-20, user's decision).**
+Before starting any new training experiment, if the code changed at all: **commit + push locally,
+then pull on lab.** One command does the whole thing, including deciding whether the rasterizer
+needs rebuilding and verifying both sides byte-for-byte:
+
+```bash
+JTOK=<token> bash scripts/setup/lab_pull.sh          # 加 --no-build 可跳過重編
+```
+
+It refuses to run if the laptop has uncommitted changes or is ahead of `origin/main` — otherwise
+lab would be running something that is not what you think you are testing.
+
+Why this replaced `lab.py put`: lab was synced file-by-file for months, so its working tree had
+drifted **573 files** from `origin/main` with 57 uncommitted edits and a HEAD three weeks stale —
+"which version did lab actually run" had become unanswerable. Lab's pre-switch state is preserved
+on the lab-local branch `lab_state_0920` (commit `6a43b2e`).
+- lab's machine-local files (`.lab_machine`, `scripts/queue.txt`, `queue.stop`, `queue.bak_*`,
+  `.ipynb_checkpoints/`) are now in `.gitignore`, so a reset never touches them.
+- **lab's rebuild needs `CUDA_HOME` forced** to `/root/miniconda3/envs/gspl`: the container's
+  default points at system nvcc 12.9 while the env's torch is cu118, and torch refuses to compile.
+  Lab had in fact **never** been able to rebuild the rasterizer before this was found.
+- glm is now vendored in the repo (1.0.3, MIT) and lab uses that same copy, so the two machines
+  no longer differ by a glm version (measured: 1 ULP, tile counts identical).
+
 **Rebuilding the trim rasterizer** (`submodules/diff-surfel-rasterization-trim-pp`):
 ```bash
 rm -rf submodules/diff-surfel-rasterization-trim-pp/build          # distutils only checks .cu mtimes, not headers

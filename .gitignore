@@ -71,3 +71,7 @@ scripts/queue.stop
 .lab_machine
 # 改光柵器前的就地備份
 submodules/diff-surfel-rasterization-trim-pp/_bak_*/
+# lab 的背景工作 log/pid
+labrun/
+# 切換到 repo 附帶 glm 時移開的 lab 舊 clone
+submodules/diff-surfel-rasterization-trim-pp/third_party/glm.labclone_*/
