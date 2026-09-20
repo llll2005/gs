@@ -60,3 +60,14 @@ scripts/queue.txt
 
 # ⛔ 含 lab Jupyter token 的個人筆記 —— 絕對不可進 git（2026-09-20 差點被 git add -A 收進去）
 抓取.txt
+
+# ── lab 端的本機狀態（2026-09-20 全同步時整理）────────────────────────────
+# Jupyter 自動存檔；lab 上到處都是，不該進 repo
+.ipynb_checkpoints/
+# 佇列是逐機器的可變狀態（runner.sh:226 已容錯，缺檔只會 idle）
+scripts/queue.bak_*
+scripts/queue.stop
+# lab 機器的識別標記，只能存在於 lab
+.lab_machine
+# 改光柵器前的就地備份
+submodules/diff-surfel-rasterization-trim-pp/_bak_*/
