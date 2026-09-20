@@ -25,6 +25,7 @@ import glob
 import os
 import sys
 
+import math
 import numpy as np
 import torch
 
@@ -60,21 +61,76 @@ def main():
     print(f"來源 {ck}\n  N = {N:,}   相機 {n}/{len(cams)}   tile = {args.tile}")
 
     bg = torch.zeros((3,), device=dev)
-    loads = []
+    loads, loads_floor, loads_exact, loads_ana = [], [], [], []
+    # ⓪ 解析路徑（`cost_budget_probe.py` 的公式）：r = 3·fx·s_max/z·stretch，
+    #    tiles = (2r/TILE)^2 clamp 到 [1, 整幀 tile 數]，再用視錐粗剔。
+    #    它與 ①② 的差別是**半徑的來源**（解析投影 vs 光柵器），不只是有沒有下限。
+    _xyz = model.get_xyz.detach()
+    _smax = model.get_scales().detach()[:, :2].max(dim=1).values
     with torch.no_grad():
         for i in range(n):
             out = renderer(cams[i].to_device(dev), model, bg_color=bg)
             r = out.get("radii")
             if r is None:
                 raise SystemExit("⛔ renderer 沒回傳 radii，拿不到 Load")
-            loads.append(float((((2.0 * r.float()) / args.tile) ** 2).sum()))
+            q = ((2.0 * r.float()) / args.tile) ** 2
+            loads.append(float(q.sum()))
+            # ★ 2026-09-21：同一組相機上比三條路徑。
+            #   ① 現行代理 Σ(2r/16)^2 —— **沒有量化下限**，所以半徑 3px 的顆粒算成 0.14 個 tile，
+            #      但它只要可見就至少碰 1 個 => 小顆粒被系統性低估。
+            #   ② 代理 + 量化下限 Σ max(q, 1)（只對可見粒子）—— `cost_budget_probe.py` 用的正是
+            #      這個 clamp(min=1)，這也是它比 calibrate 大的原因。
+            #   ③ 精確：光柵器回傳的逐顆 tile 數（已驗 num_rendered == Σtiles）。
+            vis = r > 0
+            loads_floor.append(float(torch.clamp(q[vis], min=1.0).sum()))
+            t = out.get("tiles")
+            loads_exact.append(float(t.double().sum()) if t is not None else float("nan"))
+            cam = cams[i].to_device(dev)
+            W_, H_ = int(cam.width), int(cam.height)
+            fx_ = W_ / (2.0 * math.tan(float(cam.fov_x) * 0.5))
+            nft = (W_ / args.tile) * (H_ / args.tile)
+            vm = cam.world_to_camera
+            pc = _xyz @ vm[:3, :3] + vm[3, :3] if vm.shape == (4, 4) else None
+            if pc is None:
+                loads_ana.append(float("nan"))
+            else:
+                z = pc[:, 2]
+                m2 = z > 0.2
+                if not bool(m2.any()):
+                    loads_ana.append(0.0)
+                else:
+                    pcv, zc = pc[m2], z[m2]
+                    u = fx_ * pcv[:, 0] / zc + W_ / 2
+                    v = fx_ * pcv[:, 1] / zc + H_ / 2
+                    st = torch.sqrt(1 + (pcv[:, 0] / zc) ** 2 + (pcv[:, 1] / zc) ** 2)
+                    ra = 3.0 * fx_ * _smax[m2] / zc * st
+                    inf = (u > -ra) & (u < W_ + ra) & (v > -ra) & (v < H_ + ra)
+                    loads_ana.append(float(((2 * ra[inf] / args.tile) ** 2)
+                                           .clamp(min=1.0, max=nft).sum()) if bool(inf.any()) else 0.0)
     loads = np.array(loads)
+    loads_floor = np.array(loads_floor)
+    loads_exact = np.array(loads_exact)
+    loads_ana = np.array(loads_ana)
     L = loads.max()
     print(f"\n  Load（每視角 Σ (2r/{args.tile})^2）")
     print(f"    max   **{L:,.0f}**   <- 這就是 cost_budget 的單位與當前操作點")
     print(f"    p95   {np.percentile(loads,95):,.0f}")
     print(f"    中位   {np.median(loads):,.0f}")
     print(f"    min   {loads.min():,.0f}")
+    if np.isfinite(loads_exact).all():
+        print(f"\n  ★★ 三條量測路徑（同 ckpt、同 {n} 台相機）")
+        print(f"    {'':<34}{'max':>16}{'中位':>16}{'vs 精確':>10}")
+        for lab, arr in (("⓪ 解析投影（cost_budget_probe 的公式）", loads_ana),
+                         ("① 現行代理 Σ(2r/16)^2（無量化下限）", loads),
+                         ("② 代理 + 量化下限 Σ max(q,1)", loads_floor),
+                         ("③ 精確 Σtiles（光柵器）", loads_exact)):
+            rel = np.median(arr) / max(np.median(loads_exact), 1e-9)
+            print(f"    {lab:<34}{arr.max():>16,.0f}{np.median(arr):>16,.0f}{rel:>9.3f}x")
+        print("    ⇒ ⓪ 與 ① 的差距＝**半徑來源不同**（解析投影 vs 光柵器 radii），不是下限造成的。")
+        print("    ⇒ ① 與 ② 的差距＝量化下限那一項。在**訓練後**的模型上它幾乎不生效")
+        print("       （顆粒已經夠大），但在**訓練初期**它主導 —— 實測 SfM init 時代理只有精確的 0.280 倍。")
+        print("    ⇒ ② 與 ③ 的差距＝**正方形外接盒**的高估，這是訓練後期的主要誤差來源。")
+        print("    ★ 權威順序：③ 精確 > ① 光柵器代理（cost_budget 現行單位）> ⓪ 解析（只可當上界）。")
     # 2026-09-14 補（使用者問「有總成本嗎」）：中位數只代表典型視角；
     #   訓練每步隨機渲染一台相機 => 期望每步 binning 成本＝**平均**；全部相機加總＝走一遍所有視角的總成本。
     #   ⚠ 這仍是「終點模型」的成本，不是整趟訓練的積分（族群在訓練中會變）。
