@@ -520,6 +520,23 @@ class MCMC2DGSDensityController(MCMCDensityController):
     vs 解析投影）⇒ **不可直接沿用探針的 23.1M**，先用 `cost_budget_report` 短跑標定。
     """
 
+    exact_tile_cost: bool = False
+    """★ 2026-09-21：用**光柵器回傳的逐顆 tile 數**當成本，取代 `radii^2` / `Σ(2r/16)^2` 代理。
+
+    代理有三重誤差：假設外接盒是**正方形**、忽略 **tile 量化**（半徑 3px 的顆粒算出 0.14 個
+    tile，實際碰 1~4 個）、忽略**螢幕裁切**（`getRect` 會夾到格線範圍，公式不會）。
+    本機實測（b6 @21,920，N=1.85M，30 台相機）：
+        精確 Σtiles 158,437,005 vs 代理 212,373,630 = **1.340 倍**
+        逐視角比值 中位 1.319、**最小 0.852、最大 3.356**、標準差 0.4605
+    ⇒ 重點不是「高估 34%」（常數偏差可以靠重新標定預算吸收），而是它**隨視角跳 0.85~3.36 倍**。
+      而 `cost_budget` 的閘門正是取**最壞視角**觸發的 => 誤差最大的視角主導了閘門。
+      這與「訓練中打印與離線工具差 1.5 倍、跨路徑不可比」是同一件事。
+
+    ⚠⚠ **單位會變**：`cost_budget` 先前標定出來的數值是**代理單位**的，開了這個旗標之後
+      同一個數字代表不同的量 => **必須重新標定**（開啟時會印出兩種單位的當期值供換算）。
+    ⚠ 需要光柵器回傳 `tiles`（2026-09-21 起）。拿不到會**印警告並退回代理**，不會靜默。
+    ⚠ 成本訊號與外接盒耦合：`tiles` 的值取決於 `EXACT_CONIC_AABB` 開不開。"""
+
     cost_budget_report: int = 0
     """>0 時每 N 步印出線上量到的 `Load`（不改變任何行為），用來標定 `cost_budget`。"""
 
@@ -696,6 +713,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     else:
                         self._prune_points(hot, gaussian_model, optimizers)  # harvest: just remove
                 self._max_radii2D = None
+                self._max_tiles2D = None
 
         if self.config.freeze_opacity_after_densify and global_step >= self.config.densify_until_iter:
             gaussian_model.gaussians["opacities"].grad = None
@@ -764,7 +782,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                         print(f"[elongation-prune] step {global_step}: -{_n:,} => "
                               f"N={gaussian_model.n_gaussians:,}", flush=True)
                 if self._max_radii2D is not None:
-                    self._max_radii2D = None      # N 變了，舊視窗長度對不上
+                    self._max_radii2D = None
+                    self._max_tiles2D = None      # N 變了，舊視窗長度對不上
             death_line = self._current_min_opacity(global_step)
             dead_mask = (gaussian_model.get_opacities() <= death_line).squeeze(-1)
             if self.config.min_opacity_final > 0 and global_step % 1500 == 0:
@@ -854,6 +873,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             #     修掉之後兩者可以並存 —— 而 v2 的 OOM 證明 prune 是承重的、不能拿掉。）
             if self._max_radii2D is not None and self._max_radii2D.shape[0] == dead_mask.shape[0]:
                 self._max_radii2D[dead_mask] = 0
+        if self._max_tiles2D is not None and self._max_tiles2D.shape[0] == dead_mask.shape[0]:
+            self._max_tiles2D[dead_mask] = 0
             _n_before_add = gaussian_model.n_gaussians
             self._cur_step = global_step          # 相對預算的 rho(t) 與 Load_ref(t) 需要目前步數
             self.add_new_gs(gaussian_model, optimizers)
@@ -868,6 +889,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             #   消費者順序：vpc -> screen_size_prune -> add_new_gs(cost_aware)。
             #   `add_new_gs` 會 append ⇒ 之後 shape 就對不上，所以必須在這裡清。
             self._max_radii2D = None
+            self._max_tiles2D = None
             if self._tc_last is not None:
                 print(f"[transparent-corrector] step {global_step}: {self._tc_last[0]}/{self._tc_last[1]} "
                       f"個高誤差高不透明父代的子代改為 opacity {self.config.transparent_corrector}")
@@ -875,6 +897,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             self._err_score = None                 # window restarts with the next interval
 
     _max_radii2D: torch.Tensor = None
+    _max_tiles2D: torch.Tensor = None      # 2026-09-21：精確 binning 成本的同語意視窗
     _vpc_contrib: torch.Tensor = None   # cached multi-view contribution (value)
     _vpc_step: int = -1
     _ac_score: torch.Tensor = None
@@ -1075,7 +1098,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if v is None or v.shape[0] != n:
             print(f"[vpc] step {global_step}: 取不到 value")
             return
-        c = radii.float().clamp_min(1.0) ** 2
+        if self.config.exact_tile_cost and self._max_tiles2D is not None \
+                and self._max_tiles2D.shape[0] == n:
+            c = self._max_tiles2D.float().clamp_min(1.0)          # 精確：就是 tile 數本身
+        else:
+            c = radii.float().clamp_min(1.0) ** 2                  # 代理：見 exact_tile_cost 的說明
 
         def rank(x):
             r = torch.empty_like(x)
@@ -1337,7 +1364,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 return None
             self._vpc_contrib, self._vpc_step = contrib, global_step
             print(f"[value-per-cost] step {global_step}: value refreshed in {time.time()-t0:.1f}s")
-        cost = radii.float().clamp_min(1.0) ** 2          # ∝ tile footprint
+        if self.config.exact_tile_cost and self._max_tiles2D is not None \
+                and self._max_tiles2D.shape[0] == n:
+            cost = self._max_tiles2D.float().clamp_min(1.0)       # 精確：就是 tile 數本身
+        else:
+            cost = radii.float().clamp_min(1.0) ** 2              # ∝ tile footprint（代理）
         vpc = self._vpc_contrib / cost
         k = int(n * cfg.vpc_prune_frac)
         if k <= 0:
@@ -1403,7 +1434,22 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         vis = r > 0
         if not bool(vis.any()):
             return
-        load = float(((2.0 * r[vis] / self.TILE_PX) ** 2).sum())
+        load_proxy = float(((2.0 * r[vis] / self.TILE_PX) ** 2).sum())
+        load = load_proxy
+        if self.config.exact_tile_cost:
+            tiles = outputs.get("tiles", None)
+            if tiles is None:
+                if not getattr(self, "_warned_no_tiles", False):
+                    self._warned_no_tiles = True
+                    print("⚠⚠ [exact-tile-cost] 設了 exact_tile_cost 但光柵器沒回傳 `tiles` "
+                          "=> **退回 radii^2 代理**（請重編光柵器；2026-09-21 起才有這個輸出）")
+            else:
+                load = float(tiles.double().sum())
+                if not getattr(self, "_told_tile_units", False):
+                    self._told_tile_units = True
+                    print(f"[exact-tile-cost] ✅ 首次生效：本視角 精確 Load={load:,.0f} "
+                          f"vs 代理={load_proxy:,.0f}（代理是 {load_proxy / max(load, 1):.3f} 倍）"
+                          f" ⇒ **cost_budget 的單位已改變，先前標定的數值要除以這個比值重算**")
         if load > getattr(self, "_load_max", 0.0):
             self._load_max = load
         # 報告用的累積（2026-09-14）：平均需要 sum/count；不碰閘門的 `_load_max`
@@ -1425,6 +1471,17 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if self._max_radii2D is None or self._max_radii2D.shape[0] != n or self._max_radii2D.device != radii.device:
             self._max_radii2D = torch.zeros_like(radii)
         self._max_radii2D = torch.maximum(self._max_radii2D, radii)
+        # ★ 2026-09-21：同樣窗口語意（逐顆跨視角取 max）的**精確** binning 成本。
+        #   ⚠ 窗口語意本身是既有的設計債：DAR 當初刻意改用解析投影，理由就是
+        #     「逐顆跨視角取 max 再加總，比任何真實單一視角都大」。換成 tiles 不會修好那件事，
+        #     只是把「每一項」量準；窗口要不要改是**另一個**決定。
+        if self.config.exact_tile_cost:
+            tiles = outputs.get("tiles", None)
+            if tiles is not None and tiles.shape[0] == n:
+                if self._max_tiles2D is None or self._max_tiles2D.shape[0] != n \
+                        or self._max_tiles2D.device != tiles.device:
+                    self._max_tiles2D = torch.zeros_like(tiles)
+                self._max_tiles2D = torch.maximum(self._max_tiles2D, tiles)
 
     def _prune_points(self, mask, gaussian_model, optimizers) -> None:
         # The Trim2DGS renderer (sep_depth_trim_2dgs_renderer.py) trims surfels mid-training

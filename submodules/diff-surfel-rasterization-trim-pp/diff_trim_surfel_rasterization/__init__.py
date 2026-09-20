@@ -85,13 +85,13 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_covered_pixels = _C.rasterize_gaussians(*args)
+                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_covered_pixels, tiles = _C.rasterize_gaussians(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw.dump")
                 print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
                 raise ex
         else:
-            num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_covered_pixels = _C.rasterize_gaussians(*args)
+            num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_covered_pixels, tiles = _C.rasterize_gaussians(*args)
 
         if raster_settings.record_transmittance:
             return transmittance, num_covered_pixels, radii
@@ -100,10 +100,15 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
-        return color, radii, depth
+        # ★ 2026-09-21：`tiles` = 逐顆 tile 數（精確的 binning 成本）。整數張量、不可微，
+        #   明確標記以免 autograd 為它建圖。見 rasterizer.h 的長註解。
+        ctx.mark_non_differentiable(tiles)
+        return color, radii, depth, tiles
 
     @staticmethod
-    def backward(ctx, grad_out_color, grad_radii, grad_depth):
+    def backward(ctx, grad_out_color, grad_radii, grad_depth, grad_tiles=None):
+        # grad_tiles 有預設值：`record_transmittance` 分支的 forward 只回傳 3 個值，
+        # 兩條路徑的 arity 不同（既有設計；該分支一律在 no_grad 下用）。
 
         # Restore necessary values from context
         num_rendered = ctx.num_rendered

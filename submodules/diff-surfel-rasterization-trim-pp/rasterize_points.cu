@@ -36,7 +36,8 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 	return lambda;
 }
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+// ⚠ 2026-09-21 多回傳一個 `tiles`（逐顆 tile 數＝精確的 binning 成本）=> 10 個元素
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -94,6 +95,8 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_others = torch::full({3+3+2, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
+  // ★ 2026-09-21：逐顆 tile 數（精確的 binning 成本），見 rasterizer.h 的註解
+  torch::Tensor tiles = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
 
   torch::Tensor transmittance = torch::full({P}, 0.0, float_opts);
   torch::Tensor num_occluder = torch::full({P}, 0, int_opts);
@@ -144,9 +147,10 @@ RasterizeGaussiansCUDA(
 		num_occluder.contiguous().data<int>(),
 		record_transmittance,
 		radii.contiguous().data<int>(),
-		debug);
+		debug,
+		tiles.contiguous().data<int>());
   }
-  return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_occluder);
+  return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_occluder, tiles);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>

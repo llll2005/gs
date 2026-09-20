@@ -225,7 +225,8 @@ int CudaRasterizer::Rasterizer::forward(
 	int* num_covered_pixels,
 	bool record_transmittance,
 	int* radii,
-	bool debug)
+	bool debug,
+	int* out_tiles)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -284,6 +285,11 @@ int CudaRasterizer::Rasterizer::forward(
 	// Compute prefix sum over full list of touched tile counts by Gaussians
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
+
+	// ★ 逐顆 tile 數。InclusiveSum 的輸出寫到 `point_offsets`，**沒有覆蓋** `tiles_touched`，
+	//   所以這裡拿到的仍是逐顆的原值。只是一次 device-to-device 複製，不輸出就完全不付。
+	if (out_tiles != nullptr)
+		CHECK_CUDA(cudaMemcpy(out_tiles, geomState.tiles_touched, P * sizeof(uint32_t), cudaMemcpyDeviceToDevice), debug)
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
 	int num_rendered;

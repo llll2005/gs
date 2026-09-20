@@ -202,7 +202,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 return transmittance, num_covered_pixels
             return transmittance
         else:
-            rendered_image, radii, allmap = output
+            rendered_image, radii, allmap, tiles = output
 
         # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
         # They will be excluded from value updates used in the splitting criteria.
@@ -211,6 +211,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
             "viewspace_points": screenspace_points,
             "visibility_filter": radii > 0,
             "radii": radii,
+            # ★ 2026-09-21：逐顆 tile 數＝**精確的 binning 成本**（這個視角）。
+            #   取代 `radii^2` 代理：後者假設正方形、忽略 tile 量化、忽略螢幕裁切，
+            #   而且在 EXACT_CONIC_AABB 開啟後 radii 已與真實盒子脫鉤（刻意凍結）。
+            #   ⚠ 它是**逐視角**的量；要當逐顆成本用必須自己決定窗口（max / mean / 單視角）。
+            "tiles": tiles,
         }
 
         # additional regularizations

@@ -54,7 +54,12 @@ namespace CudaRasterizer
 			int* num_covered_pixels,
 			bool record_transmittance,
 			int* radii = nullptr,
-			bool debug = false);
+			bool debug = false,
+			// ★ 2026-09-21：逐顆的 tile 數（= binning 成本本身）。光柵器每步都算好，
+			//   但過去只被 prefix sum 消費掉、從未暴露。Python 端的 `cost_budget` /
+			//   `vpc` / `cost_aware_densify` 一直在用 `radii^2` 估它，而那個估計
+			//   假設正方形、忽略 tile 量化、忽略螢幕裁切。nullptr = 不輸出（零成本）。
+			int* out_tiles = nullptr);
 
 		static void backward(
 			const int P, int D, int M, int R,
