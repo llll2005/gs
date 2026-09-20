@@ -59,7 +59,10 @@ namespace CudaRasterizer
 			//   但過去只被 prefix sum 消費掉、從未暴露。Python 端的 `cost_budget` /
 			//   `vpc` / `cost_aware_densify` 一直在用 `radii^2` 估它，而那個估計
 			//   假設正方形、忽略 tile 量化、忽略螢幕裁切。nullptr = 不輸出（零成本）。
-			int* out_tiles = nullptr);
+			int* out_tiles = nullptr,
+			// ★ 2026-09-21 執行期旗標（見 auxiliary.h 的長註解）：編譯期版本讓 lab 的
+			//   三槽平行 A/B **無法同時跑**，且誤用不會報錯。
+			bool exact_conic_aabb = false);
 
 		static void backward(
 			const int P, int D, int M, int R,

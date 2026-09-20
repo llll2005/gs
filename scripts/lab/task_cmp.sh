@@ -121,6 +121,29 @@ case "$ARM" in
   #        而按 contribution 排序剪枝只比**隨機**好 1.27 倍 => 現行判準本身很弱。
   #   ⚠ 這是「破壞集合」那一側；vpc_prune_frac 的 -2.34 dB 是「把低 v/c 的粒子**搬走**」，
   #     移除與搬移不同，但先驗要謹慎 => 判準看四個指標的正負號模式，不是單看 PSNR。
+  # ══════════ 2026-09-21 新機制 ══════════
+  # ★★★ conic：精確圓錐**不對稱**外接盒，取代上游的線性化 `truncated_R * extent(1)`
+  #   離線 Σtile **-41.2%**（無損）、本機 forward **-24.5%** / fwd+bwd -15.1%。
+  #   ⚠ **會改變渲染輸出**：它把線性化砍掉的覆蓋補回來（11.3% 的（顆粒,相機）組合被低估，
+  #     最大 73,491 px），所以不是免費的加速 —— 這個臂要回答的就是「品質有沒有代價」。
+  #   ⚠⚠ 判準不能只看 PSNR：本專案已有**四次**「虛假細節簽名」（紋理比↑ 而光度↓）。
+  #     補回邊緣貢獻正好是可能製造那個簽名的形狀 => **紋理比必須與光度一起看**。
+  #   ⚠ 與 base 比時**不可引用舊跑次的數字**：加了這段程式碼會擾動 codegen（見 forward.cu 的
+  #     長註解，最大 1.8/255、平均 9e-08）=> 對照臂必須用**同一個 .so** 現跑。
+  conic)      EXTRA=(--model.renderer.init_args.exact_conic_aabb true);         EXP=1 ;;
+  # 疊加臂：conic 會改變每顆的 tile 足跡，而 trimvpc 的 c 正是足跡 => 兩者可能互相影響。
+  # ⚠ 只有在 conic 單獨臂**先**判定無品質代價後才有意義，否則分不出是誰的效果。
+  conicvpc)   EXTRA=(--model.renderer.init_args.exact_conic_aabb true
+                     --model.renderer.init_args.trim_by_value_per_cost true);   EXP=1 ;;
+  # ★★ tilecal：**純診斷臂**，行為與 base 完全相同（cost_budget=0，沒有任何閘門生效），
+  #   只是把 Load 改用**精確的逐顆 tile 數**並同時印出代理值與比值。
+  #   要回答的：換算係數隨訓練怎麼走。已知它**會變號** —— 初期代理是精確的 0.280 倍
+  #   （低估 3.6 倍，因為忽略 tile 量化），後期 1.340 倍（高估，正方形外接盒主導）。
+  #   ⇒ 舊的 `cost_budget` 數值**不能除以一個常數**搬到新單位，要整條曲線。
+  #   產物：logs 裡的 [cost-budget] 行 => 抽成 CSV 給後續的相對預算臂當 Load_ref(t)。
+  tilecal)    EXTRA=(--model.density.init_args.exact_tile_cost true
+                     --model.density.init_args.cost_budget_report 150
+                     --model.density.init_args.churn_report true);              EXP=0 ;;
   trimvpc)    EXTRA=(--model.renderer.init_args.trim_by_value_per_cost true);      EXP=1 ;;
   # alpha 0.5：離線掃描說「每犧牲一單位 Σv 回收的 Σc」在這裡有峰（41.09 vs 現行 17.93），
   #   而 alpha=1（上面那個 trimvpc）已越過峰且端到端輸基準 -0.57 dB。
@@ -165,7 +188,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|cb50cost|cb25cost|trimvpc|trimvpc05）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|cb50cost|cb25cost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 export CITYGS_DIFF_VS="${RUN_PREFIX}cs_base"
@@ -174,6 +197,12 @@ export CITYGS_DIFF_EXPECT=$EXP
 #   （例：獨佔計時對照，不能讓 run_fit 把既有的 cs_base 搬走）。不設就是原本的 cs_<arm>。
 run_fit "${CITYGS_RUN_NAME:-${RUN_PREFIX}cs_${ARM}}" "$BLK" \
   --model.initialize_from null \
+  `# ★ 2026-09-21 加入：uint8 影像快取 + 不載入權重為 0 的深度圖。` \
+  `#   09-18 已驗證送進訓練的 GT 影像**逐位元不變**（60 步 x2 的 sha1 全同），` \
+  `#   只省 RAM（本機 12.6 -> 4.8 GB）。lab 三槽平行原本被 RAM 綁住（每個跑次快取 17~20 GB），` \
+  `#   這是讓三槽真的能用的前提。所有臂一律套用 => 家族內仍是單變數。` \
+  --data.image_uint8 true \
+  --data.skip_unused_depth true \
   --model.density.init_args.cap_max 2600000 \
   --model.density.init_args.absgrad_densify 2.0 \
   --model.density.init_args.fast_noise true \

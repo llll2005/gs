@@ -31,6 +31,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             diable_trimming: bool = False,
             skip_surf_normal: bool = False,
             trim_subsample_probe: int = 0,
+            exact_conic_aabb: bool = False,
             trim_by_value_per_cost: bool = False,
             trim_value_per_cost_alpha: float = 1.0,
     ):
@@ -76,6 +77,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   ⇒ c_i 本來就在同一個 pass 裡算好（`cost_acc`）=> **零額外成本**的判準替換。
         #   ⚠ 這是「破壞集合」那一側；記憶記著 vpc_prune_frac 的 -2.34 dB 是把低 v/c 的粒子
         #     **搬走**（relocate）——移除與搬移不是同一件事，但先驗要謹慎。
+        # ★ 2026-09-21：精確圓錐不對稱外接盒。上游的 `truncated_R * extent(1)` 是線性化，
+        #   在 88.7% 的（顆粒,相機）組合上高估（白付 tile）、11.3% 上低估（漏覆蓋，最大 73,491 px）。
+        #   離線 Σtile -41.2%、本機 forward -24.5%。⚠ **會改變渲染輸出**（把漏掉的覆蓋補回來）
+        #   => 不是免費的，要 A/B 驗品質；預設關。
+        self.exact_conic_aabb = exact_conic_aabb
         self.trim_by_value_per_cost = trim_by_value_per_cost
         # alpha：把「對成本計價的強度」連續化。score = v / c^alpha
         #   alpha=0 即現行判準（等同關閉）、alpha=1 即純 v/c。
@@ -131,6 +137,14 @@ class SepDepthTrim2DGSRenderer(Renderer):
         tanfovx = math.tan(viewpoint_camera.fov_x * 0.5)
         tanfovy = math.tan(viewpoint_camera.fov_y * 0.5)
 
+        # ⚠ 舊 ckpt 還原出來的 renderer 是**直接反序列化**的物件，沒有後來新增的屬性
+        #   => 一律用 getattr 取（稽核清單「ckpt 覆蓋 renderer 旗標」同一類）。
+        _conic = getattr(self, "exact_conic_aabb", False)
+        if _conic and "exact_conic_aabb" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError(
+                "設了 exact_conic_aabb 但光柵器不認得這個欄位 —— 沒重編。\n"
+                "    rm -rf submodules/diff-surfel-rasterization-trim-pp/build 後重裝\n"
+                "    （CLAUDE.md『Rebuilding the trim rasterizer』；lab 要強制 CUDA_HOME）")
         raster_settings = GaussianRasterizationSettings(
             image_height=int(viewpoint_camera.height),
             image_width=int(viewpoint_camera.width),
@@ -150,6 +164,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
             # Guarded for rasterizer builds without the pp_shifty patch.
             **({"pp_shifty": getattr(viewpoint_camera, "strip_pp_shifty", 0.0)}
                if "pp_shifty" in GaussianRasterizationSettings._fields else {}),
+            # ★ 2026-09-21 精確圓錐不對稱外接盒。同樣做欄位存在性守衛：光柵器沒重編時
+            #   **不會靜默失效**，而是下面的 assert 會當場擋住（設了卻拿不到 = 量錯的來源）。
+            **({"exact_conic_aabb": _conic}
+               if "exact_conic_aabb" in GaussianRasterizationSettings._fields else {}),
         )
 
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)

@@ -237,6 +237,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	ushort4* rects,
+	bool exact_conic_aabb,
 	bool prefiltered)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -332,7 +333,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// pixels -- many marginal samples, not a few large errors. One extra pixel of slack costs
 	// at most one ring of tiles and buys back exactness.
 	radius += EXACT_SUPPORT_MARGIN_PX;
-#if !EXACT_SUPPORT_GROW && !EXACT_CONIC_AABB
+#if !EXACT_SUPPORT_GROW
 	// GROW=0 的語意是「只縮不長」：margin 與浮點誤差都不得讓半徑超過原本的平坦 3-sigma 盒，
 	// 否則會在另一個方向上改變輸出（高不透明度顆粒的 truncated_R 已被 cap 在 3）。
 	radius = min(radius, ceil(3.f * max(max(extent.x, extent.y), FilterSize)));
@@ -340,7 +341,14 @@ __global__ void preprocessCUDA(int P, int D, int M,
 #endif
 
 	uint2 rect_min, rect_max;
-#if EXACT_CONIC_AABB
+	// ⚠⚠ 2026-09-21 量到的一般性事實：**在這個 kernel 裡多加程式碼會擾動基準路徑**。
+	//   把本分支 `if (false)` 讓編譯器消掉，渲染就精確回到 SHA a13583c9b550e9a2；
+	//   留著（即使執行期為 false）就變成 97a14a2de65e4793，最大差 1.8/255、5.9% 像素。
+	//   機制：codegen（暫存器配置／浮點收縮）變了，而 `ceil()` 把 sub-ULP 放大成 ±1px 的
+	//   半徑，進而改變 tile 歸屬。平均差 9.0e-08 => 對 PSNR 的影響遠小於 0.001 dB。
+	//   ⇒ **跨建置不可宣稱逐位元相同**；單變數 A/B 必須兩臂用同一個 .so、自帶對照，不可引用舊數字。
+	if (exact_conic_aabb)
+	{
 	// ★ 精確圓錐盒（不對稱）。`center`（r=1 的中心）完全不動 => renderCUDA 的低通核 rho2d
 	//   與 backward.cu 的梯度回傳都不受影響；改變的只有「哪些 tile 被綁進來」。
 	float2 cc, ce;
@@ -365,14 +373,16 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	}
 #endif
 	getRectMinMax(bx0, bx1, by0, by1, rect_min, rect_max, grid);
+	}
+	else
+	{
 	// ⚠ `radius`（=> radii）**刻意不改**：Python 端把它餵進 `_max_radii2D`，而那被
 	//   screen_size_prune / vpc 的 c = radii^2 / cost_aware_densify 當成「顆粒的螢幕尺寸與成本」。
 	//   不對稱盒的覆蓋半徑含「中心位移」，拿去當尺寸會嚴重失真（位移最大 73,491 px）。
 	//   => radii 維持線性化的 3-sigma 對稱半徑（下游行為零變化），rects 只管 binning。
 	//   radius > 0 恆成立（>= ceil(3 * FilterSize) = 3），所以 radii > 0 <=> 走到這裡 <=> 盒子非空。
-#else
-	getRect(center, radius, rect_min, rect_max, grid);
-#endif
+		getRect(center, radius, rect_min, rect_max, grid);
+	}
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
@@ -671,6 +681,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const dim3 grid,
 	uint32_t* tiles_touched,
 	ushort4* rects,
+	bool exact_conic_aabb,
 	bool prefiltered)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
@@ -699,6 +710,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		grid,
 		tiles_touched,
 		rects,
+		exact_conic_aabb,
 		prefiltered
 		);
 }

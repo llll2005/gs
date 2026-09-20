@@ -226,7 +226,8 @@ int CudaRasterizer::Rasterizer::forward(
 	bool record_transmittance,
 	int* radii,
 	bool debug,
-	int* out_tiles)
+	int* out_tiles,
+	bool exact_conic_aabb)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -279,6 +280,7 @@ int CudaRasterizer::Rasterizer::forward(
 		tile_grid,
 		geomState.tiles_touched,
 		geomState.rects,
+		exact_conic_aabb,
 		prefiltered
 	), debug)
 

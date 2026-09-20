@@ -78,7 +78,8 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.campos,
             raster_settings.prefiltered,
             raster_settings.record_transmittance,
-            raster_settings.debug
+            raster_settings.debug,
+            raster_settings.exact_conic_aabb
         )
 
         # Invoke C++/CUDA rasterizer
@@ -182,6 +183,10 @@ class GaussianRasterizationSettings(NamedTuple):
     record_transmittance: bool
     debug : bool
     pp_shifty : float = 0.0
+    # ★ 2026-09-21：精確圓錐不對稱外接盒（見 cuda_rasterizer/auxiliary.h 的長註解）。
+    #   **執行期**旗標而非 #define —— lab 三槽平行時 A/B 兩臂要能同時跑，
+    #   且誤用編譯期旗標不會報錯（兩邊都吃最後編的那份）。
+    exact_conic_aabb : bool = False
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

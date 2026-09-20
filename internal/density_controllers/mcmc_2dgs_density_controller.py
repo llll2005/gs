@@ -666,10 +666,17 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"預算={self.config.cost_budget:,.0f}"
                       f"{'（未設，純標定）' if self.config.cost_budget <= 0 else ''}"
                       f" ｜報告區間 平均={getattr(self, '_rep_sum', 0.0) / max(getattr(self, '_rep_cnt', 0), 1):,.0f}"
-                      f" 最壞={getattr(self, '_rep_max', 0.0):,.0f}（{getattr(self, '_rep_cnt', 0)} 視角）")
+                      f" 最壞={getattr(self, '_rep_max', 0.0):,.0f}（{getattr(self, '_rep_cnt', 0)} 視角）"
+                      # ★ 2026-09-21 標定用：**同時**印另一種單位與比值。代理的誤差會在訓練中
+                      #   變號（初期低估 3.6 倍、後期高估 34%），所以換算係數**不是常數**，
+                      #   必須整條曲線量出來才能把舊預算搬到新單位。
+                      + (f" ｜另一單位 平均={getattr(self, '_rep_sum_alt', 0.0) / max(getattr(self, '_rep_cnt', 0), 1):,.0f}"
+                         f" 比值={getattr(self, '_rep_sum_alt', 0.0) / max(getattr(self, '_rep_sum', 1e-9), 1e-9):.3f}"
+                         if getattr(self, '_rep_cnt', 0) > 0 and getattr(self, '_rep_sum_alt', 0.0) > 0 else ""))
                 # 報告自己的視窗（2026-09-14）：與 add_new_gs 閘門用的 `_load_max` 分開，互不干擾。
                 #   ⚠ 原本的「Load(區間最壞視角)」在沒設預算時從不歸零 => 其實是從頭累積的最大值。
                 self._rep_sum, self._rep_cnt, self._rep_max = 0.0, 0, 0.0
+        self._rep_sum_alt = 0.0
         # ★ 2026-09-05 閘門：`_accumulate_error_score` 是**唯一沒有守衛、每步都跑**的助手
         #   （全幅 avg_pool2d + N x 3 的投影矩陣乘）。它的消費者：
         #     err_unlock_frac / err_guided_densify / transparent_corrector  —— 現行配方全是 0
@@ -1455,6 +1462,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # 報告用的累積（2026-09-14）：平均需要 sum/count；不碰閘門的 `_load_max`
         self._rep_sum = getattr(self, "_rep_sum", 0.0) + load
         self._rep_cnt = getattr(self, "_rep_cnt", 0) + 1
+        # 另一單位（精確在用就記代理、反之亦然）=> 每個報告區間都能讀出換算比值
+        _alt = load_proxy if load != load_proxy else 0.0
+        self._rep_sum_alt = getattr(self, "_rep_sum_alt", 0.0) + _alt
         if load > getattr(self, "_rep_max", 0.0):
             self._rep_max = load
         # 閘門用的平均（2026-09-14）：與報告視窗分開，由 add_new_gs 在每個 densify 事件歸零

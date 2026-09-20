@@ -59,7 +59,8 @@ RasterizeGaussiansCUDA(
 	const torch::Tensor& campos,
 	const bool prefiltered,
 	const bool record_transmittance,
-	const bool debug)
+	const bool debug,
+	const bool exact_conic_aabb)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
 	AT_ERROR("means3D must have dimensions (num_points, 3)");
@@ -148,7 +149,8 @@ RasterizeGaussiansCUDA(
 		record_transmittance,
 		radii.contiguous().data<int>(),
 		debug,
-		tiles.contiguous().data<int>());
+		tiles.contiguous().data<int>(),
+		exact_conic_aabb);
   }
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_occluder, tiles);
 }
