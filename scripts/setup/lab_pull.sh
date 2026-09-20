@@ -44,13 +44,14 @@ echo \"光柵器需要重編：\$NEEDBUILD（本次允許重編：$BUILD）\"
 if [ \$NEEDBUILD = 1 ] && [ $BUILD = 1 ]; then
   G=/root/miniconda3/envs/gspl
   rm -rf $RAST/build
-  conda run -n gspl env CUDA_HOME=\$G CUDA_PATH=\$G TORCH_CUDA_ARCH_LIST=8.6 \\
-    pip install --no-build-isolation --no-deps --force-reinstall $RAST 2>&1 | tail -2
+  conda run -n gspl env CUDA_HOME=\$G CUDA_PATH=\$G TORCH_CUDA_ARCH_LIST=8.6 pip install --no-build-isolation --no-deps --force-reinstall $RAST 2>&1 | tail -2
   conda run -n gspl python -c \"import diff_trim_surfel_rasterization as m,os,time;p=os.path.dirname(m.__file__);f=[x for x in os.listdir(p) if x.endswith('.so')][0];print('so:',f,time.strftime('%m-%d %H:%M',time.localtime(os.path.getmtime(os.path.join(p,f)))))\"
 fi
 echo 'HASH'
 sha256sum $RAST/cuda_rasterizer/*.h $RAST/cuda_rasterizer/*.cu $RAST/third_party/glm/glm/glm.hpp | cut -c1-16,66-" > /tmp/.labpull.$$ 2>&1
-sed -n '/^HASH$/,$p' /tmp/.labpull.$$ | tail -n +2 | tr -d '\r' | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -E '^[0-9a-f]{16} ' > /tmp/.labhash.$$
+# ⚠ lab 端是**終端機**：輸出夾著提示字元、ANSI 與指令回顯 => 不要依賴標記行，
+# 直接抓「行首 16 個 hex + 空白」的行（指令回顯不會長這樣）。
+tr -d '\r' < /tmp/.labpull.$$ | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -E '^[0-9a-f]{16} ' | sort -u > /tmp/.labhash.$$
 grep -vE '^\[\?2004|^\(base\)|^HASH$' /tmp/.labpull.$$ | sed 's/\x1b\[[0-9;]*[A-Za-z]//g' | grep -E 'lab:|未提交|重編|so:|⛔|本來就是' 
 
 # ── 比對雜湊 ───────────────────────────────────────────────────────────────
