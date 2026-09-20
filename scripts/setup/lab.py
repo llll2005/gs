@@ -22,6 +22,10 @@ log  <name> [行數]         讀 log 尾部（contents API）
 ps                         看背景工作還在不在（用 labrun/*.pid）
 ls   <相對路徑>            列目錄（contents API）
 put  <本機檔> <遠端相對路徑>  上傳單一小檔（contents API，<10MB）
+                           ⚠⚠ **路徑基準與 get/getfile 不同**：`put`/`bg`/`ls` 相對於
+                           `ROOT`（hdd/11213），而 `get`/`getfile`/`ckpts` 相對於
+                           `ROOT/REPO`（hdd/11213/gs）⇒ 傳 repo 裡的檔要自己加 `gs/`，
+                           少加會拿到 **HTTP 500**（父目錄不存在），不是「找不到檔案」。
 ckpts <run>                看某個跑次有哪些 block / step / 大小
 get  <run> <block> <step> [本機目錄]   抓某個跑次的特定 ckpt（含同名 PLY）
 pull [run|*]               把 lab 上所有 ckpt 抓回 outputs/lab/（跳過 aborted 與已存在的）
@@ -138,11 +142,17 @@ def main():
               json={"type": "file", "format": "text", "content": body}).raise_for_status()
         # ⚠ 不要再 cd：sh() 已經 `cd ROOT`。2026-09-12 多 cd 一層導致 `&&` 短路，
         #   背景工作**根本沒啟動**，而 pid 檔還是被寫出來（$! 取到舊的）=> 看起來正常。
+        # ⚠⚠ 2026-09-13：**不可以用 `$!` 判死活。** `setsid` 若不是行程組長會先 fork 再讓
+        #   父行程立刻退出 ⇒ `$!` 抓到的是那個已經結束的包裝行程 ⇒ 這裡固定印
+        #   「⛔ 行程沒起來」，而真正的工作**活得好好的**（2026-09-13 因此誤殺並重發一次）。
+        #   正解：按**腳本名**找真正的行程，順便把真 pid 寫回 pid 檔（`ps` 子指令要用）。
         rc, out = sh(f"setsid nohup bash {script} > labrun/{name}.log 2>&1 < /dev/null & "
-                     f"echo $! > labrun/{name}.pid; sleep 2; "
-                     f"echo pid=$(cat labrun/{name}.pid); "
-                     f"kill -0 $(cat labrun/{name}.pid) 2>/dev/null && echo '確認：行程活著' "
-                     f"|| echo '⛔ 行程沒起來'", timeout=120)
+                     f"sleep 2; "
+                     f"P=$(ps -eo pid,cmd | grep 'bash labrun/{name}.sh' | grep -v grep "
+                     f"| awk '{{print $1}}' | head -1); "
+                     f"if [ -n \"$P\" ]; then echo $P > labrun/{name}.pid; "
+                     f"echo \"確認：行程活著 pid=$P\"; "
+                     f"else echo '⛔ 行程沒起來'; fi", timeout=120)
         print(f"\n[已背景啟動 {name}  rc={rc}]  看進度：lab.py log {name}")
         return 0
     if c == "log":

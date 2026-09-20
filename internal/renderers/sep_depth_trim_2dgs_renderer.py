@@ -32,6 +32,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             skip_surf_normal: bool = False,
             trim_subsample_probe: int = 0,
             trim_by_value_per_cost: bool = False,
+            trim_value_per_cost_alpha: float = 1.0,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -76,6 +77,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   ⚠ 這是「破壞集合」那一側；記憶記著 vpc_prune_frac 的 -2.34 dB 是把低 v/c 的粒子
         #     **搬走**（relocate）——移除與搬移不是同一件事，但先驗要謹慎。
         self.trim_by_value_per_cost = trim_by_value_per_cost
+        # alpha：把「對成本計價的強度」連續化。score = v / c^alpha
+        #   alpha=0 即現行判準（等同關閉）、alpha=1 即純 v/c。
+        # 2026-09-13 離線掃描（gate15000@15k，`tools/binning_and_trim_probe.py`）：
+        #   「每犧牲一單位 Σv 回收的 Σc」在 **alpha=0.5 有峰**（41.09，現行判準的 2.3 倍），
+        #   alpha=1 已越過峰（27.59），而 alpha=1 端到端實測輸基準 **-0.57 dB**
+        #   且是「紋理比↑ 光度全↓」的虛假細節簽名 => 病因像是計價過猛，不是方向錯。
+        # ⚠ 保留布林旗標而不是換成純 alpha：舊 ckpt 存了 renderer 的 init args，
+        #   移除參數會讓那些 ckpt 載入時炸掉（本檔踩過「ckpt 覆蓋 renderer 旗標」）。
+        self.trim_value_per_cost_alpha = trim_value_per_cost_alpha
         self._vpc_announced = False
         # >0 時，每次 trim 事件**額外**用「每 N 台取一台」再算一次 contribution，
         # 報告與全視角版的 Spearman 與底部 10% 遮罩重疊。只讀，不改變剪枝結果。
@@ -390,15 +400,26 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 if cost_acc is None:
                     print("⚠⚠ [trim-vpc] **設了 trim_by_value_per_cost 但拿不到 c_i，本機制不會生效**")
                 else:
-                    score = contribution / torch.clamp_min(cost_acc, 1.0)
+                    _a = float(self.trim_value_per_cost_alpha)
+                    _cc = torch.clamp_min(cost_acc, 1.0)
+                    score = contribution / (_cc if _a == 1.0 else _cc.pow(_a))
                     if not self._vpc_announced:
                         self._vpc_announced = True
                         _v, _c, _s = contribution, cost_acc, score
                         def _ceil(x):
                             k = max(1, int(x.numel() * 0.05))
                             return float(torch.topk(x, k).values.mean() / torch.clamp_min(x.mean(), 1e-30))
-                        print(f"[trim-vpc] ✅ 首次觸發：判準 v -> v/c   "
+                        # ★ 決定性的數字：它**剪掉不同的一批嗎**。
+                        #   ceiling 不同只證明「判準的分布變了」，不證明「被剪的集合變了」；
+                        #   若重疊 ~100%，這機制就是昂貴的 no-op（第 8 個「看起來正常但沒作用」）。
+                        #   兩個 quantile + 一次 & ⇒ 一次性、零額外 pass。
+                        _mv = _v <= torch.quantile(_v, self.prune_ratio)
+                        _ms = _s <= torch.quantile(_s, self.prune_ratio)
+                        _ov = float((_mv & _ms).sum()) / max(float(_mv.sum()), 1.0)
+                        print(f"[trim-vpc] ✅ 首次觸發：判準 v -> v/c^{_a:g}   "
                               f"ceiling(top5%)/mean  v={_ceil(_v):.2f}x  c={_ceil(_c):.2f}x  v/c={_ceil(_s):.2f}x")
+                        print(f"[trim-vpc]    底部 {100*self.prune_ratio:.0f}% 遮罩重疊 = "
+                              f"**{100*_ov:.2f}%**（~100% = 剪同一批 = no-op；越低代表換掉越多）")
             tile = torch.quantile(score, self.prune_ratio)
             prune_mask = (score <= tile)
             # 診斷（2026-08-25）：`<=` 在有並列時會超剪。零貢獻的來源是 EXACT_SUPPORT ——

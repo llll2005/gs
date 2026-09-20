@@ -19,20 +19,53 @@ This repo is being extended for an undergraduate research project (國科會/專
 consumer-GPU (RTX 4050 Laptop, **6GB VRAM**, 46GB RAM) training of city-scale 2DGS at quality
 competitive with CityGaussianV2.
 
-**Authority for everything below: `紀錄/研究總覽.md` — the single source of truth (proposition,
-current numbers, theory, measurement rules, refuted hypotheses, traps). `紀錄/_ctx.md` is a compact
-primer that costs far fewer tokens; read it first, then the relevant section of 研究總覽.
-Everything else under `紀錄/` is in `archive/` and is history, not current state.
+**Authority for everything below: `紀錄/研究總覽_v2.md` (rewritten 2026-09-13; §0 is the one-page
+current status). The old `紀錄/研究總覽.md` is kept only for topics v2 has not absorbed yet.
+`紀錄/_ctx.md` is a compact primer; its top section "2026-09-14 現況" supersedes the older blocks in it.
+`紀錄/archive/` no longer exists (sorted into `紀錄/new_archived/`, one-line reason per file).
 Read those before proposing mechanisms — this section is a summary and goes stale.**
 
-**⛔⛔ 2026-09-07 定案：命題的「取樣端」已被否證。** 三個變體（符號 ±／冪次+加法／
+**⛔⛔ 2026-09-13 third era boundary: images and poses were misaligned.** Every *local* training score in
+`outputs/` — including the speed3 / SfM-init / sched30 / absgrad numbers further down this file — is
+invalid; see `紀錄/倖存清單_2026-09-13.md`. New-era numbers live in `outputs/lab/` (the lab machine, **kept locked to the 6GB envelope with
+`CITYGS_VRAM_CAP_GB=5.66`** — the proposition is 6GB feasibility, so a recipe that only fits in 24GB is useless).
+**Two-machine protocol (user, 2026-09-18): lab = relative comparison (which recipe is better, lab vs lab), kept at
+3 parallel slots because throughput is ~2x and parallelism does NOT affect results — quality, offline Load and peak
+VRAM are all neighbour-independent (only wall time and it/s are, and those have dedicated `[solo]` tools).
+The laptop = absolute verification: re-run the stage winner there to claim the envelope.**
+
+**★★★ Current state of the proposition (2026-09-17; lab, blocks b6/b12/b13; authority = `紀錄/研究總覽_v2.md` §0):**
+```
+pruning side     trim criterion v -> v/c (`renderer.init_args.trim_by_value_per_cost`)
+                 short recipe (22k~27k, 3 blocks): same N, offline Load median -64~-67%, VRAM -7%, LPIPS better 3/3,
+                   PSNR -0.002/-0.08/-0.17
+                 ⚠ 60k full speed3 recipe (b6/b13): PSNR -0.27/-0.54 (3~7 sd), LPIPS slightly worse
+                   => the quality cost GROWS with training length; 60k Load not measured yet
+elongation       60k: hard prune -0.15/-0.23; relocate -0.02/-0.08 (tie, but first trigger hit 0~1 primitives);
+                 trimvpc + hard prune -0.68/-0.95 (worse than additive) => not complementary
+sampling side    loose budget = cost<->quality knob; B0/4 +0.66 dB on b6 but b12 replication degenerate => not citable
+constraint side  `cost_budget` leaks (gates additions, not scale growth; per-primitive footprint 2.5~3.4x under budget);
+                 max-view gate is the root cause of the b12 collapse (confirmed by the b12 reference trajectory:
+                 healthy max-view Load crosses B0/4 at step ~1,500; b12 spikes p90 7.6x vs b6 2.7x);
+                 relative budget, equal target cost (b6): loose->tight 27.26 @62.5B beats tight->loose 27.34 @91.2B
+init             20k, mechanisms off (b6/b13): sfmfill 28.68/28.20 > sfm 28.52/28.02 > depth 27.19/26.84 > random 22.46/21.83
+official CityGS  the official aerial "trim" stage never trims (renderer restored from the coarse ckpt);
+                 fixed by CITYGS_KEEP_CFG_RENDERER=1 (verified on lab). User's global run (official config, our code,
+                 no blocks, no trim): held-out test PSNR 25.62, N 11.44M. Unmodified-source reference run queued on lab.
+```
+**All GPU training runs on the lab machine (user, 2026-09-17); the laptop only does CPU analysis.**
+Measure cost with `scripts/task_load_compare.sh` (offline, same tool, same cameras). The in-training report's
+interval **mean** (added 2026-09-14) matches the offline mean (b6: 6.95M vs 6.96M); the older `Load(區間最壞視角)`
+field is a spiky max and must not be compared across measurement paths.
+
+**（歷史，已被上方 2026-09-14 現況修正）2026-09-07：命題的「取樣端」在寬鬆預算下被否證。** 三個變體（符號 ±／冪次+加法／
 代理+精確 c／強度未校準+校準）全輸，29 小時 GPU；**基準（無成本項）仍是最佳**
 （agd2 26.5602 vs cadd 26.3719 / fpd 26.4260 / cheap 26.2398）。
 共同形狀「紋理比↑ 而 PSNR/SSIM/LPIPS↓」且**不是塵埃**（floater 方向不一致）⇒ **虛假細節**。
 與 absgrad 互補：**往「誤差在的地方」增生有效（|g|），往「便宜/貴的地方」增生無效（c）**。
 ⚠ 且 `scale_reg` 是 **r=0.977** 的成本代理（空拍深度範圍窄）⇒
   「每個先前方法都是 `c_i ≡ 1` 的特例」**對 scale_reg 不成立**。
-❓ 只剩**約束端**未測：`cost_budget` 取代 `cap_max` ＝ `max Q s.t. (1/K)Σc_i ≤ B` 的字面形式。
+✅ 約束端已測（2026-09-13）：`cost_budget` 取代 `cap_max` —— **會漏**（只擋 add、不擋 scale 成長），見上方現況。
 **引用以下任何成本感知的正面敘述前，先讀記憶 `cost_aware_sampling_refuted`。**
 
 **Core contribution (原始提法，取樣端已否證): cost-aware density control.** Existing density control prices primitives by
@@ -41,7 +74,8 @@ price them by render cost and solve a resource-constrained problem:
 
     max Q(θ_S)  s.t.  (1/K)·Σ_{i∈S} c_i ≤ B(hardware)
 
-with `c_i` = screen-tile footprint (VRAM-grounded), `λ` = shadow price, `K` = strip tiling as a
+with `c_i` = screen-tile footprint — measured 2026-09-13 to be mainly a per-step **time** cost, not a VRAM cost
+(same N: Load -63% cut forward+backward 27% but render-forward VRAM only ~6%; VRAM is dominated by N), `λ` = shadow price, `K` = strip tiling as a
 supply-side lever. Every prior method surveyed is the `c_i ≡ 1` special case; see
 `紀錄/研究總覽.md` §3 (theory) and §8 (12 papers audited implementation-vs-text).
 ⚠ The claim "every prior method is the `c_i ≡ 1` special case" has **two counterexamples** —

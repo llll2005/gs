@@ -50,10 +50,34 @@ def running():
         return []
     hits = []
     for ln in ps.splitlines():
-        if "scripts/task_" in ln and "queue_status" not in ln and ln.strip().split()[1:2] == ["bash"]:
-            et = int(ln.strip().split()[0])
-            hits.append((et, "scripts/" + ln.split("scripts/")[1].split()[0]))
-    return hits
+        # ⚠ 2026-09-13：原本只比對 `scripts/task_`，而 **lab 的任務是 `scripts/lab/task_`**
+        #   => 在 lab 上「現在在跑」永遠印「（沒有 task 腳本在執行）」，即使三個槽都滿的。
+        #   典型的「顯示正常但沒作用」。改成比對 `task_` 並自己還原完整路徑。
+        if "task_" not in ln or "queue_status" in ln:
+            continue
+        f = ln.strip().split()
+        if f[1:2] != ["bash"]:
+            continue
+        # ⚠ 本機的 `scripts/_noedit.sh` 加固會把**整支腳本的原始碼**塞進 cmdline
+        #   （`exec bash -c "$code" "$s" "$@"`）=> 掃 token 會撈到腳本**內文**裡的字串
+        #   （實測撈到 `用法: task_cmp.sh <block_id> <arm>` 這段錯誤訊息）。
+        #   真正的 $0 排在程式碼 blob **之後** => 取**最後一個**看起來像路徑的 token。
+        cands = [t for t in f[1:] if "task_" in t and t.endswith(".sh") and "/" in t]
+        if not cands:
+            continue
+        path = cands[-1]
+        # 帶上後面**全部**的位置參數（`task_cmp.sh 6 cb50` 的「6 cb50」＝塊號與臂名）。
+        # ⚠ 2026-09-13：曾經截到 2 個 => 3 個參數的任務（`task_step_timing.sh 21920 lab/cs_base
+        #   lab/cs_trimvpc`）尾端比對不上，佇列行就不會被標成「執行中」。上限 8 只防異常長度。
+        idx = len(f) - 1 - f[::-1].index(path)
+        args = [t for t in f[idx + 1:] if not t.startswith("-")][:8]
+        hits.append((int(f[0]), " ".join([path] + args)))
+    # ⚠ 任務腳本裡的 `{ ... } | tee` 管線會 fork 出**命令列完全相同**的子 shell
+    #   => 同一個任務會出現兩次。以「路徑+參數」去重，保留跑最久的那個。
+    best = {}
+    for et, key in hits:
+        best[key] = max(et, best.get(key, -1))
+    return [(et, key) for key, et in best.items()]
 
 
 def recent_ledger(n=6):
@@ -88,7 +112,13 @@ def main():
     if not q:
         print("  （空）")
     for k, (title, cmd, nblk) in enumerate(q, 1):
-        mark = "▶ 執行中" if any(cmd.endswith(p) for _, p in run) else f"  {k}."
+        # ⚠ 2026-09-13：不可只比腳本路徑 —— 同一支 task_cmp3.sh 在跑一臂時，佇列裡**所有**
+        #   用 task_cmp3.sh 的行都會被標成「執行中」（實際發生：四個待跑的複製臂全被誤標）。
+        #   也不可用子字串：`task_cmp3.sh 6 cb25` 是 `task_cmp3.sh 6 cb25cost` 的子字串。
+        #   正解：佇列行的**尾端 token** 與「跑中的 路徑+參數」逐 token 完全相同。
+        ct = cmd.split()
+        mark = ("▶ 執行中" if any(len(pt := p.split()) <= len(ct) and ct[-len(pt):] == pt
+                                   for _, p in run) else f"  {k}.")
         print(f"{mark} {title[:74]}")
         print(f"      $ {cmd}" + ("" if nblk else "   ⚠ 這行**沒有註解區塊** => 台帳會顯示上一個區塊的標題"))
 

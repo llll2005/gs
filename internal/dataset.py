@@ -102,7 +102,15 @@ class Dataset(torch.utils.data.Dataset):
                     os.makedirs(os.path.dirname(image_save_path), exist_ok=True)
                     undistorted_pil_image.save(image_save_path, quality=100)
 
-        if self.image_uint8:
+        # ★ 2026-09-17：uint8 快取（RAM 省 4 倍）。本資料集是 RGBA 而 alpha 全為 255 => 合成結果就是 RGB，
+        #   丟掉 alpha 逐位元不變；只要有一個非不透明像素，這一張就退回原本的 float 路徑（同樣逐位元不變）。
+        _uint8_this = self.image_uint8
+        if _uint8_this and numpy_image.ndim == 3 and numpy_image.shape[2] == 4:
+            if bool((numpy_image[:, :, 3] == 255).all()):
+                numpy_image = np.ascontiguousarray(numpy_image[:, :, :3])
+            else:
+                _uint8_this = False
+        if _uint8_this:
             image = torch.from_numpy(numpy_image)
             assert image.dtype == torch.uint8
             assert image.shape[2] == 3
@@ -338,6 +346,7 @@ class DataModule(LightningDataModule):
             image_on_cpu: bool = True,
             image_uint8: bool = False,
             async_caching: bool = False,
+            skip_unused_depth: bool = False,
     ) -> None:
         r"""Load dataset
 
@@ -395,6 +404,8 @@ class DataModule(LightningDataModule):
 
         # load dataset
         self.dataparser_outputs = dataparser.get_outputs()
+        if self.hparams.get("skip_unused_depth", False):
+            self._skip_unused_depth()
 
         self.prune_extent = self.dataparser_outputs.camera_extent
         # add background sphere: https://github.com/graphdeco-inria/gaussian-splatting/issues/300#issuecomment-1756073909
@@ -553,6 +564,35 @@ class DataModule(LightningDataModule):
             num_workers=self.hparams["num_workers"],
         )
 
+    def _skip_unused_depth(self):
+        """（2026-09-17）深度 loss 權重恆為 0 時不載入 GT 深度圖。
+
+        訓練逐位元不變：深度只有 metric 在讀，訓練時權重 0 整段跳過，GT 是 None 時回傳 0。
+        會變的只有 val 的 d_reg 紀錄（變 0，連帶 val/loss）；最佳 ckpt 是按 PSNR 挑，不受影響。
+        每張 1920x1080 float32 深度 8.3 MB => b6（548 台）約省 4.5 GB RAM。
+        """
+        try:
+            m = self.trainer.lightning_module.metric
+            w = getattr(getattr(m, "config", None), "depth_loss_weight", None)
+        except Exception as e:
+            print(f"⚠⚠ [depth] skip_unused_depth：讀不到 metric 的深度權重（{type(e).__name__}）=> 照常載入", flush=True)
+            return
+        if w is None:
+            print("[depth] skip_unused_depth：這個 metric 沒有 depth_loss_weight => 照常載入", flush=True)
+            return
+        if float(getattr(w, "init", 1.0)) != 0.0:
+            print(f"[depth] skip_unused_depth：深度權重 init={w.init} 不為 0 => 照常載入", flush=True)
+            return
+        n = 0
+        for name in ("train_set", "val_set", "test_set"):
+            s = getattr(self.dataparser_outputs, name, None)
+            if s is None or getattr(s, "extra_data", None) is None:
+                continue
+            n += sum(1 for x in s.extra_data if x is not None)
+            s.extra_data = [None] * len(s.extra_data)
+        print(f"[depth] ✅ skip_unused_depth：深度權重恆為 0 => 不載入 {n:,} 張深度圖"
+              f"（訓練逐位元不變；val 的 d_reg 會記成 0）", flush=True)
+
     def on_after_batch_transfer(self, batch: Any, dataloader_idx: int) -> Any:
         if batch[1][1].dtype != torch.uint8:
             return batch
@@ -560,6 +600,8 @@ class DataModule(LightningDataModule):
         camera, image_info, extra_data = batch
         image_name, gt_image, masked_pixels = image_info
 
-        gt_image = gt_image.to(camera.R.dtype) / 255.
+        # ⚠ 2026-09-17 實測：GPU 上 float32 / 255 與原本 CPU 的 float64 路徑在 256 個值裡有 126 個差 1 ulp
+        #   => 先在 float64 除、再轉回相機 dtype，才與 float 快取逐位元相同（256/256、真實影像 141/141）
+        gt_image = (gt_image.to(torch.float64) / 255.).to(camera.R.dtype)
 
         return camera, (image_name, gt_image, masked_pixels), extra_data

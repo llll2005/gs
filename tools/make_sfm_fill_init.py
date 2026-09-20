@@ -99,7 +99,12 @@ def main():
     images = read_images_binary(os.path.join(sparse, "images.bin"))
     name_to_id = {im.name: i for i, im in images.items()}
 
+    # ⚠⚠ 2026-09-17 踩過：這個 rng 建在**塊迴圈之外**，每個塊輪流消耗 =>
+    #   **同一個塊的輸出取決於 `--blocks` 的清單與順序**（點數相同、位元不同，無聲無息）。
+    #   歷史基準（lab/init_sfmfill）是 `--blocks 6 12 13` 產的 => 要重現就得帶同一份清單。
+    #   ⛔ 不改成逐塊 seed：那會讓既有的基準 PLY 對不上，反而製造第二個不可重現的版本。
     rng = np.random.default_rng(42)
+    print(f"[rng] seed 42，塊順序 {args.blocks} —— ⚠ 產出與這個清單／順序相關，重現時要帶同一份", flush=True)
     for blk in args.blocks:
         bx, by = blk % args.block_dim[0], blk // args.block_dim[0]
         pf = os.path.join(part, f"{bx:03d}_{by:03d}.txt")

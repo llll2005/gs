@@ -39,6 +39,7 @@ namespace CudaRasterizer
 		float* rgb;
 		uint32_t* point_offsets;
 		uint32_t* tiles_touched;
+		ushort4* rects;   // 逐顆的 tile 盒（不對稱），preprocess 存、duplicateWithKeys 讀
 
 		static GeometryState fromChunk(char*& chunk, size_t P);
 	};

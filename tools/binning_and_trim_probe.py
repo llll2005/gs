@@ -128,18 +128,73 @@ def main():
     alt = torch.zeros(N, dtype=torch.bool, device=dev)
     alt[ca.topk(k, largest=False).indices] = True
     ov = float((base & alt).sum()) / k
-    print(f"  底部 {100*a.prune_ratio:.0f}% = {k:,} 顆   兩種判準的遮罩重疊 = **{100*ov:.2f}%**")
+
+    # ⛔⛔ 2026-09-13：**本題的第一次量測（09-12）就是敗在這裡，結論還把一條線關掉了。**
+    #   EXACT_SUPPORT 把 o <= 1/255 的粒子整顆剔出 binning ⇒ 它們的 contribution 恰好是 0。
+    #   v = 0  =>  v/c = 0  ⇒ 兩個判準在這批上**完全並列**，`topk` 的斷並列又只看索引序
+    #   ⇒ 只要零貢獻佔比 >= prune_ratio，重疊**恆等於 100%**，與判準好壞無關。
+    #   09-12 取 step=60000（trim 在 densify_until=30000 就停了）⇒ 量在機制不作用的時點。
+    #   訓練期實測（b6 60k 的 trim 行）零貢獻只有 **0.15% ~ 8.44%**，全部 < 10% ⇒ 不並列。
+    n_zero = int((contribution <= 0).sum())
+    f_zero = n_zero / max(N, 1)
+    print(f"  零貢獻粒子 = {n_zero:,} ({100*f_zero:.2f}%)   剪枝比例 = {100*a.prune_ratio:.0f}%")
+    if f_zero >= a.prune_ratio:
+        print(f"  ⛔⛔ **這個量測是退化的，重疊數字沒有意義**："
+              f"零貢獻 {100*f_zero:.2f}% >= 剪枝比例 {100*a.prune_ratio:.0f}%")
+        print(f"       ⇒ 兩個判準都只是在同一批並列的 0 之中挑，重疊必然 100%。")
+        print(f"       ⇒ 要量這題，**必須取 trim 仍在作用的步數**（step <= densify_until），"
+              f"用 --step 指定。")
+    print(f"  底部 {100*a.prune_ratio:.0f}% = {k:,} 顆   兩種判準的遮罩重疊 = **{100*ov:.2f}%**"
+          + ("   ⛔ 退化，不可引用" if f_zero >= a.prune_ratio else ""))
+    # 非並列子群上的重疊：把恰好為 0 的排除後重算，是「判準本身」的重疊
+    nz = contribution > 0
+    if int(nz.sum()) > 10:
+        kk = max(1, int(int(nz.sum()) * a.prune_ratio))
+        idx = torch.nonzero(nz).squeeze(-1)
+        b2 = idx[contribution[nz].topk(kk, largest=False).indices]
+        a2 = idx[ca[nz].topk(kk, largest=False).indices]
+        ov2 = len(set(b2.tolist()) & set(a2.tolist())) / kk
+        print(f"  （排除並列的零貢獻後，{int(nz.sum()):,} 顆之中的底部 {100*a.prune_ratio:.0f}%"
+              f" 重疊 = **{100*ov2:.2f}%**）")
+    V = float(contribution.double().sum())
     print(f"  移除的 Σc_i（渲染成本）：contribution {100*float(cost[base].sum())/C:.2f}%"
           f"  vs  成本感知 {100*float(cost[alt].sum())/C:.2f}%")
     print(f"  移除的 Σcontribution（貢獻）：{float(contribution[base].sum()):.3f}"
-          f"  vs  {float(contribution[alt].sum()):.3f}")
+          f" ({100*float(contribution[base].sum())/max(V,1e-30):.2f}% of total)"
+          f"  vs  {float(contribution[alt].sum()):.3f}"
+          f" ({100*float(contribution[alt].sum())/max(V,1e-30):.2f}%)")
+
+    # ── alpha 掃描：v / c^alpha ──────────────────────────────────────────────
+    # 2026-09-13：alpha=1（純 v/c）在 lab 上 @10,960 輸給基準 −0.57 dB，而且是
+    # 「紋理比↑ 光度全↓」的**虛假細節**簽名。探針顯示原因很可能是**代價付太多**：
+    # 同樣剪 10%，它多回收 5.9x 的 Σc，卻也多砍 3.8x 的 Σv。
+    # ⇒ alpha 是把「對成本計價的強度」連續化的旋鈕，alpha=0 就是現行判準。
+    # 判準：找「Σc 回收明顯增加、而 Σv 損失幾乎不增加」的那一段（若存在）。
+    print(f"\n  ── alpha 掃描：score = v / c^alpha（alpha=0 即現行判準）──")
+    print(f"  {'alpha':>6} {'與 v 判準重疊':>14} {'移除 Σc':>10} {'移除 Σv':>10} "
+          f"{'每單位 Σv 回收的 Σc':>20}")
+    cf = cost.double().clamp_min(1.0)
+    for al in (0.0, 0.25, 0.5, 0.75, 1.0):
+        sc = contribution.double() / cf.pow(al)
+        m = torch.zeros(N, dtype=torch.bool, device=dev)
+        m[sc.topk(k, largest=False).indices] = True
+        dc = 100 * float(cost[m].sum()) / C
+        dv = 100 * float(contribution[m].sum()) / max(V, 1e-30)
+        ovl = 100 * float((base & m).sum()) / k
+        print(f"  {al:>6.2f} {ovl:>13.2f}% {dc:>9.2f}% {dv:>9.2f}% "
+              f"{dc/max(dv,1e-9):>19.3f}")
+    print(f"  （最後一欄越大越划算；alpha=0 那列是現行判準的基準值）")
     print(f"""
 判讀：
   ① 浪費 > 50% 且某個門檻的交換比 > 3:1  => Elongation Filter 有實質目標，值得做
      ⚠ 但「移除」不等於「免費」：被移除的粒子帶著不透明度質量，MCMC 會 relocate
        => 建議的接法是融入 MCMC 的死亡判準（搬走而非刪除），不是硬剪
-  ② 重疊 > 95%   => 改判準也是刪同一批，這條線關掉
-     重疊低 且 成本感知移除的 Σc_i 明顯更多 => 值得端到端（一行改動）""")
+  ② **先看零貢獻佔比**：>= 剪枝比例 => 量測退化，重疊 100% 是並列造成的，**不可下結論**
+     零貢獻 < 剪枝比例時才讀重疊：
+       重疊 > 95%  => 改判準也是刪同一批 => 這條線關掉
+       重疊低 且 成本感知移除的 Σc_i 明顯更多 => 值得端到端（一行改動）
+  ⚠ --step 要落在 **trim 仍在作用的窗口**（contribution_prune_from_iter ~ densify_until_iter），
+    60000 在窗口外，量到的是收割完的模型，不是 trim 面對的族群。""")
 
 
 if __name__ == "__main__":

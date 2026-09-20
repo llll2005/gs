@@ -71,7 +71,16 @@ wait_for_gpu () {
   local used waited=0
   while true; do
     used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
-    [ -z "$used" ] && used=0
+    # ⚠⚠ 2026-09-13：`nvidia-smi` **失敗**時不可當成「卡是空的」。
+    #   實測情境：系統更新換了 nvidia 驅動（610.43 -> 615.71）但核心還載著舊模組
+    #   => `Failed to initialize NVML: Driver/library version mismatch`，輸出為空。
+    #   舊寫法 `[ -z "$used" ] && used=0` 會讓 0 < 1500 成立 => 判定 GPU 空閒
+    #   => runner 會一路啟動任務、每個都當場死，**把整個佇列燒光**（每個都留 FAIL）。
+    #   正解：取不到讀數 = **不知道** = 當作忙碌，繼續等（並每 30 分鐘說一次為什麼）。
+    if [ -z "$used" ]; then
+      [ $((waited % 1800)) -eq 0 ] && log "   ⛔ 讀不到 nvidia-smi（驅動/函式庫版本不合？）—— 當作卡忙碌，繼續等"
+      sleep 60; waited=$((waited + 60)); continue
+    fi
     [ "$used" -lt "$GPU_FREE_MIB" ] && break
     [ $((waited % 1800)) -eq 0 ] && log "   ⏳ 等 GPU（目前 ${used}MiB）"
     sleep 60; waited=$((waited + 60))
@@ -83,8 +92,10 @@ gpu_room () {   # 還放得下一個 6GB 信封的跑次嗎
   local used total
   used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
   total=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
-  [ -z "$used" ] && used=0
-  [ -z "$total" ] && total=0
+  # ⚠ 同上：讀不到 = 不知道 = **回報「放不下」**，不要因為 total-used = 0-0 = 0 就誤判。
+  #   （舊寫法把兩者都設 0，0 >= 6800 為假 ⇒ 剛好也回報放不下，但那是巧合不是設計；
+  #     寫明確一點，免得有人之後把預設值改成 total=24576 就變成災難。）
+  { [ -z "$used" ] || [ -z "$total" ]; } && return 1
   [ $((total - used)) -ge "$GPU_RESERVE_MIB" ]
 }
 

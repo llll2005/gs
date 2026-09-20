@@ -47,6 +47,7 @@ namespace FORWARD
 		float4* normal_opacity,
 		const dim3 grid,
 		uint32_t* tiles_touched,
+		ushort4* rects,
 		bool prefiltered);
 
 	// Main rasterization method.

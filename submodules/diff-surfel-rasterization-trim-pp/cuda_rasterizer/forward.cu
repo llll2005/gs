@@ -130,6 +130,51 @@ __device__ bool computeTransMat(const glm::vec3 &p_world, const glm::vec4 &quat,
 // Computing the bounding box of the 2D Gaussian and its center,
 // where the center of the bounding box is used to create a low pass filter
 // in the image plane
+// 精確圓錐外接盒（2026-09-20）。computeAABB 算的是 **r=1** 那條等高線的精確外接盒，呼叫端再乘
+// truncated_R —— 那是**線性化**：ray-splat 交點 p = k x l 對像素是仿射的（因為 Tw x Tw = 0），
+// 所以 u^2 + v^2 <= R^2 在螢幕上是真正的圓錐曲線，而不同 R 的等高線在透視下**不是等比放大**。
+// 精確解同成本：把對偶簽名 (1,1,-1) 換成 (R^2, R^2, -1)。正交極限下自動退化回 R * extent(1)。
+//
+// ⚠⚠ 這裡回傳的 center 是**該層的**中心，會隨 R 移動，**絕對不可以**寫進 points_xy_image：
+//    那個值同時是 renderCUDA 低通核 rho2d 的中心、以及 backward.cu computeAABB 梯度回傳的依據
+//    （兩者都按 r=1 的公式）。呼叫端要拿原本的 r=1 中心配上這裡的 [center +- extent] 組不對稱盒。
+// ⚠ d = C*_33 ~= -(深度^2)，**負號是常態**；中心與半寬都是 C* 的比值，對整體符號不變
+//   => 只有 d == 0 才是真退化（與原版同判準）。
+__device__ bool computeAABB_R(const float *transMat, const float R, float2 & center, float2 & extent)
+{
+	glm::mat4x3 T = glm::mat4x3(
+		transMat[0], transMat[1], transMat[2],
+		transMat[3], transMat[4], transMat[5],
+		transMat[6], transMat[7], transMat[8],
+		transMat[6], transMat[7], transMat[8]
+	);
+
+	const float R2 = R * R;
+	const glm::vec3 sgn = glm::vec3(R2, R2, -1.0f);
+
+	float d = glm::dot(sgn, T[3] * T[3]);
+	if (d == 0.0f) return false;
+
+	glm::vec3 f = sgn * (1.0f / d);
+
+	glm::vec3 p = glm::vec3(
+		glm::dot(f, T[0] * T[3]),
+		glm::dot(f, T[1] * T[3]),
+		glm::dot(f, T[2] * T[3]));
+
+	glm::vec3 h0 = p * p -
+		glm::vec3(
+			glm::dot(f, T[0] * T[0]),
+			glm::dot(f, T[1] * T[1]),
+			glm::dot(f, T[2] * T[2])
+		);
+
+	glm::vec3 h = sqrt(max(glm::vec3(0.0), h0));
+	center = {p.x, p.y};
+	extent = {h.x, h.y};
+	return true;
+}
+
 __device__ bool computeAABB(const float *transMat, float2 & center, float2 & extent, int W, int H) {
 	glm::mat4x3 T = glm::mat4x3(
 		transMat[0], transMat[1], transMat[2],
@@ -191,6 +236,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float4* normal_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
+	ushort4* rects,
 	bool prefiltered)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -286,10 +332,47 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// pixels -- many marginal samples, not a few large errors. One extra pixel of slack costs
 	// at most one ring of tiles and buys back exactness.
 	radius += EXACT_SUPPORT_MARGIN_PX;
+#if !EXACT_SUPPORT_GROW && !EXACT_CONIC_AABB
+	// GROW=0 的語意是「只縮不長」：margin 與浮點誤差都不得讓半徑超過原本的平坦 3-sigma 盒，
+	// 否則會在另一個方向上改變輸出（高不透明度顆粒的 truncated_R 已被 cap 在 3）。
+	radius = min(radius, ceil(3.f * max(max(extent.x, extent.y), FilterSize)));
+#endif
 #endif
 
 	uint2 rect_min, rect_max;
+#if EXACT_CONIC_AABB
+	// ★ 精確圓錐盒（不對稱）。`center`（r=1 的中心）完全不動 => renderCUDA 的低通核 rho2d
+	//   與 backward.cu 的梯度回傳都不受影響；改變的只有「哪些 tile 被綁進來」。
+	float2 cc, ce;
+	if (!computeAABB_R(transMat, truncated_R, cc, ce))
+		return;
+	const float fs = FilterSize * truncated_R;      // 低通圓盤：||pix - center|| <= FilterSize * R
+	float bx0 = min(cc.x - ce.x, center.x - fs) - EXACT_SUPPORT_MARGIN_PX;
+	float bx1 = max(cc.x + ce.x, center.x + fs) + EXACT_SUPPORT_MARGIN_PX;
+	float by0 = min(cc.y - ce.y, center.y - fs) - EXACT_SUPPORT_MARGIN_PX;
+	float by1 = max(cc.y + ce.y, center.y + fs) + EXACT_SUPPORT_MARGIN_PX;
+#if EXACT_SUPPORT && !EXACT_SUPPORT_GROW && EXACT_SUPPORT_RADIUS
+	{	// 「只縮不長」：夾回**同一套公式**下的平坦 3-sigma 盒（不是線性化的那個）
+		float2 c3, e3;
+		if (computeAABB_R(transMat, 3.f, c3, e3))
+		{
+			const float f3 = FilterSize * 3.f;
+			bx0 = max(bx0, min(c3.x - e3.x, center.x - f3));
+			bx1 = min(bx1, max(c3.x + e3.x, center.x + f3));
+			by0 = max(by0, min(c3.y - e3.y, center.y - f3));
+			by1 = min(by1, max(c3.y + e3.y, center.y + f3));
+		}
+	}
+#endif
+	getRectMinMax(bx0, bx1, by0, by1, rect_min, rect_max, grid);
+	// ⚠ `radius`（=> radii）**刻意不改**：Python 端把它餵進 `_max_radii2D`，而那被
+	//   screen_size_prune / vpc 的 c = radii^2 / cost_aware_densify 當成「顆粒的螢幕尺寸與成本」。
+	//   不對稱盒的覆蓋半徑含「中心位移」，拿去當尺寸會嚴重失真（位移最大 73,491 px）。
+	//   => radii 維持線性化的 3-sigma 對稱半徑（下游行為零變化），rects 只管 binning。
+	//   radius > 0 恆成立（>= ceil(3 * FilterSize) = 3），所以 radii > 0 <=> 走到這裡 <=> 盒子非空。
+#else
 	getRect(center, radius, rect_min, rect_max, grid);
+#endif
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
 
@@ -307,6 +390,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// store them in float4
 	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
+	// 把 rect 存起來給 duplicateWithKeys 用（原本是拿 center/radii 重算一次）。
+	// 線性化路徑存的值與 getRect 算的完全一樣 => 逐位元相同。
+	rects[idx] = make_ushort4((unsigned short)rect_min.x, (unsigned short)rect_min.y,
+	                          (unsigned short)rect_max.x, (unsigned short)rect_max.y);
 }
 
 // Main rasterization method. Collaboratively works on one tile per
@@ -583,6 +670,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	float4* normal_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
+	ushort4* rects,
 	bool prefiltered)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
@@ -610,6 +698,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		normal_opacity,
 		grid,
 		tiles_touched,
+		rects,
 		prefiltered
 		);
 }

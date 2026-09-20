@@ -318,17 +318,51 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         # `cap_max` 保留為儲存項的安全閥（VRAM = 逐顆儲存 + binning，本旗標只管後者）。
         # `_load_max` = 這個 densify 區間內、已見視角中最壞的 Σ_i (2r_i/16)^2（線上量）。
         _cb = getattr(self.config, "cost_budget", 0.0)
-        if _cb > 0:
-            _load = getattr(self, "_load_max", 0.0)
-            if _load > 0:                      # 0 = 這個區間還沒量到，讓它照原規則長
-                if _load >= _cb:
+        _csv = getattr(self.config, "cost_budget_ref_csv", "") or ""
+        if _csv and getattr(self, "_budget_ref", None) is None:
+            try:
+                import numpy as _np
+                _arr = _np.genfromtxt(_csv, delimiter=",", names=True)
+                self._budget_ref = (_arr["step"].astype(float), _arr["load_mean"].astype(float))
+            except Exception as _e:
+                self._budget_ref = False
+                print(f"⚠⚠ [cost-budget] **讀不到參考軌跡 {_csv}，相對預算不會生效**：{type(_e).__name__} {_e}", flush=True)
+        _ref = getattr(self, "_budget_ref", None)
+        _use_ref = bool(_csv) and _ref not in (None, False)
+        if _cb > 0 or _use_ref:
+            # 2026-09-14：可選用區間**平均**（與離線工具對得上）；相對預算一律用平均
+            _stat = "mean" if _use_ref else getattr(self.config, "cost_budget_stat", "max")
+            if _stat == "mean":
+                _c = getattr(self, "_gate_cnt", 0)
+                _load = getattr(self, "_gate_sum", 0.0) / _c if _c > 0 else 0.0
+            else:
+                _load = getattr(self, "_load_max", 0.0)
+            if _use_ref:
+                import numpy as _np
+                _step = float(getattr(self, "_cur_step", 0))
+                _f0 = float(self.config.densify_from_iter); _f1 = float(self.config.densify_until_iter)
+                _u = min(max((_step - _f0) / max(_f1 - _f0, 1.0), 0.0), 1.0)
+                _rs = float(getattr(self.config, "cost_budget_ratio_start", 1.0))
+                _re = float(getattr(self.config, "cost_budget_ratio_end", 1.0))
+                _rho = _rs + (_re - _rs) * _u
+                _B = _rho * float(_np.interp(_step, _ref[0], _ref[1]))
+            else:
+                _rho, _B = None, _cb
+            if not getattr(self, "_budget_announced", False) and _load > 0:
+                self._budget_announced = True
+                print(f"[cost-budget] ✅ 閘門首次判斷：統計量={_stat}"
+                      + (f"、相對預算 rho={_rho:.3f}（{_rs}->{_re}）x Load_ref={_B / max(_rho, 1e-12):,.0f}" if _use_ref else "")
+                      + f" => B={_B:,.0f}；本區間 Load={_load:,.0f}；N={current_num_points:,}", flush=True)
+            if _load > 0 and _B > 0:           # 0 = 這個區間還沒量到，讓它照原規則長
+                if _load >= _B:
                     num_gs = 0                 # 預算用完 -> 停止生長（relocate 不受影響）
                 else:
                     # 線性外推：成本與顆數在**同一個區間內**近似等比例（跨階段才會解耦），
                     # 所以用剩餘預算的比例限制這次的增量，避免一次超支。
-                    _room = (_cb - _load) / _load
+                    _room = (_B - _load) / _load
                     num_gs = min(num_gs, int(current_num_points * _room))
             self._load_max = 0.0               # 每個 densify 事件重開視窗
+            self._gate_sum, self._gate_cnt = 0.0, 0
 
         if num_gs <= 0:
             return 0

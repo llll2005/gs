@@ -522,6 +522,26 @@ class MCMC2DGSDensityController(MCMCDensityController):
 
     cost_budget_report: int = 0
     """>0 時每 N 步印出線上量到的 `Load`（不改變任何行為），用來標定 `cost_budget`。"""
+
+    churn_report: bool = False
+    """（2026-09-14，純打印、不改任何行為）每個 densify 事件印一行 `[churn]`：
+    事件前顆數、被 relocate 的 dead 數、新增數、事件後顆數。
+    用途：驗「前期寬鬆的預算會不會造成中期 churn」之前，先要量得到 churn。"""
+
+    cost_budget_stat: str = "max"
+    """（2026-09-14）閘門比較的統計量：`max`＝區間最壞視角（原行為）／`mean`＝區間平均。
+    b6 基準實測 最大/平均 中位 1.72、最高 11.2 倍 => 最大值被少數視角主宰，而**平均與離線工具對得上**。"""
+
+    cost_budget_ref_csv: str = ""
+    """（2026-09-14）相對預算：`B(t) = rho(t) x Load_ref(t)`，Load_ref 取自參考跑次（`refrep` 臂）的
+    `step,load_mean` CSV（例：`logs/refrep_b6_traj.csv`）。設了它就一律用**平均**判斷，`cost_budget` 常數被忽略。"""
+
+    cost_budget_ratio_start: float = 1.0
+    """相對預算在增生期起點（densify_from_iter）的 rho。"""
+
+    cost_budget_ratio_end: float = 1.0
+    """相對預算在增生期終點（densify_until_iter）的 rho；中間線性內插。
+    start > end＝前鬆後緊（使用者假設一）；start < end＝前緊後鬆（假設二）；相等＝固定比例。"""
     """>0 時按渲染成本折扣增生取樣權重：`probs /= (c/median(c))^w`，`c` = 區間內最大螢幕半徑^2。
 
     論文命題的直接實作：**既有方法用顆數計價，我方用渲染成本計價**。MCMC 分裂會讓子代
@@ -614,7 +634,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             self._update_max_radii(outputs, gaussian_model)   # cost signal for DAR / gate / v-p-c
         # 成本預算（§11.60）：B 與 N 動態解耦（B/N 在軌跡上變動 2.2 倍；15k->30k 顆數 +98%
         # 而成本只 +9.4%）⇒ `cap_max` 按顆數計價是錯的貨幣。這裡量的是正確的貨幣。
-        if self.config.cost_budget > 0 or self.config.cost_budget_report > 0:
+        # ⚠ 守衛必須含 `cost_budget_ref_csv` 自己（本檔踩過「守衛不含自己 => 靜默 no-op」）
+        if self.config.cost_budget > 0 or self.config.cost_budget_report > 0 or self.config.cost_budget_ref_csv:
+            # 閘門的平均視窗＝最近一個 densify 間隔（與報告同寬）；不這樣做，第一個事件會平均到 step 0 以來的全部歷史
+            if global_step % self.config.densification_interval == 1:
+                self._gate_sum, self._gate_cnt = 0.0, 0
             self._update_load(outputs)
             _cbr = self.config.cost_budget_report
             if _cbr > 0 and global_step % _cbr == 0:
@@ -623,7 +647,12 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 print(f"[cost-budget] step {global_step}: N={_n:,} "
                       f"Load(區間最壞視角)={_l:,.0f} Load/N={_l / max(_n, 1):.2f} "
                       f"預算={self.config.cost_budget:,.0f}"
-                      f"{'（未設，純標定）' if self.config.cost_budget <= 0 else ''}")
+                      f"{'（未設，純標定）' if self.config.cost_budget <= 0 else ''}"
+                      f" ｜報告區間 平均={getattr(self, '_rep_sum', 0.0) / max(getattr(self, '_rep_cnt', 0), 1):,.0f}"
+                      f" 最壞={getattr(self, '_rep_max', 0.0):,.0f}（{getattr(self, '_rep_cnt', 0)} 視角）")
+                # 報告自己的視窗（2026-09-14）：與 add_new_gs 閘門用的 `_load_max` 分開，互不干擾。
+                #   ⚠ 原本的「Load(區間最壞視角)」在沒設預算時從不歸零 => 其實是從頭累積的最大值。
+                self._rep_sum, self._rep_cnt, self._rep_max = 0.0, 0, 0.0
         # ★ 2026-09-05 閘門：`_accumulate_error_score` 是**唯一沒有守衛、每步都跑**的助手
         #   （全幅 avg_pool2d + N x 3 的投影矩陣乘）。它的消費者：
         #     err_unlock_frac / err_guided_densify / transparent_corrector  —— 現行配方全是 0
@@ -825,7 +854,16 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             #     修掉之後兩者可以並存 —— 而 v2 的 OOM 證明 prune 是承重的、不能拿掉。）
             if self._max_radii2D is not None and self._max_radii2D.shape[0] == dead_mask.shape[0]:
                 self._max_radii2D[dead_mask] = 0
+            _n_before_add = gaussian_model.n_gaussians
+            self._cur_step = global_step          # 相對預算的 rho(t) 與 Load_ref(t) 需要目前步數
             self.add_new_gs(gaussian_model, optimizers)
+            if getattr(self.config, "churn_report", False):
+                _n_after_add = gaussian_model.n_gaussians
+                if not getattr(self, "_churn_announced", False):
+                    self._churn_announced = True
+                    print("[churn] ✅ 首次觸發：每個 densify 事件印一行（純打印，不改行為）", flush=True)
+                print(f"[churn] step {global_step}: N={_n_before_add:,} dead->relocate={int(dead_mask.sum()):,} "
+                      f"新增={_n_after_add - _n_before_add:,} => N={_n_after_add:,}", flush=True)
             # ★ 視窗在**所有**消費者用完之後才清（2026-09-05 修）。
             #   消費者順序：vpc -> screen_size_prune -> add_new_gs(cost_aware)。
             #   `add_new_gs` 會 append ⇒ 之後 shape 就對不上，所以必須在這裡清。
@@ -1368,6 +1406,14 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         load = float(((2.0 * r[vis] / self.TILE_PX) ** 2).sum())
         if load > getattr(self, "_load_max", 0.0):
             self._load_max = load
+        # 報告用的累積（2026-09-14）：平均需要 sum/count；不碰閘門的 `_load_max`
+        self._rep_sum = getattr(self, "_rep_sum", 0.0) + load
+        self._rep_cnt = getattr(self, "_rep_cnt", 0) + 1
+        if load > getattr(self, "_rep_max", 0.0):
+            self._rep_max = load
+        # 閘門用的平均（2026-09-14）：與報告視窗分開，由 add_new_gs 在每個 densify 事件歸零
+        self._gate_sum = getattr(self, "_gate_sum", 0.0) + load
+        self._gate_cnt = getattr(self, "_gate_cnt", 0) + 1
 
     def _update_max_radii(self, outputs: dict, gaussian_model) -> None:
         radii = outputs.get("radii", None)

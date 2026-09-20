@@ -36,6 +36,13 @@
 // EXACT_SUPPORT costs bit-identity); 1 = also use the exact support radius.
 #define EXACT_SUPPORT_RADIUS 0
 
+// 精確圓錐外接盒（2026-09-20）。0 = 維持上游的線性化（radius = truncated_R * extent(1)，
+// 中心固定在 r=1 的中心）；1 = 直接解該層等高線的圓錐曲線，輸出**不對稱**盒。
+// 線性化在 88.7% 的（顆粒,相機）組合上**高估**（白付 tile），在 11.3% 上**低估**（漏覆蓋，
+// 最大 73,491 px）=> 改成精確解同時省掉白付的、補回漏掉的。離線量得 Σtile -41.2%。
+// ⚠ 必須配不對稱盒才有這個數字：硬塞回 getRect(中心, 半徑) 要付 |中心位移| 左右各一次 => +7.1%。
+#define EXACT_CONIC_AABB 0
+
 // AbsGS 式的絕對值位置梯度（2026-08-25，見 backward.cu 的長註解）。
 // 1 = 在 ray-splat 分支把 |dL_ds.x| + |dL_ds.y| 累加進 `dL_dmean2D.z`（該分量全檔未被讀，
 //     所以**渲染與梯度逐位元不變**），Python 端用 `viewspace_points.grad[:, 2]` 取用。
@@ -91,6 +98,21 @@ __forceinline__ __device__ void getRect(const float2 p, int max_radius, uint2& r
 	rect_max = {
 		min(grid.x, max((int)0, (int)((p.x + max_radius + BLOCK_X - 1) / BLOCK_X))),
 		min(grid.y, max((int)0, (int)((p.y + max_radius + BLOCK_Y - 1) / BLOCK_Y)))
+	};
+}
+
+__forceinline__ __device__ void getRectMinMax(const float x0, const float x1, const float y0, const float y1,
+	uint2& rect_min, uint2& rect_max, dim3 grid)
+{
+	// getRect 的不對稱版：直接吃盒子的 min/max，不經過「中心 +- 半徑」。
+	// x0 == p.x - r 且 x1 == p.x + r 時與 getRect 逐位元相同。
+	rect_min = {
+		min(grid.x, max((int)0, (int)(x0 / BLOCK_X))),
+		min(grid.y, max((int)0, (int)(y0 / BLOCK_Y)))
+	};
+	rect_max = {
+		min(grid.x, max((int)0, (int)((x1 + BLOCK_X - 1) / BLOCK_X))),
+		min(grid.y, max((int)0, (int)((y1 + BLOCK_Y - 1) / BLOCK_Y)))
 	};
 }
 

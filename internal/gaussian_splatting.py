@@ -6,6 +6,7 @@ from typing import Tuple, List, Dict, Union, Any, Callable, Optional
 from typing_extensions import Self
 
 import time
+import os
 import torch
 import torch.optim
 import torchvision
@@ -57,6 +58,11 @@ class _StepProfiler:
         self._step_t0 = None
         self._marks = []       # [(名稱, cuda_event, perf_counter)]
         self._prev_end = None  # 上一步結束的 wall 時間 => 迴圈外的開銷
+        # 逐段 VRAM（2026-09-17）：每個標記點讀 max_memory_allocated 後 reset_peak => 得到「段內峰值配置」
+        #   ⚠ 只在 profiler 開啟時；reset 會讓台帳的「峰值實佔」只剩最後一段 => 這類跑次的台帳 VRAM 不可引用
+        self.pk_alloc = {}     # 段落 -> 段內峰值配置 MiB（取最大）
+        self.pk_resv = {}      # 段落 -> 段末保留 MiB（取最大）
+        self.global_pk = 0.0   # 全程最大段內峰值配置 MiB（不被 reset 影響）
 
     WARMUP = int(os.environ.get("CITYGS_STEP_PROFILE_WARMUP", "20"))
 
@@ -70,6 +76,8 @@ class _StepProfiler:
             self._acc("0 迴圈外（dataloader/Lightning）", None, (now - self._prev_end) * 1e3)
         self._marks = []
         self.mark("__begin__")
+        if self._prev_end is not None:          # __begin__ 讀到的峰值 = 上一步結束到這裡（迴圈外）
+            self._accmem("0 迴圈外（dataloader/Lightning）", self._marks[0][3], self._marks[0][4])
 
     def mark(self, name):
         """⚠ 這裡**必須同步**，否則歸屬是歪的。
@@ -89,7 +97,20 @@ class _StepProfiler:
         torch.cuda.synchronize()
         ev = torch.cuda.Event(enable_timing=True)
         ev.record()
-        self._marks.append((name, ev, time.perf_counter()))
+        _a, _r = self._mem()
+        self._marks.append((name, ev, time.perf_counter(), _a, _r))
+
+    def _mem(self):
+        """段內峰值配置與當下保留（MiB），讀完 reset 峰值統計。只在 profiler 開啟時被呼叫。"""
+        a = torch.cuda.max_memory_allocated() / 2 ** 20
+        r = torch.cuda.memory_reserved() / 2 ** 20
+        torch.cuda.reset_peak_memory_stats()
+        return a, r
+
+    def _accmem(self, name, a, r):
+        self.pk_alloc[name] = max(self.pk_alloc.get(name, 0.0), a)
+        self.pk_resv[name] = max(self.pk_resv.get(name, 0.0), r)
+        self.global_pk = max(self.global_pk, a)
 
     def end_step(self):
         if not self.on:
@@ -98,11 +119,12 @@ class _StepProfiler:
         self.mark("__end__")
         torch.cuda.synchronize()                       # 每步只同步一次
         for i in range(1, len(self._marks)):
-            name, ev, t = self._marks[i]
-            _pn, pev, pt = self._marks[i - 1]
+            name, ev, t, a, r = self._marks[i]
+            _pn, pev, pt, _pa, _pr = self._marks[i - 1]
             if name.startswith("__"):
                 continue
             self._acc(name, pev.elapsed_time(ev), (t - pt) * 1e3)
+            self._accmem(name, a, r)
         self.steps += 1
         _now = time.perf_counter()
         if self._step_t0 is not None:
@@ -115,7 +137,9 @@ class _StepProfiler:
             # 記憶 `feedback_measure_before_explaining`：40 步的視窗被只跑一次的 trim 佔掉 80%
             # => 把它們單獨留一份，然後歸零重算穩態。
             self.warm = {"gpu": dict(self.gpu), "cpu": dict(self.cpu),
-                         "count": dict(self.count), "steps": self.steps}
+                         "count": dict(self.count), "steps": self.steps,
+                         "pk_alloc": dict(self.pk_alloc), "pk_resv": dict(self.pk_resv)}
+            self.pk_alloc, self.pk_resv = {}, {}   # 穩態另計（暖機含起始 trim 的一次性峰值）
             self.gpu, self.cpu, self.count, self.steps = {}, {}, {}, 0
             self.real_step_ms = 0.0
 
@@ -139,17 +163,25 @@ class _StepProfiler:
               f"（含起始 trim 掃全部相機 + CUDA 初始化）=> 攤到 60,000 步是 {w/60000:.2f} ms/步")
         A("")
         A(f"{'段落':<34} {'GPU ms/步':>10} {'wall ms/步':>11} {'觸發次數':>9} "
-          f"{'每次 wall ms':>12} {'佔 wall':>8}")
+          f"{'每次 wall ms':>12} {'佔 wall':>8} {'段內峰值配置MiB':>15} {'段末保留MiB':>12}")
         tot_cpu = sum(self.cpu.values()) / self.steps
         for k in sorted(self.cpu, key=lambda x: -self.cpu[x]):
             g = self.gpu.get(k, 0.0) / self.steps
             c = self.cpu[k] / self.steps
             n = self.count[k]
             A(f"{k:<34} {g:>10.2f} {c:>11.2f} {n:>9,} "
-              f"{self.cpu[k]/max(n,1):>12.2f} {100*c/max(tot_cpu,1e-9):>7.1f}%")
+              f"{self.cpu[k]/max(n,1):>12.2f} {100*c/max(tot_cpu,1e-9):>7.1f}% "
+              f"{self.pk_alloc.get(k, 0.0):>15.0f} {self.pk_resv.get(k, 0.0):>12.0f}")
         A(f"{'（各段之和·序列化）':<34} {sum(self.gpu.values())/self.steps:>10.2f} {tot_cpu:>11.2f}")
         A(f"{'（真實步時間·含重疊）':<34} {'':>10} {self.real_step_ms/self.steps:>11.2f}"
           f"   = {1000*self.steps/max(self.real_step_ms,1e-9):.2f} it/s")
+        if self.pk_alloc:
+            A(f"  VRAM：穩態最大段內峰值配置 {max(self.pk_alloc.values()):,.0f} MiB（{max(self.pk_alloc, key=self.pk_alloc.get)}）"
+              f"／最大段末保留 {max(self.pk_resv.values()):,.0f} MiB／全程含暖機 {self.global_pk:,.0f} MiB")
+            if self.warm and self.warm.get("pk_alloc"):
+                _w = self.warm["pk_alloc"]
+                A(f"        暖機期最大段內峰值 {max(_w.values()):,.0f} MiB（{max(_w, key=_w.get)}）")
+            A("  ⚠ 保留 - 配置 的差 ≈ 配置器快取＋碎片；這個跑次的台帳 VRAM 不可引用（每段 reset 了峰值統計）")
         A("")
         A("判讀：")
         A("  wall >> GPU 的段落 = **CPU 側阻塞**（dataloader、H2D 搬運、Python 開銷）")
@@ -351,7 +383,42 @@ class GaussianSplatting(LightningModule):
             self.gaussian_model.config = org_config
 
         # call for renderer
-        self.renderer = renderer
+        # ⚠⚠ 2026-09-14：從 .ckpt 初始化時，上面拿到的是 **ckpt 裡存的 renderer**，會把 config/CLI 的
+        #   renderer 整個換掉（官方原始碼同一行也是這樣）。官方 aerial 的 trim 階段吃的 coarse 設了
+        #   `diable_trimming: true` => **trim 階段其實一次都沒 trim**（本機 official_ft_blk5 60k 步
+        #   `Trimming` 出現 0 次）；`--model.renderer.init_args.*` 也全部無效，而 config.yaml 仍記下要求值。
+        #   `CITYGS_KEEP_CFG_RENDERER=1` => overwrite_config=False 時保留 config 的 renderer（只取權重）；
+        #   預設不設 => 行為與先前逐位元相同。
+        _keep = overwrite_config is False and load_from.endswith(".ply") is False \
+            and os.environ.get("CITYGS_KEEP_CFG_RENDERER", "") == "1"
+        _cfg_r = self.renderer
+        # ⚠⚠ 2026-09-18：ckpt 裡的 renderer 是**當時那份程式碼**反序列化出來的實例 =>
+        #   之後新增的旗標它**沒有**，而 renderer 是 nn.Module，直接 `self.新旗標` 會走到
+        #   `nn.Module.__getattr__` 丟 AttributeError ⇒ **跑到第一次週期 trim 才當場死**
+        #   （實測：lab/stepcost2_lab_hi 吃 09-13 的 cs_base ckpt，step 1,000 死在
+        #    `'SepDepthTrim2DGSRenderer' object has no attribute 'trim_by_value_per_cost'`，
+        #    而它已經跑完 800 步、報告都寫出來了 => 是「舊 ckpt ＋ 新程式碼」的相容性問題）
+        #   ⇒ 用 config 建好的那個 renderer 回填缺少的屬性（只補不覆蓋），並印出補了什麼。
+        if renderer is not _cfg_r and isinstance(renderer, type(_cfg_r)):
+            _bf = []
+            for _k, _v in vars(_cfg_r).items():
+                if _k.startswith("_") or _k in vars(renderer):
+                    continue
+                setattr(renderer, _k, _v)
+                _bf.append(f"{_k}={_v!r}")
+            if _bf:
+                print(f"[init-renderer] ⚠ ckpt 的 renderer 缺 {len(_bf)} 個較新的屬性，已用 config 預設回填："
+                      f"{', '.join(_bf[:8])}{' …' if len(_bf) > 8 else ''}", flush=True)
+        def _rflags(r):
+            return (f"{type(r).__name__} diable_trimming={getattr(r, 'diable_trimming', '-')} "
+                    f"trim_by_value_per_cost={getattr(r, 'trim_by_value_per_cost', '-')}")
+        if _keep:
+            print(f"[init-renderer] ✅ 保留 config 的 renderer：{_rflags(_cfg_r)}（ckpt 裡的是 {_rflags(renderer)}）", flush=True)
+        else:
+            if renderer is not _cfg_r and _rflags(renderer) != _rflags(_cfg_r):
+                print(f"[init-renderer] ⚠⚠ **renderer 被 ckpt 覆蓋**：config 要求 {_rflags(_cfg_r)} => 實際 {_rflags(renderer)}"
+                      f"（要保留 config 的就設 CITYGS_KEEP_CFG_RENDERER=1）", flush=True)
+            self.renderer = renderer
 
         print(f"initialize from {load_from}: sh_degree={self.gaussian_model.max_sh_degree}, overwrite_config={overwrite_config}")
 
@@ -569,6 +636,17 @@ class GaussianSplatting(LightningModule):
         return super().on_train_batch_start(batch, batch_idx)
 
     def training_step(self, batch, batch_idx):
+        # ★ 2026-09-18 驗證用（預設關）：CITYGS_BATCH_HASH_STEPS=N => 前 N 步印出送進訓練的 GT 影像雜湊
+        #   用來證明資料管線改動（uint8 快取等）對訓練輸入逐位元不變 —— 不受 GPU 運算非確定性影響
+        _hn = int(os.environ.get("CITYGS_BATCH_HASH_STEPS", "0") or 0)
+        if _hn > 0 and self.trainer.global_step < _hn:
+            import hashlib as _hl
+            try:
+                _cam, (_nm, _gt, _mk), _ex = batch
+                _h = _hl.sha1(_gt.detach().to("cpu").contiguous().numpy().tobytes()).hexdigest()[:16]
+                print(f"[batch-hash] step {self.trainer.global_step} {_nm} {tuple(_gt.shape)} {str(_gt.dtype).replace('torch.','')} {_h}", flush=True)
+            except Exception as _e:
+                print(f"⚠⚠ [batch-hash] 取不到影像：{type(_e).__name__} {_e}", flush=True)
         camera, image_info, _ = batch
         # image_name, gt_image, masked_pixels = image_info
 
@@ -939,14 +1017,24 @@ class GaussianSplatting(LightningModule):
         _prof = getattr(self, "_step_prof", None)
         if _prof is not None and _prof.on:
             import time as _t
+            # ★ 2026-09-17 補：end_step 之後、trim 之前的 hook（gaussian_model.on_train_batch_end 等）
+            #   原本**沒有歸到任何一段**（_prev_end 在 trim 後被覆寫）=> 補成第 12 段
+            torch.cuda.synchronize()
+            _c_tail = _t.perf_counter()
+            if _prof._prev_end is not None:
+                _prof._acc("12 on_train_batch_end（trim 之前的 hook）", None, (_c_tail - _prof._prev_end) * 1e3)
+                _ta, _tr = _prof._mem()
+                _prof._accmem("12 on_train_batch_end（trim 之前的 hook）", _ta, _tr)
             _e0 = torch.cuda.Event(enable_timing=True); _e0.record(); _c0 = _t.perf_counter()
             self.renderer.after_training_step(self.trainer.global_step, self)
             _e1 = torch.cuda.Event(enable_timing=True); _e1.record()
             torch.cuda.synchronize()
             _dt = (_t.perf_counter() - _c0) * 1e3
+            _pa, _pr = _prof._mem()
             # 只在它真的做事的步數上累計（其餘步是 early-return，~0 ms）=> 觸發次數才有意義
             if _dt > 1.0:
                 _prof._acc("11 週期性 trim pass（after_training_step）", _e0.elapsed_time(_e1), _dt)
+                _prof._accmem("11 週期性 trim pass（after_training_step）", _pa, _pr)
             _prof._prev_end = _t.perf_counter()
         else:
             self.renderer.after_training_step(self.trainer.global_step, self)
@@ -1226,7 +1314,14 @@ class GaussianSplatting(LightningModule):
         )
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         self.trainer.save_checkpoint(checkpoint_path)
-        with torch.no_grad():
+        # ★ 2026-09-17 使用者決定：預設**不再**輸出 -xyz_rgb.ply —— 它只有 xyz＋法線＋RGB（27 B/顆），
+        #   不是可渲染的 Gaussian 模型，每個 60k 跑次卻存 6 份（約 300 MB）。要恢復：CITYGS_EXPORT_XYZ_RGB_PLY=1
+        if os.environ.get("CITYGS_EXPORT_XYZ_RGB_PLY", "") != "1":
+            if not getattr(self, "_xyz_rgb_ply_note", False):
+                self._xyz_rgb_ply_note = True
+                print("[ckpt] -xyz_rgb.ply 不再輸出（CITYGS_EXPORT_XYZ_RGB_PLY=1 可恢復）", flush=True)
+        else:
+          with torch.no_grad():
             xyz = self.gaussian_model.get_xyz
             rgb = eval_sh(0, self.gaussian_model.get_features[:, :1, :].transpose(1, 2), None)
             store_ply(os.path.join(

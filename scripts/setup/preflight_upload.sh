@@ -48,9 +48,13 @@ if [ -z "$WL" ]; then ok "沒有"; else
   done
 fi
 
+# ⚠ scripts/queue.txt 是**逐機器的可變狀態**不是原始碼，刻意不追蹤：
+#   ① runner.sh:226 已容錯（檔案不存在就 idle）=> clone 下來不會壞
+#   ② 追蹤它的話，一次 pull 就會覆蓋掉另一台正在跑的佇列
 say "2. 被忽略、但看起來是「原始碼」的檔（clone 之後會直接消失）"
 MISSING=$(git status --porcelain --ignored 2>/dev/null | sed -n 's/^!! //p' \
   | grep -vE '^(outputs|logs|data|參考論文|\.claude)/' \
+  | grep -vxF 'scripts/queue.txt' \
   | grep -vE '__pycache__|\.pyc$|\.egg-info|\.ckpt$|\.ply$|\.pth$|\.npy$|\.pt$' \
   | grep -E '\.(py|yaml|yml|sh|md|h|cu|cpp|txt|csv|json)$' | sort)
 if [ -z "$MISSING" ]; then ok "沒有"; else
@@ -142,18 +146,15 @@ if [ "$FIX_RAST" = 1 ]; then
     mv "$RAST/.git" "submodules/.rasterizer_upstream_git" \
       && echo "  ✏ 巢狀 .git 移到 submodules/.rasterizer_upstream_git（上游歷史留在本機，沒刪）"
     git rm --cached "$RAST" >/dev/null 2>&1 && echo "  ✏ 從索引移除 gitlink"
-    rm -rf "$RAST/build" "$RAST/third_party/glm"
-    {
-      grep -v "diff-surfel-rasterization-trim-pp" .gitmodules 2>/dev/null
-      echo '[submodule "submodules/diff-surfel-rasterization-trim-pp/third_party/glm"]'
-      echo '	path = submodules/diff-surfel-rasterization-trim-pp/third_party/glm'
-      echo '	url = https://github.com/g-truc/glm.git'
-    } > .gitmodules.new && mv .gitmodules.new .gitmodules
-    echo "  ✏ .gitmodules 改為只掛公開的 glm"
+    rm -rf "$RAST/build"      # ⚠ 不要刪 third_party/glm：它是隨 repo 附帶的（見下方註解）
+    grep -v "diff-surfel-rasterization-trim-pp" .gitmodules 2>/dev/null > .gitmodules.new \
+      && mv .gitmodules.new .gitmodules
+    echo "  ✏ .gitmodules 移除光柵器相關條目（glm 已隨 repo 附帶，不再是 submodule）"
     git add -f "$RAST" >/dev/null 2>&1
     echo "  ✏ 已 git add -f $RAST（$(git diff --cached --name-only -- "$RAST" | wc -l) 個檔）"
-    echo "  ⚠ glm 已移除，bootstrap.sh 會重新 clone 它；要現在拿回來："
-    echo "      git clone --depth 1 https://github.com/g-truc/glm.git $RAST/third_party/glm"
+    echo "  ✅ third_party/glm 隨 repo 附帶（glm 1.0.3，MIT，433 檔 3.2MB）=> clone 下來就能編"
+    echo "     2026-09-20 改的：原本這裡把它刪掉並宣告成 submodule，結果 clone 後是空目錄、編譯 fail"
+    echo "     （fatal error: glm/glm.hpp: No such file or directory）"
   fi
 fi
 

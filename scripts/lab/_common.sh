@@ -5,9 +5,17 @@
 #   例：`-n lab/speed3` + `--data.parser.block_id 6`
 #       -> outputs/lab/speed3/blocks/block_6/
 #   這樣同一個配方的多個塊會收在同一個 run 目錄下，合併/比較都方便。
-# ★ `CITYGS_VRAM_CAP_GB=5.66`：3090 有 24GB，但本專案整篇的立論是**6GB 可行性**。
-#   不鎖回信封的數字對命題沒有意義（記憶 lab_machine_workflow）。
-#   同時這也是「3 個平行槽」能安全共存的前提（3 x 6.8GB < 24GB）。
+# ★★ 2026-09-18 定案的比較協定（當天先改成不鎖，同日**改回鎖**）：
+#   **lab 維持鎖 `CITYGS_VRAM_CAP_GB=5.66`** —— 本專案整篇的立論是 6GB 可行性，
+#   在 24GB 上調出放不進 6GB 的配方，對命題沒有意義（而且會讓「階段最優解」拉回本機時放不下）。
+#   **本機 = 絕對驗證**：階段最優解定案後拉回本機重跑，用它宣稱信封。
+#   ⇒ 好處：新舊 lab 跑次的**時間與 VRAM 欄仍可比**（不製造政策界線）。
+#   要臨時不鎖：`CITYGS_VRAM_CAP_GB= bash scripts/lab/...`（明確設空字串）
+#   ⚠⚠ 峰值是**唯一**能在 lab 上判斷「本機放不放得下」的欄位：
+#     台帳每個訓練的 DONE 行有 `VRAM=<保留>/<總量>G(峰值實佔<峰值配置>)`（`internal/callbacks.py`）
+#     ⇒ 在 lab 上找配方時，峰值配置 > 約 5 GB 就要當成「本機可能放不下」的警訊。
+#   ⚠⚠ **跨這條政策界線，時間與 VRAM 欄不可比**（舊 lab 跑次帶 cap＋max_split，貴約 8%、保留多 1.67GB）；
+#     品質（PSNR/SSIM/LPIPS/紋理比）仍可比 —— 機制稽核確認沒有任何訓練路徑依賴可用 VRAM 或鄰居。
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 # ⚠ 用 ${VAR-default}（**沒有冒號**）：這樣「明確設成空字串」會被尊重
@@ -15,7 +23,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 #      而 lab 不帶這個變數時仍然自動鎖 5.66。
 export CITYGS_VRAM_CAP_GB=${CITYGS_VRAM_CAP_GB-5.66}
 [ -z "${CITYGS_VRAM_CAP_GB:-}" ] && unset CITYGS_VRAM_CAP_GB
-echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制（本機原生 6GB）}]"
+echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制}]（政策：lab 鎖 6GB 信封＋記峰值；階段最優解拉回本機驗）"
 # ⚠⚠ 2026-09-13：配置器碎片是**新年代的真瓶頸**。lab 的 speed3/block_13 在
 #   Epoch 21（約 step 14,000、N 頂到 cap 2.60M）真 OOM 死掉：
 #     Tried to allocate 478 MiB | 3.61 GiB allocated | 5.66 GiB allowed | **5.25 GiB reserved**
@@ -24,7 +32,11 @@ echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制（本機原�
 #   —— 「每支腳本都寫死卻從沒對照過」，現在對照組出現了，而且是死掉的那一邊。
 #   ⇒ 新年代**一律開**，讓所有跑次的時間與 VRAM 在同一個配置器設定下可比
 #     （混著用會讓 it/s 差 6.4% 而看起來像配方差異）。要關：CITYGS_ALLOC_CONF= 明確設空。
-export PYTORCH_CUDA_ALLOC_CONF=${CITYGS_ALLOC_CONF-max_split_size_mb:128}
+# ★ 2026-09-17 使用者拍板：**有鎖 VRAM 上限才預設開** max_split（防上限下大塊配置被碎片卡住，09-13 lab OOM 的型態）；
+#   原生不鎖（本機 6GB、官方參考線）預設不開。真實迴圈實測（本機 b6、N 1.54M，scripts/task_stepcost2.sh）：
+#   開了每步 +8.0%、段內峰值配置不變、段末保留 +1.67 GB。仍可用 CITYGS_ALLOC_CONF 明確覆寫。
+if [ -n "${CITYGS_VRAM_CAP_GB:-}" ]; then _AC_DEF=max_split_size_mb:128; else _AC_DEF=; fi
+export PYTORCH_CUDA_ALLOC_CONF=${CITYGS_ALLOC_CONF-$_AC_DEF}
 [ -z "${PYTORCH_CUDA_ALLOC_CONF:-}" ] && unset PYTORCH_CUDA_ALLOC_CONF
 echo "PYTORCH_CUDA_ALLOC_CONF=[${PYTORCH_CUDA_ALLOC_CONF:-未設}]"
 CFG=configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml

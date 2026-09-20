@@ -1,3 +1,6 @@
-[submodule "third_party/glm"]
-	path = third_party/glm
-	url = https://github.com/g-truc/glm.git
+# ⚠ 2026-09-20：這個檔案已經是死的。本光柵器不再是巢狀 git repo（原始碼由母 repo 直接追蹤），
+#   而 third_party/glm 也**不再是 submodule**：glm 1.0.3 的標頭已隨 repo 附帶
+#   （MIT 授權，見 third_party/glm/copying.txt）。
+#   原因：它原本是「gitlink 但沒有可用條目」=> clone 下來是空目錄，光柵器編不起來，
+#   而 ABSGRAD / EXACT_SUPPORT / EXACT_CONIC_AABB 全都編不出來 => 結果無法重現。
+#   ⚠ 路徑要多一層：-I 指向 third_party/glm/，而 #include <glm/glm.hpp> => 實體在 third_party/glm/glm/。

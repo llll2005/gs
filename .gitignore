@@ -57,3 +57,6 @@ scripts/queue.txt
 
 # 機器標記檔（scripts/lab/_common.sh 用它判 lab vs 本機）—— 每台機器自己建，不進 git
 .lab_machine
+
+# ⛔ 含 lab Jupyter token 的個人筆記 —— 絕對不可進 git（2026-09-20 差點被 git add -A 收進去）
+抓取.txt

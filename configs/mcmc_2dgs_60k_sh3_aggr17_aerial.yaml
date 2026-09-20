@@ -64,6 +64,11 @@ data:
       - 5
       - 5
   num_workers: 8
+  # ★ 2026-09-18（使用者決定，已驗證）：影像以 uint8 快取（RAM 每張 17.3 -> 4.3 MB）；深度權重恆為 0 時不載深度圖
+  #   驗證：窮舉 256 值與真實影像 141/141 逐位元相同；管線層級 60 步 GT 影像 sha1 全同（scripts/task_bitcheck_pipeline.sh）
+  #   ⚠ 副作用：val 的 d_reg（連帶 val/loss）記成 0；最佳 ckpt 按 PSNR 挑，不受影響
+  image_uint8: true
+  skip_unused_depth: true
 save_iterations:
 - 500
 - 1500

@@ -19,6 +19,7 @@
 """
 import argparse
 import glob
+import re
 import os
 import sys
 
@@ -50,17 +51,24 @@ def main():
     ap.add_argument("--run", default="agd2_b12")
     ap.add_argument("--step", type=int, default=None)
     ap.add_argument("--repeat", type=int, default=20)
+    ap.add_argument("--block", type=int, default=None,
+                    help="多塊跑次（outputs/<run>/blocks/block_N/）只取這一塊；不給時全部 ckpt 混在一起挑，會量到任意一塊")
     args = ap.parse_args()
 
     if not torch.cuda.is_available():
         raise SystemExit("需要 GPU")
 
-    cks = sorted(glob.glob(f"outputs/{args.run}/**/*.ckpt", recursive=True),
-                 key=lambda p: int(p.split("step=")[-1].split(".")[0]))
+    # ⚠ 合併後的 ckpt 檔名不一定有 `step=` => 舊寫法 int() 直接崩潰；沒有步數的一律當 -1
+    def _step_of(p):
+        m = re.search(r"step=(\d+)", os.path.basename(p))
+        return int(m.group(1)) if m else -1
+    cks = sorted(glob.glob(f"outputs/{args.run}/**/*.ckpt", recursive=True), key=_step_of)
+    if args.block is not None:
+        cks = [p for p in cks if f"/blocks/block_{args.block}/" in p.replace(os.sep, "/")]
     if not cks:
-        raise SystemExit(f"找不到 {args.run} 的 ckpt")
+        raise SystemExit(f"找不到 {args.run} 的 ckpt" + (f"（block {args.block}）" if args.block is not None else ""))
     if args.step is not None:
-        cks = [p for p in cks if int(p.split("step=")[-1].split(".")[0]) == args.step] or cks[-1:]
+        cks = [p for p in cks if _step_of(p) == args.step] or cks[-1:]
     ck_path = cks[-1]
     print(f"ckpt: {os.path.basename(ck_path)}")
 

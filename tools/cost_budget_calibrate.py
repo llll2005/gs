@@ -75,6 +75,11 @@ def main():
     print(f"    p95   {np.percentile(loads,95):,.0f}")
     print(f"    中位   {np.median(loads):,.0f}")
     print(f"    min   {loads.min():,.0f}")
+    # 2026-09-14 補（使用者問「有總成本嗎」）：中位數只代表典型視角；
+    #   訓練每步隨機渲染一台相機 => 期望每步 binning 成本＝**平均**；全部相機加總＝走一遍所有視角的總成本。
+    #   ⚠ 這仍是「終點模型」的成本，不是整趟訓練的積分（族群在訓練中會變）。
+    print(f"    平均   {loads.mean():,.0f}   <- 期望每步成本（每步隨機一台相機）")
+    print(f"    總和   {loads.sum():,.0f}   （{len(loads)} 台相機加總）")
     print(f"    B/N   {L/N:.2f}  （每顆平均攤到多少 Load）")
     print(f"\n  ★ 緊預算的候選設定（rho_value_cost.py 量到天花板隨預算收緊而跳）")
     for f in (0.75, 0.5, 0.25, 0.10):

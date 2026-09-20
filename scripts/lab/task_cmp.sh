@@ -74,6 +74,31 @@ echo "block $BLK：$NCAM 台相機 / val 每 $PERIOD 步 => 全長 $STEPS 步、
 
 case "$ARM" in
   base)       EXTRA=();                                                        EXP=0 ;;
+  # ★ 參考軌跡（2026-09-14）：行為與 base 完全相同，只多兩個純打印旗標 ——
+  #   `cost_budget_report 150`（每個 densify 間隔印：區間最壞視角 + 報告區間平均 Load）
+  #   `churn_report true`（每個 densify 事件印 dead->relocate／新增數）
+  #   用途：預算排程實驗的 Load_ref(t) 與 churn 基準；也可當 base 的重複樣本。
+  refrep)     EXTRA=(--model.density.init_args.cost_budget_report 150
+                     --model.density.init_args.churn_report true);               EXP=0 ;;
+  # ★★ 相對預算 B(t) = rho(t) x Load_ref(t)（2026-09-14；參考軌跡 logs/refrep_b<塊>_traj.csv）
+  #   三組的 rho 依 b6 參考軌跡加權算出，使「目標總成本」Σ rho(t)·Load_ref(t)（增生期）相同 => 只比排程形狀：
+  #     refc   固定 0.5000
+  #     refh1  前鬆後緊 0.8452 -> 0.2452（使用者假設一：可用資源隨訓練減少）
+  #     refh2  前緊後鬆 0.1548 -> 0.7548（使用者假設二：資源本就不足，前期寬鬆會 churn／後期無法精修）
+  #   ⚠ 閘門只擋加點、擋不到 scale 成長 => 比較時要用**實際花費**（報告的區間平均積分）對齊，不是目標值。
+  refc|refh1|refh2)
+              REF="logs/refrep_b${BLK}_traj.csv"
+              [ -f "$REF" ] || { echo "⛔ 缺參考軌跡 $REF（先跑 refrep 臂並抽出軌跡）"; exit 2; }
+              case "$ARM" in
+                refc)  RS=0.5000;  RE=0.5000 ;;
+                refh1) RS=0.8452; RE=0.2452 ;;
+                refh2) RS=0.1548; RE=0.7548 ;;
+              esac
+              EXTRA=(--model.density.init_args.cost_budget_ref_csv "$REF"
+                     --model.density.init_args.cost_budget_ratio_start "$RS"
+                     --model.density.init_args.cost_budget_ratio_end "$RE"
+                     --model.density.init_args.cost_budget_report 150
+                     --model.density.init_args.churn_report true);               EXP=3 ;;
   # ⚠⚠ 2026-09-13 時序：`cs_costdir` 這個**已經在跑的**跑次是 03:15 啟動的，當時腳本寫的還是
   #   w=2.278（旗標 docstring 依**舊資料** ceiling=10.89x 算的）。我在 04:2x 才依新資料重算成 4.0。
   #   ⇒ **磁碟上的 `cs_costdir` = w 2.278**，不是這一行現在寫的值。
@@ -81,6 +106,12 @@ case "$ARM" in
   #   「加權過猛」害過一次：權重實現 148.7x 而非設計 25.8x）：
   #     cs_costdir      w 2.278  = 校準目標的 0.57 倍（已跑）
   #     cs_costdir_cal  w 4.0    = 依新資料校準（ceiling(1/c) b12 6.32 / b13 6.14 => 24.8/c）
+  # ★ init 第四臂（2026-09-16 lab 20k 零機制：sfmfill 贏 sfm b6 +0.165／b13 +0.187，四項同向）
+  #   問題：這個增益在**完整配方**（absgrad + noise + trim）下還在不在。
+  #   ⚠ 走 points_from ply 而不是 initialize_from：後者連 scale 初始化也換掉，就不是單變數了。
+  sfmfill)    P="sfmfill_init/block_${BLK}.ply"
+              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 sfmfill_init/block_${BLK}.ply"; exit 2; }
+              EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
   costdir)    EXTRA=(--model.density.init_args.cost_add_densify 2.278);         EXP=1 ;;
   costdir_cal) EXTRA=(--model.density.init_args.cost_add_densify 4.0);          EXP=1 ;;
   costtaming) EXTRA=(--model.density.init_args.cost_add_densify -2.8);          EXP=1 ;;
@@ -91,6 +122,10 @@ case "$ARM" in
   #   ⚠ 這是「破壞集合」那一側；vpc_prune_frac 的 -2.34 dB 是「把低 v/c 的粒子**搬走**」，
   #     移除與搬移不同，但先驗要謹慎 => 判準看四個指標的正負號模式，不是單看 PSNR。
   trimvpc)    EXTRA=(--model.renderer.init_args.trim_by_value_per_cost true);      EXP=1 ;;
+  # alpha 0.5：離線掃描說「每犧牲一單位 Σv 回收的 Σc」在這裡有峰（41.09 vs 現行 17.93），
+  #   而 alpha=1（上面那個 trimvpc）已越過峰且端到端輸基準 -0.57 dB。
+  trimvpc05)  EXTRA=(--model.renderer.init_args.trim_by_value_per_cost true
+                     --model.renderer.init_args.trim_value_per_cost_alpha 0.5);     EXP=1 ;;
   dssim05)    EXTRA=(--model.metric.init_args.lambda_dssim 0.5);                EXP=1 ;;
   both)       EXTRA=(--model.density.init_args.cost_add_densify 4.0
                      --model.metric.init_args.lambda_dssim 0.5);                EXP=2 ;;
@@ -106,12 +141,38 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 2)));         EXP=1 ;;
   cb25)       [ "${B0:-0}" -gt 0 ] || { echo "⛔ block $BLK 沒有標定過的 B0"; exit 2; }
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4)));         EXP=1 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|trimvpc）"; exit 2 ;;
+  # ★★★ 2026-09-13 使用者提的組合（我漏掉的格子）：**緊預算 + 成本感知增生**。
+  #   我一直用「①取樣端是在寬鬆預算下量的」替它的三連敗辯護，但 cb50/cb25 只開了
+  #   `cost_budget`、**沒有**開 `cost_add_densify` => 那個辯護從來沒被真正測過。
+  #   這一格是它的判決實驗：
+  #     贏 => 「成本感知取樣需要預算真的綁住才有用」成立，命題活過來
+  #     輸 => 藉口用完，取樣端**永久關閉**（三個年代、五種變體、鬆緊兩端都輸過）
+  #   ⚠ 使用者原本提的是 `cap 5M`，但實測 lab 同塊 N=1.85M->3.26GB / 2.34M->4.48GB
+  #     （2.49 GB/百萬顆）=> 5M 約 **11.1 GB**，是 6GB 信封的兩倍，不可行；
+  #     而且調高 cap 是把約束**放鬆**，方向相反。真正綁住的是 cost_budget ——
+  #     實測 cs_cb50 在 49% 時只有 **0.45M 顆**而 cap 還是 2.6M。
+  #   ⚠⚠ 而 `B0/2` **其實不是緊端**：背包表按「預算佔總成本」分欄，50% 那欄上界只有
+  #     +5.4~8.9%，25% 才是 +21.5~26.6%。=> 判決要做成**兩點**，cb25cost 才是主力，
+  #     cb50cost 是「上界隨預算放大」這條曲線本身的對照（預期增益更小）。
+  # ⚠ 加 `cost_budget_report 500`：讓預算**自證**（每 500 步印 N / Load / 預算）。
+  #   它是**純打印**（`_update_load` 在 cost_budget>0 時本來就會跑）=> 不改變訓練行為。
+  #   2026-09-13 的教訓：cb50/cb25 跑完也沒辦法從 log 證明預算真的在綁。
+  cb50cost)   [ "${B0:-0}" -gt 0 ] || { echo "⛔ block $BLK 沒有標定過的 B0"; exit 2; }
+              EXTRA=(--model.density.init_args.cost_budget $((B0 / 2))
+                     --model.density.init_args.cost_add_densify 4.0
+                     --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
+  cb25cost)   [ "${B0:-0}" -gt 0 ] || { echo "⛔ block $BLK 沒有標定過的 B0"; exit 2; }
+              EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
+                     --model.density.init_args.cost_add_densify 4.0
+                     --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|cb50cost|cb25cost|trimvpc|trimvpc05）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 export CITYGS_DIFF_VS="${RUN_PREFIX}cs_base"
 export CITYGS_DIFF_EXPECT=$EXP
-run_fit "${RUN_PREFIX}cs_${ARM}" "$BLK" \
+# ★ 2026-09-18：`CITYGS_RUN_NAME` 可覆蓋跑次名。用途＝**同一份配方、換個名字再跑一次**
+#   （例：獨佔計時對照，不能讓 run_fit 把既有的 cs_base 搬走）。不設就是原本的 cs_<arm>。
+run_fit "${CITYGS_RUN_NAME:-${RUN_PREFIX}cs_${ARM}}" "$BLK" \
   --model.initialize_from null \
   --model.density.init_args.cap_max 2600000 \
   --model.density.init_args.absgrad_densify 2.0 \

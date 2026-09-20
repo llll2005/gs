@@ -38,5 +38,22 @@ case "$ARM" in
            [ -f "$F" ] || { echo "❌ 缺 $F —— 先跑 tools/make_sfm_fill_init.py"; exit 2; }
            run_fit "${RUN_PREFIX}init_sfmfill" "$BLK" --model.initialize_from null \
              --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" ;;
-  *) echo "❌ 不認得的 arm：$ARM（sfm/depth/random/sfmfill）"; exit 2 ;;
+  # ★ sfmfill 參數比較的變體（2026-09-17，task_sfmfill_sweep.sh 產生 PLY）：sfmfill_<變體>
+  #   與 sfmfill 臂唯一差別是 PLY 來源目錄 sfmfill_init_<變體>/；run 名 init_sfmfill_<變體>
+  sfmfill_*) V=${ARM#sfmfill_}
+             [[ "$V" =~ ^[a-z0-9]+$ ]] || { echo "❌ 變體名只准 [a-z0-9]：$V"; exit 2; }
+             P="sfmfill_init_$V/block_$BLK.ply"
+             F="data/matrix_city/aerial/train/block_all/$P"
+             [ -f "$F" ] || { echo "❌ 缺 $F —— 先跑 scripts/lab/task_sfmfill_sweep.sh gen"; exit 2; }
+             run_fit "${RUN_PREFIX}init_sfmfill_$V" "$BLK" --model.initialize_from null \
+               --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" ;;
+  # ★ sfmfill 參數比較（更正版，task_sfmfill_sweep2.sh）：PLY 在 sfmfill_sweep/<變體>/；run 名 init_sfmsweep_<變體>
+  #   ⚠ 上面的 sfmfill_* 臂屬於作廢的第一版（基準參數錯），保留只為可追溯
+  sfmsweep_*) V=${ARM#sfmsweep_}
+             [[ "$V" =~ ^[a-z0-9]+$ ]] || { echo "❌ 變體名只准 [a-z0-9]：$V"; exit 2; }
+             P="sfmfill_sweep/$V/block_$BLK.ply"
+             [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "❌ 缺 $P —— 先跑 task_sfmfill_sweep2.sh gen"; exit 2; }
+             run_fit "${RUN_PREFIX}init_sfmsweep_$V" "$BLK" --model.initialize_from null \
+               --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" ;;
+  *) echo "❌ 不認得的 arm：$ARM（sfm/depth/random/sfmfill/sfmsweep_<變體>）"; exit 2 ;;
 esac

@@ -75,6 +75,7 @@ __global__ void duplicateWithKeys(
 	uint64_t* gaussian_keys_unsorted,
 	uint32_t* gaussian_values_unsorted,
 	int* radii,
+	const ushort4* rects,
 	dim3 grid)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -86,9 +87,11 @@ __global__ void duplicateWithKeys(
 	{
 		// Find this Gaussian's offset in buffer for writing keys/values.
 		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
-		uint2 rect_min, rect_max;
-
-		getRect(points_xy[idx], radii[idx], rect_min, rect_max, grid);
+		// rect 由 preprocess 存好（不再重算）：精確圓錐盒是**不對稱**的，
+		// 用 center + radii 重建不出來。線性化路徑存的值與 getRect 相同 => 逐位元不變。
+		const ushort4 r4 = rects[idx];
+		uint2 rect_min = {r4.x, r4.y};
+		uint2 rect_max = {r4.z, r4.w};
 
 		// For each tile that the bounding rect overlaps, emit a
 		// key/value pair. The key is |  tile ID  |      depth      |,
@@ -163,6 +166,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
+	obtain(chunk, geom.rects, P, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
 	obtain(chunk, geom.point_offsets, P, 128);
@@ -273,6 +277,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.normal_opacity,
 		tile_grid,
 		geomState.tiles_touched,
+		geomState.rects,
 		prefiltered
 	), debug)
 
@@ -298,6 +303,7 @@ int CudaRasterizer::Rasterizer::forward(
 		binningState.point_list_keys_unsorted,
 		binningState.point_list_unsorted,
 		radii,
+		geomState.rects,
 		tile_grid)
 	CHECK_CUDA(, debug)
 
