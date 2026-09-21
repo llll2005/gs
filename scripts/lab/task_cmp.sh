@@ -207,7 +207,12 @@ run_fit "${CITYGS_RUN_NAME:-${RUN_PREFIX}${CITYGS_FAMILY:-cs_}${ARM}}" "$BLK" \
   `#   這是讓三槽真的能用的前提。所有臂一律套用 => 家族內仍是單變數。` \
   --data.image_uint8 true \
   --data.skip_unused_depth true \
-  --model.density.init_args.cap_max 2600000 \
+  `# ★ 2026-09-21 CITYGS_CAP 覆寫顆數上限（預設 2.6M）。用途＝**cap_max 掃描**，` \
+  `#   它是成本預算的對照基線：現有 7 個 budget 跑次已經有 (N, 分數)，但 cap 控制的只有一個點，` \
+  `#   畫不出「純 cap 曲線」就無法判斷 budget 有沒有把點推到曲線上方。` \
+  `# ⚠ cap 必須 > 起始 N（b6 SfM init 約 52 萬）：低於起始 N 時 add_new_gs 直接加 0，` \
+  `#   N 只被 trim 衰減、停在與 cap 無關的地方 => 那不是 cap 控制，是衰減動力學。` \
+  --model.density.init_args.cap_max "${CITYGS_CAP:-2600000}" \
   --model.density.init_args.absgrad_densify 2.0 \
   --model.density.init_args.fast_noise true \
   --model.density.init_args.noise_gate_eps 0.001 \
