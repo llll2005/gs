@@ -2,9 +2,9 @@
 # ★★★★★★ 實驗排程：精確圓錐外接盒（conic）與精確 tile 成本（tilecost）
 #   2026-09-21 設計。**在 lab 上執行**，它只會把任務追加進 scripts/queue.txt，不自己跑訓練。
 #
-#       bash scripts/lab/plan_conic_tilecost.sh          # 乾跑：只印出會排什麼
-#       bash scripts/lab/plan_conic_tilecost.sh --go     # 真的追加進佇列
-#       STEPS=60000 bash scripts/lab/plan_conic_tilecost.sh --go   # 改全長（見下方「長度」）
+#       bash scripts/lab/plan_conic_tilecost.sh                # 乾跑：只印出會排什麼
+#       bash scripts/lab/plan_conic_tilecost.sh --go           # 真的追加進佇列（兩階段都排）
+#       bash scripts/lab/plan_conic_tilecost.sh --go --stage1-only   # 只排第一階段（22k 閘門）
 #
 # ══════════════════════════════════════════════════════════════════════════════
 # 這兩個機制在問什麼
@@ -57,7 +57,34 @@
 #    （elongation + trimvpc 疊加 -0.68/-0.95 就是這樣被誤讀過一次）。
 #
 # ══════════════════════════════════════════════════════════════════════════════
-# 長度：預設走 task_cmp.sh 的「2 萬多步」標準
+# 兩個階段：22k 當閘門，60k 當判決
+# ══════════════════════════════════════════════════════════════════════════════
+# **階段一（6 個跑次，約 6~7 小時）**：b6/b13 x {base, conic, tilecal}，走 task_cmp.sh 的
+#   「2 萬多步」標準。便宜、問得到「符號模式」（四項指標的正負號），而且 tilecal 免費給
+#   噪音底與換算曲線。
+# **階段二（4 個跑次，約 15 小時）**：b6/b13 x {base, conic}，`STEPS=60000`。
+#
+# 為什麼**非要**階段二不可：`trimvpc` 在 22k 是**平手**，到 60k 才顯出 -0.27/-0.54
+#   => 短配方會**系統性低估品質代價**。conic 與 trimvpc 的先驗不同（trimvpc 是**移除**資訊，
+#   conic 是**補回**被線性化誤刪的覆蓋），但先驗不能取代量測。
+#   ⇒ **只有 60k 的結果能決定要不要把 `exact_conic_aabb` 設成預設。**
+#
+# 為什麼階段二仍然只排 base + conic（不排 tilecal）：60k 的 tilecal 要再多燒 2 x 7.6h，
+#   而它在階段二只剩「噪音底」這一個用途。
+#   ⚠ **這是一個有代價的取捨，要照實說**：用 22k 的噪音底去判 60k 的差異是**假設**噪音
+#     不隨長度放大。若 60k 的差異落在邊緣（與 22k 噪音底同量級），就**必須**補一次 60k 重複樣本，
+#     不可直接宣稱顯著。
+#
+# 判讀順序（**佇列隨時可編輯，只有正在執行的那行是固定的**）：
+#   階段一就已經輸（尤其出現虛假細節簽名：紋理比↑ 而光度↓）=> **把階段二那幾行從佇列刪掉**，不必燒。
+#   階段一平手或更好                                       => 讓階段二跑完再下結論。
+#
+# ⚠ `STEPS=60000` 不是各塊 val 週期的整數倍（b6 每 10,960 / b13 每 13,340），
+#   所以最後一次 val 落在 54,800 / 53,360。**同一塊內** base 與 conic 落在同樣的 val 點，
+#   A/B 不受影響；**跨塊**比較要對齊 step。這與既有的 60k 線（lab/speed3）一致。
+#
+# ══════════════════════════════════════════════════════════════════════════════
+# 階段一的長度：task_cmp.sh 的「2 萬多步」標準
 # ══════════════════════════════════════════════════════════════════════════════
 # task_cmp.sh 會按塊的相機數把全長對齊到 val 點（b6 21,920 / b13 26,680），並把
 # `means_lr max_steps` 與 `densify_until_iter` 一起縮放 —— 直接截斷 60k 會落進不同 regime。
@@ -69,7 +96,14 @@
 #   但先驗不能取代量測。
 set -u
 cd "$(dirname "$0")/../.." || exit 1
-GO=0; [ "${1:-}" = "--go" ] && GO=1
+GO=0; STAGE1_ONLY=0
+for a in "$@"; do
+  case "$a" in
+    --go) GO=1 ;;
+    --stage1-only) STAGE1_ONLY=1 ;;
+    *) echo "⛔ 未知參數 $a（只接受 --go / --stage1-only）"; exit 2 ;;
+  esac
+done
 Q=scripts/queue.txt
 S=${STEPS:-}
 PRE=""; [ -n "$S" ] && PRE="STEPS=$S "
@@ -88,8 +122,22 @@ PLAN=$(
     emit "★★★★★ b$blk：tilecal＝base 的重複樣本（噪音底）＋精確/代理成本的換算曲線$TAG" \
          "${PRE}bash scripts/lab/task_cmp.sh $blk tilecal"
   done
-  emit "[cpu] ★★★★ 一頁式報表：conic 家族四項指標 + 顆數 + 峰值 VRAM（四項要一起看，只看 PSNR 會漏掉虛假細節簽名）" \
-       "[cpu] conda run -n gspl python tools/lab_cmp_report.py"
+  for blk in 6 13; do
+    emit "[cpu] ★★★★ 階段一報表 b$blk：四項指標 + 顆數 + 峰值 VRAM（四項要一起看，只看 PSNR 會漏掉虛假細節簽名）" \
+         "[cpu] conda run -n gspl python tools/lab_cmp_report.py --blk $blk --prefix cs_"
+  done
+  if [ "$STAGE1_ONLY" = 0 ]; then
+    for blk in 6 13; do
+      emit "★★★★★★★ 階段二・60k 判決 b$blk：對照臂 base（唯一能決定 conic 要不要設成預設的實驗）" \
+           "STEPS=60000 CITYGS_FAMILY=cs60_ bash scripts/lab/task_cmp.sh $blk base"
+      emit "★★★★★★★ 階段二・60k 判決 b$blk：conic（trimvpc 在 22k 平手、60k 才顯出 -0.27/-0.54 => 短配方會低估代價）" \
+           "STEPS=60000 CITYGS_FAMILY=cs60_ bash scripts/lab/task_cmp.sh $blk conic"
+    done
+    for blk in 6 13; do
+      emit "[cpu] ★★★★★ 階段二報表 b$blk：60k 的四項指標（與階段一**分開看**，排程 regime 不同不可混比）" \
+           "[cpu] conda run -n gspl python tools/lab_cmp_report.py --blk $blk --prefix cs60_"
+    done
+  fi
 )
 
 echo "════════ 將追加 $(printf '%s' "$PLAN" | grep -cE '^(\[cpu\]|STEPS=|bash )') 個任務到 $Q ════════"
@@ -107,10 +155,13 @@ cat <<'NOTE'
 3. 換算曲線：從 tilecal 的 log 抽 [cost-budget] 行（含「另一單位」與「比值」），
    畫成 ratio(t)。**這條曲線是把舊 cost_budget 搬到新單位的唯一依據** —— 它會變號，
    所以不能除以一個常數。
-4. 條件式第二階段（只有在 conic 判定無品質代價後才排）：
+4. 階段二（60k）已經一起排進去了。⚠ **若階段一就已經輸，把那幾行從佇列刪掉** ——
+   runner 每跑完一個任務都會重讀 queue.txt，只有正在執行的那行是固定的。
+5. ⚠ 階段二只有 base + conic，沒有 60k 的重複樣本。**若 60k 的差異落在 22k 噪音底的量級，
+   必須補一次 60k 重複樣本才能宣稱顯著** —— 不可假設噪音不隨長度放大。
+6. 條件式第三階段（只有在 conic 判定無品質代價後才排）：
        bash scripts/lab/task_cmp.sh 6 conicvpc
        bash scripts/lab/task_cmp.sh 13 conicvpc
-5. 若 22k 平手或更好 => 必須再跑一次 STEPS=60000 才能宣稱無代價（trimvpc 的教訓）。
 
 ⚠ 排之前確認 lab 已同步且光柵器已重編（否則 exact_conic_aabb 這個欄位不存在，
   renderer 會**當場擋住**而不是靜默失效）：

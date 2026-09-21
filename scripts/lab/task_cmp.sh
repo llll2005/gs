@@ -191,11 +191,15 @@ case "$ARM" in
   *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|cb50cost|cb25cost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
-export CITYGS_DIFF_VS="${RUN_PREFIX}cs_base"
+# ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次
+#   （例：60k 判決用 `cs60_`）。⚠ 它**保留 RUN_PREFIX** —— 直接用 `CITYGS_RUN_NAME` 會
+#   繞過前綴，在 lab 上就把產物寫到 `outputs/` 而不是 `outputs/lab/`，違反命名空間規則。
+#   config diff 的基準也跟著換家族，否則會拿 60k 的臂去跟 22k 的 cs_base 比。
+export CITYGS_DIFF_VS="${RUN_PREFIX}${CITYGS_FAMILY:-cs_}base"
 export CITYGS_DIFF_EXPECT=$EXP
 # ★ 2026-09-18：`CITYGS_RUN_NAME` 可覆蓋跑次名。用途＝**同一份配方、換個名字再跑一次**
 #   （例：獨佔計時對照，不能讓 run_fit 把既有的 cs_base 搬走）。不設就是原本的 cs_<arm>。
-run_fit "${CITYGS_RUN_NAME:-${RUN_PREFIX}cs_${ARM}}" "$BLK" \
+run_fit "${CITYGS_RUN_NAME:-${RUN_PREFIX}${CITYGS_FAMILY:-cs_}${ARM}}" "$BLK" \
   --model.initialize_from null \
   `# ★ 2026-09-21 加入：uint8 影像快取 + 不載入權重為 0 的深度圖。` \
   `#   09-18 已驗證送進訓練的 GT 影像**逐位元不變**（60 步 x2 的 sha1 全同），` \
