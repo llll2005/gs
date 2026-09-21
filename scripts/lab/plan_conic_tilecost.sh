@@ -146,7 +146,7 @@ PLAN=$(
   fi
 )
 
-echo "════════ 將追加 $(printf '%s' "$PLAN" | grep -cE '^(\[cpu\]|STEPS=|bash )') 個任務到 $Q ════════"
+echo "════════ 將追加 $(printf '%s' "$PLAN" | grep -cE '^(\[(cpu|solo)\]|STEPS=|bash )') 個任務到 $Q ════════"
 printf '%s\n' "$PLAN"
 cat <<'NOTE'
 
