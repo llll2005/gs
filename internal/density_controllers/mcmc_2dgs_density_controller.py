@@ -880,8 +880,13 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             #     修掉之後兩者可以並存 —— 而 v2 的 OOM 證明 prune 是承重的、不能拿掉。）
             if self._max_radii2D is not None and self._max_radii2D.shape[0] == dead_mask.shape[0]:
                 self._max_radii2D[dead_mask] = 0
-        if self._max_tiles2D is not None and self._max_tiles2D.shape[0] == dead_mask.shape[0]:
-            self._max_tiles2D[dead_mask] = 0
+            # ⚠⚠ 2026-09-21：這兩行原本被我插成 8 格縮排（patch 用寫死縮排的字串 .replace，
+            #   而 8 格版本是 16 格版本的子字串 => 配上了但只帶 8 格）=> 整段 densify 尾巴
+            #   （含 add_new_gs）掉進這個 if 的 body，而 `_max_tiles2D` 在 exact_tile_cost=False
+            #   時恆為 None => **add_new_gs 一次都沒被呼叫**，N 只被 trim 剪、每 500 步 -10%。
+            #   Python 照樣通過語法檢查。燒掉 lab 四個跑次。
+            if self._max_tiles2D is not None and self._max_tiles2D.shape[0] == dead_mask.shape[0]:
+                self._max_tiles2D[dead_mask] = 0
             _n_before_add = gaussian_model.n_gaussians
             self._cur_step = global_step          # 相對預算的 rho(t) 與 Load_ref(t) 需要目前步數
             self.add_new_gs(gaussian_model, optimizers)
