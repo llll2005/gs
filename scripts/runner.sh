@@ -243,6 +243,12 @@ while true; do
   cmd="$task"; needs_gpu=1
   case "$task" in
     \[cpu\]*) cmd="${task#\[cpu\]}"; needs_gpu=0 ;;
+    # ⚠⚠ 2026-09-21：序列模式**也必須剝掉 `[solo]`**。單槽本來就是獨佔，所以 `[solo]` 在這裡
+    #   是恆真的語意；但先前沒剝，bash 會去執行字面上的 `[solo]` => **rc=127、0 秒、佇列照常往下跑**。
+    #   實際後果：為三槽 lab 寫的佇列在單槽 runner 上，6 個 [solo] 任務全部 0 秒失敗
+    #   （兩個報表 + 四個 step_breakdown），而且官方參考線的 19 個 [solo] 也會同樣中招。
+    #   ⇒ 前綴的支援必須**兩條路徑一致**，否則佇列的可攜性是假的。
+    \[solo\]*) cmd="${task#\[solo\]}" ;;
   esac
 
   log "▶ START  $label"
