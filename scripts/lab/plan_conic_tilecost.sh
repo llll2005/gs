@@ -75,6 +75,12 @@
 #     不隨長度放大。若 60k 的差異落在邊緣（與 22k 噪音底同量級），就**必須**補一次 60k 重複樣本，
 #     不可直接宣稱顯著。
 #
+# ⚠⚠ **報表行用 `[solo]` 不是 `[cpu]`，這是刻意的。** lab 是 3 槽平行，而 `[cpu]` 只是
+#   「不檢查顯卡餘量」，它照樣一有空槽就被取走 => 6 個跑次分兩批時，報表會在**最後一批還在跑**
+#   的時候啟動，讀到半成品。`[solo]` 的語意是「等到沒有任何任務在跑」(runner.sh:179)
+#   => 它剛好就是我們要的**屏障**。報表只花幾秒，獨佔整張卡的代價可以忽略。
+#   （同一類的坑：`results.txt` 不寫步數，半途死掉的跑次會留下看起來正常的分數。）
+#
 # 判讀順序（**佇列隨時可編輯，只有正在執行的那行是固定的**）：
 #   階段一就已經輸（尤其出現虛假細節簽名：紋理比↑ 而光度↓）=> **把階段二那幾行從佇列刪掉**，不必燒。
 #   階段一平手或更好                                       => 讓階段二跑完再下結論。
@@ -123,8 +129,8 @@ PLAN=$(
          "${PRE}bash scripts/lab/task_cmp.sh $blk tilecal"
   done
   for blk in 6 13; do
-    emit "[cpu] ★★★★ 階段一報表 b$blk：四項指標 + 顆數 + 峰值 VRAM（四項要一起看，只看 PSNR 會漏掉虛假細節簽名）" \
-         "[cpu] conda run -n gspl python tools/lab_cmp_report.py --blk $blk --prefix cs_"
+    emit "[solo] ★★★★ 階段一報表 b$blk：四項指標 + 顆數 + 峰值 VRAM（四項要一起看，只看 PSNR 會漏掉虛假細節簽名）" \
+         "[solo] conda run -n gspl python tools/lab_cmp_report.py --blk $blk --prefix cs_"
   done
   if [ "$STAGE1_ONLY" = 0 ]; then
     for blk in 6 13; do
@@ -134,8 +140,8 @@ PLAN=$(
            "STEPS=60000 CITYGS_FAMILY=cs60_ bash scripts/lab/task_cmp.sh $blk conic"
     done
     for blk in 6 13; do
-      emit "[cpu] ★★★★★ 階段二報表 b$blk：60k 的四項指標（與階段一**分開看**，排程 regime 不同不可混比）" \
-           "[cpu] conda run -n gspl python tools/lab_cmp_report.py --blk $blk --prefix cs60_"
+      emit "[solo] ★★★★★ 階段二報表 b$blk：60k 的四項指標（與階段一**分開看**，排程 regime 不同不可混比）" \
+           "[solo] conda run -n gspl python tools/lab_cmp_report.py --blk $blk --prefix cs60_"
     done
   fi
 )
