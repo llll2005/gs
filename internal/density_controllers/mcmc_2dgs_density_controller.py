@@ -667,12 +667,15 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"{'（未設，純標定）' if self.config.cost_budget <= 0 else ''}"
                       f" ｜報告區間 平均={getattr(self, '_rep_sum', 0.0) / max(getattr(self, '_rep_cnt', 0), 1):,.0f}"
                       f" 最壞={getattr(self, '_rep_max', 0.0):,.0f}（{getattr(self, '_rep_cnt', 0)} 視角）"
-                      # ★ 2026-09-21 標定用：**同時**印另一種單位與比值。代理的誤差會在訓練中
-                      #   變號（初期低估 3.6 倍、後期高估 34%），所以換算係數**不是常數**，
-                      #   必須整條曲線量出來才能把舊預算搬到新單位。
-                      + (f" ｜另一單位 平均={getattr(self, '_rep_sum_alt', 0.0) / max(getattr(self, '_rep_cnt', 0), 1):,.0f}"
-                         f" 比值={getattr(self, '_rep_sum_alt', 0.0) / max(getattr(self, '_rep_sum', 1e-9), 1e-9):.3f}"
-                         if getattr(self, '_rep_cnt', 0) > 0 and getattr(self, '_rep_sum_alt', 0.0) > 0 else ""))
+                      # ⛔⛔ 2026-09-22 拆掉「另一單位／比值」這段：它印出來的值**是錯的**
+                      #   （實測 b6 step 21,900 印代理平均 40,xxx，而同一個模型離線量到 7.0M，差 170 倍；
+                      #   「退回代理」的警告一次都沒出現 => 不是 tiles 拿不到，根因未查明）。
+                      #   **錯的數字比沒有數字更糟** —— 而且這個數的用途正是重新標定 cost_budget。
+                      #   ⇒ 換算曲線改用**已驗證的離線路徑**：對中途 ckpt 跑
+                      #     `tools/cost_budget_calibrate.py`，它會直接印 ①代理／③精確 的比值。
+                      #     實測（b6，conic 開啟）：step 499 **0.716** -> 1,499 1.653 -> 14,999 2.240
+                      #     -> 21,920 **2.317**（conic 關閉時是 0.280 -> 1.340）=> **不可用常數換算**。
+                      )
                 # 報告自己的視窗（2026-09-14）：與 add_new_gs 閘門用的 `_load_max` 分開，互不干擾。
                 #   ⚠ 原本的「Load(區間最壞視角)」在沒設預算時從不歸零 => 其實是從頭累積的最大值。
                 self._rep_sum, self._rep_cnt, self._rep_max = 0.0, 0, 0.0
