@@ -1448,6 +1448,24 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return
         load_proxy = float(((2.0 * r[vis] / self.TILE_PX) ** 2).sum())
         load = load_proxy
+        if not self.config.exact_tile_cost:
+            # ★★ 2026-09-22 守衛：`exact_conic_aabb` 開啟後，`radii` 被**刻意凍結**成線性化的
+            #   對稱半徑（保護 screen_size_prune / vpc / cost_aware_densify 的尺寸語意），
+            #   於是代理 `Σ(2r/16)^2` 與真實 tile 數**脫鉤**：實測比值從 1.07~1.28 跳到 2.23~2.27。
+            #   後果：b13 的 max 代理說「貴兩倍」而精確說「便宜 44%」=> 結論**方向相反**。
+            #   ⇒ 這裡直接用**實測比值**偵測（不看旗標，因為控制器看不到 renderer 的設定），
+            #     比值過大就大聲說出來。門檻 1.8 取在兩個 regime 之間。
+            _t = outputs.get("tiles", None)
+            if _t is not None and not getattr(self, "_proxy_decoupled_warned", False):
+                _ex = float(_t.double().sum())
+                if _ex > 0 and load_proxy / _ex > 1.8:
+                    self._proxy_decoupled_warned = True
+                    print(f"⚠⚠ [cost-proxy] **代理成本已與真實盒子脫鉤**："
+                          f"Σ(2r/16)^2={load_proxy:,.0f} 是精確 tile 數 {_ex:,.0f} 的 "
+                          f"{load_proxy / _ex:.2f} 倍（正常約 1.1~1.3）。"
+                          f"多半是 `exact_conic_aabb` 開著而 `exact_tile_cost` 沒開。"
+                          f"⇒ cost_budget / vpc / cost_aware_densify 的標定會錯約這個倍數，"
+                          f"請改開 `exact_tile_cost`（見 資源與效能量測彙整 §9.9b）", flush=True)
         if self.config.exact_tile_cost:
             tiles = outputs.get("tiles", None)
             if tiles is None:

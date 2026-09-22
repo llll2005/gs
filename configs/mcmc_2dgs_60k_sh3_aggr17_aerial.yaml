@@ -1,3 +1,15 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# ⚠⚠ 2026-09-22 config 收斂：這個檔**曾經是舊年代的**（sched30 之前），而現行最佳配方
+#    全靠各腳本的旗標蓋過去 => 任何新腳本或直接 `main.py fit --config ...` 吃到的是
+#    2026-08 的舊配方，**而且不會報錯**。本次把 config 改成**腳本本來就在傳的值**：
+#      既有腳本行為**零變化**（它們照樣傳同一個值），新腳本才不會漏。
+#    改動：lambda_normal 0.0125->0 / depth_loss_weight.init 0.5->0 / opacity_reg 0.007->0.002
+#          cap_max 1.7M->2.6M / densify_until 42k->30k / 新增 absgrad_densify 2.0
+#          / fast_noise true / noise_gate_eps 1e-3（這三個的 dataclass 預設是關的）
+#
+# ★★ 唯一**真正改變行為**的一項：`renderer.exact_conic_aabb: true`（見下方 renderer 段）
+#    => 這是一個**年代小分界**：此 commit 之後的跑次與之前的不可逐位元比較。
+# ══════════════════════════════════════════════════════════════════════════════
 model:
   initialize_from: null          # depth-init via CLI: --model.initialize_from .../depth_init/block_7.ply
   overwrite_config: False
@@ -14,12 +26,12 @@ model:
   metric:
     class_path: internal.metrics.mcmc_citygsv2_metrics.MCMCCityGSV2Metrics
     init_args:
-      lambda_normal: 0.0125
+      lambda_normal: 0.0            # 2026-09-22 對齊腳本（sched30）
       normal_regularization_from_iter: 0
       depth_loss_type: l1+ssim
       depth_loss_ssim_weight: 1.0
       depth_loss_weight:
-        init: 0.5
+        init: 0.0                    # 2026-09-22 對齊腳本；連帶讓零權重 loss 閘門與 skip_unused_depth 生效
         final_factor: 0.05
         max_steps: 60_000
       fused_ssim: false           # ⛔ 2026-08-28 退回（實測見下）
@@ -31,21 +43,41 @@ model:
       #  且把它納入後樣本 sd **+119%**（PSNR 只 +8%）=> 它是離群值不是同分布樣本。
       #  換到的 -4.9% 加速，不值得在**唯一噪音底沒被低估的尺**上冒系統性損失。
       #  ✅ 位元級無損的兩項保留：零權重 loss 閘門(-9%) 與 skip_surf_normal(-1%)。
-      opacity_reg: 0.007          # 0.01 -> 0.007 : 小幅鬆綁，少砍掉峰值的點（cap2M 後半掉 10%）
+      opacity_reg: 0.002          # 2026-09-22 對齊腳本（sched30；⚠ **不是 0** —— 那是舊資料的結論）
+      # 舊註：0.01 -> 0.007 : 小幅鬆綁，少砍掉峰值的點（cap2M 後半掉 10%）
       scale_reg: 0.007            # 同上
       immune_opacity_threshold: 0.9
   renderer:
     class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
     init_args:
       depth_ratio: 1.0
+      # ★★★ 2026-09-22 起預設開啟：精確圓錐**不對稱**外接盒，取代上游的線性化
+      #   `radius = truncated_R * extent(1)`（詳見 cuda_rasterizer/auxiliary.h 與
+      #   紀錄/資源與效能量測彙整.md §9）。
+      #   判決依據（lab，2 塊 x 2 長度 = 4 組比較，兩臂同 N、同一個 .so）：
+      #     ΔPSNR  b6 22k +0.000 / b13 22k +0.080 / b6 60k +0.060 / b13 60k +0.160
+      #     16 個指標差**沒有一個是負的**；trimvpc 那個「代價隨長度放大」的失效模式沒出現
+      #     離線 Σtiles 中位 **-40.1% / -45.8%**、forward **-26%**、峰值 VRAM **-3.9~-6.6%**
+      #   ⚠ 不宣稱它讓品質變好：60k 沒有重複樣本，+0.06~+0.16 落在同配方重複的量級（0.03~0.05）。
+      #   ⚠⚠ 開了它之後，`radii` 與真實盒子**脫鉤**（radii 刻意凍結成線性化半徑以保護
+      #      screen_size_prune / vpc / cost_aware_densify 的尺寸語意）=> 代理成本
+      #      `Σ(2r/16)^2` 會高估約 **2.23~2.27 倍**（關閉時只有 1.07~1.28）。
+      #      ⇒ 用 cost_budget / vpc / cost_aware_densify 時**必須**改用 `exact_tile_cost`，
+      #        否則既有的預算標定會錯約 2.3 倍。控制器已加自動偵測並大聲警告。
+      exact_conic_aabb: true
   density:
     class_path: internal.density_controllers.mcmc_2dgs_density_controller.MCMC2DGSDensityController
     init_args:
-      cap_max: 1700000           # 上一階 1.3M 撞 cap 仍在爬 -> 往上推找天花板
+      cap_max: 2600000           # 2026-09-22 對齊腳本
+      # 舊註：1.7M ＝ 上一階 1.3M 撞 cap 仍在爬 -> 往上推找天花板
       noise_lr: 500000.0
       densify_from_iter: 1000
-      densify_until_iter: 42_000  # 30k -> 42k : 主力積極槓桿，內容導向的點長更久
+      densify_until_iter: 30_000  # 2026-09-22 對齊腳本（sched30 = 全長的 50%；42k/70% 是 bug 期漂移）
       densification_interval: 150 # 200 -> 150 : 加密 add 事件
+      # ★ 2026-09-22 新增：以下三項的 dataclass 預設**是關的**，先前只活在腳本旗標裡
+      absgrad_densify: 2.0        # AbsGS 的 |g| 導引 MCMC 取樣（需 ABSGRAD=1，位元級不變）
+      fast_noise: true
+      noise_gate_eps: 0.001
       min_opacity: 0.005
       N_max: 51
 trainer:
