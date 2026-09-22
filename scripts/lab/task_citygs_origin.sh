@@ -1,4 +1,13 @@
 #!/bin/bash
+# ⚠⚠ 2026-09-22：本條線一律跑在 **gspl_off** 環境（可用 CITYGS_OFF_ENV 覆寫）。
+#   為什麼：官方參考線的用途之一是**資源對照**，但 `diff_trim_surfel_rasterization` 是裝在
+#   **共用的 conda 環境**裡，而那一份是**我方改過的**：
+#     EXACT_SUPPORT=1（渲染逐位元相同，但 render VRAM -20.3%、tile 數大降 => 比真官方更省）
+#     ABSGRAD=1（渲染/梯度逐位元相同，但 backward 多一次 atomicAdd => 略慢）
+#     rects 緩衝 +8 B/顆、tiles 張量 +4 B/顆（即使沒開 return_tiles 也會配置）
+#   => **品質那一欄是乾淨的**（以上前三項都逐位元相同），但**時間與 VRAM 不是官方的數字**。
+#   而且這個污染從 EXACT_SUPPORT 啟用起就存在，不是 2026-09-22 才有的。
+#   ⇒ `gspl_off` 裝的是**上游原版**（YuxueYang1204/diff-surfel-rasterization），不含上述任何一項。
 # ★★★ 官方 CityGaussianV2 的**完整**流程，跑在**未修改的 cityGS_origin**（使用者 2026-09-17 決定）。
 #
 # 為什麼要這一條：使用者 09-15/09-16 手動跑的兩次雖然用的是官方 config（lab 上那份是乾淨的），
@@ -91,7 +100,7 @@ record () {   # record <block 或 -> <目錄>：N（PLY 標頭，沒有就讀 ck
     if [ -f "$ply" ]; then
       n=$(head -c 4000 "$ply" | grep -a -m1 'element vertex' | awk '{print $3}')
     else
-      n=$(conda run -n gspl python -c "
+      n=$(conda run -n "${CITYGS_OFF_ENV:-gspl_off}" python -c "
 import sys, torch
 sd = torch.load(sys.argv[1], map_location='cpu')['state_dict']
 k = [k for k, v in sd.items() if (k.endswith('means') or k.endswith('xyz')) and getattr(v, 'ndim', 0) == 2 and v.shape[-1] == 3]
@@ -109,9 +118,9 @@ case "$MODE" in
       if [ -L "$L" ]; then rm -f "$L"; echo "  移除符號連結 $L"; fi
       if [ -d "$L" ] && [ "$(ls "$L" | wc -l)" -ge "$N_SRC" ]; then echo "  已存在且張數足夠，略過 $L"; continue; fi
       echo "=== 縮放 $d/input -> $L（$N_SRC 張）$(date) ==="
-      conda run -n gspl --no-capture-output python utils/image_downsample.py "$d/input" --dst "$L" --factor 1.2 || exit $?
+      conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python utils/image_downsample.py "$d/input" --dst "$L" --factor 1.2 || exit $?
     done
-    conda run -n gspl python -c "
+    conda run -n "${CITYGS_OFF_ENV:-gspl_off}" python -c "
 from PIL import Image
 import os
 for d in ['$TRAIN', '$TEST']:
@@ -134,9 +143,9 @@ print('✅ 影像完成')" || exit $?
         echo "  已有深度圖 $n_dep 張＋尺度檔，略過 $od"; continue
       fi
       echo "=== 官方深度工具（-d 1.2）：$od（$n_img 張）$(date) ==="
-      conda run -n gspl --no-capture-output python utils/estimate_dataset_depths.py "$od" -d 1.2 || exit $?
+      conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python utils/estimate_dataset_depths.py "$od" -d 1.2 || exit $?
     done
-    conda run -n gspl python -c "
+    conda run -n "${CITYGS_OFF_ENV:-gspl_off}" python -c "
 import numpy as np, os, glob, json
 for od in ['$OTRAIN', '$OTEST']:
     fs = sorted(glob.glob(os.path.join(od, 'estimated_depths', '*.npy')))
@@ -147,7 +156,7 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
   coarse)
     move_aside "outputs/$COARSE"
     echo "=== 官方 coarse（未修改原始碼＋原版 config，sh2 30k）$(date) ==="
-    run_measured conda run -n gspl --no-capture-output python -u main.py fit \
+    run_measured conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python -u main.py fit \
       --config configs/$COARSE.yaml -n $COARSE --data.train_max_num_images_to_cache 1024 \
       --data.num_workers 8 --data.path "$OTRAIN_REL"
     rc=$?; record - "outputs/$COARSE"; exit "$rc" ;;
@@ -157,7 +166,7 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     WANT="outputs/$COARSE/checkpoints/epoch=6-step=30000.ckpt"
     [ -e "$WANT" ] || { ln -s "$(basename "$CK")" "$WANT"; echo "  補連結 $WANT -> $(basename "$CK")"; }
     echo "=== 官方分區（4x4，content_threshold 0.05；與我方 5x5 不同目錄，不會互相覆寫）$(date) ==="
-    conda run -n gspl --no-capture-output python utils/partition_citygs.py \
+    conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python utils/partition_citygs.py \
       --config_path configs/$NAME.yaml --force 2>&1 | tee "$LOG"
     rc=${PIPESTATUS[0]}
     ls -d "$OTRAIN"/partition/partitions-dim_4_4_visibility_0.05 || rc=3
@@ -178,18 +187,18 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     #     依據＝我方跑次在**同一顆碟**上用 8 條執行緒快取 548 張影像沒問題；lab 有 20 執行緒。
     #     ⚠ 資料在 **機械碟**（/dev/sda = ST2000DM008，rotational=1）=> 不再往上加，並行讀會造成尋道。
     #     純基礎建設，不影響演算法。
-    run_measured conda run -n gspl --no-capture-output python -u main.py fit \
+    run_measured conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python -u main.py fit \
       --config configs/$NAME.yaml --data.parser.block_id "$BLKARG" -n $NAME \
       --data.num_workers 8 --data.path "$OTRAIN_REL"
     rc=$?; record "$BLKARG" "outputs/$NAME/blocks/block_$BLKARG"; exit "$rc" ;;
   merge)
     n=$(find "outputs/$NAME/blocks" -maxdepth 3 -name '*step=60000.ckpt' 2>/dev/null | wc -l)
     echo "完賽的塊：$n"; [ "$n" -ge 1 ] || { echo "⛔ 沒有任何完賽的塊"; exit 2; }
-    conda run -n gspl --no-capture-output python utils/merge_citygs_ckpts.py "outputs/$NAME" 2>&1 | tee "$LOG"
+    conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python utils/merge_citygs_ckpts.py "outputs/$NAME" 2>&1 | tee "$LOG"
     exit "${PIPESTATUS[0]}" ;;
   test)
     echo "=== 官方 held-out 評測（$TEST 全部）$(date) ==="
-    run_measured conda run -n gspl --no-capture-output python -u main.py test \
+    run_measured conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python -u main.py test \
       --config outputs/$COARSE/config.yaml -n $NAME \
       --data.path "$OTEST" \
       --data.parser.eval_image_select_mode ratio \
@@ -207,8 +216,8 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     { bad=0
       echo "════ 官方參考線：訓練期資源表 ════"; cat "$RES_TSV"
       echo "════ 合併模型離線量測：$CK（$(du -h "$CK" | cut -f1)）════"
-      conda run -n gspl --no-capture-output python tools/cost_budget_calibrate.py --ckpt "$CK" --max-cam "${CITYGS_MAXCAM:-600}" || { echo "⛔ 離線 Load 失敗"; bad=1; }
-      conda run -n gspl --no-capture-output python tools/step_breakdown.py --run "$R/checkpoints" --repeat 20 || { echo "⛔ 逐步計時失敗"; bad=1; }
+      conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python tools/cost_budget_calibrate.py --ckpt "$CK" --max-cam "${CITYGS_MAXCAM:-600}" || { echo "⛔ 離線 Load 失敗"; bad=1; }
+      conda run -n "${CITYGS_OFF_ENV:-gspl_off}" --no-capture-output python tools/step_breakdown.py --run "$R/checkpoints" --repeat 20 || { echo "⛔ 逐步計時失敗"; bad=1; }
       exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$LOG"
     exit "${PIPESTATUS[0]}" ;;
   *) echo "⛔ 不認得的模式：$MODE"; exit 2 ;;
