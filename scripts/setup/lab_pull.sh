@@ -39,7 +39,10 @@ echo \"lab: \$(git log --oneline -1)\"
 echo \"未提交改動：\$(git status --porcelain | wc -l)\"
 if [ \"\$OLD\" = \"\$NEW\" ]; then echo '（lab 本來就是最新的）'; fi
 NEEDBUILD=0
-if [ \"\$OLD\" != \"\$NEW\" ] && ! git diff --quiet \$OLD \$NEW -- $RAST/cuda_rasterizer $RAST/third_party; then NEEDBUILD=1; fi
+# ⚠ 2026-09-22 擴大偵測範圍到**整個 submodule**：先前只看 cuda_rasterizer 與 third_party，
+#   但 `diff_trim_surfel_rasterization/__init__.py`（Python 包裝層）改了也必須重裝，
+#   否則 lab 的 site-packages 還是舊的 => 介面不一致而且不會報錯。
+if [ \"\$OLD\" != \"\$NEW\" ] && ! git diff --quiet \$OLD \$NEW -- $RAST; then NEEDBUILD=1; fi
 echo \"光柵器需要重編：\$NEEDBUILD（本次允許重編：$BUILD）\"
 if [ \$NEEDBUILD = 1 ] && [ $BUILD = 1 ]; then
   G=/root/miniconda3/envs/gspl

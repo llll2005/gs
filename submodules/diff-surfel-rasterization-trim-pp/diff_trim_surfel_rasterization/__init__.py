@@ -103,6 +103,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
         # ★ 2026-09-21：`tiles` = 逐顆 tile 數（精確的 binning 成本）。整數張量、不可微，
         #   明確標記以免 autograd 為它建圖。見 rasterizer.h 的長註解。
+        if not getattr(raster_settings, "return_tiles", False):
+            return color, radii, depth          # 歷史介面：其他 checkout 靠它
         ctx.mark_non_differentiable(tiles)
         return color, radii, depth, tiles
 
@@ -187,6 +189,13 @@ class GaussianRasterizationSettings(NamedTuple):
     #   **執行期**旗標而非 #define —— lab 三槽平行時 A/B 兩臂要能同時跑，
     #   且誤用編譯期旗標不會報錯（兩邊都吃最後編的那份）。
     exact_conic_aabb : bool = False
+    # ⚠⚠ 2026-09-22：`tiles` 必須**可選**。這個套件裝在**共用的 conda 環境**裡，而同一台機器上
+    #   還有別的 checkout 在用它（例：`cityGS_origin/` 那份未改動原始碼的官方參考線）。
+    #   把回傳從 3 個改成 4 個 => 那份的 `rendered_image, radii, allmap = output` 直接
+    #   `ValueError: too many values to unpack`，官方參考線**整條陣亡**（2026-09-22 實際發生）。
+    #   ⇒ 預設 False（回傳 3 個，與歷史一致）；要 tiles 的呼叫端自己開。
+    #   本修正**只動 Python 包裝層**，C++ 本來就一直回傳 10 個 => **不需要重編**。
+    return_tiles : bool = False
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

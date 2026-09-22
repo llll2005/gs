@@ -168,6 +168,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
             #   **不會靜默失效**，而是下面的 assert 會當場擋住（設了卻拿不到 = 量錯的來源）。
             **({"exact_conic_aabb": _conic}
                if "exact_conic_aabb" in GaussianRasterizationSettings._fields else {}),
+            # 2026-09-22：tiles 改成可選（保護共用環境裡其他 checkout 的 3 元組介面）
+            **({"return_tiles": True}
+               if "return_tiles" in GaussianRasterizationSettings._fields else {}),
         )
 
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -220,7 +223,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 return transmittance, num_covered_pixels
             return transmittance
         else:
-            rendered_image, radii, allmap, tiles = output
+            # 光柵器未重編（沒有 return_tiles 欄位）時回傳 3 個 => 相容解包
+            if len(output) == 4:
+                rendered_image, radii, allmap, tiles = output
+            else:
+                rendered_image, radii, allmap = output; tiles = None
 
         # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
         # They will be excluded from value updates used in the splitting criteria.
@@ -233,7 +240,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             #   取代 `radii^2` 代理：後者假設正方形、忽略 tile 量化、忽略螢幕裁切，
             #   而且在 EXACT_CONIC_AABB 開啟後 radii 已與真實盒子脫鉤（刻意凍結）。
             #   ⚠ 它是**逐視角**的量；要當逐顆成本用必須自己決定窗口（max / mean / 單視角）。
-            "tiles": tiles,
+            **({"tiles": tiles} if tiles is not None else {}),
         }
 
         # additional regularizations

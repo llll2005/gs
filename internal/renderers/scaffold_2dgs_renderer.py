@@ -59,7 +59,7 @@ class Scaffold2DGSRenderer(SepDepthTrim2DGSRenderer):
             transmittance_sum, num_covered_pixels, radii = output
             return transmittance_sum / (num_covered_pixels + 1e-6)
 
-        rendered_image, radii, allmap, _tiles = output   # 2026-09-21 光柵器多回傳 tiles（本退役線不用）
+        rendered_image, radii, allmap = output[:3]   # 2026-09-22 tiles 改成可選，這裡一律只取前三個
         rets = {
             "render": rendered_image,
             "viewspace_points": screenspace_points,
