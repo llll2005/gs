@@ -106,7 +106,8 @@ case "$MODE" in
     echo "=== 點數總表（> $MAXPTS 的變體在 run 時會被擋下）==="
     for v in $VARIANTS; do for b in 6 13; do echo "$(npts "$OUT/$v/block_$b.ply")  $v/b$b"; done; done ;;
   run)
-    BLK=${2:?用法: task_sfmfill_sweep2.sh run <塊> <變體>}; V=${3:?同上}
+    BLK=${2:?用法: task_sfmfill_sweep2.sh run <塊> <變體> [額外參數...]}; V=${3:?同上}
+    shift 3   # 2026-09-22：把剩下的參數轉給 task_initcmp.sh
     args_of "$V" >/dev/null || { echo "⛔ 不認得的變體：$V（$VARIANTS）"; exit 2; }
     [ -f "$OKF" ] || { echo "⛔ 來源核對沒通過或還沒跑 gen => 基準不明，不跑"; exit 2; }
     F="$OUT/$V/block_$BLK.ply"
@@ -115,6 +116,6 @@ case "$MODE" in
     [ "${n:-0}" -le "$MAXPTS" ] || { echo "⛔ $V／b$BLK 有 $n 點 > $MAXPTS => 不跑，避免起步 OOM"; exit 2; }
     echo "[sweep2] 變體 $V（$(args_of "$V")）／block $BLK／起始點數 $n"
     export CITYGS_DIFF_VS=lab/init_sfmfill CITYGS_DIFF_EXPECT=1   # 與基準只該差 ply_file
-    exec bash scripts/lab/task_initcmp.sh "$BLK" "sfmsweep_$V" ;;
+    exec bash scripts/lab/task_initcmp.sh "$BLK" "sfmsweep_$V" "$@" ;;
   *) echo "⛔ 不認得的模式：$MODE"; exit 2 ;;
 esac

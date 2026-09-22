@@ -53,8 +53,13 @@
 #   ⇒ 沿用舊值等於用相反方向重蹈同一個錯。**校準值要跟著資料重算。**
 set -u
 source "$(dirname "$0")/_common.sh"
-BLK=${1:?用法: task_cmp.sh <block_id> <arm>}
+# ⚠⚠ 2026-09-22：這三支先前**都不轉傳多餘參數**（沒有 "$@"）=> 從佇列想覆寫單一設定時
+#   會被**靜默吃掉**。2026-09-22 釘 exact_conic_aabb=false 時中過一次（25 行全無效）。
+#   ⇒ 一律 `shift` 掉自己的位置參數，把剩下的用 "$@" 傳到 run_fit 的最後（最後者勝）。
+#   用環境變數也能做，但**不會出現在 resolved config** => 少一層本專案賴以驗證的保護。
+BLK=${1:?用法: task_cmp.sh <block_id> <arm> [額外參數...]}
 ARM=${2:?同上}
+shift 2
 
 # ★ B0 = 當前操作點的 Load（`max_view Σ (2r/16)^2`），由 tools/cost_budget_calibrate.py
 #   在**已訓練好的 ckpt** 上一次前向量出來（不需要訓練，見該工具檔頭）。
@@ -222,4 +227,4 @@ run_fit "${CITYGS_RUN_NAME:-${RUN_PREFIX}${CITYGS_FAMILY:-cs_}${ARM}}" "$BLK" \
   --trainer.max_steps "$STEPS" \
   --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.max_steps "$STEPS" \
   --model.density.init_args.densify_until_iter "$HALF" \
-  "${EXTRA[@]}"
+  "${EXTRA[@]}" "$@"

@@ -8,7 +8,12 @@
 #   （cap 固定、不 absgrad、不 noise、無正則）以免機制與 init 交互作用
 #   —— 這是本機 `configs/normal.yaml` 那條線的 lab 版。
 source "$(dirname "$0")/_common.sh"
-BLK=${1:?用法: task_initcmp.sh <block_id> <arm>}; ARM=${2:?}
+# ⚠⚠ 2026-09-22：這三支先前**都不轉傳多餘參數**（沒有 "$@"）=> 從佇列想覆寫單一設定時
+#   會被**靜默吃掉**。2026-09-22 釘 exact_conic_aabb=false 時中過一次（25 行全無效）。
+#   ⇒ 一律 `shift` 掉自己的位置參數，把剩下的用 "$@" 傳到 run_fit 的最後（最後者勝）。
+#   用環境變數也能做，但**不會出現在 resolved config** => 少一層本專案賴以驗證的保護。
+BLK=${1:?用法: task_initcmp.sh <block_id> <arm> [額外參數...]}; ARM=${2:?}
+shift 2
 # ⚠ STEPS 可覆寫，用來當**閘門**（例：STEPS=1500 先驗 PLY 載入正確再上 lab 跑全長）。
 #   LR 排程跟著一起縮放，否則閘門跑的是另一個 regime（v2 §7 的教訓）。
 STEPS=${STEPS:-20000}
@@ -22,12 +27,12 @@ COMMON=(--trainer.max_steps "$STEPS"
         --model.metric.init_args.lambda_normal 0.0
         --model.metric.init_args.depth_loss_weight.init 0.0)
 case "$ARM" in
-  sfm)    run_fit "${RUN_PREFIX}init_sfm"    "$BLK" --model.initialize_from null "${COMMON[@]}" ;;
+  sfm)    run_fit "${RUN_PREFIX}init_sfm"    "$BLK" --model.initialize_from null "${COMMON[@]}" "$@" ;;
   depth)  P="data/matrix_city/aerial/train/block_all/depth_init/block_$BLK.ply"
           [ -f "$P" ] || { echo "❌ 缺 $P —— 先跑 scripts/lab/task_depthprep.sh"; exit 2; }
-          run_fit "${RUN_PREFIX}init_depth"  "$BLK" --model.initialize_from "$P" "${COMMON[@]}" ;;
+          run_fit "${RUN_PREFIX}init_depth"  "$BLK" --model.initialize_from "$P" "${COMMON[@]}" "$@" ;;
   random) run_fit "${RUN_PREFIX}init_random" "$BLK" --model.initialize_from null \
-            --data.parser.points_from random --data.parser.n_random_points 100000 "${COMMON[@]}" ;;
+            --data.parser.points_from random --data.parser.n_random_points 100000 "${COMMON[@]}" "$@" ;;
   # ★ SfM 點 + 空處低密度補點（使用者 2026-09-13 提案；tools/make_sfm_fill_init.py 產生）
   # ⚠ 走 `points_from ply` 而**不是** `--model.initialize_from` —— 後者載入已存好的
   #   Gaussian 模型（scale 由檔案決定），而 sfm 臂走 setup_from_pcd（scale 從點雲算）
@@ -37,7 +42,7 @@ case "$ARM" in
            F="data/matrix_city/aerial/train/block_all/$P"
            [ -f "$F" ] || { echo "❌ 缺 $F —— 先跑 tools/make_sfm_fill_init.py"; exit 2; }
            run_fit "${RUN_PREFIX}init_sfmfill" "$BLK" --model.initialize_from null \
-             --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" ;;
+             --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" "$@" ;;
   # ★ sfmfill 參數比較的變體（2026-09-17，task_sfmfill_sweep.sh 產生 PLY）：sfmfill_<變體>
   #   與 sfmfill 臂唯一差別是 PLY 來源目錄 sfmfill_init_<變體>/；run 名 init_sfmfill_<變體>
   sfmfill_*) V=${ARM#sfmfill_}
@@ -46,7 +51,7 @@ case "$ARM" in
              F="data/matrix_city/aerial/train/block_all/$P"
              [ -f "$F" ] || { echo "❌ 缺 $F —— 先跑 scripts/lab/task_sfmfill_sweep.sh gen"; exit 2; }
              run_fit "${RUN_PREFIX}init_sfmfill_$V" "$BLK" --model.initialize_from null \
-               --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" ;;
+               --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" "$@" ;;
   # ★ sfmfill 參數比較（更正版，task_sfmfill_sweep2.sh）：PLY 在 sfmfill_sweep/<變體>/；run 名 init_sfmsweep_<變體>
   #   ⚠ 上面的 sfmfill_* 臂屬於作廢的第一版（基準參數錯），保留只為可追溯
   sfmsweep_*) V=${ARM#sfmsweep_}
@@ -54,6 +59,6 @@ case "$ARM" in
              P="sfmfill_sweep/$V/block_$BLK.ply"
              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "❌ 缺 $P —— 先跑 task_sfmfill_sweep2.sh gen"; exit 2; }
              run_fit "${RUN_PREFIX}init_sfmsweep_$V" "$BLK" --model.initialize_from null \
-               --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" ;;
+               --data.parser.points_from ply --data.parser.ply_file "$P" "${COMMON[@]}" "$@" ;;
   *) echo "❌ 不認得的 arm：$ARM（sfm/depth/random/sfmfill/sfmsweep_<變體>）"; exit 2 ;;
 esac
