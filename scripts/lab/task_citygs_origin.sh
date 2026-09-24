@@ -7,7 +7,8 @@
 #     - 分區是 09-18 用更早的 coarse 做的；深度圖/1600 影像是在 gspl 裡、用 gs 的 Depth-Anything-V2 做的
 #     - 09-23~24 的 block 0~8 是手動啟動，沒有資源紀錄
 #   允許的例外（使用者 2026-09-24）：我方的 log／計數器。=> tools/peakmem/sitecustomize.py 經 PYTHONPATH
-#     外掛（官方原始碼一行不改）：行程峰值＋每 100 batch 的 N／it/s／VRAM（logs/citygs_official_train_*.tsv）。
+#     外掛（官方原始碼一行不改）：行程峰值＋每 100 batch 的 N／it/s／VRAM（logs/citygs_official_train_*.tsv）
+#     ＋每次加顆/剪枝的 churn（logs/citygs_official_churn_*.tsv）＋我方台帳 logs/quad_progress.log 的 START/DONE/DIED（名稱 OFF:…）。
 #   `res`（離線 Load／逐步計時）是**我方量測工具**，跑在 gspl，量的是官方產出的 ckpt。
 # ⚠⚠ 2026-09-22：本條線一律跑在 **gspl_off** 環境（可用 CITYGS_OFF_ENV 覆寫）。
 #   為什麼：官方參考線的用途之一是**資源對照**，但 `diff_trim_surfel_rasterization` 是裝在
@@ -73,6 +74,7 @@ echo "VRAM 上限：不限制（官方原始碼不認得 CITYGS_VRAM_CAP_GB；�
 LOG=$GS/logs/citygs_official_${MODE}${BLKARG:+_$BLKARG}.log
 RES_TSV=$GS/logs/citygs_official_resources.tsv
 TRAINLOG=$GS/logs/citygs_official_train_${MODE}${BLKARG:+_$BLKARG}.tsv
+CHURN=$GS/logs/citygs_official_churn_${MODE}${BLKARG:+_$BLKARG}.tsv   # 每次加顆/剪枝一行（phase=clone/split/cull/trim）
 PEAK_DIR=$GS/tools/peakmem
 [ -f "$PEAK_DIR/sitecustomize.py" ] || { echo "⛔ 缺 $PEAK_DIR/sitecustomize.py（峰值紀錄）"; exit 2; }
 [ -f "$RES_TSV" ] || printf 'mode\tblock\tstart\twall_s\trc\tpeak_alloc_MiB\tpeak_reserved_MiB\tgpu_used_max_MiB\tN\tckpt\n' > "$RES_TSV"
@@ -93,7 +95,9 @@ run_measured () {   # run_measured <指令...>：資源寫進 RUN_* 變數；完
   rm -f "$pk"
   RUN_START=$(date '+%m-%d %H:%M'); t0=$(date +%s); RUN_GMAX=0
   [ -f "$TRAINLOG" ] && mv "$TRAINLOG" "$TRAINLOG.old_$(date +%m%d_%H%M%S)"
-  ( export CITYGS_PEAK_OUT="$pk" CITYGS_TRAINLOG_OUT="$TRAINLOG" CITYGS_TRAINLOG_EVERY=100 PYTHONPATH="$PEAK_DIR${PYTHONPATH:+:$PYTHONPATH}"; exec "$@" ) > "$LOG" 2>&1 &
+  [ -f "$CHURN" ] && mv "$CHURN" "$CHURN.old_$(date +%m%d_%H%M%S)"
+  ( export CITYGS_PEAK_OUT="$pk" CITYGS_TRAINLOG_OUT="$TRAINLOG" CITYGS_TRAINLOG_EVERY=100 \
+      CITYGS_CHURN_OUT="$CHURN" CITYGS_LEDGER="$GS/logs/quad_progress.log" PYTHONPATH="$PEAK_DIR${PYTHONPATH:+:$PYTHONPATH}"; exec "$@" ) > "$LOG" 2>&1 &
   bg=$!
   while kill -0 "$bg" 2>/dev/null; do
     u=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' \r')
