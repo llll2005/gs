@@ -72,6 +72,11 @@ say "2. 官方三行 requirements（順序照 doc/installation.md）"
 conda run -n "$ENV_NAME" --no-capture-output pip install -r requirements/pyt201_cu118.txt || die "pyt201_cu118 失敗"
 pipi -r requirements.txt || die "requirements.txt 失敗"
 pipi -r requirements/CityGS.txt || die "CityGS.txt 失敗"
+# ⚠ 2026-09-24 第一次建環境撞到：官方 requirements **沒有釘 numpy** => 今天 pip 解出 numpy 2.0.2，
+#   而 torch 2.0.1 是對 numpy 1.x 編的：`Failed to initialize NumPy: _ARRAY_API not found`、
+#   torch.from_numpy 直接失敗 => 官方程式碼跑不起來。釘 numpy<2（1.26.4）同樣滿足官方所有 requirements
+#   （官方沒指定版本），只是選了 torch 2.0.1 能用的那一個；官方發布時 numpy 2 尚未存在。
+conda run -n "$ENV_NAME" --no-capture-output pip install "numpy<2" || die "numpy<2 失敗"
 # 官方 requirements 自己同時列了兩個 diff-gaussian-rasterization（lightning23 -> common.txt 的 graphdeco@59f5f77、
 # CityGS.txt 的 DekuLiuTesla@82c31d7），後裝的蓋前面 ⇒ 最終是 DekuLiuTesla 那份，這也是照官方指令的結果。
 
@@ -96,26 +101,41 @@ fi
 
 say "5. 驗證（裝好 != 裝對）"
 conda run -n "$ENV_NAME" --no-capture-output python - <<'PY' || die "驗證失敗"
-import importlib, os, sys, dataclasses
+import importlib, sys
 bad = 0
-for m in ["torch", "lightning", "diff_trim_surfel_rasterization", "diff_gaussian_rasterization",
-          "simple_knn", "torch_scatter", "cv2", "open3d", "bitsandbytes"]:
+# 必要：官方 coarse／微調／分區／merge／test／深度工具真的會 import 的
+for m in ["torch", "lightning", "numpy", "diff_trim_surfel_rasterization", "diff_gaussian_rasterization",
+          "simple_knn._C", "torch_scatter", "cv2", "plyfile", "PIL"]:
     try:
         x = importlib.import_module(m)
-        f = getattr(x, "__file__", "?")
+        f = getattr(x, "__file__", None) or "?"
         flag = "⛔ 來自 gs/" if "/11213/gs/" in f else ""
         bad += bool(flag)
         print(f"  {m:32s} {getattr(x, '__version__', '')}  {f} {flag}")
     except Exception as e:
         bad += 1; print(f"  ⛔ {m}: {e!r}")
-import torch
+# 只顯示：官方 requirements 有列，但 CityGS 訓練流程沒用到（bnb 官方程式碼零引用；open3d 只在 mesh 萃取）
+for m in ["bitsandbytes", "open3d"]:
+    try:
+        importlib.import_module(m); print(f"  （資訊）{m} 可匯入")
+    except Exception as e:
+        print(f"  （資訊，不擋）{m} 無法匯入：{type(e).__name__}（CityGS 訓練流程不用它）")
+import numpy, torch
 assert torch.__version__.startswith("2.0.1"), torch.__version__
+assert numpy.__version__.startswith("1."), numpy.__version__
 assert torch.cuda.is_available()
+torch.from_numpy(numpy.zeros(3))
+from simple_knn._C import distCUDA2
+print("  distCUDA2:", distCUDA2(torch.rand(100, 3).cuda()).shape)
 from diff_trim_surfel_rasterization import GaussianRasterizationSettings as S
 ours = {"pp_shifty", "exact_conic_aabb", "return_tiles"} & set(S._fields)
 print("  光柵器欄位:", S._fields)
 print("  我方自訂欄位:", ours or "無 => 官方版 ✅")
 bad += bool(ours)
+import os
+w = "utils/Depth-Anything-V2/checkpoints/depth_anything_v2_vitl.pth"
+print("  DA-V2 權重:", os.path.getsize(w) if os.path.exists(w) else "⛔ 缺")
+bad += not os.path.exists(w) or os.path.getsize(w) < 1e8
 sys.exit(1 if bad else 0)
 PY
 
