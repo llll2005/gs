@@ -51,3 +51,110 @@ if _out:
             pass
 
     atexit.register(_dump)
+
+
+# ── 訓練過程紀錄（2026-09-24）：**只在設了 CITYGS_TRAINLOG_OUT 時作用** ─────────────────
+# 用途：官方參考線（未修改的 cityGS_origin）沒有我方台帳；使用者允許「我方的 log/計數器」
+#   外掛，但官方原始碼一行都不能改 ⇒ 在 import 時替 lightning 的 Trainer 多掛一個唯讀 callback。
+# 每 CITYGS_TRAINLOG_EVERY（預設 100）個 batch 寫一行 TSV：
+#   batch  global_step  牆鐘秒  區間it/s  N  目前配置MiB  目前保留MiB  累計峰值配置MiB  累計峰值保留MiB
+# 結束寫 END／例外寫 DIED＋例外字串。
+# ⚠ 唯讀：不 reset 峰值統計（那會改掉上面 atexit 的整段峰值）、不同步、不碰 RNG、不改任何張量。
+#   N 只讀 get_xyz.shape[0]（參數的形狀），不做計算。
+_tl = os.environ.get("CITYGS_TRAINLOG_OUT")
+if _tl:
+    import importlib.abc
+    import importlib.machinery
+
+    _every = int(os.environ.get("CITYGS_TRAINLOG_EVERY", "100"))
+
+    def _w(line):
+        try:
+            new = not os.path.exists(_tl)
+            with open(_tl, "a") as f:
+                if new:
+                    f.write("batch\tglobal_step\twall_s\tit_s\tN\talloc_MiB\treserved_MiB\tpeak_alloc_MiB\tpeak_reserved_MiB\n")
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+    def _make_cb(Callback):
+        class _TrainLog(Callback):
+            def __init__(self):
+                self.k = 0
+                self.t0 = self.tl = time.time()
+                self.kl = 0
+
+            def _row(self, trainer, pl_module, tag=""):
+                t = sys.modules["torch"]
+                now = time.time()
+                its = (self.k - self.kl) / max(now - self.tl, 1e-9)
+                self.kl, self.tl = self.k, now
+                try:
+                    n = int(pl_module.gaussian_model.get_xyz.shape[0])
+                except Exception:
+                    n = -1
+                m = [0.0] * 4
+                try:
+                    c = t.cuda
+                    m = [c.memory_allocated() / 2 ** 20, c.memory_reserved() / 2 ** 20,
+                         c.max_memory_allocated() / 2 ** 20, c.max_memory_reserved() / 2 ** 20]
+                except Exception:
+                    pass
+                _w(f"{self.k}\t{trainer.global_step}\t{now - self.t0:.1f}\t{its:.3f}\t{n}\t"
+                   + "\t".join(f"{v:.0f}" for v in m) + (f"\t{tag}" if tag else ""))
+
+            def on_train_start(self, trainer, pl_module):
+                self.t0 = self.tl = time.time()
+                self._row(trainer, pl_module, "START")
+
+            def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+                self.k += 1
+                if self.k % _every == 0:
+                    self._row(trainer, pl_module)
+
+            def on_train_end(self, trainer, pl_module):
+                self._row(trainer, pl_module, "END")
+
+            def on_exception(self, trainer, pl_module, exception):
+                self._row(trainer, pl_module, "DIED " + repr(exception)[:300].replace("\t", " ").replace("\n", " "))
+
+        return _TrainLog
+
+    def _patch(mod):
+        # ⚠ 不包 Trainer.__init__：LightningCLI/jsonargparse 會讀它的簽名來產生 CLI 參數。
+        #   掛在 callback connector 上：它把使用者的 callbacks 整理成 trainer.callbacks 之後，再多加一個。
+        from lightning.pytorch.callbacks import Callback
+        C = mod._CallbackConnector
+        orig = C.on_trainer_init
+        CB = _make_cb(Callback)
+
+        def on_trainer_init(self, *a, **kw):
+            r = orig(self, *a, **kw)
+            self.trainer.callbacks.append(CB())
+            print(f"[trainlog] ✅ 已掛上唯讀紀錄 callback -> {_tl}（每 {_every} batch）", file=sys.stderr)
+            return r
+
+        C.on_trainer_init = on_trainer_init
+
+    class _Hook(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path, target=None):
+            if name != "lightning.pytorch.trainer.connectors.callback_connector":
+                return None
+            sys.meta_path.remove(self)
+            spec = importlib.machinery.PathFinder.find_spec(name, path)
+            if spec is None or spec.loader is None:
+                return spec
+            _orig_exec = spec.loader.exec_module
+
+            def exec_module(module):
+                _orig_exec(module)
+                try:
+                    _patch(module)
+                except Exception as e:
+                    print(f"[trainlog] ⚠⚠ 掛不上 callback：{e!r}", file=sys.stderr)
+
+            spec.loader.exec_module = exec_module
+            return spec
+
+    sys.meta_path.insert(0, _Hook())
