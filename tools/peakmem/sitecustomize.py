@@ -62,6 +62,8 @@ if _out:
 #        phase = clone／split（split 會先加 2k 再剪掉 k 個母體，removed 記的就是那 k）／
 #                cull（opacity／螢幕尺寸／世界尺寸剪枝）／trim（renderer 的貢獻度剪枝，含 step 1 起始 trim）
 #        另有 reset_opacity 事件（added=removed=0）
+#   ④ 現況檔    train_status.txt（寫在跑次輸出目錄 trainer.default_root_dir；另設 CITYGS_STATUS_OUT 時再寫一份）
+#        每 100 batch 覆寫：步數/總步數、N、it/s、預估剩餘、VRAM、churn 累計與最近一次事件、最近的 val PSNR
 #   ③ 我方台帳  CITYGS_LEDGER：logs/quad_progress.log 的 START/DONE/DIED，格式與 internal/callbacks.py 相同
 # ⚠ 唯讀：不 reset 峰值統計、不碰 RNG、不改任何張量或回傳值。churn 的 mask.sum().item() 只在
 #   剪枝事件發生時同步一次（本來就要同步做索引），不改數值。
@@ -73,7 +75,8 @@ if _tl:
     _every = int(os.environ.get("CITYGS_TRAINLOG_EVERY", "100"))
     _churn = os.environ.get("CITYGS_CHURN_OUT")
     _ledger = os.environ.get("CITYGS_LEDGER")
-    _S = {"step": 0, "phase": [], "tot": {}}
+    _S = {"step": 0, "phase": [], "tot": {}, "last_ev": ""}
+    _status_extra = os.environ.get("CITYGS_STATUS_OUT")
 
     def _append(path, header, line):
         if not path:
@@ -122,6 +125,7 @@ if _tl:
     def _event(phase, added, removed, gm):
         t = _S["tot"].setdefault(phase, [0, 0, 0])
         t[0] += added; t[1] += removed; t[2] += 1
+        _S["last_ev"] = f"step {_S['step']:,} {phase} +{added:,} -{removed:,} => N {_n_of(gm):,}"
         _append(_churn, "global_step\tphase\tadded\tremoved\tN_after",
                 f"{_S['step']}\t{phase}\t{added}\t{removed}\t{_n_of(gm)}")
 
@@ -207,10 +211,52 @@ if _tl:
                          c.max_memory_allocated() / 2 ** 20, c.max_memory_reserved() / 2 ** 20]
                 except Exception:
                     pass
-                self.last = dict(step=trainer.global_step, n=n, its=its, pa=m[2], pr=m[3], wall=now - self.t0)
+                self.last = dict(step=trainer.global_step, n=n, its=its, a=m[0], r=m[1], pa=m[2], pr=m[3], wall=now - self.t0)
                 _append(_tl, "batch\tglobal_step\twall_s\tit_s\tN\talloc_MiB\treserved_MiB\tpeak_alloc_MiB\tpeak_reserved_MiB\ttag",
                         f"{self.k}\t{trainer.global_step}\t{now - self.t0:.1f}\t{its:.3f}\t{n}\t"
                         + "\t".join(f"{v:.0f}" for v in m) + f"\t{tag}")
+
+            def _status(self, trainer, phase):
+                L = self.last
+                ms = trainer.max_steps or 0
+                st = L.get("step", 0)
+                wall = L.get("wall", 0.0)
+                avg = st / wall if wall > 0 else 0.0
+                eta = (ms - st) / avg if avg > 0 and ms else 0
+                lines = [
+                    f"# 官方參考線現況（{_run_name()}）  更新 {time.strftime('%m-%d %H:%M:%S')}",
+                    f"狀態     {phase}",
+                    f"步數     {st:,} / {ms:,}（{100 * st / ms:.1f}%）" if ms else f"步數     {st:,}",
+                    f"N        {L.get('n', 0):,}",
+                    f"速度     區間 {L.get('its', 0):.2f} it/s ／ 全程平均 {avg:.2f} it/s",
+                    f"經過     {wall / 3600:.2f} h   預估剩餘 {eta / 3600:.2f} h",
+                    f"VRAM     目前 {L.get('a', 0) / 1024:.2f}G 配置／{L.get('r', 0) / 1024:.2f}G 保留   "
+                    f"累計峰值 {L.get('pa', 0) / 1024:.2f}G／{L.get('pr', 0) / 1024:.2f}G",
+                ]
+                try:
+                    ps = [f"{k}={float(v):.4f}" for k, v in trainer.callback_metrics.items()
+                          if any(x in k.lower() for x in ("psnr", "ssim", "lpips"))]
+                    if ps:
+                        lines.append("val      " + " ".join(ps))
+                except Exception:
+                    pass
+                tot = _S["tot"]
+                if tot:
+                    lines.append("churn    " + " ".join(f"{p}: +{a:,}/-{r:,}（{c} 次）" for p, (a, r, c) in tot.items()))
+                    lines.append("最近事件 " + _S["last_ev"])
+                txt = "\n".join(lines) + "\n"
+                for d in {getattr(trainer, "default_root_dir", None), None}:
+                    path = os.path.join(d, "train_status.txt") if d else _status_extra
+                    if not path:
+                        continue
+                    try:
+                        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+                        tmp = path + ".tmp"
+                        with open(tmp, "w", encoding="utf-8") as f:
+                            f.write(txt)
+                        os.replace(tmp, path)
+                    except Exception:
+                        pass
 
             def _snap(self, trainer):
                 L = self.last
@@ -229,9 +275,14 @@ if _tl:
                     s += " churn[" + " ".join(f"{p}+{a}-{r}" for p, (a, r, _) in tot.items() if a or r) + "]"
                 return s
 
+            def setup(self, trainer, pl_module, stage):
+                if stage == "fit":
+                    self._status(trainer, "準備中：建立資料集／快取影像（尚未開始訓練）")
+
             def on_train_start(self, trainer, pl_module):
                 self.t0 = self.tl = time.time()
                 self._row(trainer, pl_module, "START")
+                self._status(trainer, "訓練中")
                 _progress("START", f"max_steps={trainer.max_steps:,} N0={self.last.get('n', 0):,} "
                                    f"env={os.environ.get('CONDA_DEFAULT_ENV', '?')} out={os.getcwd()}")
 
@@ -242,13 +293,16 @@ if _tl:
                 self.k += 1
                 if self.k % _every == 0:
                     self._row(trainer, pl_module)
+                    self._status(trainer, "訓練中")
 
             def on_train_end(self, trainer, pl_module):
                 self._row(trainer, pl_module, "END")
+                self._status(trainer, "✅ 完成")
                 _progress("DONE", self._snap(trainer))
 
             def on_exception(self, trainer, pl_module, exception):
                 self._row(trainer, pl_module, "DIED " + repr(exception)[:300].replace("\t", " ").replace("\n", " "))
+                self._status(trainer, "⛔ DIED " + " ".join(str(exception).split())[:200])
                 _progress("DIED", f"{type(exception).__name__}: {' '.join(str(exception).split())[:90]} | {self._snap(trainer)}")
 
         return _TrainLog

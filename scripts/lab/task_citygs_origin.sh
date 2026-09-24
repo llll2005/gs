@@ -97,7 +97,8 @@ run_measured () {   # run_measured <指令...>：資源寫進 RUN_* 變數；完
   [ -f "$TRAINLOG" ] && mv "$TRAINLOG" "$TRAINLOG.old_$(date +%m%d_%H%M%S)"
   [ -f "$CHURN" ] && mv "$CHURN" "$CHURN.old_$(date +%m%d_%H%M%S)"
   ( export CITYGS_PEAK_OUT="$pk" CITYGS_TRAINLOG_OUT="$TRAINLOG" CITYGS_TRAINLOG_EVERY=100 \
-      CITYGS_CHURN_OUT="$CHURN" CITYGS_LEDGER="$GS/logs/quad_progress.log" PYTHONPATH="$PEAK_DIR${PYTHONPATH:+:$PYTHONPATH}"; exec "$@" ) > "$LOG" 2>&1 &
+      CITYGS_CHURN_OUT="$CHURN" CITYGS_LEDGER="$GS/logs/quad_progress.log" \
+      CITYGS_STATUS_OUT="$GS/logs/citygs_official_status_${MODE}${BLKARG:+_$BLKARG}.txt" PYTHONPATH="$PEAK_DIR${PYTHONPATH:+:$PYTHONPATH}"; exec "$@" ) > "$LOG" 2>&1 &
   bg=$!
   while kill -0 "$bg" 2>/dev/null; do
     u=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' \r')
