@@ -143,13 +143,50 @@ case "$MODE" in
   prep)
     # 2026-09-24：影像與深度圖**全部在 $OFFENV 裡重做**，放進官方線專用目錄（不再連到共用 block_all/images_1.2）。
     #   完成標記 .made_by_$OFFENV；沒有標記的舊產物一律搬走重做。
+    # ── test 的檔名層（2026-09-24）──────────────────────────────────────────────
+    #   官方 test 的 sparse 相機叫 0000.png..0740.png（MatrixCity／官方原本就從 0 起算），
+    #   而我方 lab_fetch_test_images.sh 把串好的 741 幀存成 **1 起算** 的 input/0001.png..0741.png
+    #   （md5 驗過內容與配對正確，只是名字整體 +1；記憶「相機 N <-> 影像 N+1」就是這件事）。
+    #   官方工具照相機名找檔 => 找不到 0000.png.npy 而失敗。
+    #   ⇒ 官方線專用的 $OTEST/images 改成**真目錄＋改名連結**：images/0000.png -> input/0001.png …
+    #     把我方多加的那一號還原回官方檔名；原始 input/ 與我方流程都不動。
+    #   逐幀驗證：sparse 名稱集合必須恰好等於 {input 編號 - 1}，否則中止。
+    if [ ! -f "$OTEST/images/.renamed_to_sparse" ]; then
+      conda run -n "$OFFENV" python - "$TEST" "$OTEST" <<'PY' || exit $?
+import os, sys
+sys.path.insert(0, os.getcwd())
+from internal.utils.colmap import read_images_binary
+src, od = sys.argv[1], sys.argv[2]
+names = sorted(v.name for v in read_images_binary(os.path.join(src, "sparse", "0", "images.bin")).values())
+inp = sorted(os.listdir(os.path.join(src, "input")))
+want = {f"{int(os.path.splitext(f)[0]) - 1:0{len(os.path.splitext(f)[0])}d}{os.path.splitext(f)[1]}": f for f in inp}
+assert len(names) == len(inp) == len(want), (len(names), len(inp))
+miss = [n for n in names if n not in want]
+assert not miss, f"sparse 名稱對不上 input-1：{miss[:5]}"
+dst = os.path.join(od, "images")
+if os.path.islink(dst):
+    os.remove(dst)
+os.makedirs(dst, exist_ok=True)
+for n in names:
+    l = os.path.join(dst, n)
+    if os.path.lexists(l):
+        os.remove(l)
+    os.symlink(os.path.join(src, "input", want[n]), l)
+print(f"✅ test 改名層：{len(names)} 幀，{names[0]} -> input/{want[names[0]]} … {names[-1]} -> input/{want[names[-1]]}")
+PY
+      # 用舊（錯名）影像做的 1600 影像與深度圖一律搬走重做
+      move_aside "$OTEST/images_1.2"
+      move_aside "$OTEST/estimated_depths"
+      [ -f "$OTEST/estimated_depth_scales.json" ] && mv "$OTEST/estimated_depth_scales.json" "$OTEST/estimated_depth_scales.json.aborted_$(date +%m%d_%H%M%S)"
+      touch "$OTEST/images/.renamed_to_sparse"
+    fi
     for pair in "$TRAIN:$OTRAIN" "$TEST:$OTEST"; do
       src=${pair%%:*}; od=${pair##*:}; mkdir -p "$od"
       L="$od/images_1.2"; N_SRC=$(ls "$src/input" | wc -l)
       if [ -f "$L/.made_by_$OFFENV" ]; then echo "  已由 $OFFENV 產生，略過 $L"; continue; fi
       if [ -L "$L" ]; then rm -f "$L"; echo "  移除符號連結 $L"; else move_aside "$L"; fi
       echo "=== 縮放 $src/input -> $L（$N_SRC 張，官方 image_downsample.py）$(date) ==="
-      conda run -n "$OFFENV" --no-capture-output python utils/image_downsample.py "$src/input" --dst "$L" --factor 1.2 || exit $?
+      conda run -n "$OFFENV" --no-capture-output python utils/image_downsample.py "$od/images" --dst "$L" --factor 1.2 || exit $?
       [ "$(ls "$L" | wc -l)" -ge "$N_SRC" ] || { echo "⛔ $L 張數不足"; exit 3; }
       touch "$L/.made_by_$OFFENV"
     done
