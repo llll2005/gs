@@ -152,7 +152,9 @@ case "$MODE" in
     #     把我方多加的那一號還原回官方檔名；原始 input/ 與我方流程都不動。
     #   逐幀驗證：sparse 名稱集合必須恰好等於 {input 編號 - 1}，否則中止。
     if [ ! -f "$OTEST/images/.renamed_to_sparse" ]; then
-      conda run -n "$OFFENV" python - "$TEST" "$OTEST" <<'PY' || exit $?
+      # ⚠ --no-capture-output 不可省：沒有它 conda run **不轉送 stdin** => python 讀到空腳本、rc=0 什麼都沒做
+      #   （2026-09-24 就是這樣：改名層沒建，下面的 touch 穿過符號連結把標記寫進了共用 input/）
+      conda run -n "$OFFENV" --no-capture-output python - "$TEST" "$OTEST" <<'PY' || exit $?
 import os, sys
 sys.path.insert(0, os.getcwd())
 from internal.utils.colmap import read_images_binary
@@ -178,6 +180,8 @@ PY
       move_aside "$OTEST/images_1.2"
       move_aside "$OTEST/estimated_depths"
       [ -f "$OTEST/estimated_depth_scales.json" ] && mv "$OTEST/estimated_depth_scales.json" "$OTEST/estimated_depth_scales.json.aborted_$(date +%m%d_%H%M%S)"
+      [ -d "$OTEST/images" ] && [ ! -L "$OTEST/images" ] || { echo "⛔ $OTEST/images 仍不是真目錄（改名層沒建成）"; exit 3; }
+      [ -L "$OTEST/images/0000.png" ] || { echo "⛔ 改名層缺 0000.png"; exit 3; }
       touch "$OTEST/images/.renamed_to_sparse"
     fi
     for pair in "$TRAIN:$OTRAIN" "$TEST:$OTEST"; do
