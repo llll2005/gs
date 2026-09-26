@@ -77,7 +77,49 @@ TRAINLOG=$GS/logs/citygs_official_train_${MODE}${BLKARG:+_$BLKARG}.tsv
 CHURN=$GS/logs/citygs_official_churn_${MODE}${BLKARG:+_$BLKARG}.tsv   # 每次加顆/剪枝一行（phase=clone/split/cull/trim）
 PEAK_DIR=$GS/tools/peakmem
 [ -f "$PEAK_DIR/sitecustomize.py" ] || { echo "⛔ 缺 $PEAK_DIR/sitecustomize.py（峰值紀錄）"; exit 2; }
-[ -f "$RES_TSV" ] || printf 'mode\tblock\tstart\twall_s\trc\tpeak_alloc_MiB\tpeak_reserved_MiB\tgpu_used_max_MiB\tN\tckpt\n' > "$RES_TSV"
+[ -f "$RES_TSV" ] || printf 'mode\tblock\tstart\twall_s\trc\tpeak_alloc_MiB\tpeak_reserved_MiB\tgpu_used_max_MiB\tN\tckpt\text_max_MiB\tgate_wait_s\n' > "$RES_TSV"
+# 2026-09-27：舊表頭補兩欄（ext_max_MiB＝同卡外部佔用估計峰值；gate_wait_s＝閘門等待秒數）
+head -1 "$RES_TSV" | grep -q ext_max_MiB || sed -i '1s/$/\text_max_MiB\tgate_wait_s/' "$RES_TSV"
+
+# ── GPU 閘門（2026-09-27，使用者要求）────────────────────────────────────────────
+# 09-26 起同一張 3090 上出現我們容器外的佔用（約 10~13 GB，容器內看不到是誰）⇒ b10/b11 OOM、
+#   b10~b12 同 N 下每步慢 2~3 倍（時間紀錄不可用）。規則（使用者原話的實作）：
+#   ① 開始前卡是空的（整卡已用 < GATE_FREE_MIB）⇒ 直接開始（例如上一塊剛跑完、沒有別人）
+#   ② 被佔用 ⇒ 等它空下來，然後**連續**空閒滿 GATE_HOLD_S（預設 1 小時）才開始；
+#      計時中只要又被佔用就歸零重等
+# 「空閒」只看 nvidia-smi 整卡已用量 —— 我們自己的其他訓練也會算進去（[solo] 下本來就不該有）。
+# ⚠ nvidia-smi 讀不到（空值/非數字）一律當「被佔用」：偵測失敗不可當成空閒（見記憶 local_nvidia_driver_mismatch）。
+GATE_FREE_MIB=${CITYGS_GATE_FREE_MIB:-1500}
+GATE_HOLD_S=${CITYGS_GATE_HOLD_S:-3600}
+GATE_WAIT=0
+_gpu_used () { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' \r'; }
+_is_free () { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -lt "$GATE_FREE_MIB" ]; }   # 同一次讀數判斷與印出
+gpu_gate () {
+  local st="$GS/logs/citygs_official_status_${MODE}${BLKARG:+_$BLKARG}.txt" t0 since="" now u
+  t0=$(date +%s)
+  u=$(_gpu_used)
+  if _is_free "$u"; then echo "[閘門] GPU 空閒（$u MiB）=> 直接開始"; return 0; fi
+  echo "[閘門] ⏸ GPU 被佔用（${u:-讀不到} MiB）=> 等它空下來，再連續空閒 $((GATE_HOLD_S / 60)) 分鐘才開始 $(date '+%m-%d %H:%M')"
+  while true; do
+    now=$(date +%s); u=$(_gpu_used)
+    if _is_free "$u"; then
+      [ -z "$since" ] && { since=$now; echo "[閘門] $(date '+%m-%d %H:%M') 空了（${u} MiB），開始計時"; }
+      if [ $((now - since)) -ge "$GATE_HOLD_S" ]; then
+        GATE_WAIT=$((now - t0))
+        echo "[閘門] $(date '+%m-%d %H:%M') 連續空閒滿 $((GATE_HOLD_S / 60)) 分鐘 => 開始（共等 $((GATE_WAIT / 60)) 分鐘）"
+        return 0
+      fi
+      printf '# 官方參考線現況（%s%s）  更新 %s\n狀態     ⏸ 閘門計時中：已連續空閒 %d / %d 分鐘（整卡 %s MiB）\n已等待   %d 分鐘\n' \
+        "$MODE" "${BLKARG:+ $BLKARG}" "$(date '+%m-%d %H:%M:%S')" $(((now - since) / 60)) $((GATE_HOLD_S / 60)) "$u" $(((now - t0) / 60)) > "$st"
+    else
+      [ -n "$since" ] && echo "[閘門] $(date '+%m-%d %H:%M') 計時中斷：又被佔用（${u:-讀不到} MiB），歸零"
+      since=""
+      printf '# 官方參考線現況（%s%s）  更新 %s\n狀態     ⏸ 閘門等待中：GPU 被佔用（整卡 %s MiB，門檻 < %s）\n已等待   %d 分鐘\n' \
+        "$MODE" "${BLKARG:+ $BLKARG}" "$(date '+%m-%d %H:%M:%S')" "${u:-讀不到}" "$GATE_FREE_MIB" $(((now - t0) / 60)) > "$st"
+    fi
+    sleep 60
+  done
+}
 
 cd "$ORIG" || exit 1
 if [ "$MODE" != res ]; then
@@ -91,9 +133,10 @@ move_aside () { if [ -d "$1" ]; then mv "$1" "$1.aborted_$(date +%m%d_%H%M%S)" &
 coarse_ckpt () { find "outputs/$COARSE/checkpoints" -maxdepth 1 -name '*step=30000.ckpt' 2>/dev/null | head -1; }
 
 run_measured () {   # run_measured <指令...>：資源寫進 RUN_* 變數；完整輸出在 $LOG
-  local pk="$GS/logs/.peak_${MODE}${BLKARG:+_$BLKARG}_$$.tsv" t0 u bg
+  local pk="$GS/logs/.peak_${MODE}${BLKARG:+_$BLKARG}_$$.tsv" t0 u bg r ext
   rm -f "$pk"
-  RUN_START=$(date '+%m-%d %H:%M'); t0=$(date +%s); RUN_GMAX=0
+  gpu_gate
+  RUN_START=$(date '+%m-%d %H:%M'); t0=$(date +%s); RUN_GMAX=0; RUN_EXT=0
   [ -f "$TRAINLOG" ] && mv "$TRAINLOG" "$TRAINLOG.old_$(date +%m%d_%H%M%S)"
   [ -f "$CHURN" ] && mv "$CHURN" "$CHURN.old_$(date +%m%d_%H%M%S)"
   ( export CITYGS_PEAK_OUT="$pk" CITYGS_TRAINLOG_OUT="$TRAINLOG" CITYGS_TRAINLOG_EVERY=100 \
@@ -102,7 +145,12 @@ run_measured () {   # run_measured <指令...>：資源寫進 RUN_* 變數；完
   bg=$!
   while kill -0 "$bg" 2>/dev/null; do
     u=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' \r')
-    case "$u" in ''|*[!0-9]*) ;; *) [ "$u" -gt "$RUN_GMAX" ] && RUN_GMAX=$u ;; esac
+    case "$u" in ''|*[!0-9]*) ;; *) [ "$u" -gt "$RUN_GMAX" ] && RUN_GMAX=$u
+      # 外部佔用估計 = 整卡已用 − 本行程目前保留（train TSV 最後一行第 7 欄）− CUDA context 約 450 MiB
+      #   （b0~b9 乾淨時實測差額恆為 ~418 MiB）；只在訓練開始後才有意義
+      r=$(tail -1 "$TRAINLOG" 2>/dev/null | cut -f7)
+      case "$r" in ''|*[!0-9]*) ;; *) ext=$((u - r - 450)); [ "$ext" -gt "$RUN_EXT" ] && RUN_EXT=$ext ;; esac ;;
+    esac
     sleep 20
   done
   wait "$bg"; RUN_RC=$?
@@ -115,7 +163,8 @@ run_measured () {   # run_measured <指令...>：資源寫進 RUN_* 變數；完
   else
     echo "⚠⚠ 沒拿到行程內峰值（行程非正常結束？）"
   fi
-  echo "[資源] rc=$RUN_RC 牆鐘 ${RUN_WALL}s 配置峰值 ${RUN_PA} MiB 保留峰值 ${RUN_PR} MiB 整卡最大 ${RUN_GMAX} MiB"
+  echo "[資源] rc=$RUN_RC 牆鐘 ${RUN_WALL}s 配置峰值 ${RUN_PA} MiB 保留峰值 ${RUN_PR} MiB 整卡最大 ${RUN_GMAX} MiB 外部佔用估計峰值 ${RUN_EXT} MiB"
+  [ "$RUN_EXT" -gt 2000 ] && echo "⚠⚠ 訓練期間同卡有外部佔用（估計峰值 ${RUN_EXT} MiB）=> 這一次的時間紀錄不可引用"
   return "$RUN_RC"
 }
 
@@ -135,12 +184,13 @@ k = [k for k, v in sd.items() if (k.endswith('means') or k.endswith('xyz')) and 
 print(sd[k[0]].shape[0] if k else -1)" "$ck" 2>/dev/null | tail -1)
     fi
   fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$MODE" "$blk" "$RUN_START" "$RUN_WALL" "$RUN_RC" "$RUN_PA" "$RUN_PR" "$RUN_GMAX" "$n" "$sz" >> "$RES_TSV"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$MODE" "$blk" "$RUN_START" "$RUN_WALL" "$RUN_RC" "$RUN_PA" "$RUN_PR" "$RUN_GMAX" "$n" "$sz" "${RUN_EXT:--}" "${GATE_WAIT:-0}" >> "$RES_TSV"
   echo "[資源] 已記入 $RES_TSV：N=$n ckpt=$sz"
 }
 
 case "$MODE" in
   prep)
+    gpu_gate   # 深度估計用 GPU
     # 2026-09-24：影像與深度圖**全部在 $OFFENV 裡重做**，放進官方線專用目錄（不再連到共用 block_all/images_1.2）。
     #   完成標記 .made_by_$OFFENV；沒有標記的舊產物一律搬走重做。
     # ── test 的檔名層（2026-09-24）──────────────────────────────────────────────
@@ -288,6 +338,7 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     [ -f "outputs/$NAME/results.txt" ] && { echo "-- results.txt --"; cat "outputs/$NAME/results.txt"; }
     exit "$rc" ;;
   res)
+    gpu_gate   # 逐步計時要獨佔整卡
     # 工具在 gs；用 ../ 讓 glob 指到 origin 的 outputs（ckpt 裡的 data 路徑相對 gs，剛好同一份資料）
     cd "$GS" || exit 1
     OFFENV=gspl   # 量測工具是我方的（使用者允許的例外），量的是官方 ckpt
