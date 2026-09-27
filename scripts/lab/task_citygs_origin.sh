@@ -90,7 +90,7 @@ head -1 "$RES_TSV" | grep -q ext_max_MiB || sed -i '1s/$/\text_max_MiB\tgate_wai
 # 「空閒」只看 nvidia-smi 整卡已用量 —— 我們自己的其他訓練也會算進去（[solo] 下本來就不該有）。
 # ⚠ nvidia-smi 讀不到（空值/非數字）一律當「被佔用」：偵測失敗不可當成空閒（見記憶 local_nvidia_driver_mismatch）。
 GATE_FREE_MIB=${CITYGS_GATE_FREE_MIB:-1500}
-GATE_HOLD_S=${CITYGS_GATE_HOLD_S:-3600}
+GATE_HOLD_S=${CITYGS_GATE_HOLD_S:-1800}   # 2026-09-27 使用者：1 小時 -> 半小時
 GATE_WAIT=0
 _gpu_used () { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' \r'; }
 _is_free () { case "$1" in ''|*[!0-9]*) return 1 ;; esac; [ "$1" -lt "$GATE_FREE_MIB" ]; }   # 同一次讀數判斷與印出
