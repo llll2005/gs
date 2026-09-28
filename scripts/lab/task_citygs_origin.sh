@@ -322,8 +322,19 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
       --data.num_workers 8 --data.path "$OTRAIN_REL"
     rc=$?; record "$BLKARG" "outputs/$NAME/blocks/block_$BLKARG"; exit "$rc" ;;
   merge)
-    n=$(find "outputs/$NAME/blocks" -maxdepth 3 -name '*step=60000.ckpt' 2>/dev/null | wc -l)
-    echo "完賽的塊：$n"; [ "$n" -ge 1 ] || { echo "⛔ 沒有任何完賽的塊"; exit 2; }
+    # ⚠ 2026-09-29：官方 merge 只 assert「至少 1 塊」，而且掃 blocks/ 底下**每個目錄**（含 *.aborted_*）
+    #   => 缺一塊時會**靜默用 15 塊合成**，test 分數照樣出來。這裡逐塊要求 block_0..15 都有 60000 步，
+    #   且 aborted 目錄裡不得有 60000 步的 ckpt（否則同一塊會被合兩次）。
+    NB=16; miss=""; dup=""
+    for b in $(seq 0 $((NB - 1))); do
+      ls "outputs/$NAME/blocks/block_$b/checkpoints/"*step=60000.ckpt >/dev/null 2>&1 || miss="$miss $b"
+    done
+    for d in "outputs/$NAME/blocks/"*.aborted_*; do
+      [ -d "$d" ] && ls "$d/checkpoints/"*step=60000.ckpt >/dev/null 2>&1 && dup="$dup $(basename "$d")"
+    done
+    [ -z "$miss" ] || { echo "⛔ 這些塊沒有 60000 步 ckpt：$miss => 不合併（官方 merge 會靜默少合）"; exit 2; }
+    [ -z "$dup" ] || { echo "⛔ aborted 目錄裡有 60000 步 ckpt（會被重複合併）：$dup"; exit 2; }
+    echo "✅ 16 塊都有 60000 步 ckpt，aborted 目錄無完賽 ckpt"
     conda run -n "$OFFENV" --no-capture-output python utils/merge_citygs_ckpts.py "outputs/$NAME" 2>&1 | tee "$LOG"
     exit "${PIPESTATUS[0]}" ;;
   test)
