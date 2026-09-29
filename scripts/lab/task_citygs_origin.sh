@@ -325,6 +325,14 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     # ⚠ 2026-09-29：官方 merge 只 assert「至少 1 塊」，而且掃 blocks/ 底下**每個目錄**（含 *.aborted_*）
     #   => 缺一塊時會**靜默用 15 塊合成**，test 分數照樣出來。這裡逐塊要求 block_0..15 都有 60000 步，
     #   且 aborted 目錄裡不得有 60000 步的 ckpt（否則同一塊會被合兩次）。
+    # ⚠⚠ 2026-09-29 實測：沒有 ckpt 的 aborted 目錄也會讓官方 merge **當場崩潰**
+    #   （search_load_file 找不到 ckpt 就 assert，不是略過）=> 合併前把它們搬出 blocks/（log 全保留）
+    mkdir -p "outputs/$NAME/aborted_blocks"
+    for d in "outputs/$NAME/blocks/"*.aborted_*; do
+      [ -d "$d" ] || continue
+      if ls "$d/checkpoints/"*step=60000.ckpt >/dev/null 2>&1; then continue; fi   # 留給下面的重複檢查報錯
+      mv "$d" "outputs/$NAME/aborted_blocks/" && echo "  搬出 blocks/：$(basename "$d")"
+    done
     NB=16; miss=""; dup=""
     for b in $(seq 0 $((NB - 1))); do
       ls "outputs/$NAME/blocks/block_$b/checkpoints/"*step=60000.ckpt >/dev/null 2>&1 || miss="$miss $b"
