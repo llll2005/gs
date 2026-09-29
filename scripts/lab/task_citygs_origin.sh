@@ -59,10 +59,16 @@ COARSE=citygsv2_mc_aerial_coarse_sh2
 TRAIN=$GS/data/matrix_city/aerial/train/block_all
 TEST=$GS/data/matrix_city/aerial/test/block_all_test
 OTRAIN=$GS/data/matrix_city/aerial/train/block_all_official       # 官方線專用（見表頭）
-OTEST=$GS/data/matrix_city/aerial/test/block_all_test_official
+# ⛔ 2026-09-29：舊的 block_all_test_official 建在**我方自製**的 test input 上 —— 那份是從 10 個 tar 自己串接、
+#   用本機一份不明來源的清單重編號的：741 張裡只有 657 張是官方 test 影格（另 84 張不在官方 transforms 裡），
+#   而且順序對 sparse 相機是分段錯開（+1、+9、+26…）。官方 held-out 因此量到 15.62（渲染對錯的 GT）。
+#   證據（不經模型）：sparse 相機 N 的姿態 = transforms_test.json 第 N 幀（位置殘差 1.6e-6、朝向 2.5e-7，741 對 741 唯一）；
+#   另以官方模型的 741 張渲染佐證：舊 GT 平均 17.1 dB、官方對應平均 28.7 dB（160x90 探針）。
+#   ⇒ 改用 prep_test_official **照官方 data_proc_mc.sh 從 tar 重建**的目錄（不經我方的 input/）
+OTEST=$GS/data/matrix_city/aerial/test/block_all_test_official2
 OTRAIN_REL=data/matrix_city/aerial/train/block_all_official        # 相對 cityGS_origin（data -> gs/data）
 [ -d "$ORIG" ] || { echo "⛔ 找不到 $ORIG"; exit 2; }
-MODE=${1:?用法: task_citygs_origin.sh prep|coarse|partition|block <N>|merge|test|res|blockload|prune}
+MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|merge|test|res|blockload|prune}
 BLKARG=${2:-}
 
 # ⚠ 執行期也要鎖 arch：容器設成含 10.0，torch 2.0.1 不認識，而 CUDA 後端第一次 densify 才 JIT 編譯
@@ -201,7 +207,9 @@ case "$MODE" in
     #   ⇒ 官方線專用的 $OTEST/images 改成**真目錄＋改名連結**：images/0000.png -> input/0001.png …
     #     把我方多加的那一號還原回官方檔名；原始 input/ 與我方流程都不動。
     #   逐幀驗證：sparse 名稱集合必須恰好等於 {input 編號 - 1}，否則中止。
-    if [ ! -f "$OTEST/images/.renamed_to_sparse" ]; then
+    # ⛔ 2026-09-29 停用：這個「改名層」建在我方自製的 test input 上，對應是錯的（見 OTEST 定義處）。
+    #   test 集一律由 prep_test_official 產生；prep 只處理 train。
+    if false; then
       # ⚠ --no-capture-output 不可省：沒有它 conda run **不轉送 stdin** => python 讀到空腳本、rc=0 什麼都沒做
       #   （2026-09-24 就是這樣：改名層沒建，下面的 touch 穿過符號連結把標記寫進了共用 input/）
       conda run -n "$OFFENV" --no-capture-output python - "$TEST" "$OTEST" <<'PY' || exit $?
@@ -234,7 +242,7 @@ PY
       [ -L "$OTEST/images/0000.png" ] || { echo "⛔ 改名層缺 0000.png"; exit 3; }
       touch "$OTEST/images/.renamed_to_sparse"
     fi
-    for pair in "$TRAIN:$OTRAIN" "$TEST:$OTEST"; do
+    for pair in "$TRAIN:$OTRAIN"; do   # 09-29：test 改由 prep_test_official
       src=${pair%%:*}; od=${pair##*:}; mkdir -p "$od"
       L="$od/images_1.2"; N_SRC=$(ls "$src/input" | wc -l)
       if [ -f "$L/.made_by_$OFFENV" ]; then echo "  已由 $OFFENV 產生，略過 $L"; continue; fi
@@ -247,7 +255,7 @@ PY
     conda run -n "$OFFENV" python -c "
 from PIL import Image
 import os
-for d in ['$OTRAIN', '$OTEST']:
+for d in ['$OTRAIN']:
     p = os.path.join(d, 'images_1.2')
     fs = sorted(f for f in os.listdir(p) if not f.startswith('.'))
     w, h = Image.open(os.path.join(p, fs[0])).size
@@ -256,7 +264,7 @@ for d in ['$OTRAIN', '$OTEST']:
 print('✅ 影像完成')" || exit $?
     # Depth-Anything-V2：setup_official_env.sh 照 doc/data_preparation.md clone 的官方 repo（不再連到 gs）
     [ -d utils/Depth-Anything-V2/.git ] || { echo "⛔ utils/Depth-Anything-V2 不是官方 clone（先跑 setup_official_env.sh）"; exit 2; }
-    for pair in "$TRAIN:$OTRAIN" "$TEST:$OTEST"; do
+    for pair in "$TRAIN:$OTRAIN"; do   # 09-29：test 改由 prep_test_official
       src=${pair%%:*}; od=${pair##*:}
       mkdir -p "$od"
       [ -e "$od/sparse" ]     || ln -s "$src/sparse" "$od/sparse"
@@ -274,7 +282,7 @@ print('✅ 影像完成')" || exit $?
     done
     conda run -n "$OFFENV" python -c "
 import numpy as np, os, glob, json
-for od in ['$OTRAIN', '$OTEST']:
+for od in ['$OTRAIN']:
     fs = sorted(glob.glob(os.path.join(od, 'estimated_depths', '*.npy')))
     a = np.load(fs[0]); s = json.load(open(os.path.join(od, 'estimated_depth_scales.json')))
     print(f'{od}: 深度圖 {len(fs)} 張、形狀 {a.shape}、尺度 {len(s)} 筆')
@@ -363,6 +371,66 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     rc=$?; record - "outputs/$NAME/checkpoints"
     [ -f "outputs/$NAME/results.txt" ] && { echo "-- results.txt --"; cat "outputs/$NAME/results.txt"; }
     exit "$rc" ;;
+  prep_test_official)
+    # 2026-09-29：官方 held-out test 集，**逐步照官方** scripts/citygs/untar_matrixcity_test.sh + data_proc_mc.sh：
+    #   ① 每個 block_k_test.tar 的 png 放到 test/block_k_test/input/（官方是 mv；這裡用連結指向已解開的 tar，內容相同）
+    #   ② transforms.json = pose/block_all/transforms_test.json（官方原檔）
+    #   ③ 官方 tools/transform_json2txt_mc_aerial.py：依 transforms 影格順序複製成 input/{idx:04d}.png
+    #   ④ sparse 換成官方下載的 colmap_results/matrix_city_aerial/test/sparse
+    #   ⑤ 官方 image_downsample（1.2）＋官方 estimate_dataset_depths（-d 1.2）
+    #   我方 test/block_all_test/input 完全不參與。
+    gpu_gate   # 深度估計用 GPU
+    T=$GS/data/matrix_city/aerial/test
+    STG=$T/_stage_official
+    CR=$GS/data/colmap_results/matrix_city_aerial/test/sparse
+    [ -d "$CR" ] || { echo "⛔ 找不到官方 colmap_results 的 test sparse：$CR"; exit 2; }
+    for k in $(seq 1 10); do
+      src=$STG/x_block_$k/block_${k}_test; dst=$T/block_${k}_test/input
+      [ -d "$src" ] || { echo "⛔ 缺解開的 tar：$src"; exit 2; }
+      mkdir -p "$dst"
+      for f in "$src"/*.png; do [ -e "$dst/$(basename "$f")" ] || ln -s "$f" "$dst/$(basename "$f")"; done
+      echo "  ① block_${k}_test/input：$(ls "$dst" | wc -l) 張"
+    done
+    if [ ! -f "$OTEST/.built_by_official_steps" ]; then
+      move_aside "$OTEST"
+      mkdir -p "$OTEST"
+      cp "$GS/data/matrix_city/aerial/pose/block_all/transforms_test.json" "$OTEST/transforms.json" || exit 3
+      conda run -n "$OFFENV" --no-capture-output python tools/transform_json2txt_mc_aerial.py --source_path "$OTEST" || exit 3
+      rm -rf "$OTEST/sparse"
+      cp -r "$CR" "$OTEST/sparse" || exit 3
+      ln -s input "$OTEST/images"          # 官方 parser 的 image_dir 預設 images（+ _1.2）；深度工具也讀 images
+      # 驗證（不經模型）：input/{idx}.png 的 md5 必須等於 transforms 第 idx 幀在官方 tar 裡那個檔
+      conda run -n "$OFFENV" --no-capture-output python - "$OTEST" "$STG/official_md5.txt" <<'PY' || exit 3
+import hashlib, json, os, sys
+od, mfile = sys.argv[1], sys.argv[2]
+off = {"/".join(l.split(None, 1)[1].strip().split("/")[-2:]): l.split()[0] for l in open(mfile)}
+fr = json.load(open(os.path.join(od, "transforms.json")))["frames"]
+bad = 0
+for i, f in enumerate(fr):
+    key = "/".join(f["file_path"].split("/")[-2:])
+    got = hashlib.md5(open(os.path.join(od, "input", f"{i:04d}.png"), "rb").read()).hexdigest()
+    bad += got != off[key]
+n = len([x for x in os.listdir(os.path.join(od, "input")) if x.endswith(".png")])
+print(f"✅ input {n} 張；逐張 md5 對 transforms 影格的官方檔：不符 {bad}")
+assert n == len(fr) and bad == 0
+PY
+      [ "$(md5sum < "$OTEST/sparse/0/images.bin")" = "$(md5sum < "$T/block_all_test/sparse/0/images.bin")" ] \
+        && echo "  sparse/images.bin 與 block_all_test 那份相同（兩者都是官方下載）" || echo "  ⚠ sparse 與 block_all_test 那份不同（以官方 colmap_results 為準）"
+      touch "$OTEST/.built_by_official_steps"
+    fi
+    L="$OTEST/images_1.2"
+    if [ ! -f "$L/.made_by_$OFFENV" ]; then
+      move_aside "$L"
+      conda run -n "$OFFENV" --no-capture-output python utils/image_downsample.py "$OTEST/input" --dst "$L" --factor 1.2 || exit 3
+      touch "$L/.made_by_$OFFENV"
+    fi
+    if [ ! -f "$OTEST/estimated_depths/.made_by_$OFFENV" ]; then
+      move_aside "$OTEST/estimated_depths"
+      conda run -n "$OFFENV" --no-capture-output python utils/estimate_dataset_depths.py "$OTEST" -d 1.2 || exit 3
+      touch "$OTEST/estimated_depths/.made_by_$OFFENV"
+    fi
+    echo "✅ 官方 test 集：$OTEST（$(ls "$L" | wc -l) 張 1600 影像、$(ls "$OTEST/estimated_depths" | grep -c npy) 張深度）"
+    exit 0 ;;
   blockload)
     # 2026-09-29：每塊在 30k（增生期結束附近）與 60k（終點）的離線 Load —— 我方跑次都有這一欄
     #   （同一支 cost_budget_calibrate、精確 Σtiles 與代理並列）。官方原始碼沒有訓練中 Load 打印，
