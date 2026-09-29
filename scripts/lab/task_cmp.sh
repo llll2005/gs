@@ -117,6 +117,13 @@ case "$ARM" in
   sfmfill)    P="sfmfill_init/block_${BLK}.ply"
               [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 sfmfill_init/block_${BLK}.ply"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
+  # ★ init 第五臂（2026-09-29）：20k 零機制下 dup4 對 sfmfill +1.38/+1.28 dB，但分數幾乎完全跟著**起始顆數**
+  #   （dup 只把同一批 SfM 點複製 4 份＋抖動，沒有新位置資訊；20k 配方 densify 在 10k 停 => 起始少的長不到）
+  #   問題：完整配方（60k、densify 到 30k、cap 2.6M，大家都會長到 cap 附近）下這個增益還在不在。
+  #   PLY = task_sfmfill_sweep2.sh gen 的 dup4（其餘參數同 sfmfill 基準），同樣走 points_from ply。
+  sfmdup4)    P="sfmfill_sweep/dup4/block_${BLK}.ply"
+              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
+              EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
   costdir)    EXTRA=(--model.density.init_args.cost_add_densify 2.278);         EXP=1 ;;
   costdir_cal) EXTRA=(--model.density.init_args.cost_add_densify 4.0);          EXP=1 ;;
   costtaming) EXTRA=(--model.density.init_args.cost_add_densify -2.8);          EXP=1 ;;
@@ -193,7 +200,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|cb50cost|cb25cost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|cb50cost|cb25cost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次

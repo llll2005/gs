@@ -62,7 +62,7 @@ OTRAIN=$GS/data/matrix_city/aerial/train/block_all_official       # 官方線專
 OTEST=$GS/data/matrix_city/aerial/test/block_all_test_official
 OTRAIN_REL=data/matrix_city/aerial/train/block_all_official        # 相對 cityGS_origin（data -> gs/data）
 [ -d "$ORIG" ] || { echo "⛔ 找不到 $ORIG"; exit 2; }
-MODE=${1:?用法: task_citygs_origin.sh prep|coarse|partition|block <N>|merge|test|res}
+MODE=${1:?用法: task_citygs_origin.sh prep|coarse|partition|block <N>|merge|test|res|blockload|prune}
 BLKARG=${2:-}
 
 # ⚠ 執行期也要鎖 arch：容器設成含 10.0，torch 2.0.1 不認識，而 CUDA 後端第一次 densify 才 JIT 編譯
@@ -363,6 +363,49 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     rc=$?; record - "outputs/$NAME/checkpoints"
     [ -f "outputs/$NAME/results.txt" ] && { echo "-- results.txt --"; cat "outputs/$NAME/results.txt"; }
     exit "$rc" ;;
+  blockload)
+    # 2026-09-29：每塊在 30k（增生期結束附近）與 60k（終點）的離線 Load —— 我方跑次都有這一欄
+    #   （同一支 cost_budget_calibrate、精確 Σtiles 與代理並列）。官方原始碼沒有訓練中 Load 打印，
+    #   所以「訓練途中的負載」只能用這兩個 ckpt 近似。量測工具是我方的（使用者允許的例外），跑在 gspl。
+    gpu_gate
+    cd "$GS" || exit 1
+    R="../cityGS_origin/outputs/$NAME"
+    { bad=0
+      for b in $(seq 0 15); do
+        for st in 29999 60000; do
+          CK=$(ls "$R/blocks/block_$b/checkpoints/"*step=$st.ckpt 2>/dev/null | head -1)
+          [ -n "$CK" ] || { echo "⛔ block $b 沒有 step=$st 的 ckpt"; bad=1; continue; }
+          echo "════════ 官方 block $b  step $st ════════"
+          conda run -n gspl --no-capture-output python tools/cost_budget_calibrate.py --ckpt "$CK" --max-cam "${CITYGS_MAXCAM:-600}" || { echo "⛔ 失敗"; bad=1; }
+        done
+      done
+      exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images|WARNING depth scale' | tee "$LOG"
+    exit "${PIPESTATUS[0]}" ;;
+  prune)
+    # 2026-09-29：官方合併模型依 opacity 剪 X% 後的 held-out 品質（評分走官方 main.py test，與 test 同一條路徑）
+    gpu_gate
+    CK=$(ls outputs/$NAME/checkpoints/*.ckpt 2>/dev/null | head -1)
+    [ -n "$CK" ] || { echo "⛔ 沒有合併後的 ckpt（先 merge）"; exit 2; }
+    CFG=outputs/$COARSE/config.yaml
+    [ -f "$CFG" ] || CFG=$(ls -d outputs/$COARSE/lightning_logs/version_*/config.yaml 2>/dev/null | sort -V | tail -1)
+    PT=$GS/logs/citygs_official_prune.tsv
+    [ -f "$PT" ] || printf 'ratio\tN\tpsnr\tssim\tlpips\trc\n' > "$PT"
+    { conda run -n "$OFFENV" --no-capture-output python "$GS/tools/official_prune_ckpt.py" "$CK" "${NAME}_prune" 10 25 50 75 || exit 3
+      for r in 10 25 50 75; do
+        P=${NAME}_prune_p$r
+        echo "════════ 官方 test：剪 ${r}% ($P) ════════"
+        conda run -n "$OFFENV" --no-capture-output python -u main.py test --config "$CFG" -n "$P" \
+          --data.path "$OTEST" --data.parser.eval_image_select_mode ratio --data.parser.eval_ratio 1.0
+        rc=$?
+        n=$(grep -a -m1 "剪 ${r}" "$LOG.tmp" 2>/dev/null | grep -o '剩 [0-9,]*' | tr -dc 0-9)
+        m=$(tr -d ' ,' < "outputs/$P/results.txt" 2>/dev/null | awk -F: '/test\/psnr/{p=$2}/test\/ssim/{s=$2}/test\/lpips/{l=$2}END{print p"\t"s"\t"l}')
+        printf '%s\t%s\t%s\t%s\n' "$r" "${n:--}" "${m:--\t-\t-}" "$rc" >> "$PT"
+        # 評分完就刪剪枝 ckpt（每個 1~3 GiB；要重算可重跑本模式），保留 results.txt 與 metrics/
+        rm -f "outputs/$P/checkpoints/"*.ckpt
+      done; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$LOG" "$LOG.tmp"
+    rm -f "$LOG.tmp"
+    echo "-- 剪枝曲線 --"; cat "$PT"
+    exit 0 ;;
   res)
     gpu_gate   # 逐步計時要獨佔整卡
     # 工具在 gs；用 ../ 讓 glob 指到 origin 的 outputs（ckpt 裡的 data 路徑相對 gs，剛好同一份資料）
