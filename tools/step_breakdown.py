@@ -25,7 +25,10 @@ import sys
 
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 2026-09-29：CITYGS_CODE_ROOT 指定「用哪一份程式碼」（例如官方 cityGS_origin）。官方參考線的時間組成
+#   必須用**官方的** renderer／光柵器量，否則量到的是我方改過的光柵器（EXACT_SUPPORT 等），不是官方的數字。
+_ROOT = os.environ.get("CITYGS_CODE_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
 
 
 def cuda_time(fn, repeat, warmup=3):
@@ -71,6 +74,11 @@ def main():
         cks = [p for p in cks if _step_of(p) == args.step] or cks[-1:]
     ck_path = cks[-1]
     print(f"ckpt: {os.path.basename(ck_path)}")
+    try:
+        import diff_trim_surfel_rasterization as _r
+        print(f"程式碼根目錄: {_ROOT}\n光柵器: {_r.__file__}")
+    except Exception:
+        print(f"程式碼根目錄: {_ROOT}")
 
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     dev = torch.device("cuda")
@@ -124,8 +132,15 @@ def main():
         model.gaussians["means"].grad = None
     results.append(("forward+backward(L1)", cuda_time(fb, max(4, args.repeat // 3))))
 
-    # MCMC noise：cov_3d 建構 + bmm
-    from internal.density_controllers.mcmc_density_controller import compute_cov_3d
+    # MCMC noise：cov_3d 建構 + bmm —— **只有 MCMC 類的 density controller 才有這一步**
+    #   （2026-09-29：官方 CityGSV2 是 vanilla 系，之前照量會多出一項官方根本沒有的時間）
+    _dens_cfg = ckpt.get("hyper_parameters", {}).get("density", None)
+    _is_mcmc = "MCMC" in type(_dens_cfg).__name__ or "MCMC" in str(getattr(_dens_cfg, "class_path", ""))
+    compute_cov_3d = None
+    if _is_mcmc:
+        from internal.density_controllers.mcmc_density_controller import compute_cov_3d
+    else:
+        print(f"  （density controller = {type(_dens_cfg).__name__}，不是 MCMC => 沒有 noise 段）")
     if compute_cov_3d is not None:
         def noise_term():
             sc = model.get_scales()

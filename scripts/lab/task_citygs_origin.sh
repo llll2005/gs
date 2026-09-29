@@ -478,7 +478,10 @@ PY
     gpu_gate   # 逐步計時要獨佔整卡
     # 工具在 gs；用 ../ 讓 glob 指到 origin 的 outputs（ckpt 裡的 data 路徑相對 gs，剛好同一份資料）
     cd "$GS" || exit 1
-    OFFENV=gspl   # 量測工具是我方的（使用者允許的例外），量的是官方 ckpt
+    # 離線 Load：我方量測工具＋我方光柵器（gspl），當作**共同的量尺**——同一支工具、同一顆光柵器量雙方的模型。
+    #   ⚠ 這不是官方光柵器實際的 binning 量：我方光柵器有 EXACT_SUPPORT（o<=1/255 不進 binning），
+    #     而官方光柵器不暴露 tiles，無從直接量。報告時要標明「共同量尺」。
+    OFFENV=gspl
     R="../cityGS_origin/outputs/$NAME"
     CK=$(find "$R/checkpoints" -maxdepth 1 -name '*.ckpt' 2>/dev/null | tail -1)
     [ -n "$CK" ] || { echo "⛔ 沒有合併後的 ckpt（先 merge）"; exit 2; }
@@ -486,11 +489,13 @@ PY
       echo "════ 官方參考線：訓練期資源表 ════"; cat "$RES_TSV"
       echo "════ 合併模型離線量測：$CK（$(du -h "$CK" | cut -f1)）════"
       conda run -n "$OFFENV" --no-capture-output python tools/cost_budget_calibrate.py --ckpt "$CK" --max-cam "${CITYGS_MAXCAM:-600}" || { echo "⛔ 離線 Load 失敗"; bad=1; }
-      # step_breakdown 會在 --run 前面自動加 outputs/ => 相對路徑多退一層。
-      # 逐**塊**量（合併後 24.5M 顆拿來量 fwd+bwd 沒意義，訓練是逐塊做的，而且 24 GB 放不下）
+      # 逐**塊**量（訓練是逐塊做的）。⚠ 2026-09-29 改：必須用**官方的程式碼與光柵器**量
+      #   （gspl_official、CITYGS_CODE_ROOT=cityGS_origin）；先前在 gspl 裡量到的是我方改過的光柵器，
+      #   還多了一項官方根本沒有的 MCMC noise => 那份時間組成作廢。
       for b in $(seq 0 15); do
-        echo "── 逐步計時：官方 block $b ──"
-        conda run -n "$OFFENV" --no-capture-output python tools/step_breakdown.py --run "../$R/blocks/block_$b" --repeat 20 || { echo "⛔ 逐步計時失敗（block $b）"; bad=1; }
+        echo "── 逐步計時：官方 block $b（官方程式碼＋官方光柵器）──"
+        ( cd "$ORIG" && CITYGS_CODE_ROOT="$ORIG" conda run -n gspl_official --no-capture-output \
+            python "$GS/tools/step_breakdown.py" --run "$NAME/blocks/block_$b" --repeat 20 ) || { echo "⛔ 逐步計時失敗（block $b）"; bad=1; }
       done
       exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$LOG"
     exit "${PIPESTATUS[0]}" ;;
