@@ -347,8 +347,15 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     exit "${PIPESTATUS[0]}" ;;
   test)
     echo "=== 官方 held-out 評測（$TEST 全部）$(date) ==="
+    # ⚠ 2026-09-29：官方腳本（scripts/citygs/run_citygs_mc_aerial.sh）寫 --config outputs/$COARSE/config.yaml，
+    #   但官方 fit（lightning 2.3、save_config_kwargs overwrite）實際存在 lightning_logs/version_N/config.yaml
+    #   => 照官方路徑找不到。沿用官方意圖（coarse 的 resolved config），只是換成它實際所在的位置。
+    CFG=outputs/$COARSE/config.yaml
+    [ -f "$CFG" ] || CFG=$(ls -d outputs/$COARSE/lightning_logs/version_*/config.yaml 2>/dev/null | sort -V | tail -1)
+    [ -f "$CFG" ] || { echo "⛔ 找不到 coarse 的 config.yaml"; exit 2; }
+    echo "test 用的 config：$CFG"
     run_measured conda run -n "$OFFENV" --no-capture-output python -u main.py test \
-      --config outputs/$COARSE/config.yaml -n $NAME \
+      --config "$CFG" -n $NAME \
       --data.path "$OTEST" \
       --data.parser.eval_image_select_mode ratio \
       --data.parser.eval_ratio 1.0 \
@@ -368,7 +375,12 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
       echo "════ 官方參考線：訓練期資源表 ════"; cat "$RES_TSV"
       echo "════ 合併模型離線量測：$CK（$(du -h "$CK" | cut -f1)）════"
       conda run -n "$OFFENV" --no-capture-output python tools/cost_budget_calibrate.py --ckpt "$CK" --max-cam "${CITYGS_MAXCAM:-600}" || { echo "⛔ 離線 Load 失敗"; bad=1; }
-      conda run -n "$OFFENV" --no-capture-output python tools/step_breakdown.py --run "$R/checkpoints" --repeat 20 || { echo "⛔ 逐步計時失敗"; bad=1; }
+      # step_breakdown 會在 --run 前面自動加 outputs/ => 相對路徑多退一層。
+      # 逐**塊**量（合併後 24.5M 顆拿來量 fwd+bwd 沒意義，訓練是逐塊做的，而且 24 GB 放不下）
+      for b in $(seq 0 15); do
+        echo "── 逐步計時：官方 block $b ──"
+        conda run -n "$OFFENV" --no-capture-output python tools/step_breakdown.py --run "../$R/blocks/block_$b" --repeat 20 || { echo "⛔ 逐步計時失敗（block $b）"; bad=1; }
+      done
       exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$LOG"
     exit "${PIPESTATUS[0]}" ;;
   *) echo "⛔ 不認得的模式：$MODE"; exit 2 ;;
