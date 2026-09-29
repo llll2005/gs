@@ -381,6 +381,10 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
         echo "── 逐步計時：官方 block $b ──"
         conda run -n "$OFFENV" --no-capture-output python tools/step_breakdown.py --run "../$R/blocks/block_$b" --repeat 20 || { echo "⛔ 逐步計時失敗（block $b）"; bad=1; }
       done
+      # 合併後的模型也量（使用者 2026-09-29：最後都要比較）。24.5M 顆的 fwd+bwd 放不放得下 24 GB 沒實測過
+      #   => 直接跑，失敗照實記錄（不擋後面的步驟）。相機取自合併 ckpt 內記的 dataparser（第一塊的相機）。
+      echo "── 逐步計時：合併後的模型 ──"
+      conda run -n "$OFFENV" --no-capture-output python tools/step_breakdown.py --run "../$R/checkpoints" --repeat 20 || echo "⚠ 合併模型逐步計時失敗（見上方錯誤；可能是 24 GB 放不下 fwd+bwd）"
       exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$LOG"
     exit "${PIPESTATUS[0]}" ;;
   *) echo "⛔ 不認得的模式：$MODE"; exit 2 ;;
