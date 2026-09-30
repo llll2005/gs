@@ -34,7 +34,7 @@ def main():
     for ci in range(a.cams):
         cam = cams[ci * 37 % len(cams)].to_device(dev)
         res = {}
-        for flag in (False, True):
+        for tag, flag in (("off", False), ("off2", False), ("on", True)):   # off vs off2 = 噪音底（backward 的 atomicAdd 順序不定）
             renderer.skip_surf_normal = flag
             for p in params:
                 p.grad = None
@@ -44,23 +44,29 @@ def main():
             gt = torch.rand(img.shape, device=dev, generator=torch.Generator(device=dev).manual_seed(123))
             loss = 0.8 * (img - gt).abs().mean() + 0.2 * (1 - ssim(img, gt))
             loss.backward()
-            res[flag] = ({k: v.detach().clone() for k, v in out.items() if torch.is_tensor(v) and k != "surf_normal"},
+            res[tag] = ({k: v.detach().clone() for k, v in out.items() if torch.is_tensor(v) and k != "surf_normal"},
                          [p.grad.detach().clone() if p.grad is not None else None for p in params], float(loss))
-        (o0, g0, l0), (o1, g1, l1) = res[False], res[True]
-        d = {"loss": abs(l0 - l1)}
-        for k in o0:
-            if k in o1 and o0[k].shape == o1[k].shape:
-                d[f"out:{k}"] = float((o0[k].float() - o1[k].float()).abs().max()) if o0[k].numel() else 0.0
-            else:
-                d[f"out:{k}"] = float("inf")
-        for i, (x, y) in enumerate(zip(g0, g1)):
-            d[f"grad[{i}]"] = 0.0 if x is None and y is None else float((x - y).abs().max())
-        for k, v in d.items():
-            worst[k] = max(worst.get(k, 0.0), v)
-        ok &= all(v == 0 for v in d.values())
-        print(f"相機 {ci}: 關 surf_normal 後有差異的項目：{[k for k, v in d.items() if v != 0] or '無'}")
+        def diff(A, B):
+            (o0, g0, l0), (o1, g1, l1) = A, B
+            d = {"loss": abs(l0 - l1)}
+            for k in o0:
+                d[f"out:{k}"] = (float((o0[k].float() - o1[k].float()).abs().max()) if o0[k].numel() else 0.0) \
+                    if k in o1 and o0[k].shape == o1[k].shape else float("inf")
+            for i, (x, y) in enumerate(zip(g0, g1)):
+                d[f"grad[{i}]"] = 0.0 if x is None and y is None else float((x - y).abs().max())
+            return d
+        dn, df = diff(res["off"], res["off2"]), diff(res["off"], res["on"])
+        # 通過條件：輸出與 loss 完全相同；梯度差不超過「同設定重跑」的噪音底（取 2 倍寬容，避免單次抽樣運氣）
+        outs_same = all(v == 0 for k, v in df.items() if not k.startswith("grad"))
+        grads_ok = all(df[k] <= 2 * dn[k] for k in df if k.startswith("grad"))
+        ok &= outs_same and grads_ok
+        for k in df:
+            worst[k] = max(worst.get(k, 0.0), df[k])
+        gmax_n = max(v for k, v in dn.items() if k.startswith("grad")); gmax_f = max(v for k, v in df.items() if k.startswith("grad"))
+        print(f"相機 {ci}: 輸出/loss 相同={outs_same}；梯度最大差 同設定重跑 {gmax_n:.2e} vs 開旗標 {gmax_f:.2e}")
     print("最大差異：", {k: v for k, v in worst.items() if v != 0} or "全部為 0")
-    print("✅ 逐位元無損（渲染輸出與所有參數梯度完全相同）" if ok else "⛔ 不是逐位元無損")
+    print("✅ 無損：輸出與 loss 逐位元相同，梯度差落在同設定重跑的噪音底內（backward atomicAdd 順序不定）"
+          if ok else "⛔ 有差異超出噪音底")
     sys.exit(0 if ok else 1)
 
 
