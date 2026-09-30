@@ -41,7 +41,7 @@ def main():
             torch.manual_seed(0)
             out = renderer(cam, model, bg_color=bg)
             img = out["render"]
-            gt = torch.rand_like(img, generator=torch.Generator(device=dev).manual_seed(123))
+            gt = torch.rand(img.shape, device=dev, generator=torch.Generator(device=dev).manual_seed(123))
             loss = 0.8 * (img - gt).abs().mean() + 0.2 * (1 - ssim(img, gt))
             loss.backward()
             res[flag] = ({k: v.detach().clone() for k, v in out.items() if torch.is_tensor(v) and k != "surf_normal"},
