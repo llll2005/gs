@@ -1,5 +1,15 @@
 """Score a trained block model on the OFFICIAL MatrixCity held-out test set.
 
+⛔⛔ 2026-09-29 更正（先讀這段）：下面 docstring 說的「照 sparse 名稱 +/-1 偏移校準」**不成立**。
+  舊的 `block_all_test/input/` 是我方自己從 10 個 tar 串接、依一份來源不明的清單編號的：
+  741 張只有 657 張是官方 test 影格，且對 sparse 相機是**分段**錯開（+1/+9/+26…），
+  不是一個常數偏移 ⇒ 過去用它量的 held-out（北極星 16.63、使用者全域版 25.62）全部待重驗。
+  正解（不經模型）：sparse 相機 N 的姿態 = transforms_test.json 第 N 幀（殘差 1e-6，741 對 741）
+  ＝ 官方 tools/transform_json2txt_mc_aerial.py 產生 input/{N:04d}.png 的方式。
+  ⇒ 現在**只接受**照官方步驟重建的 test 目錄（`scripts/lab/task_citygs_origin.sh prep_test_official`
+     產生 block_all_test_official2，含 .built_by_official_steps 標記，逐張 md5 驗過），並**照同名配對**；
+     偏移校準已移除。另外補上紋理比（逐張平均與能量加權，定義同 citygsv2_metrics）。
+
 Why this exists: every number in 紀錄/實驗總表.csv comes from `split_mode: reconstruction`, where
 the validation images are a subset of the TRAINING images (every 8th image, also trained on). Those
 numbers are internally comparable but they are not held-out, so they cannot be quoted against
@@ -131,19 +141,17 @@ def main():
     ap.add_argument("--block", type=int, default=None, help="omit to score all 741 views")
     ap.add_argument("--block_dim", type=int, nargs=2, default=[5, 5])
     ap.add_argument("--train_dir", default="data/matrix_city/aerial/train/block_all")
-    ap.add_argument("--test_dir", default="data/matrix_city/aerial/test/block_all_test")
+    ap.add_argument("--test_dir", default="data/matrix_city/aerial/test/block_all_test_official2")
     ap.add_argument("--image_subdir", default="images_1.2")
     ap.add_argument("--down_sample", type=float, default=1.2)
     ap.add_argument("--margin", type=float, default=0.0, help="expand the block AABB by this much")
-    ap.add_argument("--offset", type=int, default=None,
-                    help="force the camera->image index offset instead of calibrating. Use -1 for "
-                         "this dataset (established on training views with a 7 dB margin). Needed "
-                         "for models whose coverage is too partial for calibration to separate the "
-                         "candidates -- calibration still runs and prints, it just cannot abort.")
     ap.add_argument("--save_dir", default=None)
     a = ap.parse_args()
 
     dev = "cuda"
+    if not os.path.exists(os.path.join(a.test_dir, ".built_by_official_steps")):
+        raise SystemExit(f"⛔ {a.test_dir} 不是照官方步驟重建的 test 集（缺 .built_by_official_steps）。\n"
+                         "  舊的 block_all_test/input 對應是錯的（見檔頭）；先跑 task_citygs_origin.sh prep_test_official")
     names, cameras = load_test_cameras(a.test_dir, a.down_sample)
     centres = np.array([(-cameras.R[i].numpy().T @ cameras.T[i].numpy()) for i in range(len(names))])
 
@@ -168,67 +176,32 @@ def main():
     lpips_fn = LearnedPerceptualImagePatchSimilarity(normalize=True, net_type="alex").to(dev)
 
     img_dir = os.path.join(a.test_dir, a.image_subdir)
-    files = sorted(f for f in os.listdir(img_dir) if f.lower().endswith((".png", ".jpg")))
-    if len(files) != len(names):
-        print(f"[警告] 影像 {len(files)} 張 vs 相機 {len(names)} 台，數量不符")
+    miss = [n for n in names if not os.path.exists(os.path.join(img_dir, n))]
+    if miss:
+        raise SystemExit(f"⛔ {len(miss)} 台相機在 {img_dir} 找不到同名影像（例：{miss[:3]}）——官方 test 集應該逐一同名")
     bg = torch.zeros(3, device=dev)
 
     def render(i):
         with torch.no_grad():
             return renderer(cameras[i].to_device(dev), model, bg_color=bg)["render"].clamp(0, 1)
 
-    def load_gt(idx, like):
-        pil = Image.open(os.path.join(img_dir, files[idx])).convert("RGB")
+    def load_gt(name, like):
+        pil = Image.open(os.path.join(img_dir, name)).convert("RGB")
         cw, ch = int(like.shape[2]), int(like.shape[1])
         if pil.size != (cw, ch):
             pil = pil.resize((cw, ch), Image.LANCZOS)
         return torch.from_numpy(np.array(pil, np.uint8)).float().permute(2, 0, 1).to(dev) / 255.
 
-    # --- calibrate the camera->image offset (see module docstring) ---
-    # Probe views are taken away from the ends: camera 0000 has no counterpart at offset -1 and
-    # camera 0740 none at +1, so probing the endpoints silently starved two of the three offsets
-    # and left max() with an empty sequence (2026-08-03, the first merged-model eval).
-    inner = sel[1:-1] if len(sel) > 4 else sel
-    probe = [inner[j] for j in np.linspace(0, len(inner) - 1, min(4, len(inner))).astype(int)]
-    scores = {}
-    for off in (-1, 0, 1):
-        vals = []
-        for i in probe:
-            j = int(names[i].rsplit(".", 1)[0]) + off
-            if not 0 <= j < len(files):
-                continue          # this probe has no counterpart here; drop the probe, not the offset
-            out = render(i)
-            vals.append(float(-10 * torch.log10(((out - load_gt(j, out)) ** 2).mean().clamp_min(1e-12))))
-        if len(vals) >= 2:        # a one-view mean says nothing
-            scores[off] = float(np.mean(vals))
-
-    if scores:
-        best = max(scores, key=scores.get)
-        others = [v for k, v in scores.items() if k != best]
-        margin = scores[best] - max(others) if others else float("inf")
-        print("[偏移校準] " + "  ".join(f"{o:+d}:{v:.2f}dB" for o, v in sorted(scores.items()))
-              + f"   → 最佳 {best:+d}（領先 {margin:.2f} dB）")
-    else:
-        best, margin = None, 0.0
-        print("[偏移校準] 沒有任何 offset 取得足夠探針")
-
-    if a.offset is not None:
-        if best is not None and best != a.offset:
-            print(f"[偏移] 校準指向 {best:+d}，但依指定採用 {a.offset:+d}"
-                  f"{'（領先僅 %.2f dB，本就無法分辨）' % margin if margin < 1.0 else ' ⚠ 校準與指定不符，值得查'}")
-        best = a.offset
-    elif best is None or margin < 1.0:
-        raise SystemExit("偏移無法確立——相機與影像的對應沒被證實，數字不可信。\n"
-                         "  若模型覆蓋範圍本來就只有畫面一部分（單塊模型／部分合併），"
-                         "校準本來就分不出來，改用 --offset -1 指定。")
+    from internal.metrics.citygsv2_metrics import _grad_energy
 
     if a.save_dir:
         os.makedirs(a.save_dir, exist_ok=True)
-    ps, ss, ls = [], [], []
+    ps, ss, ls, tr, tg = [], [], [], [], []
     with torch.no_grad():
         for k, i in enumerate(sel):
             out = render(i)
-            gt = load_gt(int(names[i].rsplit(".", 1)[0]) + best, out)
+            gt = load_gt(names[i], out)          # 官方 test 集：相機與影像同名（見檔頭）
+            tr.append(float(_grad_energy(out))); tg.append(float(_grad_energy(gt)))
 
             ps.append(float(-10 * torch.log10(((out - gt) ** 2).mean().clamp_min(1e-12))))
             ss.append(float(ssim_fn(out, gt)))
@@ -244,6 +217,8 @@ def main():
     print(f"PSNR  {np.mean(ps):6.3f}   (min {np.min(ps):.2f} / max {np.max(ps):.2f})")
     print(f"SSIM  {np.mean(ss):6.4f}")
     print(f"LPIPS {np.mean(ls):6.4f}")
+    print(f"紋理比 逐張平均 {np.mean(np.array(tr) / np.maximum(tg, 1e-8)):6.4f}   能量加權 {np.sum(tr) / max(np.sum(tg), 1e-8):6.4f}"
+          "（<1 偏糊、>1 多出不存在的細節；要與 LPIPS 一起看）")
 
     # Break down by which MatrixCity block each test view came from -- difficulty varies a lot
     # across the city, so a shift in the mix can move the average on its own.
