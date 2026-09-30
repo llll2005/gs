@@ -124,6 +124,15 @@ case "$ARM" in
   sfmdup4)    P="sfmfill_sweep/dup4/block_${BLK}.ply"
               [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
+  # ★ 2026-10-01：dup4 為什麼贏（60k 同 N +0.27/+0.32）—— 兩個候選機制分開測：
+  #   fastgrow  預設 SfM init，只把 add_ratio 1.05 -> 1.2（每次增生的倍率），讓族群像 dup4 一樣約 2~3k 步就長滿
+  #             （dup4 在 step ~2.3k 滿額、預設要到 ~14.3k；兩者 ∫N dstep 差 13.8%）=> 若 ≈ dup4，贏在「提早長滿」
+  #   sfmdup2   dup 2 份（起始 1.2M）=> 看效果是否隨劑量變化
+  #   其餘（densify_until 30k、cap 2.6M）全部不動 => 單變數
+  fastgrow)   EXTRA=(--model.density.init_args.add_ratio 1.2);                  EXP=1 ;;
+  sfmdup2)    P="sfmfill_sweep/dup2/block_${BLK}.ply"
+              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
+              EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
   costdir)    EXTRA=(--model.density.init_args.cost_add_densify 2.278);         EXP=1 ;;
   costdir_cal) EXTRA=(--model.density.init_args.cost_add_densify 4.0);          EXP=1 ;;
   costtaming) EXTRA=(--model.density.init_args.cost_add_densify -2.8);          EXP=1 ;;
@@ -216,7 +225,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次
