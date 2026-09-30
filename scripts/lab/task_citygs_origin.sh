@@ -409,7 +409,13 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
       move_aside "$OTEST"
       mkdir -p "$OTEST"
       cp "$GS/data/matrix_city/aerial/pose/block_all/transforms_test.json" "$OTEST/transforms.json" || exit 3
-      conda run -n "$OFFENV" --no-capture-output python tools/transform_json2txt_mc_aerial.py --source_path "$OTEST" || exit 3
+      # ⚠ 2026-09-30：官方工具的 --intrinsic_path 預設是 **train** 的 transforms，而它的**影格清單也從這裡讀**；
+      #   官方 data_proc_mc.sh 對 aerial test 沒傳這個參數 => 實際拿 train 的 5,621 幀去 test 目錄找檔，
+      #   全部 cp 失敗、input/ 一張都沒有（09-30 第一次就是這樣，被下面的 md5 驗證擋下）。
+      #   官方對 street 的 test 有傳 --intrinsic_path transforms_test.json => aerial 照同樣做法傳 test 自己的 transforms。
+      #   結果＝input/{N} = transforms_test 第 N 幀的原始檔，與官方下載的 test sparse（相機 N = 第 N 幀，已驗證）一致。
+      conda run -n "$OFFENV" --no-capture-output python tools/transform_json2txt_mc_aerial.py --source_path "$OTEST" \
+        --intrinsic_path "$OTEST/transforms.json" || exit 3
       rm -rf "$OTEST/sparse"
       cp -r "$CR" "$OTEST/sparse" || exit 3
       ln -s input "$OTEST/images"          # 官方 parser 的 image_dir 預設 images（+ _1.2）；深度工具也讀 images
