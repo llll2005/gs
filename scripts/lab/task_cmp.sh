@@ -162,6 +162,10 @@ case "$ARM" in
   trimvpc05)  EXTRA=(--model.renderer.init_args.trim_by_value_per_cost true
                      --model.renderer.init_args.trim_value_per_cost_alpha 0.5);     EXP=1 ;;
   dssim05)    EXTRA=(--model.metric.init_args.lambda_dssim 0.5);                EXP=1 ;;
+  # ★★ 2026-09-30：depth loss 重測。關掉它（0.5 -> 0）的決定是用**舊的、被污染的** scales 量的
+  #   （研究總覽 v2「待重測」）；現行 estimated_depths 與 estimated_depth_scales.json 是 2026-09-13
+  #   影像↔姿態修正後重生的（依相機名稱存檔）=> 前提已倒，值得重測。0.5 = 修改前我方值 = 官方 aerial 配方值。
+  depth05)    EXTRA=(--model.metric.init_args.depth_loss_weight.init 0.5);       EXP=1 ;;
   both)       EXTRA=(--model.density.init_args.cost_add_densify 4.0
                      --model.metric.init_args.lambda_dssim 0.5);                EXP=2 ;;
   # ★★ 命題的**約束端**：把生長條件從顆數 `N<=cap_max` 換成渲染成本 `Load<=cost_budget`
@@ -192,6 +196,18 @@ case "$ARM" in
   # ⚠ 加 `cost_budget_report 500`：讓預算**自證**（每 500 步印 N / Load / 預算）。
   #   它是**純打印**（`_update_load` 在 cost_budget>0 時本來就會跑）=> 不改變訓練行為。
   #   2026-09-13 的教訓：cb50/cb25 跑完也沒辦法從 log 證明預算真的在綁。
+  # ★★★ 2026-09-30：**精確成本計價**的預算（約束端從未在精確單位下測過）。
+  #   舊 cb 臂用代理 Σ(2r/16)² 計價，而 conic 開啟後代理與真實成本方向相反（精確中位 -40% 時代理 +6%，
+  #   資源彙整 §9.9e）=> 舊的否定結果不能延伸到精確單位。這裡：exact_tile_cost=true（閘門與 c 都用 Σtiles），
+  #   B0X = conic 開的同排程終點模型（cs_conic@21,920）的**精確**最壞視角 Load 5,149,466（load_compare_b6_0921_1716）。
+  #   比較方式同 §9.9d：同工具量終點精確 Load，與 conic 開的 cap 曲線（capc07/12/17，同批新跑）在同成本下比。
+  cb50x|cb25x|cb50xcost|cb25xcost)
+              case "$BLK" in 6) B0X=5149466 ;; *) echo "⛔ block $BLK 沒有精確 B0X（只標定了 b6）"; exit 2 ;; esac
+              case "$ARM" in cb50x*) BX=$((B0X / 2)) ;; *) BX=$((B0X / 4)) ;; esac
+              EXTRA=(--model.density.init_args.exact_tile_cost true
+                     --model.density.init_args.cost_budget "$BX"
+                     --model.density.init_args.cost_budget_report 500)
+              case "$ARM" in *cost) EXTRA+=(--model.density.init_args.cost_add_densify 4.0); EXP=3 ;; *) EXP=2 ;; esac ;;
   cb50cost)   [ "${B0:-0}" -gt 0 ] || { echo "⛔ block $BLK 沒有標定過的 B0"; exit 2; }
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 2))
                      --model.density.init_args.cost_add_densify 4.0
@@ -200,7 +216,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|costdir|costdir_cal|costtaming|dssim05|both|cb50|cb25|cb50cost|cb25cost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次

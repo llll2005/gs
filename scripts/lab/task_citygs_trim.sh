@@ -118,5 +118,36 @@ case "$MODE" in
     NAME="${RUN_PREFIX}citygs_${MODE}"
     fit_arm "$NAME" 60000 ${EXTRA[@]+"${EXTRA[@]}"} || exit $?
     resource_report "$NAME" ;;
-  *) echo "⛔ 不認得的模式：$MODE（res|gate|trimon|trimvpc）"; exit 2 ;;
+  blk)
+    # 2026-09-30：**逐塊**版（全域版一臂約 23 小時，太貴）。官方 4x4 分區挑塊，兩臂只差 v/c：
+    #   config  = cityGS_origin 的**官方原版** configs/citygsv2_mc_aerial_sh2_trim.yaml（我方 repo 那份被改過）
+    #   init    = 官方參考線的 coarse（gspl_official 訓練的那個）
+    #   data    = block_all_official（官方分區 4x4、0.05；官方 -d 1.2 深度）
+    #   程式碼  = 我方（v/c 是我方機制）＋ CITYGS_KEEP_CFG_RENDERER=1（讓官方 config 的 trim 真的跑）
+    #   ⚠ 所以兩臂都是「我方程式碼跑官方配方」，彼此可比；不可與官方參考線（官方程式碼、沒 trim）的同塊直接比。
+    #   不鎖 6GB（官方配方每塊 12~20 GB）=> 一律 [solo]；影像全快取（官方預設，見 task_citygs_origin.sh 的 block 註解）
+    ARM=${2:?用法: task_citygs_trim.sh blk trimon|trimvpc <block>}; BLK=${3:?缺 block}
+    ORIG=/workspace/data/hdd/11213/cityGS_origin
+    OCFG=$ORIG/configs/citygsv2_mc_aerial_sh2_trim.yaml
+    OCK=$(find_ckpt "$ORIG/outputs/citygsv2_mc_aerial_coarse_sh2")
+    [ -f "$OCFG" ] && [ -n "$OCK" ] || { echo "⛔ 缺官方 config 或官方 coarse ckpt"; exit 2; }
+    ( cd "$ORIG" && git diff --quiet HEAD -- configs/citygsv2_mc_aerial_sh2_trim.yaml ) || { echo "⛔ 官方 config 被改過"; exit 2; }
+    EXTRA=()
+    [ "$ARM" = trimvpc ] && EXTRA=(--model.renderer.init_args.trim_by_value_per_cost true)
+    NAME="${RUN_PREFIX}citygs_blk${BLK}_${ARM}"
+    out="outputs/$NAME"
+    [ -d "$out" ] && { mv "$out" "${out}.aborted_$(date +%m%d_%H%M%S)"; echo "  舊輸出已搬開"; }
+    L="logs/$(printf '%s' "$NAME" | tr '/' '_').log"
+    echo "=== $NAME / 官方 config / 官方 coarse $(basename "$OCK") / block $BLK / $(date) ==="
+    CITYGS_KEEP_CFG_RENDERER=1 conda run -n gspl --no-capture-output python -u main.py fit \
+      --config "$OCFG" --model.initialize_from "$OCK" \
+      --data.path data/matrix_city/aerial/train/block_all_official --data.parser.block_id "$BLK" \
+      --data.num_workers 8 -n "$NAME" ${EXTRA[@]+"${EXTRA[@]}"} 2>&1 | tee "$L"
+    rc=${PIPESTATUS[0]}
+    [ "$rc" -ne 0 ] && { echo "❌ $NAME 失敗 rc=$rc"; exit "$rc"; }
+    nt=$(grep -c 'Trimming\.\.\.' "$L"); echo "[檢查] Trimming 次數 = $nt"
+    [ "$nt" -ge 1 ] || { echo "⛔⛔ trim 一次都沒跑 => 這個跑次不可用"; exit 5; }
+    if [ "$ARM" = trimvpc ]; then grep -q 'trim-vpc\] ✅' "$L" || { echo "⛔⛔ v/c 沒有首次觸發"; exit 6; }; fi
+    resource_report "$NAME/blocks/block_$BLK" ;;   # 有 block_id 時輸出在 outputs/<name>/blocks/block_N
+  *) echo "⛔ 不認得的模式：$MODE（res|gate|trimon|trimvpc|blk）"; exit 2 ;;
 esac
