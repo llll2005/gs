@@ -382,8 +382,22 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
     gpu_gate   # 深度估計用 GPU
     T=$GS/data/matrix_city/aerial/test
     STG=$T/_stage_official
+    # 官方 data_proc_mc.sh 是把 colmap_results/.../test/sparse **mv** 到 block_all_test/sparse
+    #   => lab 上 colmap_results/matrix_city_aerial/test 已是空的，官方那份就在 block_all_test/sparse。
+    #   不信任位置：與 colmap_results.zip 裡的原檔逐檔比 md5，全部相同才用。
     CR=$GS/data/colmap_results/matrix_city_aerial/test/sparse
-    [ -d "$CR" ] || { echo "⛔ 找不到官方 colmap_results 的 test sparse：$CR"; exit 2; }
+    if [ ! -d "$CR/0" ]; then
+      CR=$T/block_all_test/sparse
+      Z=$GS/data/colmap_results.zip
+      [ -f "$Z" ] || { echo "⛔ 找不到 $Z，無法驗證 test sparse 是官方原檔"; exit 2; }
+      for f in cameras.bin images.bin points3D.bin; do
+        a1=$(unzip -p "$Z" "colmap_results/matrix_city_aerial/test/sparse/0/$f" 2>/dev/null | md5sum | cut -d' ' -f1)
+        [ -n "$a1" ] && [ "$a1" != "d41d8cd98f00b204e9800998ecf8427e" ] || a1=$(unzip -p "$Z" "matrix_city_aerial/test/sparse/0/$f" 2>/dev/null | md5sum | cut -d' ' -f1)
+        a2=$(md5sum < "$CR/0/$f" | cut -d' ' -f1)
+        [ "$a1" = "$a2" ] || { echo "⛔ $CR/0/$f 與 zip 裡的官方原檔不同（$a1 vs $a2）"; exit 2; }
+      done
+      echo "  ④ test sparse：$CR（與 colmap_results.zip 原檔逐檔 md5 相同）"
+    fi
     for k in $(seq 1 10); do
       src=$STG/x_block_$k/block_${k}_test; dst=$T/block_${k}_test/input
       [ -d "$src" ] || { echo "⛔ 缺解開的 tar：$src"; exit 2; }
@@ -458,7 +472,8 @@ PY
     [ -f "$CFG" ] || CFG=$(ls -d outputs/$COARSE/lightning_logs/version_*/config.yaml 2>/dev/null | sort -V | tail -1)
     PT=$GS/logs/citygs_official_prune.tsv
     [ -f "$PT" ] || printf 'ratio\tN\tpsnr\tssim\tlpips\trc\n' > "$PT"
-    { conda run -n "$OFFENV" --no-capture-output python "$GS/tools/official_prune_ckpt.py" "$CK" "${NAME}_prune" 10 25 50 75 || exit 3
+    # ⚠ PYTHONPATH=$ORIG 不可省：unpickle 官方 ckpt 要 import 官方的 internal（09-29 第一次因此失敗）
+    { PYTHONPATH="$ORIG" conda run -n "$OFFENV" --no-capture-output python "$GS/tools/official_prune_ckpt.py" "$CK" "${NAME}_prune" 10 25 50 75 || exit 3
       for r in 10 25 50 75; do
         P=${NAME}_prune_p$r
         echo "════════ 官方 test：剪 ${r}% ($P) ════════"
@@ -471,9 +486,10 @@ PY
         # 評分完就刪剪枝 ckpt（每個 1~3 GiB；要重算可重跑本模式），保留 results.txt 與 metrics/
         rm -f "outputs/$P/checkpoints/"*.ckpt
       done; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$LOG" "$LOG.tmp"
+    rc=${PIPESTATUS[0]}
     rm -f "$LOG.tmp"
     echo "-- 剪枝曲線 --"; cat "$PT"
-    exit 0 ;;
+    exit "$rc" ;;
   res)
     gpu_gate   # 逐步計時要獨佔整卡
     # 工具在 gs；用 ../ 讓 glob 指到 origin 的 outputs（ckpt 裡的 data 路徑相對 gs，剛好同一份資料）
