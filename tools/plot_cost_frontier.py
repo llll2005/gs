@@ -133,14 +133,14 @@ def fig3():
     rd = [(0.24, 15.460), (0.36, 16.936), (0.52, 18.468), (0.73, 20.103), (1.05, 22.001), (1.48, 24.210), (1.94, 26.543)]
     fig, ax = plt.subplots(figsize=(8.2, 5.0))
     ax.plot(*zip(*rd), "--", color=MUTED, lw=1.4, label="隨機（參考基準）")
-    ax.plot(*zip(*mc), "-^", color=C3, lw=2, ms=6, label="單視角最大貢獻（現行 trim 判準）")
+    ax.plot(*zip(*mc), "-^", color=C3, lw=2, ms=6, label="總貢獻最大（偏好又大又亮的顆粒；不是現行 trim 判準）")
     ax.plot(*zip(*op), "-s", color=C2, lw=2, ms=6, label="opacity 最高")
     ax.plot([p[0] for p in tk], [p[1] for p in tk], "-o", color=C1, lw=2, ms=7, label="逐 tile 前 K 名", zorder=4)
     for x, y, k in tk:
         lab(ax, x, y, f"K={k}", dx=-6, dy=5, ha="right", color=C1 if False else INK2)
     ax.plot(2.94, 30.481, "*", color="#0b0b0b", ms=13, zorder=5); lab(ax, 2.94, 30.481, "不剪 30.48", dx=-6, dy=6, ha="right")
     lab(ax, rd[-1][0], rd[-1][1], "隨機", dx=5, dy=-4, color=MUTED)
-    lab(ax, mc[-1][0], mc[-1][1], "單視角最大貢獻", dx=5, dy=-6)
+    lab(ax, mc[-1][0], mc[-1][1], "總貢獻最大", dx=5, dy=-6)
     lab(ax, op[3][0], op[3][1], "opacity", dx=6, dy=-10)
     ax.set_xlabel("渲染成本：精確 Load 中位（百萬）")
     ax.set_ylabel("val PSNR（dB）")
