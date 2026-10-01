@@ -34,6 +34,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             exact_conic_aabb: bool = False,
             trim_by_value_per_cost: bool = False,
             trim_value_per_cost_alpha: float = 1.0,
+            trim_by_tile_topk: bool = False,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -93,6 +94,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   移除參數會讓那些 ckpt 載入時炸掉（本檔踩過「ckpt 覆蓋 renderer 旗標」）。
         self.trim_value_per_cost_alpha = trim_value_per_cost_alpha
         self._vpc_announced = False
+        # ★ 2026-10-01：週期 trim 判準改成「逐 tile 名次」（使用者提的 tile 局部背包）。
+        #   每顆記下它在所有 (視角, tile) 裡拿到的**最好名次**（internal/utils/tile_topk.py），
+        #   剪掉最好名次最差的 prune_ratio（並列時再依貢獻）。事後剪枝（未重訓）量到：同 N 下 Load 最低、
+        #   同成本下品質最好（紀錄/new_figures_costfrontier 圖 3）。與 trim_by_value_per_cost 同時開時以本旗標為準。
+        #   ⚠ 用 getattr 讀：ckpt 反序列化的舊 renderer 沒有這個屬性。
+        self.trim_by_tile_topk = trim_by_tile_topk
+        self._tk_announced = False
         # >0 時，每次 trim 事件**額外**用「每 N 台取一台」再算一次 contribution，
         # 報告與全視角版的 Spearman 與底部 10% 遮罩重疊。只讀，不改變剪枝結果。
         # 目的（§11.48）：trim pass 佔 profile 視窗 80%、約 9 小時跑次的 10%，
@@ -220,6 +228,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 # limitation. What it IS, is a per-primitive render COST: sum_i c_i is the total
                 # blend work, and that is the quantity that predicts VRAM (see
                 # tools/measure_overdraw_waste.py and tools/fit_vram_model.py).
+                if kwargs.get("record_radii", False):      # 2026-10-01：trim_by_tile_topk 要每顆的外接盒半徑
+                    return transmittance, num_covered_pixels, radii
                 return transmittance, num_covered_pixels
             return transmittance
         else:
@@ -396,15 +406,35 @@ class SepDepthTrim2DGSRenderer(Renderer):
             stride = max(1, int(os.environ.get("TRIM_SUBSAMPLE", "1") or 1))
             n_used = len(range(0, len(cameras), stride))
             print(f"Trimming...（相機 {n_used}/{len(cameras)}，stride={stride}）")
+            _tk = bool(getattr(self, "trim_by_tile_topk", False))
+            best_rank = None
+            if _tk:
+                from internal.utils.tile_topk import update_best_rank, NEVER
+                best_rank = torch.full((module.gaussian_model.get_xyz.shape[0],), NEVER,
+                                       dtype=torch.int64, device=device)
+                _tk_pairs = 0
             for i in range(0, len(cameras), stride):
                 camera = cameras[i].to_device(device)
-                mean, covered = self(
-                    camera,
-                    module.gaussian_model,
-                    bg_color=module._fixed_background_color().to(device),
-                    record_transmittance=True,
-                    record_coverage=True,
-                )
+                if _tk:
+                    mean, covered, _radii = self(
+                        camera,
+                        module.gaussian_model,
+                        bg_color=module._fixed_background_color().to(device),
+                        record_transmittance=True,
+                        record_coverage=True,
+                        record_radii=True,
+                    )
+                    _tk_pairs += update_best_rank(best_rank, mean * covered.float(), _radii,
+                                                  module.gaussian_model.get_xyz, camera)
+                    del _radii
+                else:
+                    mean, covered = self(
+                        camera,
+                        module.gaussian_model,
+                        bg_color=module._fixed_background_color().to(device),
+                        record_transmittance=True,
+                        record_coverage=True,
+                    )
                 push(mean)
                 # Mini-Splatting's blur criterion (arXiv 2403.14166 Eq. 2) wants S_i = #pixels where
                 # i is the argmax-weight Gaussian. The soft equivalent sum_p T_i*a_i is already
@@ -450,6 +480,23 @@ class SepDepthTrim2DGSRenderer(Renderer):
                               f"ceiling(top5%)/mean  v={_ceil(_v):.2f}x  c={_ceil(_c):.2f}x  v/c={_ceil(_s):.2f}x")
                         print(f"[trim-vpc]    底部 {100*self.prune_ratio:.0f}% 遮罩重疊 = "
                               f"**{100*_ov:.2f}%**（~100% = 剪同一批 = no-op；越低代表換掉越多）")
+            if best_rank is not None:
+                # 分數＝-最好名次（越前面越好）；並列時以貢獻決勝（正規化到 [0, 0.5)，不跨名次）
+                _c = contribution / torch.clamp_min(contribution.max(), 1e-30)
+                _tk_score = (-best_rank.to(torch.float64) + 0.5 * _c.to(torch.float64))
+                if not getattr(self, "_tk_announced", False):
+                    self._tk_announced = True
+                    _mv = contribution <= torch.quantile(contribution, self.prune_ratio)
+                    _ms = _tk_score <= torch.quantile(_tk_score, self.prune_ratio)
+                    _ov = float((_mv & _ms).sum()) / max(float(_mv.sum()), 1.0)
+                    _ok = best_rank < NEVER
+                    _never = 1.0 - float(_ok.float().mean())
+                    _med = float(best_rank[_ok].float().median()) if bool(_ok.any()) else -1.0
+                    print(f"[trim-tilek] ✅ 首次觸發：判準＝逐 tile 最好名次（{_tk_pairs:,} 個 (顆,tile) 對，{n_used} 視角）"
+                          f"  從未上榜 {100*_never:.2f}%  名次中位 {_med:.0f}")
+                    print(f"[trim-tilek]    與貢獻判準的底部 {100*self.prune_ratio:.0f}% 遮罩重疊 = **{100*_ov:.2f}%**"
+                          f"（~100% = 剪同一批 = no-op）")
+                score = _tk_score
             tile = torch.quantile(score, self.prune_ratio)
             prune_mask = (score <= tile)
             # 診斷（2026-08-25）：`<=` 在有並列時會超剪。零貢獻的來源是 EXACT_SUPPORT ——
