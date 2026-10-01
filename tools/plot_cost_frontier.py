@@ -127,26 +127,83 @@ def fig2():
 
 # ── 圖 3：逐 tile 前 K 名（事後剪枝，b6 60k conic 開）────────────────────────
 def fig3():
+    # 2026-10-01 改版：加入現行 trim 判準 v 與 v/c（先前誤把「總貢獻最大」標成現行判準）
     tk = [(0.23, 17.925, 1), (0.32, 19.356, 2), (0.45, 20.963, 4), (0.65, 22.825, 8), (0.92, 24.945, 16), (1.37, 27.231, 32), (1.92, 29.165, 64)]
+    vt = [(0.17, 16.391), (0.24, 18.231), (0.37, 20.525), (0.58, 22.740), (0.85, 25.034), (1.25, 27.297), (1.78, 29.165)]
+    vc = [(0.05, 10.790), (0.08, 11.406), (0.13, 12.286), (0.19, 13.496), (0.31, 15.043), (0.49, 17.043), (0.76, 19.807)]
     op = [(0.51, 18.139), (0.75, 19.522), (0.99, 21.025), (1.18, 23.124), (1.35, 25.218), (1.60, 27.200), (1.93, 28.834)]
     mc = [(1.28, 19.195), (1.42, 20.218), (1.62, 21.544), (1.83, 23.219), (2.05, 25.189), (2.31, 27.243), (2.56, 28.970)]
     rd = [(0.24, 15.460), (0.36, 16.936), (0.52, 18.468), (0.73, 20.103), (1.05, 22.001), (1.48, 24.210), (1.94, 26.543)]
-    fig, ax = plt.subplots(figsize=(8.2, 5.0))
-    ax.plot(*zip(*rd), "--", color=MUTED, lw=1.4, label="隨機（參考基準）")
-    ax.plot(*zip(*mc), "-^", color=C3, lw=2, ms=6, label="總貢獻最大（偏好又大又亮的顆粒；不是現行 trim 判準）")
-    ax.plot(*zip(*op), "-s", color=C2, lw=2, ms=6, label="opacity 最高")
-    ax.plot([p[0] for p in tk], [p[1] for p in tk], "-o", color=C1, lw=2, ms=7, label="逐 tile 前 K 名", zorder=4)
-    for x, y, k in tk:
-        lab(ax, x, y, f"K={k}", dx=-6, dy=5, ha="right", color=C1 if False else INK2)
-    ax.plot(2.94, 30.481, "*", color="#0b0b0b", ms=13, zorder=5); lab(ax, 2.94, 30.481, "不剪 30.48", dx=-6, dy=6, ha="right")
+    fig, ax = plt.subplots(figsize=(9.0, 5.6))
+    # 參考基準：灰色、不佔類別色（線型區分＋直接標註）
+    ax.plot(*zip(*rd), "--", color=MUTED, lw=1.3, label="參考：隨機")
+    ax.plot(*zip(*op), ":", color=MUTED, lw=1.6, label="參考：opacity 最高")
+    ax.plot(*zip(*mc), "-.", color=MUTED, lw=1.3, label="參考：總貢獻最大（偏好又大又亮的顆粒）")
     lab(ax, rd[-1][0], rd[-1][1], "隨機", dx=5, dy=-4, color=MUTED)
-    lab(ax, mc[-1][0], mc[-1][1], "總貢獻最大", dx=5, dy=-6)
-    lab(ax, op[3][0], op[3][1], "opacity", dx=6, dy=-10)
-    ax.set_xlabel("渲染成本：精確 Load 中位（百萬）")
-    ax.set_ylabel("val PSNR（dB）")
-    ax.legend(fontsize=8, loc="lower right")
-    ax.set_title("圖 3　同一個訓練好的模型，用四種規則剪掉不同比例（沒有重新訓練）\n每條線＝一種剪法；線上的點＝剪掉的比例不同。越左越便宜、越上品質越好：藍線（逐 tile 前 K 名）最左上", fontsize=10)
+    lab(ax, op[-1][0], op[-1][1], "opacity", dx=5, dy=-10, color=MUTED)
+    lab(ax, mc[-1][0], mc[-1][1], "總貢獻最大", dx=5, dy=-4, color=MUTED)
+    # 主角：三種判準
+    ax.plot(*zip(*vc), "-^", color=C3, lw=2, ms=6, label="v/c（剪完不重訓時最差：只留小而暗的顆粒）")
+    ax.plot(*zip(*vt), "-s", color=C2, lw=2, ms=6, label="現行 trim 判準 v（每像素平均貢獻）", zorder=4)
+    ax.plot([p[0] for p in tk], [p[1] for p in tk], "-o", color=C1, lw=2, ms=6, label="逐 tile 前 K 名", zorder=4)
+    for x, y, k in tk[3:]:
+        lab(ax, x, y, f"K={k}", dx=-6, dy=5, ha="right")
+    lab(ax, vt[-1][0], vt[-1][1], "現行 v", dx=-10, dy=4, ha="right")
+    lab(ax, vc[-1][0], vc[-1][1], "v/c", dx=6, dy=-4)
+    ax.plot(2.94, 30.481, "*", color="#0b0b0b", ms=13, zorder=5); lab(ax, 2.94, 30.481, "不剪 30.48", dx=-6, dy=6, ha="right")
+    ax.set_xlabel("渲染成本：精確 Load 中位（百萬）"); ax.set_ylabel("val PSNR（dB）")
+    ax.legend(fontsize=7.5, loc="lower right")
+    ax.set_title("圖 3　同一個訓練好的模型（b6 60k），用不同規則剪掉不同比例、剪完「不重新訓練」\n"
+                 "每條線＝一種剪法，線上的點＝保留比例不同。越左越便宜、越上越好：現行 v 與逐 tile 前 K 名幾乎重疊（v 略佳）",
+                 fontsize=9.5)
     save(fig, "f3_tile_topk_posthoc.png")
+
+
+# ── 圖 6：剪完再 fine-tune（b6 60k -> 接續到 65k）───────────────────────────────
+def fig6():
+    arms = ["不剪", "前32名", "opacity\n（同 N）", "前64名", "opacity\n（同 N） "]
+    pre = [(2.936, 30.481), (1.372, 27.231), (1.599, 27.200), (1.920, 29.165), (1.931, 28.834)]
+    post = [(2.926, 30.681), (1.546, 29.838), (1.771, 29.872), (2.051, 30.335), (2.066, 30.317)]
+    x = np.arange(len(arms)); w = 0.38
+    fig, axs = plt.subplots(1, 2, figsize=(12, 4.3))
+    ax = axs[0]
+    ax.bar(x - w / 2, [p[1] for p in pre], w, color=MUTED, label="剪完、未重訓")
+    ax.bar(x + w / 2, [p[1] for p in post], w, color=C1, label="再 fine-tune 5k 步（60k→65k）")
+    for i, (a, b) in enumerate(zip(pre, post)):
+        lab(ax, i - w / 2, a[1], f"{a[1]:.2f}", dx=0, dy=2, ha="center", size=7)
+        lab(ax, i + w / 2, b[1], f"{b[1]:.2f}", dx=0, dy=2, ha="center", size=7)
+    ax.set_ylim(26.5, 31.2); ax.set_xticks(x); ax.set_xticklabels(arms, fontsize=8.5)
+    ax.set_title("val PSNR（dB）", fontsize=10); ax.grid(axis="x", visible=False)
+    ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=2)
+    ax = axs[1]
+    ax.bar(x - w / 2, [p[0] for p in pre], w, color=MUTED, label="剪完、未重訓")
+    ax.bar(x + w / 2, [p[0] for p in post], w, color=C1, label="fine-tune 後")
+    for i, (a, b) in enumerate(zip(pre, post)):
+        lab(ax, i + w / 2, b[0], f"{b[0]:.2f}M", dx=0, dy=2, ha="center", size=7)
+    ax.set_xticks(x); ax.set_xticklabels(arms, fontsize=8.5)
+    ax.set_title("渲染成本：精確 Load 中位（百萬；越低越便宜）", fontsize=10); ax.grid(axis="x", visible=False)
+    fig.suptitle("圖 6　剪完再 fine-tune 5k 步：前 K 名與同顆數的 opacity 剪法補回後品質幾乎一樣（差 ≤0.04 dB）；\n"
+                 "前 32 名的 Load 比 opacity 低 13%，前 64 名只低 1%。對照：不剪多跑 5k 步也 +0.20", fontsize=10.5, y=1.02)
+    save(fig, "f6_prune_finetune.png")
+
+
+# ── 圖 7：官方配方 trim 真的執行時（官方 block 3）──────────────────────────────────
+def fig7():
+    names = ["官方原版\n（trim 從未執行）", "官方＋一行修正\n（trim 執行）", "我方程式碼跑官方配方\n（trim 執行）"]
+    N = [5.23, 0.91, 0.93]; ps = [31.69, 30.87, 30.91]; wall = [3.31, 2.29, None]; vr = [7.30, 2.75, 2.59]
+    fig, axs = plt.subplots(1, 3, figsize=(13, 3.8))
+    for ax, vals, t, fmt in ((axs[0], N, "終點顆數 N（百萬）", "{:.2f}M"), (axs[1], ps, "val PSNR（dB）", "{:.2f}"),
+                             (axs[2], vr, "訓練峰值 VRAM（實際配置，GB）", "{:.2f}")):
+        cols = [MUTED, C1, C2]
+        ax.bar(range(3), vals, color=cols, width=0.6)
+        for i, v in enumerate(vals):
+            lab(ax, i, v, fmt.format(v), dx=0, dy=2, ha="center", size=8)
+        ax.set_xticks(range(3)); ax.set_xticklabels(names, fontsize=7.5); ax.set_title(t, fontsize=10)
+        ax.grid(axis="x", visible=False)
+    axs[1].set_ylim(29.5, 32.2)
+    fig.suptitle("圖 7　官方 block 3：讓 trim 真的執行，顆數少 5.7 倍、峰值 VRAM 少 62%，val 只低 0.8 dB（val⊂train）；\n"
+                 "我方程式碼與官方＋修正的結果一致（30.91 vs 30.87、0.93M vs 0.91M）=> 我方能重現官方的 trim 行為", fontsize=10.5, y=1.05)
+    save(fig, "f7_official_trim.png")
 
 
 # ── 圖 4：60k init 軌跡 ───────────────────────────────────────────────────────
@@ -199,4 +256,4 @@ def fig5():
 
 
 if __name__ == "__main__":
-    fig1(); fig2(); fig3(); fig4(); fig5()
+    fig1(); fig2(); fig3(); fig4(); fig5(); fig6(); fig7()
