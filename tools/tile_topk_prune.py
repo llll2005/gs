@@ -12,7 +12,10 @@
   ⚠ 近似：同一顆在不同 tile 的真實貢獻不同（邊緣淡、中心濃），平均分攤會高估邊緣 tile 的分數。
     外接盒用對稱半徑（conic 開時光柵器實際用的是不對稱盒，這裡偏大）。
 
-對照（同顆數 N_K）：opacity 由高到低、單視角最大貢獻（現行 trim 的判準 max）、隨機。
+對照（同顆數 N_K）：opacity 由高到低、隨機，以及三種貢獻判準：
+  總貢獻最大   max_v (每像素平均 T·α × 覆蓋像素)  —— ⚠ 09-30 版圖 3 誤標為「現行 trim 判準」，它偏好又大又亮的顆粒
+  現行 trim v  max_v (每像素平均 T·α)              —— renderer 週期 trim 的預設判準（contribution_accumulator reduce=max）
+  v/c          v ÷ Σ_v 覆蓋像素                    —— trim_by_value_per_cost（α=1）
 評分：val 視角（val ⊂ train，只用於同模型不同剪法之間的相對比較）PSNR/SSIM/LPIPS，
       與同批視角的精確 Load 中位（Σtiles，光柵器回傳）。
 
@@ -66,6 +69,8 @@ def main():
         idxs = idxs[::max(1, len(idxs) // a.max_cam)][:a.max_cam]
     best_rank = torch.full((N,), 1 << 30, dtype=torch.int64, device=dev)
     max_contrib = torch.zeros(N, device=dev)
+    v_trim = torch.zeros(N, device=dev)          # 現行 trim 的 v：各視角每像素平均貢獻取最大
+    cost_sum = torch.zeros(N, device=dev)        # c：各視角覆蓋像素數加總（renderer 的 cost_acc）
     B = 16
     with torch.no_grad():
         for vi, ci in enumerate(idxs):
@@ -77,6 +82,8 @@ def main():
             trans, cov = renderer(cam, model, bg_color=bg, record_transmittance=True, record_coverage=True)
             C = (trans * cov.to(trans.dtype)).reshape(-1)                 # 該視角總貢獻 Σ T·α
             max_contrib = torch.maximum(max_contrib, C)
+            v_trim = torch.maximum(v_trim, trans.reshape(-1))
+            cost_sum += cov.reshape(-1).float()
             ph = torch.cat([model.get_xyz, torch.ones(N, 1, device=dev)], 1) @ cam.full_projection
             w = ph[:, 3].clamp_min(1e-7)
             px = ((ph[:, 0] / w + 1.0) * W - 1.0) * 0.5
@@ -158,7 +165,10 @@ def main():
         print(f"── K={K}：保留「至少在某個 (視角,tile) 進前 {K} 名」的 {n:,} 顆 ──")
         evaluate(m, f"tile 前{K}名")
         evaluate(op >= torch.topk(op, n).values[-1], "同 N：opacity 最高")
-        evaluate(max_contrib >= torch.topk(max_contrib, n).values[-1], "同 N：單視角最大貢獻")
+        evaluate(max_contrib >= torch.topk(max_contrib, n).values[-1], "同 N：總貢獻最大")
+        evaluate(v_trim >= torch.topk(v_trim, n).values[-1], "同 N：現行 trim v")
+        vpc = v_trim / torch.clamp_min(cost_sum, 1.0)
+        evaluate(vpc >= torch.topk(vpc, n).values[-1], "同 N：v/c")
         evaluate(rnd >= torch.topk(rnd, n).values[-1], "同 N：隨機")
 
 
