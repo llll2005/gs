@@ -68,7 +68,7 @@ OTRAIN=$GS/data/matrix_city/aerial/train/block_all_official       # 官方線專
 OTEST=$GS/data/matrix_city/aerial/test/block_all_test_official2
 OTRAIN_REL=data/matrix_city/aerial/train/block_all_official        # 相對 cityGS_origin（data -> gs/data）
 [ -d "$ORIG" ] || { echo "⛔ 找不到 $ORIG"; exit 2; }
-MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|merge|test|res|blockload|prune}
+MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blockfix <N>|merge|test|res|blockload|prune}
 BLKARG=${2:-}
 
 # ⚠ 執行期也要鎖 arch：容器設成含 10.0，torch 2.0.1 不認識，而 CUDA 後端第一次 densify 才 JIT 編譯
@@ -451,6 +451,26 @@ PY
     fi
     echo "✅ 官方 test 集：$OTEST（$(ls "$L" | wc -l) 張 1600 影像、$(ls "$OTEST/estimated_depths" | grep -c npy) 張深度）"
     exit 0 ;;
+  blockfix)
+    # 2026-10-01：第二條官方參考線（官方程式碼＋一行修正讓 trim 真的執行，見 setup_official_trimfix.sh），先跑一塊。
+    #   其餘與 block 模式完全相同：官方 config、官方 coarse（cityGS_origin 那個，用絕對路徑）、官方分區、官方套件、外掛紀錄。
+    [ -n "$BLKARG" ] || { echo "⛔ 用法: task_citygs_origin.sh blockfix <N>"; exit 2; }
+    FIX=/workspace/data/hdd/11213/cityGS_origin_trimfix
+    ( cd "$FIX" 2>/dev/null && [ "$(git diff --name-only)" = "internal/gaussian_splatting.py" ] ) \
+      || { echo "⛔ $FIX 不存在或差異不是恰好那一個檔（先跑 scripts/lab/setup_official_trimfix.sh）"; exit 2; }
+    CK=$(coarse_ckpt); [ -n "$CK" ] || { echo "⛔ 沒有官方 coarse ckpt"; exit 2; }
+    CK=$ORIG/$CK
+    NAMEF=citygsv2_mc_aerial_sh2_trimfix
+    cd "$FIX" || exit 1
+    move_aside "outputs/$NAMEF/blocks/block_$BLKARG"
+    echo "=== 官方＋一行修正 微調 block $BLKARG（60k，吃官方 coarse $(basename "$CK")）$(date) ==="
+    run_measured conda run -n "$OFFENV" --no-capture-output python -u main.py fit \
+      --config configs/$NAME.yaml --data.parser.block_id "$BLKARG" -n $NAMEF \
+      --model.initialize_from "$CK" --data.num_workers 8 --data.path "$OTRAIN_REL"
+    rc=$?
+    nt=$(grep -a -c 'Trimming' "$LOG"); echo "[檢查] log 裡 Trimming 出現 $nt 次（官方原版同塊 = 0）"
+    [ "$nt" -ge 1 ] || { echo "⛔⛔ trim 仍然沒有執行 => 修正無效"; rc=5; }
+    record "$BLKARG" "outputs/$NAMEF/blocks/block_$BLKARG"; exit "$rc" ;;
   blockload)
     # 2026-09-29：每塊在 30k（增生期結束附近）與 60k（終點）的離線 Load —— 我方跑次都有這一欄
     #   （同一支 cost_budget_calibrate、精確 Σtiles 與代理並列）。官方原始碼沒有訓練中 Load 打印，
