@@ -44,6 +44,14 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     本旗標只移除**固定的下壓力（L1）**，光度梯度對 opacity 的學習照常 ⇒ 兩極化保留。
     """
 
+    opacity_entropy_reg: float = 0.0
+    """>0 時加上 opacity 的**二元熵**正則 H(o) = -o ln o - (1-o) ln(1-o)（對全部顆粒取平均），
+    把 o 往 0 或 1 推（兩極化）。2026-10-01 使用者提的構想：兩極化後靠近 0 的會被 trim／MCMC 回收 ⇒
+    顆數可降、每個 tile 的前幾名貢獻更集中。⚠ 不是「整體變高」：那個方向已有反證（收割期關 L1 => 四項全輸）。
+    梯度 dH/do = ln((1-o)/o)：o=0.5 為 0、o=0.1 約 2.2 ⇒ 權重與 opacity_reg 同量級（0.002）時，極端處約 L1 的 2 倍。"""
+    opacity_entropy_from_iter: int = 0
+    """從這一步開始加熵正則（要在 densify_until 之前才會被回收機制吃到）。"""
+
     def instantiate(self, *args, **kwargs) -> "MCMCCityGSV2MetricsModule":
         return MCMCCityGSV2MetricsModule(self)
 
@@ -69,6 +77,19 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         metrics["loss"] = metrics["loss"] \
             + _oreg_w * opacity_reg \
             + self.config.scale_reg * scale_reg
+
+        _ew = float(getattr(self.config, "opacity_entropy_reg", 0.0))
+        if _ew > 0 and step >= int(getattr(self.config, "opacity_entropy_from_iter", 0)):
+            _o = opacities.clamp(1e-6, 1 - 1e-6)
+            _H = -(_o * torch.log(_o) + (1 - _o) * torch.log(1 - _o)).mean()
+            metrics["loss"] = metrics["loss"] + _ew * _H
+            metrics["op_ent"] = _H.detach()
+            pbar["op_ent"] = False
+            if not getattr(self, "_ent_announced", False):
+                self._ent_announced = True
+                _od = _o.detach()
+                print(f"[opacity-entropy] ✅ 首次觸發 step={step} 權重={_ew:g}  H={float(_H):.4f}  "
+                      f"o∈(0.1,0.9) 佔 {100 * float(((_od > 0.1) & (_od < 0.9)).float().mean()):.1f}%", flush=True)
 
         metrics["op_reg"] = opacity_reg.detach()
         metrics["sc_reg"] = scale_reg.detach()

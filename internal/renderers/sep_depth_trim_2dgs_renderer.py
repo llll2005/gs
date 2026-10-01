@@ -35,6 +35,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_by_value_per_cost: bool = False,
             trim_value_per_cost_alpha: float = 1.0,
             trim_by_tile_topk: bool = False,
+            trim_tile_k_soft: float = 32.0,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -100,6 +101,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   同成本下品質最好（紀錄/new_figures_costfrontier 圖 3）。與 trim_by_value_per_cost 同時開時以本旗標為準。
         #   ⚠ 用 getattr 讀：ckpt 反序列化的舊 renderer 沒有這個屬性。
         self.trim_by_tile_topk = trim_by_tile_topk
+        # 2026-10-01：與 trim_by_value_per_cost **同時開**時合成一個判別式（背包觀點：v/c＝全場總預算、
+        #   tile 名次＝每個 tile 的容量上限）：score = (v / c^α) / (1 + 最好名次 / K_soft)
+        self.trim_tile_k_soft = trim_tile_k_soft
         self._tk_announced = False
         # >0 時，每次 trim 事件**額外**用「每 N 台取一台」再算一次 contribution，
         # 報告與全視角版的 Spearman 與底部 10% 遮罩重疊。只讀，不改變剪枝結果。
@@ -496,7 +500,22 @@ class SepDepthTrim2DGSRenderer(Renderer):
                           f"  從未上榜 {100*_never:.2f}%  名次中位 {_med:.0f}")
                     print(f"[trim-tilek]    與貢獻判準的底部 {100*self.prune_ratio:.0f}% 遮罩重疊 = **{100*_ov:.2f}%**"
                           f"（~100% = 剪同一批 = no-op）")
-                score = _tk_score
+                if bool(getattr(self, "trim_by_value_per_cost", False)) and cost_acc is not None:
+                    # 合成判別式：v/c（上面已算進 score）除以 tile 名次的軟懲罰；從未上榜 => 名次 NEVER => 分數趨近 0
+                    _ks = float(getattr(self, "trim_tile_k_soft", 32.0))
+                    _comb = score.to(torch.float64) / (1.0 + best_rank.to(torch.float64) / _ks)
+                    if not getattr(self, "_comb_announced", False):
+                        self._comb_announced = True
+                        _r = self.prune_ratio
+                        _mvc = score <= torch.quantile(score, _r)
+                        _mrk = _tk_score <= torch.quantile(_tk_score, _r)
+                        _mc = _comb <= torch.quantile(_comb, _r)
+                        _ov = lambda a, b: 100.0 * float((a & b).sum()) / max(float(a.sum()), 1.0)
+                        print(f"[trim-vpc+tilek] ✅ 合成判別式 (v/c^α)/(1+名次/{_ks:g})：底部 {100*_r:.0f}% 與純 v/c 重疊 "
+                              f"{_ov(_mvc, _mc):.2f}%、與純名次重疊 {_ov(_mrk, _mc):.2f}%（都 ~100% = 合成無作用）", flush=True)
+                    score = _comb
+                else:
+                    score = _tk_score
             tile = torch.quantile(score, self.prune_ratio)
             prune_mask = (score <= tile)
             # 診斷（2026-08-25）：`<=` 在有並列時會超剪。零貢獻的來源是 EXACT_SUPPORT ——

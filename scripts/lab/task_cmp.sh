@@ -132,6 +132,12 @@ case "$ARM" in
   fastgrow)   EXTRA=(--model.density.init_args.add_ratio 1.2);                  EXP=1 ;;
   # ★ 2026-10-01：逐 tile 前 K 名做成訓練期 trim 判準（renderer trim_by_tile_topk；事後剪枝同成本下最好）
   tilek)      EXTRA=(--model.renderer.init_args.trim_by_tile_topk true);         EXP=1 ;;
+  # ★ 2026-10-01：v/c 與逐 tile 名次合成一個判別式 score = (v/c) / (1 + 最好名次/32)（背包：全場預算＋每 tile 容量）
+  vpctilek)   EXTRA=(--model.renderer.init_args.trim_by_value_per_cost true
+                     --model.renderer.init_args.trim_by_tile_topk true);         EXP=2 ;;
+  # ★ 2026-10-01：opacity 二元熵正則（兩極化；權重與 opacity_reg 同量級，從 densify_from 開始才會被回收機制吃到）
+  oent)       EXTRA=(--model.metric.init_args.opacity_entropy_reg 0.002
+                     --model.metric.init_args.opacity_entropy_from_iter 1000);   EXP=2 ;;
   # ★ 2026-10-01：dup 系列更激進（scripts/lab/gen_dup_variants.sh 產的 PLY）——
   #   sfmdup5＝複製 5 份（起始 > cap）、sfmdup4j10／sfmdup4j025＝dup4 但抖動 1.0／0.25（jitter 從沒測過）
   sfmdup5|sfmdup4j10|sfmdup4j025)
@@ -233,7 +239,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|sfmdup5|sfmdup4j10|sfmdup4j025|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|sfmdup5|sfmdup4j10|sfmdup4j025|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次

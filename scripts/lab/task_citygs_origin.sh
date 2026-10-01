@@ -68,7 +68,7 @@ OTRAIN=$GS/data/matrix_city/aerial/train/block_all_official       # 官方線專
 OTEST=$GS/data/matrix_city/aerial/test/block_all_test_official2
 OTRAIN_REL=data/matrix_city/aerial/train/block_all_official        # 相對 cityGS_origin（data -> gs/data）
 [ -d "$ORIG" ] || { echo "⛔ 找不到 $ORIG"; exit 2; }
-MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blockfix <N>|merge|test|res|blockload|prune}
+MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blockfix <N>|blockpaper <N>|merge|test|res|blockload|prune}
 BLKARG=${2:-}
 
 # ⚠ 執行期也要鎖 arch：容器設成含 10.0，torch 2.0.1 不認識，而 CUDA 後端第一次 densify 才 JIT 編譯
@@ -471,6 +471,29 @@ PY
     nt=$(grep -a -c 'Trimming' "$LOG"); echo "[檢查] log 裡 Trimming 出現 $nt 次（官方原版同塊 = 0）"
     [ "$nt" -ge 1 ] || { echo "⛔⛔ trim 仍然沒有執行 => 修正無效"; rc=5; }
     record "$BLKARG" "outputs/$NAMEF/blocks/block_$BLKARG"; exit "$rc" ;;
+  blockpaper)
+    # 2026-10-01：「照論文設定」的官方參考線（先兩塊驗證）：官方程式碼＋一行修正（trim 真的執行，同 blockfix）
+    #   ＋ 論文 §5.1 寫的兩個值（發布的 aerial config 沒設、用的是預設）：
+    #     ω（densify_grad_scaler）= 0.9（預設 0 => 梯度縮放不作用）、pruning ratio（trim 的 prune_ratio）= 0.025（預設 0.1）
+    #   只用命令列覆寫，程式碼不另外改。
+    [ -n "$BLKARG" ] || { echo "⛔ 用法: task_citygs_origin.sh blockpaper <N>"; exit 2; }
+    FIX=/workspace/data/hdd/11213/cityGS_origin_trimfix
+    ( cd "$FIX" 2>/dev/null && [ "$(git diff --name-only)" = "internal/gaussian_splatting.py" ] ) \
+      || { echo "⛔ $FIX 不存在或差異不是恰好那一個檔（先跑 scripts/lab/setup_official_trimfix.sh）"; exit 2; }
+    CK=$(coarse_ckpt); [ -n "$CK" ] || { echo "⛔ 沒有官方 coarse ckpt"; exit 2; }
+    CK=$ORIG/$CK
+    NAMEP=citygsv2_mc_aerial_sh2_paper
+    cd "$FIX" || exit 1
+    move_aside "outputs/$NAMEP/blocks/block_$BLKARG"
+    echo "=== 照論文設定 微調 block $BLKARG（ω=0.9、prune_ratio=0.025、trim 執行；60k）$(date) ==="
+    run_measured conda run -n "$OFFENV" --no-capture-output python -u main.py fit \
+      --config configs/$NAME.yaml --data.parser.block_id "$BLKARG" -n $NAMEP \
+      --model.initialize_from "$CK" --data.num_workers 8 --data.path "$OTRAIN_REL" \
+      --model.density.init_args.densify_grad_scaler 0.9 --model.renderer.init_args.prune_ratio 0.025
+    rc=$?
+    nt=$(grep -a -c 'Trimming' "$LOG"); echo "[檢查] Trimming 出現 $nt 次"
+    [ "$nt" -ge 1 ] || { echo "⛔⛔ trim 沒有執行"; rc=5; }
+    record "$BLKARG" "outputs/$NAMEP/blocks/block_$BLKARG"; exit "$rc" ;;
   blockload)
     # 2026-09-29：每塊在 30k（增生期結束附近）與 60k（終點）的離線 Load —— 我方跑次都有這一欄
     #   （同一支 cost_budget_calibrate、精確 Σtiles 與代理並列）。官方原始碼沒有訓練中 Load 打印，
