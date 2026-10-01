@@ -2,6 +2,7 @@
 
 產生：`python tools/plot_cost_frontier.py`（數字寫在腳本裡，出處見各節）。
 軸的讀法：**往左＝更便宜、往上＝品質更好；同成本比較看「同一個 x 位置誰比較高」。**
+**每個點都是一個跑完的模型（或同一模型的一種剪法），連線只是把同一組設定的點連起來，不是訓練過程。**
 成本一律是 **精確 Load 中位**＝光柵器實際 binning 的 (tile, 顆) 對數 Σtiles，每視角取中位（同工具 `tools/cost_budget_calibrate.py`、同相機）。
 val PSNR 是 val⊂train（同模型、同塊之間的相對比較用）；只有圖 5 是官方 held-out。
 
@@ -25,6 +26,10 @@ val PSNR 是 val⊂train（同模型、同塊之間的相對比較用）；只�
 出處：`logs/load_compare_b6_0927_2234.log`、`load_compare_b6_0930_1010.log`、`load_compare_b6_0930_2125.log`（lab）；PSNR 為各跑次 `best_val.txt`／`train_status.txt`。
 
 ## 圖 2　60k：v/c trim 與 init　`f2_60k_vpc_init.png`
+
+（2026-10-01 改版：原本畫成「點＋連線」容易被讀成訓練過程或趨勢，改成「前 → 後」長條。
+ 每一列＝同一塊、只改一項設定的兩個跑次，比的是兩者跑完 60k 的終點；左圖是渲染成本變化 %、右圖是 PSNR 變化 dB，兩張分開、不共用軸。
+ 灰色斜線列＝只調 cap 省下同樣比例成本時，依 22k cap 曲線斜率推估的 PSNR 變化，不是實測。）
 
 | 塊 | 臂 | 精確 Load 中位 | PSNR / SSIM / LPIPS / 紋理比 |
 |---|---|---:|---|

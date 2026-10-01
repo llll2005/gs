@@ -74,7 +74,7 @@ def fig1():
         lab(ax, a, b, s, dx=(-6 if "基準" in s else 5), dy=(7 if "基準" in s else -11), ha=("right" if "基準" in s else "left"))
     for a, b, s, m in budx:
         ax.plot(a, b, m, color=C2, ms=8, mec="#fcfcfb", mew=1.5, zorder=4)
-        lab(ax, a, b, s, dx=6, dy=-3 if "成本" not in s else 4)
+        lab(ax, a, b, s, dx=(-8 if s == "cb50x+成本取樣" else 6), dy=(-3 if "成本" not in s else 4), ha=("right" if s == "cb50x+成本取樣" else "left"))
     ax.plot([], [], "o", color=C2, ms=8, label="預算閘門（精確單位）")
     ax.set_title("conic 開（現行預設）", fontsize=10.5)
     ax.set_xlabel("渲染成本：精確 Load 中位（百萬，對數軸）")
@@ -82,40 +82,46 @@ def fig1():
     for ax in axs:
         ax.set_xscale("log"); ax.set_xticks([1, 1.5, 2, 3, 4, 5]); ax.set_xticklabels(["1", "1.5", "2", "3", "4", "5"])
         ax.set_ylim(26.2, 29.4)
-    fig.suptitle("圖 1　同成本比較（b6，22k）：左上方＝同成本下品質更好。預算閘門都在 cap 線下方；v/c trim 在線的左上方", fontsize=11)
+    fig.suptitle("圖 1　同成本比較（b6，22k）：每個點＝一個跑完的模型；藍線只是把不同 cap 的跑次連起來（不是訓練過程）\n"
+                 "越左越便宜、越上品質越好。預算閘門的點都在藍線下方；v/c trim 在藍線的左上方", fontsize=10.5, y=0.99)
+    fig.subplots_adjust(top=0.80)
     save(fig, "f1_frontier_22k.png")
 
 
-# ── 圖 2：60k（v/c trim 與 init）──────────────────────────────────────────────
+# ── 圖 2：60k 的「前 → 後」對照（長條；每一列是一組對照，不是訓練過程）──────────
 def fig2():
-    data = {
-        "b6": dict(base=(4.729, 30.45), vpc=(2.391, 30.19), conic=(2.773, 30.48), dup4=(2.616, 30.75)),
-        "b13": dict(base=(6.123, 29.86), vpc=(2.955, 29.32), conic=(3.337, 30.00), dup4=(3.059, 30.32)),
-    }
     slope = 2.31          # 22k conic 關 cap 曲線 cap07->cap12 的斜率（dB / ln Load）
-    fig, axs = plt.subplots(1, 2, figsize=(11.5, 4.6), sharey=False)
-    for ax, (blk, d) in zip(axs, data.items()):
-        (bx, by), (vx, vy) = d["base"], d["vpc"]
-        xs = np.linspace(vx * 0.9, bx * 1.02, 50)
-        ax.plot(xs, by + slope * np.log(xs / bx), "--", color=MUTED, lw=1.3, zorder=1)
-        lab(ax, xs[3], by + slope * np.log(xs[3] / bx), "只調 cap 的推估線（22k 斜率）", dx=4, dy=-12, color=MUTED)
-        ax.plot([bx, vx], [by, vy], "-", color=C3, lw=1.2, alpha=0.6, zorder=2)
-        ax.plot(bx, by, "o", color=C1, ms=9, zorder=4); lab(ax, bx, by, f"speed3（conic 關）\n{by:.2f}", dx=-6, dy=6, ha="right")
-        ax.plot(vx, vy, "*", color=C3, ms=15, mec="#fcfcfb", mew=1.2, zorder=5); lab(ax, vx, vy, f"+v/c trim\n{vy:.2f}（Load {100 * (vx / bx - 1):+.0f}%）", dx=6, dy=-18)
-        (cx, cy), (dx_, dy_) = d["conic"], d["dup4"]
-        ax.plot([cx, dx_], [cy, dy_], "-", color=C2, lw=1.2, alpha=0.6, zorder=2)
-        ax.plot(cx, cy, "s", color=C2, ms=8, mec="#fcfcfb", mew=1.2, zorder=4); lab(ax, cx, cy, f"conic 開 預設 init {cy:.2f}", dx=6, dy=-10)
-        ax.plot(dx_, dy_, "D", color=C2, ms=8, mec="#fcfcfb", mew=1.2, zorder=4); lab(ax, dx_, dy_, f"conic 開 dup4 {dy_:.2f}", dx=6, dy=4)
-        ax.set_title(f"{blk}（60k，N 都是 2.34M）", fontsize=10.5)
-        ax.set_xlabel("渲染成本：精確 Load 中位（百萬）")
-        ax.set_ylabel("val PSNR（dB，60,000 步）")
-        ax.set_ylim(min(vy, by + slope * np.log(vx * 0.9 / bx)) - 0.3, max(dy_, by) + 0.45)
-    axs[1].plot([], [], "o", color=C1, ms=8, label="conic 關 基準（speed3）")
-    axs[1].plot([], [], "*", color=C3, ms=12, label="conic 關 + v/c trim")
-    axs[1].plot([], [], "s", color=C2, ms=8, label="conic 開：預設 init → dup4")
-    axs[1].plot([], [], "--", color=MUTED, label="只調 cap 的推估（22k 斜率，非 60k 實測）")
-    axs[1].legend(fontsize=7.5, loc="lower right")
-    fig.suptitle("圖 2　60k：v/c trim 省一半渲染成本只付 0.26~0.54 dB（調 cap 推估要付 ~1.6 dB）；dup4 同 N 品質更好且更便宜", fontsize=11)
+    rows = [  # (標籤, 前 Load, 後 Load, 前 PSNR, 後 PSNR, 顏色, 是否推估)
+        ("v/c trim　b6", 4.729, 2.391, 30.45, 30.19, C3, False),
+        ("v/c trim　b13", 6.123, 2.955, 29.86, 29.32, C3, False),
+        ("dup4 init　b6", 2.773, 2.616, 30.48, 30.75, C2, False),
+        ("dup4 init　b13", 3.337, 3.059, 30.00, 30.32, C2, False),
+    ]
+    # 對照：只調 cap 省下與 v/c trim 相同比例的成本，依 22k 斜率推估的 PSNR 變化
+    for blk, bx, vx in (("b6", 4.729, 2.391), ("b13", 6.123, 2.955)):
+        rows.append((f"只調 cap 省同樣成本（推估）　{blk}", bx, vx, 0.0, slope * np.log(vx / bx), MUTED, True))
+    labels = [r[0] for r in rows]
+    dload = [100 * (r[2] / r[1] - 1) for r in rows]
+    dpsnr = [r[4] - r[3] for r in rows]
+    cols = [r[5] for r in rows]
+    y = np.arange(len(rows))[::-1]
+    fig, axs = plt.subplots(1, 2, figsize=(12, 4.4), sharey=True)
+    for ax, vals, unit, title in ((axs[0], dload, "%", "渲染成本變化（精確 Load 中位，%）\n負＝更便宜"),
+                                  (axs[1], dpsnr, " dB", "品質變化（val PSNR，dB）\n正＝更好")):
+        for yy, v, c, r in zip(y, vals, cols, rows):
+            ax.barh(yy, v, color=c, height=0.62, hatch=("///" if r[6] else None), edgecolor="#fcfcfb", lw=0)
+            ax.annotate(f"{v:+.1f}{unit}" if unit == "%" else f"{v:+.2f}{unit}", (v, yy),
+                        xytext=(4 if v >= 0 else -4, 0), textcoords="offset points",
+                        ha="left" if v >= 0 else "right", va="center", fontsize=8, color=INK2)
+        ax.axvline(0, color="#0b0b0b", lw=0.8)
+        ax.set_title(title, fontsize=10)
+        ax.grid(axis="y", visible=False)
+    axs[0].set_yticks(y); axs[0].set_yticklabels(labels, fontsize=8.5)
+    axs[0].set_xlim(-64, 12); axs[1].set_xlim(-2.15, 0.6)
+    fig.subplots_adjust(top=0.74, wspace=0.08)
+    fig.suptitle("圖 2　60k 的前 → 後對照（每一列＝同一塊、只改一項設定的兩個跑次，比較它們跑完時的終點）\n"
+                 "v/c trim：成本 -49~-52%，品質只 -0.26~-0.54 dB；同樣省成本若只調 cap，推估要 -1.6~-1.7 dB（灰色斜線＝推估）",
+                 fontsize=10.5, y=0.99)
     save(fig, "f2_60k_vpc_init.png")
 
 
@@ -139,7 +145,7 @@ def fig3():
     ax.set_xlabel("渲染成本：精確 Load 中位（百萬）")
     ax.set_ylabel("val PSNR（dB）")
     ax.legend(fontsize=8, loc="lower right")
-    ax.set_title("圖 3　事後剪枝（沒有重新訓練）：同成本下「逐 tile 前 K 名」最好\n每個 K 的四條線是同一個保留顆數 N；前 K 名的點落在最左邊＝同顆數下最便宜", fontsize=10.5)
+    ax.set_title("圖 3　同一個訓練好的模型，用四種規則剪掉不同比例（沒有重新訓練）\n每條線＝一種剪法；線上的點＝剪掉的比例不同。越左越便宜、越上品質越好：藍線（逐 tile 前 K 名）最左上", fontsize=10)
     save(fig, "f3_tile_topk_posthoc.png")
 
 
