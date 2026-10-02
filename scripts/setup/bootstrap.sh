@@ -376,7 +376,7 @@ cat <<'TXT'
 
   ⚠ estimate_dataset_depths.py 需要 Depth-Anything-V2 的權重與程式碼；本機是用
     depth_anything_v2 這個符號連結指到外部 clone，**連結不會跟著 git 過來**。
-  ⚠ 換了資料就是換了世代：SfM 重生會換座標系，舊 ckpt 不可當 init（紀錄/研究總覽.md 的鐵律）。
+  ⚠ 換了資料就是換了世代：SfM 重生會換座標系，舊 ckpt 不可當 init（紀錄/研究總覽.md §10 年代與舊資料）。
 TXT
 
 say "完成"
@@ -384,5 +384,5 @@ echo "  下一步："
 echo "    conda activate $ENV_NAME"
 echo "    python tools/queue_status.py                 # 排程器現況"
 echo "    bash scripts/task_speed3.sh                  # 現行最佳配方（b12，約 8.8h）"
-echo "  文件：紀錄/_ctx.md（開場必讀）-> 紀錄/完整指令手冊.md -> 紀錄/研究總覽.md §13"
+echo "  文件：紀錄/README.md（入口）-> 紀錄/研究總覽.md §0 -> 紀錄/完整指令手冊.md"
 exit $VRC

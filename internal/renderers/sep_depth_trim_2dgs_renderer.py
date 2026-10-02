@@ -83,7 +83,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # -1 = follow the density controller's densify_until_iter (the shipped behaviour). Set it
         # explicitly to keep harvesting after densify stops -- trimming and densify are separate
         # mechanisms and tying them together makes a "densify off, keep shrinking" schedule
-        # impossible to express. See 紀錄/研究總覽.md §4.
+        # impossible to express. See 紀錄/new_archived/研究總覽_v1_至2026-09-13.md §4.
         self.contribution_prune_until_iter = contribution_prune_until_iter
         self.start_prune_ratio = start_prune_ratio
         self.diable_start_trimming = diable_start_trimming
@@ -119,7 +119,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ★ 2026-10-01：週期 trim 判準改成「逐 tile 名次」（使用者提的 tile 局部背包）。
         #   每顆記下它在所有 (視角, tile) 裡拿到的**最好名次**（internal/utils/tile_topk.py），
         #   剪掉最好名次最差的 prune_ratio（並列時再依貢獻）。事後剪枝（未重訓）量到：同 N 下 Load 最低、
-        #   同成本下品質最好（紀錄/new_figures_costfrontier 圖 3）。與 trim_by_value_per_cost 同時開時以本旗標為準。
+        #   同成本下品質最好（紀錄/實驗分析/06_事後剪枝與fine-tune.md）。與 trim_by_value_per_cost 同時開時以本旗標為準。
         #   ⚠ 用 getattr 讀：ckpt 反序列化的舊 renderer 沒有這個屬性。
         self.trim_by_tile_topk = trim_by_tile_topk
         # 2026-10-01：與 trim_by_value_per_cost **同時開**時合成一個判別式（背包觀點：v/c＝全場總預算、
@@ -342,7 +342,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # 2026-08-26：`depth_to_normal` 是全幅逐像素且可微（反投影 + 鄰域叉積），
         # 唯一的訓練期消費者是 lambda_normal=0 的 normal loss ⇒ 可跳過。見建構子 docstring。
         # ⚠ 2026-08-28：用 `getattr` 不是 `self.skip_surf_normal` —— ckpt 當 init 時 renderer 是
-        # 從 checkpoint **反序列化**的（_ctx 陷阱 1），舊 ckpt 沒有這個屬性 => AttributeError。
+        # 從 checkpoint **反序列化**的（紀錄/new_archived/_ctx.md 陷阱 1），舊 ckpt 沒有這個屬性 => AttributeError。
         # `opprofile` 就是這樣死的。新增 renderer 屬性一律要對舊 ckpt 保持相容。
         if not getattr(self, "skip_surf_normal", False):
             surf_normal = self.depth_to_normal(viewpoint_camera, surf_depth)

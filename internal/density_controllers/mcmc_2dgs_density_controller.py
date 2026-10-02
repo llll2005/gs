@@ -1468,7 +1468,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                           f"{load_proxy / _ex:.2f} 倍（正常約 1.1~1.3）。"
                           f"多半是 `exact_conic_aabb` 開著而 `exact_tile_cost` 沒開。"
                           f"⇒ cost_budget / vpc / cost_aware_densify 的標定會錯約這個倍數，"
-                          f"請改開 `exact_tile_cost`（見 資源與效能量測彙整 §9.9b）", flush=True)
+                          f"請改開 `exact_tile_cost`（見 紀錄/實驗分析/04_外接盒與binning成本.md）", flush=True)
         if self.config.exact_tile_cost:
             tiles = outputs.get("tiles", None)
             if tiles is None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""通用 config 新舊版對比圖（2026-09-22）。輸出到 紀錄/new_figures_commonconf/
+"""通用 config 新舊版對比圖（2026-09-22）。面板輸出到 $CITYGS_FIG_OUT（預設 紀錄/實驗分析/_panels）；組圖由 tools/plot_analysis.py 做
 
 ⚠⚠ 這張比較「是什麼」與「不是什麼」，先讀清楚再引用：
 
@@ -13,7 +13,7 @@ config 只是被對齊過去，讓新腳本不會漏。
 ⛔ 本圖**不是**「舊 config 整體 vs 新 config 整體」—— 那個比較**不存在乾淨資料**，
    因為新年代裡沒有任何一次跑次真的用過那 6 項的舊值（腳本全都覆寫掉了）。
 
-數據出處：紀錄/資源與效能量測彙整.md §9.9b（品質／時間／VRAM／離線 Load）。
+數據出處：紀錄/實驗分析/04_外接盒與binning成本.md（原 資源與效能量測彙整 §9.9b）（品質／時間／VRAM／離線 Load）。
 """
 import os
 import matplotlib
@@ -31,12 +31,18 @@ except Exception as _e:
 plt.rcParams["font.sans-serif"] = [_fn, "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["figure.dpi"] = 150
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "紀錄", "new_figures_commonconf")
+OUT = os.environ.get("CITYGS_FIG_OUT", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   "紀錄", "實驗分析", "_panels"))   # 2026-10-03：面板，由 tools/plot_analysis.py 組合
 os.makedirs(OUT, exist_ok=True)
 OLD, NEW = "#B0B0B0", "#55A868"
 
 def save(fig, name):
+    import re as _re
+    _pat = _re.compile(r"^(圖\s*\d+[a-z]?\s*[　 ]*)")
+    if getattr(fig, "_suptitle", None) is not None:
+        fig._suptitle.set_text(_pat.sub("", fig._suptitle.get_text()))
+    for _ax in fig.axes:
+        _ax.set_title(_pat.sub("", _ax.get_title()), fontsize=_ax.title.get_fontsize())
     p = os.path.join(OUT, name); fig.tight_layout()
     fig.savefig(p, bbox_inches="tight"); plt.close(fig); print("  ->", p)
 

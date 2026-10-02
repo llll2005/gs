@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-"""資源與效能量測的圖（2026-09-17）。數據全部是量測值，出處見 紀錄/資源與效能量測彙整.md。
-用法：python tools/plot_resource_report.py   => 輸出到 紀錄/figures/
+"""資源與效能量測的圖（2026-09-17）。數據全部是量測值，出處見 紀錄/實驗分析/01~04（原 資源與效能量測彙整）。
+用法：python tools/plot_resource_report.py   => 面板輸出到 $CITYGS_FIG_OUT（預設 紀錄/實驗分析/_panels）；組圖由 tools/plot_analysis.py 做
 """
 import os
 import matplotlib
@@ -22,14 +22,26 @@ plt.rcParams["font.sans-serif"] = [_fn, "DejaVu Sans"]
 print("字型：", _fn)
 plt.rcParams["axes.unicode_minus"] = False
 plt.rcParams["figure.dpi"] = 150
-OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "紀錄", "figures")
+OUT = os.environ.get("CITYGS_FIG_OUT", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "紀錄", "實驗分析", "_panels"))
 os.makedirs(OUT, exist_ok=True)
 C = {"backward": "#4C72B0", "forward": "#55A868", "trim": "#C44E52", "optimizer": "#8172B2",
      "loss": "#CCB974", "loopout": "#64B5CD", "other": "#B0B0B0"}
 LAB = {"backward": "backward", "forward": "forward（光柵化）", "trim": "週期 trim（按 500 步攤平）",
        "optimizer": "optimizer.step", "loss": "loss（L1+SSIM）", "loopout": "迴圈外（dataloader／搬運）", "other": "其他"}
 
+def _strip_fig_numbers(fig):
+    """組合成 紀錄/實驗分析/ 的單一圖時，面板用 (a)(b)… 標號 => 去掉舊的「圖 N　」前綴。"""
+    import re as _re
+    pat = _re.compile(r"^(圖\s*\d+[a-z]?\s*[　 ]*)")
+    st = getattr(fig, "_suptitle", None)
+    if st is not None:
+        st.set_text(pat.sub("", st.get_text()))
+    for ax in fig.axes:
+        ax.set_title(pat.sub("", ax.get_title()), fontsize=ax.title.get_fontsize())
+
+
 def save(fig, name):
+    _strip_fig_numbers(fig)
     p = os.path.join(OUT, name); fig.tight_layout(); fig.savefig(p, bbox_inches="tight"); plt.close(fig); print("  ->", p)
 
 # ── 圖 1：每步時間拆解（增生期，trim 按真實週期 500 步攤平）──

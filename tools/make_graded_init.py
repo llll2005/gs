@@ -2,7 +2,7 @@
 
 ⛔ 重投影誤差**不可**當信心指標，它與驗證度**反相關**（track<=2 誤差 0.142px < track>=6 的
 0.549px）。用 track 長度。⚠ 取點區域要用「離 depth-init 雲夠近」不是 partition AABB
-（AABB 只涵蓋足跡的 1/6）。Stage 0 結果與後續見 紀錄/研究總覽.md §7.1。
+（AABB 只涵蓋足跡的 1/6）。Stage 0 結果與後續見 紀錄/new_archived/研究總覽_v1_至2026-09-13.md §7.1 與 紀錄/new_archived/信心分級初始化_2026-08-05.md。
 """
 import argparse
 import os

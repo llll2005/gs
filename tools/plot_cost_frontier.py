@@ -1,4 +1,4 @@
-"""2026-10-01 成本-品質前緣與相關比較圖 -> 紀錄/new_figures_costfrontier/
+"""2026-10-01 成本-品質前緣與相關比較圖 -> 面板輸出到 $CITYGS_FIG_OUT（預設 紀錄/實驗分析/_panels）；組圖由 tools/plot_analysis.py 做
 
 數字全部來自 lab 的離線量測與訓練紀錄（同工具、同相機；來源寫在 README.md）。
 配色：參考調色盤前 3 個類別色（藍/橙/青綠，all-pairs 驗證通過）；參考基準用中性灰虛線，不佔類別色。
@@ -27,11 +27,23 @@ plt.rcParams.update({"font.sans-serif": [_fn, "DejaVu Sans"], "axes.unicode_minu
                      "axes.spines.top": False, "axes.spines.right": False, "legend.frameon": False})
 C1, C2, C3 = "#2a78d6", "#eb6834", "#1baf7a"      # 類別色 1~3
 MUTED, INK2 = "#898781", "#52514e"
-OUT = "紀錄/new_figures_costfrontier"
+OUT = os.environ.get("CITYGS_FIG_OUT", "紀錄/實驗分析/_panels")   # 2026-10-03：面板，由 tools/plot_analysis.py 組合
 os.makedirs(OUT, exist_ok=True)
 
 
+def _strip_fig_numbers(fig):
+    """組合成 紀錄/實驗分析/ 的單一圖時，面板用 (a)(b)… 標號 => 去掉舊的「圖 N　」前綴。"""
+    import re as _re
+    pat = _re.compile(r"^(圖\s*\d+[a-z]?\s*[　 ]*)")
+    st = getattr(fig, "_suptitle", None)
+    if st is not None:
+        st.set_text(pat.sub("", st.get_text()))
+    for ax in fig.axes:
+        ax.set_title(pat.sub("", ax.get_title()), fontsize=ax.title.get_fontsize())
+
+
 def save(fig, name):
+    _strip_fig_numbers(fig)
     p = os.path.join(OUT, name)
     fig.savefig(p, bbox_inches="tight"); plt.close(fig); print("  ->", p)
 

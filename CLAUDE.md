@@ -19,23 +19,31 @@ This repo is being extended for an undergraduate research project (國科會/專
 consumer-GPU (RTX 4050 Laptop, **6GB VRAM**, 46GB RAM) training of city-scale 2DGS at quality
 competitive with CityGaussianV2.
 
-**Authority for everything below: `紀錄/研究總覽_v2.md` (rewritten 2026-09-13; §0 is the one-page
-current status). The old `紀錄/研究總覽.md` is kept only for topics v2 has not absorbed yet.
-`紀錄/_ctx.md` is a compact primer; its top section "2026-09-14 現況" supersedes the older blocks in it.
-`紀錄/archive/` no longer exists (sorted into `紀錄/new_archived/`, one-line reason per file).
+**Records have a single entry (reorganised 2026-10-03): `紀錄/README.md` -> `紀錄/研究總覽.md` (the only body;
+§0 = one-page current status, §10 = which old-era conclusions were re-measured) -> `紀錄/實驗分析/NN_*.md`, each paired with a
+same-named `NN_*.png` (doc tables = the numbers on the figure; regenerate with `python tools/plot_analysis.py`).
+The previous bodies are archived: `紀錄/new_archived/研究總覽_v2_至2026-10-03.md` (09-13..10-03) and
+`紀錄/new_archived/研究總覽_v1_至2026-09-13.md` — **code comments citing "研究總覽 §11.x/§13.x/§16.x" mean v1**.
+`_ctx.md`, the indexes, the survival list and the speed Q&A are also in `new_archived/` (one-line reason per file).
 Read those before proposing mechanisms — this section is a summary and goes stale.**
 
 **⛔⛔ 2026-09-13 third era boundary: images and poses were misaligned.** Every *local* training score in
 `outputs/` — including the speed3 / SfM-init / sched30 / absgrad numbers further down this file — is
-invalid; see `紀錄/倖存清單_2026-09-13.md`. New-era numbers live in `outputs/lab/` (the lab machine, **kept locked to the 6GB envelope with
+invalid; see `紀錄/研究總覽.md` §10 (item list: `紀錄/new_archived/倖存清單_2026-09-13.md`). New-era numbers live in `outputs/lab/` (the lab machine, **kept locked to the 6GB envelope with
 `CITYGS_VRAM_CAP_GB=5.66`** — the proposition is 6GB feasibility, so a recipe that only fits in 24GB is useless).
 **Two-machine protocol (user, 2026-09-18): lab = relative comparison (which recipe is better, lab vs lab), kept at
 3 parallel slots because throughput is ~2x and parallelism does NOT affect results — quality, offline Load and peak
 VRAM are all neighbour-independent (only wall time and it/s are, and those have dedicated `[solo]` tools).
 The laptop = absolute verification: re-run the stage winner there to claim the envelope.**
 
-**★★★ Current state of the proposition (2026-09-17; lab, blocks b6/b12/b13; authority = `紀錄/研究總覽_v2.md` §0):**
+**★★★ Current state of the proposition (2026-09-17, with 2026-10-03 additions; lab, blocks b6/b12/b13; authority = `紀錄/研究總覽.md` §0):**
 ```
+2026-10-03       current best = cs60_sfmdup4 (conic exact AABB is the default + task_cmp.sh common flags + dup4 init):
+                   60k val b6 30.75 / b13 30.32; lean_train (-20.9%/step, render bit-identical) installed on lab
+                 official CityGSV2, unmodified source, current data: official 741-frame held-out 25.79 / .833 / .176 (24.48M)
+                 v/c trim with conic on: 60k -0.17/-0.20, LPIPS better; on the 22k cost-quality frontier it beats cap-only
+                   by ~+1.2 dB at equal Load; cost_budget (proxy or exact units) does NOT beat simply lowering cap
+                 new-era rechecks: almost no floaters, failure tiles 1.3~2.3%, geometry improves with training
 pruning side     trim criterion v -> v/c (`renderer.init_args.trim_by_value_per_cost`)
                  short recipe (22k~27k, 3 blocks): same N, offline Load median -64~-67%, VRAM -7%, LPIPS better 3/3,
                    PSNR -0.002/-0.08/-0.17
@@ -77,7 +85,7 @@ price them by render cost and solve a resource-constrained problem:
 with `c_i` = screen-tile footprint — measured 2026-09-13 to be mainly a per-step **time** cost, not a VRAM cost
 (same N: Load -63% cut forward+backward 27% but render-forward VRAM only ~6%; VRAM is dominated by N), `λ` = shadow price, `K` = strip tiling as a
 supply-side lever. Every prior method surveyed is the `c_i ≡ 1` special case; see
-`紀錄/研究總覽.md` §3 (theory) and §8 (12 papers audited implementation-vs-text).
+`紀錄/研究總覽.md` §1 (theory) and §9 + `紀錄/論文核對表.md` (12 papers audited implementation-vs-text).
 ⚠ The claim "every prior method is the `c_i ≡ 1` special case" has **two counterexamples** —
 RAIN-GS (arXiv 2403.09413), whose `s = HW/(9πN)` is a global screen budget, and **Taming 3DGS,
 whose densify score contains `c^i_g` = "number of pixels covered by g in view i" per primitive**.
@@ -123,7 +131,7 @@ b7   24.99 -> 25.28   PSNR +10.0sd SSIM +99.6sd  LPIPS +16.7sd
 - **`absgrad_densify`** steers MCMC's parent sampling by AbsGS's absolute positional gradient:
   `probs = opacity * (1 + w*|g|/mean|g|)`. Requires the rasterizer built with `ABSGRAD 1`
   (`cuda_rasterizer/auxiliary.h`); `|g|` is accumulated into the never-read `dL_dmean2D.z`,
-  so renders and gradients are bit-identical. See `紀錄/研究總覽.md` §11.45/§11.47.
+  so renders and gradients are bit-identical. See v1 (`紀錄/new_archived/研究總覽_v1_至2026-09-13.md`) §11.45/§11.47.
 - `EXACT_SUPPORT` in the trim rasterizer — drops primitives with `o <= 1/255` from binning.
   Byte-identical, -20.3% render VRAM.
 - Zero-weight loss gating (`gs2d_metrics` / `citygsv2_metrics`): skip the normal/dist/depth
@@ -131,7 +139,7 @@ b7   24.99 -> 25.28   PSNR +10.0sd SSIM +99.6sd  LPIPS +16.7sd
   ⛔ `fused_ssim` was tried and **reverted**: -4.9% time but SSIM is an outlier vs same-config
   repeats (-4.06sd, sample sd +119% when included).
 
-**⚫ Retired lines — do not restart without reading `紀錄/研究總覽.md` §7 first:**
+**⚫ Retired lines — do not restart without reading `紀錄/研究總覽.md` §8 first:**
 DT-ADMM-GAT (the original proposal), reactive shadow-price λ, radius-based monster detection,
 gradient checkpointing, Scaffold/latent-MLP variants. The dual mathematics from the ADMM line
 survives, applied to the VRAM constraint.
@@ -184,7 +192,7 @@ pip install -r requirements/gsplat.txt
 global model and different tools; mixing them silently fails.** Full recipes with all flags:
 `紀錄/完整指令手冊.md` (rewritten 2026-09-11: §0 daily workflow, §3 the live training line,
 §4 the diagnostic tools, §7 the dynamic-strips warning; the retired Mode A/B/C flows are in its
-appendix H). The ones used daily are also in `紀錄/_ctx.md`.
+appendix H). The ones used daily are also in `紀錄/README.md` (操作速查).
 
 **Data prep (once per dataset):**
 ```bash
