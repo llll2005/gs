@@ -112,6 +112,103 @@ if _tl:
         except Exception:
             pass
 
+    # ── 記憶體（2026-10-02）：本行程 RSS／峰值 RSS／子行程（DataLoader worker）RSS 合計，讀 /proc，不需 psutil ──
+    #   ⚠ 子行程是 fork 出來的，共用頁面在 RSS 裡會重複計算 => 合計是上界。
+    def _rss_mib():
+        me = os.getpid(); rss = hwm = kids = 0.0
+        try:
+            for ln in open("/proc/self/status"):
+                if ln.startswith("VmRSS:"):
+                    rss = int(ln.split()[1]) / 1024
+                elif ln.startswith("VmHWM:"):
+                    hwm = int(ln.split()[1]) / 1024
+        except Exception:
+            pass
+        try:
+            for d in os.listdir("/proc"):
+                if not d.isdigit():
+                    continue
+                try:
+                    st = open(f"/proc/{d}/stat").read()
+                    if int(st.rsplit(")", 1)[1].split()[1]) != me:
+                        continue
+                    for ln in open(f"/proc/{d}/status"):
+                        if ln.startswith("VmRSS:"):
+                            kids += int(ln.split()[1]) / 1024
+                            break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return rss, hwm, kids
+
+    # ── 真實迴圈逐段計時（2026-10-02）：**只在設了 CITYGS_STEPPROF_OUT 時作用**（專用的短跑次，不用在正式訓練）──
+    #   對應我方 `_StepProfiler`（CITYGS_STEP_PROFILE）：每個標記點 synchronize、量 wall ms 與段內峰值配置。
+    #   官方原始碼一行不改：在 import 時包住 forward／loss／backward／density after_backward／Adam.step／trim。
+    #   ⚠ 會 reset 峰值統計 => 這種跑次的峰值欄不可當資源數字；同步會消掉 CPU/GPU 重疊 => 段落和 > 真實每步。
+    _sp = os.environ.get("CITYGS_STEPPROF_OUT")
+    _SP = {"on": False, "acc": {}, "steps": 0, "tot": 0.0, "prev": None, "depth": {},
+           "warm": int(os.environ.get("CITYGS_STEPPROF_WARMUP", "20"))}
+
+    def _sp_wrap(fn, seg, only_training=False):
+        def w(*a, **kw):
+            if (not _SP["on"]) or _SP["depth"].get(seg, 0) > 0 or \
+                    (only_training and a and not getattr(a[0], "training", True)):
+                return fn(*a, **kw)
+            c = sys.modules["torch"].cuda
+            _SP["depth"][seg] = 1
+            try:
+                c.synchronize(); c.reset_peak_memory_stats(); t0 = time.perf_counter()
+                r = fn(*a, **kw)
+                c.synchronize(); dt = (time.perf_counter() - t0) * 1e3
+                e = _SP["acc"].setdefault(seg, [0.0, 0, 0.0, 0.0])
+                e[0] += dt; e[1] += 1
+                e[2] = max(e[2], c.max_memory_allocated() / 2 ** 20); e[3] = c.memory_reserved() / 2 ** 20
+                return r
+            finally:
+                _SP["depth"][seg] = 0
+        w._citygs_wrapped = True
+        return w
+
+    def _sp_patch_methods(mod, names_to_seg, only_training=()):
+        for nm in dir(mod):
+            cls = getattr(mod, nm)
+            if not isinstance(cls, type) or getattr(cls, "__module__", None) != mod.__name__:
+                continue
+            for meth, seg in names_to_seg.items():
+                f = cls.__dict__.get(meth)
+                if f is not None and not getattr(f, "_citygs_wrapped", False):
+                    setattr(cls, meth, _sp_wrap(f, seg, meth in only_training))
+
+    def _sp_tick(trainer):
+        # 每步的真實總時間＝相鄰兩次 on_train_batch_start 的間隔（含 trim 與迴圈外）
+        if not _sp:
+            return
+        c = sys.modules["torch"].cuda
+        c.synchronize()
+        now = time.perf_counter()
+        if _SP["on"] and _SP["prev"] is not None:
+            _SP["tot"] += (now - _SP["prev"]) * 1e3; _SP["steps"] += 1
+        _SP["on"] = trainer.global_step >= _SP["warm"]
+        _SP["prev"] = now
+
+    def _sp_report(n):
+        if not _sp or not _SP["steps"]:
+            return
+        S = _SP["steps"]; meas = 0.0
+        lines = [f"# 官方程式碼真實迴圈逐段計時（每標記點 synchronize；暖機 {_SP['warm']} 步）  N={n:,}  run={_run_name()}",
+                 f"# 計時步數 {S}  真實每步（相鄰 batch_start 間隔，含同步開銷） {_SP['tot'] / S:.2f} ms",
+                 "segment\tms_per_step\tcalls_per_step\tms_per_call\tseg_peak_alloc_MiB\treserved_MiB_after"]
+        for seg, (ms, cnt, pk, rs) in sorted(_SP["acc"].items()):
+            lines.append(f"{seg}\t{ms / S:.2f}\t{cnt / S:.3f}\t{ms / max(cnt, 1):.2f}\t{pk:.0f}\t{rs:.0f}")
+            meas += ms
+        lines.append(f"0 其他（迴圈外＋未包到的）\t{(_SP['tot'] - meas) / S:.2f}\t-\t-\t-\t-")
+        try:
+            with open(_sp, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception:
+            pass
+
     # ── churn：包住 density controller 的函式（只數數量）──────────────────────────
     def _n_of(gm):
         try:
@@ -212,9 +309,11 @@ if _tl:
                 except Exception:
                     pass
                 self.last = dict(step=trainer.global_step, n=n, its=its, a=m[0], r=m[1], pa=m[2], pr=m[3], wall=now - self.t0)
-                _append(_tl, "batch\tglobal_step\twall_s\tit_s\tN\talloc_MiB\treserved_MiB\tpeak_alloc_MiB\tpeak_reserved_MiB\ttag",
+                rs, hw, kd = _rss_mib()
+                _append(_tl, "batch\tglobal_step\twall_s\tit_s\tN\talloc_MiB\treserved_MiB\tpeak_alloc_MiB\tpeak_reserved_MiB\ttag"
+                             "\trss_MiB\trss_peak_MiB\tworkers_rss_MiB",
                         f"{self.k}\t{trainer.global_step}\t{now - self.t0:.1f}\t{its:.3f}\t{n}\t"
-                        + "\t".join(f"{v:.0f}" for v in m) + f"\t{tag}")
+                        + "\t".join(f"{v:.0f}" for v in m) + f"\t{tag}\t{rs:.0f}\t{hw:.0f}\t{kd:.0f}")
 
             def _status(self, trainer, phase):
                 L = self.last
@@ -288,6 +387,9 @@ if _tl:
 
             def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
                 _S["step"] = trainer.global_step
+                _sp_tick(trainer)
+                if _sp and _SP["steps"] and _SP["steps"] % 200 == 0:
+                    _sp_report(_n_of(pl_module.gaussian_model) if hasattr(pl_module, "gaussian_model") else -1)
 
             def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
                 self.k += 1
@@ -296,6 +398,7 @@ if _tl:
                     self._status(trainer, "訓練中")
 
             def on_train_end(self, trainer, pl_module):
+                _sp_report(_n_of(pl_module.gaussian_model) if hasattr(pl_module, "gaussian_model") else -1)
                 self._row(trainer, pl_module, "END")
                 self._status(trainer, "✅ 完成")
                 _progress("DONE", self._snap(trainer))
@@ -326,6 +429,49 @@ if _tl:
     _TARGETS = {"lightning.pytorch.trainer.connectors.callback_connector": _patch_trainer,
                 "internal.density_controllers.vanilla_density_controller": _patch_density,
                 "internal.density_controllers.citygsv2_density_controller": _patch_density}
+    if _sp:
+        def _sp_gs(mod):
+            _sp_patch_methods(mod, {"forward": "3 forward（光柵化）"}, only_training=("forward",))
+            # manual_backward 是從 LightningModule 繼承的（不在子類的 __dict__）=> 直接在 GaussianSplatting 上覆寫一層
+            cls = getattr(mod, "GaussianSplatting", None)
+            if cls is not None:
+                f = getattr(cls, "manual_backward", None)
+                if f is not None and not getattr(f, "_citygs_wrapped", False):
+                    cls.manual_backward = _sp_wrap(f, "6 backward")
+
+        def _sp_metric(mod):
+            _sp_patch_methods(mod, {"get_train_metrics": "4 loss（含正則）"})
+
+        def _sp_dens(mod):
+            _sp_patch_methods(mod, {"after_backward": "7 density_controller.after_backward"})
+
+        def _sp_rend(mod):
+            _sp_patch_methods(mod, {"before_training_step": "1 起始 trim（before_training_step）",
+                                    "after_training_step": "11 週期 trim（after_training_step）"})
+
+        def _sp_torch_adam():
+            import torch as _t
+            for cls in (_t.optim.Adam,):
+                f = cls.__dict__.get("step")
+                if f is not None and not getattr(f, "_citygs_wrapped", False):
+                    cls.step = _sp_wrap(f, "9 optimizer.step")
+
+        def _chain(*fs):
+            def g(m):
+                for f in fs:
+                    f(m)
+            return g
+
+        _orig_trainer_patch = _TARGETS["lightning.pytorch.trainer.connectors.callback_connector"]
+        _TARGETS["lightning.pytorch.trainer.connectors.callback_connector"] = _chain(_orig_trainer_patch, lambda m: _sp_torch_adam())
+        _TARGETS["internal.gaussian_splatting"] = _sp_gs
+        for _mn in ("internal.metrics.citygsv2_metrics",):
+            _TARGETS[_mn] = _sp_metric
+        for _mn in ("internal.density_controllers.vanilla_density_controller",
+                    "internal.density_controllers.citygsv2_density_controller"):
+            _TARGETS[_mn] = _chain(_TARGETS[_mn], _sp_dens)
+        _TARGETS["internal.renderers.sep_depth_trim_2dgs_renderer"] = _sp_rend
+        print(f"[stepprof] ✅ 逐段計時開啟 -> {_sp}（暖機 {_SP['warm']} 步）", file=sys.stderr)
 
     class _Hook(importlib.abc.MetaPathFinder):
         def __init__(self):
