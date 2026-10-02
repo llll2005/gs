@@ -96,14 +96,16 @@ case "$MODE" in
       echo "# ★★★★★★ 我方 4x4：資源（逐塊逐步計時、合併模型離線 Load、儲存）"
       echo "[solo] bash scripts/lab/task_full44.sh res"
     } > "$_ins"
-    # 錨點：第一個 [solo] 行（Load 比較或官方 blockpaper）=> 插在獨佔批之前，與其他訓練行連成同一批平行跑
-    _ln=$(grep -nE "^\[solo\] " "$Q" | head -1 | cut -d: -f1)
+    # 錨點：第一個 [solo] Load 比較行（找不到才退到第一個 [solo] 行）=> 插在獨佔批之前，與其他訓練行連成同一批平行跑
+    #   ⚠ 不直接用「第一個 [solo]」：佇列頂端可能有短的 [solo] 分析，插到那裡會讓 16 塊跳到所有訓練之前
+    _ln=$(grep -nE "^\[solo\] bash scripts/task_load_compare\.sh " "$Q" | head -1 | cut -d: -f1)
+    [ -n "$_ln" ] || _ln=$(grep -nE "^\[solo\] " "$Q" | head -1 | cut -d: -f1)
     if [ -n "$_ln" ]; then
       while [ "$_ln" -gt 1 ] && [ "$(sed -n "$((_ln-1))p" "$Q" | cut -c1)" = "#" ]; do _ln=$((_ln-1)); done
       _tmp=$(mktemp)
       { head -n $((_ln-1)) "$Q"; cat "$_ins"; tail -n +"$_ln" "$Q"; } > "$_tmp"
       mv "$_tmp" "$Q"
-      echo "✅ 已把 16 個 block 行＋merge/test/res 插到第一個 [solo] 行之前（第 $_ln 行）"
+      echo "✅ 已把 16 個 block 行＋merge/test/res 插到獨佔批（[solo] Load 比較）之前（第 $_ln 行）"
     else
       cat "$_ins" >> "$Q"
       echo "✅ 已把 16 個 block 行＋merge/test/res 追加到佇列尾"
