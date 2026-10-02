@@ -80,7 +80,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.record_transmittance,
             raster_settings.debug,
             raster_settings.exact_conic_aabb,
-            bool(getattr(raster_settings, "lean_render", False)),
+            3 if getattr(raster_settings, "audit_tiles", False) else int(bool(getattr(raster_settings, "lean_render", False))),
         )
 
         # Invoke C++/CUDA rasterizer
@@ -95,6 +95,9 @@ class _RasterizeGaussians(torch.autograd.Function):
         else:
             num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_covered_pixels, tiles = _C.rasterize_gaussians(*args)
 
+        if getattr(raster_settings, "audit_tiles", False):
+            # audit：transmittance＝reached_tiles、num_covered_pixels＝useful_tiles、depth＝逐像素 [迴圈次數, tile 配對數, 混合次數]
+            return transmittance, num_covered_pixels, radii, depth, tiles
         if raster_settings.record_transmittance:
             return transmittance, num_covered_pixels, radii
 
@@ -219,6 +222,8 @@ class GaussianRasterizationSettings(NamedTuple):
     #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。
     #   預設 False => 與舊行為完全相同（舊 kernel 的原始碼一字未動，只是多了模板參數）。
     lean_render : bool = False
+    # ★ 2026-10-02：純量測（auditCUDA）——每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量。不可微、不參與訓練。
+    audit_tiles : bool = False
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

@@ -202,7 +202,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"return_tiles": True}
                if "return_tiles" in GaussianRasterizationSettings._fields else {}),
             **({"lean_render": True} if _lean else {}),
+            # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
+            **({"audit_tiles": True} if kwargs.get("_audit", False) else {}),
         )
+        if kwargs.get("_audit", False) and "audit_tiles" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError("_audit 需要有 audit_tiles 欄位的光柵器（lean 驗證時另外裝的那份，用 PYTHONPATH 指過去）")
 
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
@@ -232,6 +236,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             cov3D_precomp=cov3D_precomp,
         )
 
+        if kwargs.get("_audit", False):
+            return output          # (reached_tiles, useful_tiles, radii, 逐像素 [迴圈次數, tile 配對數, 混合次數], tiles)
         if record_transmittance:
             transmittance_sum, num_covered_pixels, radii = output
             # Per-COVERED-PIXEL mean, not the sum: size-normalised, so a large primitive and a

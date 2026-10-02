@@ -40,7 +40,7 @@ RasterizeGaussiansCUDA(
 	const bool record_transmittance,
 	const bool debug,
 	const bool exact_conic_aabb,
-	const bool lean);
+	const int lean);
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(

@@ -228,7 +228,7 @@ int CudaRasterizer::Rasterizer::forward(
 	bool debug,
 	int* out_tiles,
 	bool exact_conic_aabb,
-	int lean)
+	int lean)   // 0 舊路徑／1 lean／3 audit（見 forward.cu auditCUDA）
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -359,7 +359,7 @@ int CudaRasterizer::Rasterizer::forward(
 		num_covered_pixels,
 		record_transmittance,
 		// lean：訓練 => 只算顏色（MODE 1）；record => 只算 T*alpha 與覆蓋數（MODE 2）。見 forward.cu
-		lean ? (record_transmittance ? 2 : 1) : 0), debug)
+		lean == 3 ? 3 : (lean ? (record_transmittance ? 2 : 1) : 0)), debug)
 
 	return num_rendered;
 }

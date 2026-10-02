@@ -61,7 +61,7 @@ RasterizeGaussiansCUDA(
 	const bool record_transmittance,
 	const bool debug,
 	const bool exact_conic_aabb,
-	const bool lean)
+	const int lean)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
 	AT_ERROR("means3D must have dimensions (num_points, 3)");
@@ -152,7 +152,7 @@ RasterizeGaussiansCUDA(
 		debug,
 		tiles.contiguous().data<int>(),
 		exact_conic_aabb,
-		lean ? 1 : 0);
+		lean);
   }
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_occluder, tiles);
 }

@@ -628,6 +628,116 @@ renderCUDA(
 	}
 }
 
+// ★ 2026-10-02 audit（純量測，不參與訓練）：每個 (tile, 顆粒) 配對實際發生什麼事。
+//   用途：估「tile 精確剔除（StopThePop）」「遮擋尾巴略過（Taming §4.1）」「誤差引導 tile 抽樣」能省多少工作。
+//   幾何／遮擋邏輯與 renderCUDA 完全相同（NEAR_PLANE、p.z、power>0、alpha<1/255、T<1e-4 提早結束）。
+//   輸出（緩衝區都由呼叫端歸零）：
+//     useful_tiles[i]   顆粒 i 在幾個 tile 裡「至少一個像素 alpha >= 1/255」（不管遮擋）＝tile 精確剔除後還留下的配對
+//     reached_tiles[i]  顆粒 i 在幾個 tile 裡「至少一個像素在提早結束前處理到它」＝沒被遮擋尾巴吃掉的配對
+//     out_others[0]     每像素實際跑的迴圈次數（含 alpha<1/255 被跳過的）＝forward 的逐像素工作量
+//     out_others[1]     該像素所在 tile 的配對數（binning 的 range 長度）
+//     out_others[2]     每像素實際混合的次數（alpha>=1/255 且未飽和）
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+auditCUDA(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ point_list,
+	int W, int H,
+	const float2* __restrict__ points_xy_image,
+	const float* __restrict__ transMats,
+	const float4* __restrict__ normal_opacity,
+	float* __restrict__ out_others,
+	float* __restrict__ reached_tiles,
+	int* __restrict__ useful_tiles)
+{
+	auto block = cg::this_thread_block();
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	uint32_t pix_id = W * pix.y + pix.x;
+	float2 pixf = { (float)pix.x + 0.5, (float)pix.y + 0.5};
+	bool inside = pix.x < W && pix.y < H;
+	bool done = !inside;
+	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	int toDo = range.y - range.x;
+
+	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
+	__shared__ float3 collected_Tu[BLOCK_SIZE];
+	__shared__ float3 collected_Tv[BLOCK_SIZE];
+	__shared__ float3 collected_Tw[BLOCK_SIZE];
+	__shared__ int s_geo[BLOCK_SIZE];
+	__shared__ int s_reach[BLOCK_SIZE];
+
+	float T = 1.0f;
+	float n_proc = 0.f, n_blend = 0.f;
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	{
+		block.sync();
+		int progress = i * BLOCK_SIZE + block.thread_rank();
+		if (range.x + progress < range.y)
+		{
+			int coll_id = point_list[range.x + progress];
+			collected_id[block.thread_rank()] = coll_id;
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
+			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
+			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
+			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+		}
+		s_geo[block.thread_rank()] = 0;
+		s_reach[block.thread_rank()] = 0;
+		block.sync();
+		const int nb = min(BLOCK_SIZE, toDo);
+		for (int j = 0; inside && j < nb; j++)
+		{
+			const bool live = !done;
+			if (live) { s_reach[j] = 1; n_proc += 1.f; }
+			float3 Tu = collected_Tu[j];
+			float3 Tv = collected_Tv[j];
+			float3 Tw = collected_Tw[j];
+			float3 k = {-Tu.x + pixf.x * Tw.x, -Tu.y + pixf.x * Tw.y, -Tu.z + pixf.x * Tw.z};
+			float3 l = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
+			float3 p = crossProduct(k, l);
+#if BACKFACE_CULL
+			if (p.z == 0.0) continue;
+#endif
+			float2 s = {p.x / p.z, p.y / p.z};
+			float rho3d = (s.x * s.x + s.y * s.y);
+			float2 xy = collected_xy[j];
+			float2 d = {xy.x - pixf.x, xy.y - pixf.y};
+			float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+			float rho = min(rho3d, rho2d);
+			if ((s.x * Tw.x + s.y * Tw.y) + Tw.z < NEAR_PLANE) continue;
+			float4 nor_o = collected_normal_opacity[j];
+			float power = -0.5f * rho;
+			if (power > 0.0f) continue;
+			float alpha = min(0.99f, nor_o.w * exp(power));
+			if (alpha < 1.0f / 255.0f) continue;
+			s_geo[j] = 1;
+			if (!live) continue;
+			float test_T = T * (1 - alpha);
+			if (test_T < 0.0001f) { done = true; continue; }
+			T = test_T;
+			n_blend += 1.f;
+		}
+		block.sync();
+		if (range.x + progress < range.y)
+		{
+			const int id = collected_id[block.thread_rank()];
+			if (s_geo[block.thread_rank()]) atomicAdd(&useful_tiles[id], 1);
+			if (s_reach[block.thread_rank()]) atomicAdd(&reached_tiles[id], 1.0f);
+		}
+	}
+	if (inside)
+	{
+		out_others[0 * H * W + pix_id] = n_proc;
+		out_others[1 * H * W + pix_id] = (float)(range.y - range.x);
+		out_others[2 * H * W + pix_id] = n_blend;
+	}
+}
+
 void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
@@ -651,6 +761,8 @@ void FORWARD::render(
 {
 #define _RENDER_ARGS ranges, point_list, W, H, focal_x, focal_y, means2D, colors, transMats, depths, \
 		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance
+	if (mode == 3) { auditCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
+		out_others, transmittance, num_covered_pixels); return; }
 	if (mode == 1) { renderCUDA<NUM_CHANNELS, 1> << <grid, block >> > (_RENDER_ARGS); return; }
 	if (mode == 2) { renderCUDA<NUM_CHANNELS, 2> << <grid, block >> > (_RENDER_ARGS); return; }
 #undef _RENDER_ARGS
