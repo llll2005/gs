@@ -738,6 +738,128 @@ auditCUDA(
 	}
 }
 
+// ★ 2026-10-03 record_reduce（MODE 4）：trim pass 的 record，**先在 block 內加總、每個 (tile, 顆粒) 只做一次 global atomic**。
+//   原本 MODE 0/2 是每個被評估的 (像素, 顆粒) 都做 2 個 global atomicAdd（在 alpha<1/255 判斷之前），同一 warp 的 32 條
+//   執行緒打同一個位址 => atomic 綁死（lean 後 trim 約佔增生期每步 37%，而 lean 對它只省 1~2%）。
+//   語意逐條照 renderCUDA：p.z==0 跳過／NEAR_PLANE 跳過／power>0 跳過／記錄 T*alpha 與 1（在 alpha 判斷之前）／
+//   alpha<1/255 不更新 T／test_T<1e-4 => done（該顆已記錄）。done 的執行緒貢獻 0 而不離開迴圈（warp 歸約要全員參與）。
+//   覆蓋數是整數 => 逐位元相同；T*alpha 只差浮點加總順序。
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+recordReduceCUDA(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ point_list,
+	int W, int H,
+	const float2* __restrict__ points_xy_image,
+	const float* __restrict__ transMats,
+	const float4* __restrict__ normal_opacity,
+	float* __restrict__ transmittance,
+	int* __restrict__ num_covered_pixels)
+{
+	auto block = cg::this_thread_block();
+	auto warp = cg::tiled_partition<32>(block);
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	float2 pixf = { (float)pix.x + 0.5, (float)pix.y + 0.5};
+	bool inside = pix.x < W && pix.y < H;
+	bool done = !inside;
+	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	int toDo = range.y - range.x;
+
+	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
+	__shared__ float3 collected_Tu[BLOCK_SIZE];
+	__shared__ float3 collected_Tv[BLOCK_SIZE];
+	__shared__ float3 collected_Tw[BLOCK_SIZE];
+	__shared__ float s_ta[BLOCK_SIZE];
+	__shared__ int s_cnt[BLOCK_SIZE];
+
+	float T = 1.0f;
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	{
+		int num_done = __syncthreads_count(done);
+		if (num_done == BLOCK_SIZE)
+			break;
+		int progress = i * BLOCK_SIZE + block.thread_rank();
+		if (range.x + progress < range.y)
+		{
+			int coll_id = point_list[range.x + progress];
+			collected_id[block.thread_rank()] = coll_id;
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
+			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
+			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
+			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+		}
+		s_ta[block.thread_rank()] = 0.f;
+		s_cnt[block.thread_rank()] = 0;
+		block.sync();
+		const int nb = min(BLOCK_SIZE, toDo);
+		const bool warp_done = warp.all(done);
+		for (int j = 0; !warp_done && j < nb; j++)
+		{
+			float v = 0.f;
+			int c = 0;
+			if (!done)
+			{
+				float3 Tu = collected_Tu[j];
+				float3 Tv = collected_Tv[j];
+				float3 Tw = collected_Tw[j];
+				float3 k = {-Tu.x + pixf.x * Tw.x, -Tu.y + pixf.x * Tw.y, -Tu.z + pixf.x * Tw.z};
+				float3 l = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
+				float3 p = crossProduct(k, l);
+				bool ok = true;
+#if BACKFACE_CULL
+				if (p.z == 0.0) ok = false;
+#endif
+				if (ok)
+				{
+					float2 s = {p.x / p.z, p.y / p.z};
+					float rho3d = (s.x * s.x + s.y * s.y);
+					float2 xy = collected_xy[j];
+					float2 d = {xy.x - pixf.x, xy.y - pixf.y};
+					float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+					float rho = min(rho3d, rho2d);
+					if ((s.x * Tw.x + s.y * Tw.y) + Tw.z >= NEAR_PLANE)
+					{
+						float power = -0.5f * rho;
+						if (power <= 0.0f)
+						{
+							float4 nor_o = collected_normal_opacity[j];
+							float alpha = min(0.99f, nor_o.w * exp(power));
+							v = T * alpha;
+							c = 1;
+							if (alpha >= 1.0f / 255.0f)
+							{
+								float test_T = T * (1 - alpha);
+								if (test_T < 0.0001f)
+									done = true;
+								else
+									T = test_T;
+							}
+						}
+					}
+				}
+			}
+			const float vs = cg::reduce(warp, v, cg::plus<float>());
+			const int cs = cg::reduce(warp, c, cg::plus<int>());
+			if (warp.thread_rank() == 0 && cs > 0)
+			{
+				atomicAdd(&s_ta[j], vs);
+				atomicAdd(&s_cnt[j], cs);
+			}
+		}
+		block.sync();
+		if (range.x + progress < range.y && s_cnt[block.thread_rank()] > 0)
+		{
+			atomicAdd(&transmittance[collected_id[block.thread_rank()]], s_ta[block.thread_rank()]);
+			atomicAdd(&num_covered_pixels[collected_id[block.thread_rank()]], s_cnt[block.thread_rank()]);
+		}
+	}
+}
+
 void FORWARD::render(
 	const dim3 grid, dim3 block,
 	const uint2* ranges,
@@ -763,6 +885,8 @@ void FORWARD::render(
 		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance
 	if (mode == 3) { auditCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
 		out_others, transmittance, num_covered_pixels); return; }
+	if (mode == 4) { recordReduceCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
+		transmittance, num_covered_pixels); return; }
 	if (mode == 1) { renderCUDA<NUM_CHANNELS, 1> << <grid, block >> > (_RENDER_ARGS); return; }
 	if (mode == 2) { renderCUDA<NUM_CHANNELS, 2> << <grid, block >> > (_RENDER_ARGS); return; }
 #undef _RENDER_ARGS

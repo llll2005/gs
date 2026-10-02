@@ -287,6 +287,14 @@ esac
 #   （例：60k 判決用 `cs60_`）。⚠ 它**保留 RUN_PREFIX** —— 直接用 `CITYGS_RUN_NAME` 會
 #   繞過前綴，在 lab 上就把產物寫到 `outputs/` 而不是 `outputs/lab/`，違反命名空間規則。
 #   config diff 的基準也跟著換家族，否則會拿 60k 的臂去跟 22k 的 cs_base 比。
+# ★ 2026-10-03 `CITYGS_LEAN=1` => 加 `lean_train true`（光柵器 lean_render：渲染逐位元相同、梯度 atomic 順序級、每步 -20.9%）。
+#   使用者規則：同家族已有舊跑次且**要比時間**的臂不開（牆鐘／it/s 會不可比）；需要幾何通道的臂（cdist*）不可開。
+#   resolved config 會多一項 lean_train => diff 的預期變數數 +1。
+if [ "${CITYGS_LEAN:-0}" = 1 ]; then
+  case "$ARM" in cdist*) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
+  EXTRA+=(--model.renderer.init_args.lean_train true); EXP=$((EXP + 1))
+  echo "lean_train=true（CITYGS_LEAN=1）"
+fi
 export CITYGS_DIFF_VS="${RUN_PREFIX}${CITYGS_FAMILY:-cs_}base"
 export CITYGS_DIFF_EXPECT=$EXP
 # ★ 2026-09-18：`CITYGS_RUN_NAME` 可覆蓋跑次名。用途＝**同一份配方、換個名字再跑一次**

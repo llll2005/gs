@@ -80,7 +80,10 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.record_transmittance,
             raster_settings.debug,
             raster_settings.exact_conic_aabb,
-            3 if getattr(raster_settings, "audit_tiles", False) else int(bool(getattr(raster_settings, "lean_render", False))),
+            3 if getattr(raster_settings, "audit_tiles", False) else (
+                (1 if getattr(raster_settings, "lean_render", False) else 0)
+                | (4 if getattr(raster_settings, "record_reduce", False) else 0)
+                | (8 if getattr(raster_settings, "tile_cull", False) else 0)),
         )
 
         # Invoke C++/CUDA rasterizer
@@ -224,6 +227,10 @@ class GaussianRasterizationSettings(NamedTuple):
     lean_render : bool = False
     # ★ 2026-10-02：純量測（auditCUDA）——每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量。不可微、不參與訓練。
     audit_tiles : bool = False
+    # ★ 2026-10-03：record（trim pass）改成 block 內先加總、每個 (tile,顆粒) 一次 global atomic（forward.cu recordReduceCUDA）
+    record_reduce : bool = False
+    # ★ 2026-10-03：非 record 呼叫只綁「可能 alpha >= 1/255」的 tile（rasterizer_impl.cu tileMayContribute）；渲染逐位元相同
+    tile_cull : bool = False
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

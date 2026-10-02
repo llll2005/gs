@@ -41,6 +41,8 @@ def cmd_dump(a):
         a.ckpt, device=dev, eval_mode=False, pre_activate=False)
     renderer.lean_train = bool(a.lean)
     renderer._lean_announced = True
+    renderer.record_reduce = bool(getattr(a, "record_reduce", 0))
+    renderer.tile_cull = bool(getattr(a, "tile_cull", 0))
     ck = torch.load(a.ckpt, map_location="cpu")
     dmh = ck["datamodule_hyper_parameters"]
     cams = dmh["parser"].instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)),
@@ -63,7 +65,8 @@ def cmd_dump(a):
         loss.backward()
         return out
 
-    res = {"renders": [], "radii": [], "trans": [], "cover": [], "lean": a.lean, "N": N}
+    res = {"renders": [], "radii": [], "trans": [], "cover": [], "tiles": [], "N": N,
+           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}"}
     gsum = {k: torch.zeros_like(p, dtype=torch.float64) for k, p in params.items()}
     vsum = None
     for c in idx:
@@ -73,6 +76,8 @@ def cmd_dump(a):
         out = step(cam, tgt)
         res["renders"].append(out["render"].detach().cpu())
         res["radii"].append(out["radii"].detach().cpu())
+        if out.get("tiles") is not None:
+            res["tiles"].append(out["tiles"].detach().cpu())
         for k, p in params.items():
             if p.grad is not None:
                 gsum[k] += p.grad.double()
@@ -292,6 +297,15 @@ def cmd_compare(a):
     ok &= cv == 0
     tr = [_cmp(x, y) for x, y in zip(A["trans"], B["trans"])]
     print(f"  record T*alpha 平均（浮點 atomic）：最大相對差 {max(r[1] for r in tr):.2e}、不同 {sum(r[2] for r in tr)} 顆")
+    # trim 判準：v = 各視角每像素平均貢獻取最大 => 底部 10% 遮罩的重疊（record_reduce 只差加總順序，邊界上可能換掉幾顆）
+    va = torch.stack([t.float() for t in A["trans"]]).max(0).values
+    vb = torch.stack([t.float() for t in B["trans"]]).max(0).values
+    ma, mb = va <= torch.quantile(va, 0.1), vb <= torch.quantile(vb, 0.1)
+    print(f"  trim 判準（{len(A['trans'])} 視角的 max v）底部 10% 遮罩重疊 {100 * float((ma & mb).sum()) / max(float(ma.sum()), 1):.4f}%"
+          f"（{int((ma ^ mb).sum())} 顆不同）")
+    if A.get("tiles") and B.get("tiles"):
+        ta = sum(int(t.long().sum()) for t in A["tiles"]); tb = sum(int(t.long().sum()) for t in B["tiles"])
+        print(f"  binning 配對（{len(A['tiles'])} 視角合計）{ta:,} -> {tb:,}（{100 * (tb / max(ta, 1) - 1):+.1f}%）")
     print("  梯度（6 台相機加總；浮點 atomic => 與噪音底比）：")
     for k in A["grads"]:
         m, rel, n, tot = _cmp(A["grads"][k], B["grads"][k])
@@ -310,6 +324,8 @@ def main():
     d = sp.add_parser("dump"); d.add_argument("--ckpt", required=True); d.add_argument("--out", required=True)
     d.add_argument("--lean", type=int, default=0); d.add_argument("--ncam", type=int, default=6)
     d.add_argument("--repeat", type=int, default=10)
+    d.add_argument("--record-reduce", dest="record_reduce", type=int, default=0)
+    d.add_argument("--tile-cull", dest="tile_cull", type=int, default=0)
     c = sp.add_parser("compare"); c.add_argument("a"); c.add_argument("b"); c.add_argument("--label", default="")
     pr = sp.add_parser("profile"); pr.add_argument("--ckpt", required=True); pr.add_argument("--lean", type=int, default=0)
     pr.add_argument("--steps", type=int, default=12); pr.add_argument("--fused", type=int, default=0)

@@ -68,7 +68,7 @@ OTRAIN=$GS/data/matrix_city/aerial/train/block_all_official       # 官方線專
 OTEST=$GS/data/matrix_city/aerial/test/block_all_test_official2
 OTRAIN_REL=data/matrix_city/aerial/train/block_all_official        # 相對 cityGS_origin（data -> gs/data）
 [ -d "$ORIG" ] || { echo "⛔ 找不到 $ORIG"; exit 2; }
-MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blockfix <N>|blockpaper <N>|mergepaper|testpaper|merge|test|res|blockload|prune}
+MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blockfix <N>|blockpaper <N>|mergepaper|testpaper|merge|test|res|blockload|prune|stepprof [N]|evalours|storage（CITYGS_OFF_LINE=paper 改量論文設定線）}
 BLKARG=${2:-}
 
 # ⚠ 執行期也要鎖 arch：容器設成含 10.0，torch 2.0.1 不認識，而 CUDA 後端第一次 densify 才 JIT 編譯
@@ -77,7 +77,16 @@ _A=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head
 echo "TORCH_CUDA_ARCH_LIST=[${TORCH_CUDA_ARCH_LIST:-未設}]"
 unset CITYGS_VRAM_CAP_GB PYTORCH_CUDA_ALLOC_CONF
 echo "VRAM 上限：不限制（官方原始碼不認得 CITYGS_VRAM_CAP_GB；配置器維持官方預設）"
-LOG=$GS/logs/citygs_official_${MODE}${BLKARG:+_$BLKARG}.log
+# ★ 2026-10-03 `CITYGS_OFF_LINE=paper` => blockload／res／prune／evalours 改量「照論文設定」那條線
+#   （trimfix worktree 的 citygsv2_mc_aerial_sh2_paper）；預設 orig＝官方原版。log 檔名加 _paper 後綴，不覆蓋原版的。
+FIX=/workspace/data/hdd/11213/cityGS_origin_trimfix
+NAMEP=citygsv2_mc_aerial_sh2_paper
+case "${CITYGS_OFF_LINE:-orig}" in
+  paper) LROOT=$FIX; LNAME=$NAMEP; LSUF=_paper ;;
+  orig)  LROOT=$ORIG; LNAME=$NAME; LSUF= ;;
+  *) echo "⛔ CITYGS_OFF_LINE 只能是 orig 或 paper"; exit 2 ;;
+esac
+LOG=$GS/logs/citygs_official_${MODE}${BLKARG:+_$BLKARG}${LSUF}.log
 RES_TSV=$GS/logs/citygs_official_resources.tsv
 TRAINLOG=$GS/logs/citygs_official_train_${MODE}${BLKARG:+_$BLKARG}.tsv
 CHURN=$GS/logs/citygs_official_churn_${MODE}${BLKARG:+_$BLKARG}.tsv   # 每次加顆/剪枝一行（phase=clone/split/cull/trim）
@@ -525,7 +534,8 @@ PY
     #   所以「訓練途中的負載」只能用這兩個 ckpt 近似。量測工具是我方的（使用者允許的例外），跑在 gspl。
     gpu_gate
     cd "$GS" || exit 1
-    R="../cityGS_origin/outputs/$NAME"
+    R="$LROOT/outputs/$LNAME"
+    echo "量測對象：$R（CITYGS_OFF_LINE=${CITYGS_OFF_LINE:-orig}）"
     { bad=0
       for b in $(seq 0 15); do
         for st in 29999 60000; do
@@ -540,16 +550,17 @@ PY
   prune)
     # 2026-09-29：官方合併模型依 opacity 剪 X% 後的 held-out 品質（評分走官方 main.py test，與 test 同一條路徑）
     gpu_gate
-    CK=$(ls outputs/$NAME/checkpoints/*.ckpt 2>/dev/null | head -1)
+    cd "$LROOT" || exit 1
+    CK=$(ls outputs/$LNAME/checkpoints/*.ckpt 2>/dev/null | head -1)
     [ -n "$CK" ] || { echo "⛔ 沒有合併後的 ckpt（先 merge）"; exit 2; }
-    CFG=outputs/$COARSE/config.yaml
-    [ -f "$CFG" ] || CFG=$(ls -d outputs/$COARSE/lightning_logs/version_*/config.yaml 2>/dev/null | sort -V | tail -1)
-    PT=$GS/logs/citygs_official_prune.tsv
+    CFG=$ORIG/outputs/$COARSE/config.yaml
+    [ -f "$CFG" ] || CFG=$(ls -d $ORIG/outputs/$COARSE/lightning_logs/version_*/config.yaml 2>/dev/null | sort -V | tail -1)
+    PT=$GS/logs/citygs_official_prune${LSUF}.tsv
     [ -f "$PT" ] || printf 'ratio\tN\tpsnr\tssim\tlpips\trc\n' > "$PT"
     # ⚠ PYTHONPATH=$ORIG 不可省：unpickle 官方 ckpt 要 import 官方的 internal（09-29 第一次因此失敗）
-    { PYTHONPATH="$ORIG" conda run -n "$OFFENV" --no-capture-output python "$GS/tools/official_prune_ckpt.py" "$CK" "${NAME}_prune" 10 25 50 75 || exit 3
+    { PYTHONPATH="$LROOT" conda run -n "$OFFENV" --no-capture-output python "$GS/tools/official_prune_ckpt.py" "$CK" "${LNAME}_prune" 10 25 50 75 || exit 3
       for r in 10 25 50 75; do
-        P=${NAME}_prune_p$r
+        P=${LNAME}_prune_p$r
         echo "════════ 官方 test：剪 ${r}% ($P) ════════"
         conda run -n "$OFFENV" --no-capture-output python -u main.py test --config "$CFG" -n "$P" \
           --data.path "$OTEST" --data.parser.eval_image_select_mode ratio --data.parser.eval_ratio 1.0
@@ -572,7 +583,8 @@ PY
     #   ⚠ 這不是官方光柵器實際的 binning 量：我方光柵器有 EXACT_SUPPORT（o<=1/255 不進 binning），
     #     而官方光柵器不暴露 tiles，無從直接量。報告時要標明「共同量尺」。
     OFFENV=gspl
-    R="../cityGS_origin/outputs/$NAME"
+    R="$LROOT/outputs/$LNAME"
+    echo "量測對象：$R（CITYGS_OFF_LINE=${CITYGS_OFF_LINE:-orig}）"
     CK=$(find "$R/checkpoints" -maxdepth 1 -name '*.ckpt' 2>/dev/null | tail -1)
     [ -n "$CK" ] || { echo "⛔ 沒有合併後的 ckpt（先 merge）"; exit 2; }
     { bad=0
@@ -583,11 +595,76 @@ PY
       #   （gspl_official、CITYGS_CODE_ROOT=cityGS_origin）；先前在 gspl 裡量到的是我方改過的光柵器，
       #   還多了一項官方根本沒有的 MCMC noise => 那份時間組成作廢。
       for b in $(seq 0 15); do
-        echo "── 逐步計時：官方 block $b（官方程式碼＋官方光柵器）──"
-        ( cd "$ORIG" && CITYGS_CODE_ROOT="$ORIG" conda run -n gspl_official --no-capture-output \
-            python "$GS/tools/step_breakdown.py" --run "$NAME/blocks/block_$b" --repeat 20 ) || { echo "⛔ 逐步計時失敗（block $b）"; bad=1; }
+        echo "── 逐步計時：官方 block $b（官方程式碼＋官方光柵器；$LROOT）──"
+        ( cd "$LROOT" && CITYGS_CODE_ROOT="$LROOT" conda run -n gspl_official --no-capture-output \
+            python "$GS/tools/step_breakdown.py" --run "$LNAME/blocks/block_$b" --repeat 20 ) || { echo "⛔ 逐步計時失敗（block $b）"; bad=1; }
       done
       exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$LOG"
     exit "${PIPESTATUS[0]}" ;;
+  stepprof)
+    # ★ 2026-10-03 官方程式碼的**真實訓練迴圈逐段計時**（對應我方 fig1/3/9 的 _StepProfiler；官方原始碼一行不改，
+    #   tools/peakmem/sitecustomize.py 經 CITYGS_STEPPROF_OUT 外掛）。block ${BLKARG:-6}、從官方 coarse 起跑 1,500 步：
+    #     orig   官方原版（trim 從未執行）
+    #     paper  官方＋一行修正＋ω=0.9＋prune_ratio=0.025（trim 執行）
+    #   DGD 的分兩次 backward 在增生期兩條都有（ω=0 只是讓縮放不作用，backward 仍做兩次）=> 看「6 backward」的每步呼叫數
+    #   ⚠ 每個標記點 synchronize 且 reset 峰值統計 => 這兩個跑次的時間會比真實多一點、VRAM 峰值欄不可當資源數字。
+    B=${BLKARG:-6}
+    CK=$(coarse_ckpt); [ -n "$CK" ] || { echo "⛔ 沒有官方 coarse ckpt"; exit 2; }
+    CK=$ORIG/$CK
+    bad=0
+    for line in orig paper; do
+      if [ "$line" = orig ]; then DIR=$ORIG; NM=${NAME}_stepprof; XA=()
+      else
+        DIR=$FIX; NM=${NAMEP}_stepprof
+        XA=(--model.density.init_args.densify_grad_scaler 0.9 --model.renderer.init_args.prune_ratio 0.025)
+        ( cd "$FIX" 2>/dev/null && [ "$(git diff --name-only)" = "internal/gaussian_splatting.py" ] ) \
+          || { echo "⛔ $FIX 不是預期的一行修正 worktree"; bad=1; continue; }
+      fi
+      cd "$DIR" || { bad=1; continue; }
+      move_aside "outputs/$NM"
+      LOG=$GS/logs/citygs_official_stepprof_${line}_b$B.log
+      TRAINLOG=$GS/logs/citygs_official_train_stepprof_${line}_b$B.tsv
+      CHURN=$GS/logs/citygs_official_churn_stepprof_${line}_b$B.tsv
+      SP=$GS/logs/citygs_official_stepprof_${line}_b$B.txt
+      rm -f "$SP"
+      echo "=== 逐段計時：$line block $B（1,500 步，從官方 coarse）$(date) ==="
+      export CITYGS_STEPPROF_OUT="$SP"
+      run_measured conda run -n "$OFFENV" --no-capture-output python -u main.py fit \
+        --config "$ORIG/configs/$NAME.yaml" --data.parser.block_id "$B" -n "$NM" \
+        --model.initialize_from "$CK" --data.num_workers 8 --data.path "$OTRAIN_REL" \
+        --trainer.max_steps 1500 "${XA[@]}" || bad=1
+      unset CITYGS_STEPPROF_OUT
+      echo "── $line：$(grep -a -c 'Trimming' "$LOG") 次 Trimming"
+      cat "$SP" 2>/dev/null || { echo "⛔ 沒有逐段計時輸出"; bad=1; }
+    done
+    exit "$bad" ;;
+  evalours)
+    # ★ 2026-10-03 用**我方評分工具**（tools/eval_official_test.py）評官方合併模型（全部 741 幀）：
+    #   ① 交叉驗證：要重現官方 main.py test 的分數（原版 25.79／0.833／0.176），我方數字才可與官方並列
+    #   ② 補官方 test 沒有的：紋理比（逐張／能量加權）、渲染 ms/幀與 FPS、峰值 VRAM
+    #   ⚠ 渲染走 gspl 的光柵器（EXACT_SUPPORT 逐位元同官方渲染、lean 預設關）；FPS 要 [solo]。
+    gpu_gate
+    cd "$GS" || exit 1
+    CK=$(ls "$LROOT/outputs/$LNAME/checkpoints/"*.ckpt 2>/dev/null | head -1)
+    [ -n "$CK" ] || { echo "⛔ $LROOT/outputs/$LNAME 沒有合併 ckpt"; exit 2; }
+    { echo "════ 我方工具評官方合併模型（${CITYGS_OFF_LINE:-orig}）：$CK"
+      echo "-- 官方 main.py test 的 results.txt --"; cat "$LROOT/outputs/$LNAME/results.txt" 2>/dev/null || echo "（沒有）"
+      conda run -n gspl --no-capture-output python tools/eval_official_test.py --ckpt "$CK" --test_dir "$OTEST"
+    } 2>&1 | grep -vE 'pkg_resources|declare_namespace|\.\.\.[0-9]+/[0-9]+ +PSNR' | tee "$LOG"
+    exit "${PIPESTATUS[0]}" ;;
+  storage)
+    # ★ 2026-10-03 儲存結構（tools/run_storage_audit.py：ckpt 組成不載入張量、跑次目錄組成）—— 官方與我方同一支工具
+    cd "$GS" || exit 1
+    { echo "════ 目錄總量（du）"
+      for d in "$ORIG/outputs/$COARSE" "$ORIG/outputs/$NAME" "$FIX/outputs/$NAMEP" outputs/lab/cs60_conic outputs/lab/cs60_sfmdup4; do
+        [ -e "$d" ] && du -sh "$d" 2>/dev/null
+      done
+      python3 tools/run_storage_audit.py "$ORIG/outputs/$COARSE" "$ORIG/outputs/$NAME/blocks/block_6" \
+        $(ls "$ORIG/outputs/$NAME/checkpoints/"*.ckpt 2>/dev/null | head -1) \
+        "$FIX/outputs/$NAMEP/blocks/block_6" \
+        outputs/lab/cs60_conic/blocks/block_6 outputs/lab/cs60_sfmdup4/blocks/block_6
+      [ -d "$FIX/outputs/$NAMEP/checkpoints" ] && python3 tools/run_storage_audit.py $(ls "$FIX/outputs/$NAMEP/checkpoints/"*.ckpt | head -1)
+    } 2>&1 | tee "$LOG"
+    exit 0 ;;
   *) echo "⛔ 不認得的模式：$MODE"; exit 2 ;;
 esac

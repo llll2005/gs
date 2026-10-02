@@ -113,6 +113,121 @@ __global__ void duplicateWithKeys(
 	}
 }
 
+// ★ 2026-10-03 tile_cull（StopThePop §3.4 的 2DGS 版）：(tile, 顆粒) 配對只有在**該 tile 內至少一個像素可能 alpha >= 1/255**
+//   時才綁進來。renderCUDA／backward 對 alpha < 1/255 的取樣本來就 `continue`（不改 T、不累積、零梯度）
+//   => 被剔除的配對對影像與梯度的貢獻恰為 0 => 渲染逐位元相同（只少了排序、載入、迴圈）。
+//   上界是**保守**的（只會多留、不會多剔）：
+//     rho = min(rho3d, rho2d)，alpha = min(0.99, o*exp(-rho/2))
+//     rho2d 下界：像素中心矩形到投影中心的最近距離
+//     rho3d 下界：像素 -> splat UV 是單應 p = k x l = Tu x Tv - y (Tu x Tw) - x (Tw x Tv)（xy 項因 Tw x Tw = 0 消失）
+//                 => 矩形的像是凸四邊形（四角 p.z 同號時）；原點在內 => 0，否則到四邊的最近距離
+//                 四角 p.z 不同號或接近 0 => 不剔
+//   NEAR_PLANE、p.z==0 的跳過條件只會讓實際貢獻更少 => 忽略它們仍是保守的。
+//   ⚠ 只用在非 record 的呼叫：record（trim pass）在 alpha 判斷**之前**就累積 T*alpha 與覆蓋數 => 剔除會改變 trim 判準。
+//   ⚠ `tiles` 輸出（逐顆 tile 數）會變成剔除後的數 => 用 tiles 當成本的機制（exact_tile_cost）語意會變。
+//   ⚠ 新 kernel，不碰 preprocessCUDA（那裡多一行程式碼就會擾動基準路徑的 codegen，見 forward.cu 註解）。
+__device__ __forceinline__ float segDist2(float2 a, float2 b)
+{
+	// 原點到線段 ab 的距離平方
+	float2 ab = {b.x - a.x, b.y - a.y};
+	float L = ab.x * ab.x + ab.y * ab.y;
+	float t = L > 0.f ? -(a.x * ab.x + a.y * ab.y) / L : 0.f;
+	t = fminf(fmaxf(t, 0.f), 1.f);
+	float2 q = {a.x + t * ab.x, a.y + t * ab.y};
+	return q.x * q.x + q.y * q.y;
+}
+
+__device__ __forceinline__ bool tileMayContribute(int tx, int ty, int W, int H, float2 c, const float* T9, float o)
+{
+	const float thr = 2.f * logf(255.f * o);          // rho <= thr 才可能 alpha >= 1/255
+	if (!(thr > 0.f))
+		return true;                                  // 不該發生（EXACT_SUPPORT 已丟掉 o<=1/255）；保守起見保留
+	const float lim = thr * (1.f + 1e-3f) + 1e-3f;     // 浮點保守量
+	const float x0 = tx * BLOCK_X + 0.5f, x1 = (float)min(tx * BLOCK_X + BLOCK_X - 1, W - 1) + 0.5f;
+	const float y0 = ty * BLOCK_Y + 0.5f, y1 = (float)min(ty * BLOCK_Y + BLOCK_Y - 1, H - 1) + 0.5f;
+	const float dx = fmaxf(fmaxf(x0 - c.x, c.x - x1), 0.f);
+	const float dy = fmaxf(fmaxf(y0 - c.y, c.y - y1), 0.f);
+	if (FilterInvSquare * (dx * dx + dy * dy) <= lim)
+		return true;
+	const float3 Tu = {T9[0], T9[1], T9[2]}, Tv = {T9[3], T9[4], T9[5]}, Tw = {T9[6], T9[7], T9[8]};
+	const float xs[4] = {x0, x1, x1, x0}, ys[4] = {y0, y0, y1, y1};
+	float2 q[4];
+	float pz0 = 0.f;
+	for (int i = 0; i < 4; i++)
+	{
+		float3 k = {-Tu.x + xs[i] * Tw.x, -Tu.y + xs[i] * Tw.y, -Tu.z + xs[i] * Tw.z};
+		float3 l = {-Tv.x + ys[i] * Tw.x, -Tv.y + ys[i] * Tw.y, -Tv.z + ys[i] * Tw.z};
+		float3 p = crossProduct(k, l);
+		if (i == 0) pz0 = p.z;
+		if (!(fabsf(p.z) > 1e-12f) || (p.z > 0.f) != (pz0 > 0.f))
+			return true;                              // 跨過消失線或退化 => 不剔
+		q[i] = {p.x / p.z, p.y / p.z};
+	}
+	// 原點是否在凸四邊形內（四個邊的叉積同號）
+	bool pos = false, neg = false;
+	float d2 = 3.4e38f;
+	for (int i = 0; i < 4; i++)
+	{
+		float2 a = q[i], b = q[(i + 1) & 3];
+		float cr = a.x * b.y - a.y * b.x;
+		pos |= cr > 0.f; neg |= cr < 0.f;
+		d2 = fminf(d2, segDist2(a, b));
+	}
+	if (!(pos && neg))
+		return true;                                  // 原點在內（或在邊上）
+	return d2 <= lim;
+}
+
+__global__ void cullTilesCUDA(int P, const int* radii, const ushort4* rects, const float* transMats,
+	const float4* normal_opacity, const float2* points_xy, int W, int H, uint32_t* tiles_touched)
+{
+	auto idx = cg::this_grid().thread_rank();
+	if (idx >= P || radii[idx] <= 0)
+		return;
+	const ushort4 r = rects[idx];
+	const float o = normal_opacity[idx].w;
+	uint32_t n = 0;
+	for (int y = r.y; y < r.w; y++)
+		for (int x = r.x; x < r.z; x++)
+			n += tileMayContribute(x, y, W, H, points_xy[idx], transMats + 9 * idx, o) ? 1u : 0u;
+	tiles_touched[idx] = n;
+}
+
+__global__ void duplicateWithKeysCulled(
+	int P,
+	const float2* points_xy,
+	const float* depths,
+	const uint32_t* offsets,
+	uint64_t* gaussian_keys_unsorted,
+	uint32_t* gaussian_values_unsorted,
+	int* radii,
+	const ushort4* rects,
+	const float* transMats,
+	const float4* normal_opacity,
+	int W, int H,
+	dim3 grid)
+{
+	auto idx = cg::this_grid().thread_rank();
+	if (idx >= P || radii[idx] <= 0)
+		return;
+	uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
+	const uint32_t end = offsets[idx];
+	const ushort4 r = rects[idx];
+	const float o = normal_opacity[idx].w;
+	for (int y = r.y; y < r.w; y++)
+		for (int x = r.x; x < r.z; x++)
+		{
+			if (!tileMayContribute(x, y, W, H, points_xy[idx], transMats + 9 * idx, o) || off >= end)
+				continue;
+			uint64_t key = y * grid.x + x;
+			key <<= 32;
+			key |= *((uint32_t*)&depths[idx]);
+			gaussian_keys_unsorted[off] = key;
+			gaussian_values_unsorted[off] = idx;
+			off++;
+		}
+}
+
 // Check keys to see if it is at the start/end of one tile's range in
 // the full sorted list. If yes, write start/end of this tile.
 // Run once per instanced (duplicated) Gaussian ID.
@@ -287,6 +402,13 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
 	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
+	// ★ 2026-10-03 旗標位元（Python 包裝層組成，見 __init__.py）：1 lean／2 audit（固定傳 3）／4 record_reduce／8 tile_cull
+	const bool flag_audit = (lean & 2) != 0;
+	const bool tile_cull = (lean & 8) && !record_transmittance && !flag_audit;
+	const float* transMat_bin = transMat_precomp != nullptr ? transMat_precomp : geomState.transMat;
+	if (tile_cull)
+		cullTilesCUDA << <(P + 255) / 256, 256 >> > (P, radii, geomState.rects, transMat_bin,
+			geomState.normal_opacity, geomState.means2D, width, height, geomState.tiles_touched);
 	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
 
 	// ★ 逐顆 tile 數。InclusiveSum 的輸出寫到 `point_offsets`，**沒有覆蓋** `tiles_touched`，
@@ -304,6 +426,12 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// For each instance to be rendered, produce adequate [ tile | depth ] key
 	// and corresponding dublicated Gaussian indices to be sorted
+	if (tile_cull)
+		duplicateWithKeysCulled << <(P + 255) / 256, 256 >> > (
+			P, geomState.means2D, geomState.depths, geomState.point_offsets,
+			binningState.point_list_keys_unsorted, binningState.point_list_unsorted,
+			radii, geomState.rects, transMat_bin, geomState.normal_opacity, width, height, tile_grid);
+	else
 	duplicateWithKeys << <(P + 255) / 256, 256 >> > (
 		P,
 		geomState.means2D,
@@ -359,7 +487,7 @@ int CudaRasterizer::Rasterizer::forward(
 		num_covered_pixels,
 		record_transmittance,
 		// lean：訓練 => 只算顏色（MODE 1）；record => 只算 T*alpha 與覆蓋數（MODE 2）。見 forward.cu
-		lean == 3 ? 3 : (lean ? (record_transmittance ? 2 : 1) : 0)), debug)
+		flag_audit ? 3 : ((record_transmittance && (lean & 4)) ? 4 : ((lean & 1) ? (record_transmittance ? 2 : 1) : 0))), debug)
 
 	return num_rendered;
 }

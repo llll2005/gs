@@ -37,6 +37,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_by_tile_topk: bool = False,
             trim_tile_k_soft: float = 32.0,
             lean_train: bool = False,
+            record_reduce: bool = False,
+            tile_cull: bool = False,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -62,6 +64,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #     或在 backward 被光柵器擋下（RuntimeError），不會安靜地算錯。
         self.lean_train = lean_train
         self._lean_announced = False
+        # ★ 2026-10-03 速度旗標（光柵器，見 forward.cu recordReduceCUDA、rasterizer_impl.cu tileMayContribute）：
+        #   record_reduce  trim pass 的 record 在 block 內先加總，每個 (tile,顆粒) 只做一次 global atomic
+        #                  （覆蓋數逐位元相同；T*alpha 只差浮點加總順序 => trim 判準邊界上可能差幾顆）
+        #   tile_cull      非 record 的呼叫只綁「可能 alpha >= 1/255」的 tile => 渲染逐位元相同、少三~四成配對
+        #                  ⚠ `tiles`（逐顆 tile 數）會變成剔除後的數 => exact_tile_cost 類機制的成本語意會變
+        self.record_reduce = record_reduce
+        self.tile_cull = tile_cull
 
         # hyper-parameters for trimming
         self.depth_ratio = depth_ratio
@@ -204,7 +213,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"lean_render": True} if _lean else {}),
             # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
             **({"audit_tiles": True} if kwargs.get("_audit", False) else {}),
+            **({"record_reduce": True} if (record_transmittance and getattr(self, "record_reduce", False)) else {}),
+            **({"tile_cull": True} if (not record_transmittance and not kwargs.get("_audit", False)
+                                       and getattr(self, "tile_cull", False)) else {}),
         )
+        for _f in ("record_reduce", "tile_cull"):
+            if getattr(self, _f, False) and _f not in GaussianRasterizationSettings._fields:
+                raise RuntimeError(f"設了 {_f} 但光柵器不認得這個欄位 —— 沒重編")
         if kwargs.get("_audit", False) and "audit_tiles" not in GaussianRasterizationSettings._fields:
             raise RuntimeError("_audit 需要有 audit_tiles 欄位的光柵器（lean 驗證時另外裝的那份，用 PYTHONPATH 指過去）")
 
