@@ -54,6 +54,14 @@ PY="conda run -n gspl --no-capture-output"
   $PY python tools/check_lean_render.py compare "$O/old1.pt" "$O/new0.pt" --label "B 新 .so 的舊路徑 vs 舊 .so" || bad=1
   $PY python tools/check_lean_render.py compare "$O/new0.pt" "$O/new1.pt" --label "C lean 關 vs 開（同一個新 .so）" || bad=1
   rm -f "$O"/*.pt        # 每個 ~0.6 GB，結論在 log 裡
+  # ★ kernel 層級拆解（使用者 10-02：「梯度計算是不是運算大宗」）：一個訓練步（forward／loss／backward／Adam）
+  #   ＋一次 trim record pass 的每個 kernel 時間，分成「逐配對／逐顆／逐像素／逐參數」=> 決定下一步打哪裡
+  echo "════ kernel 拆解（torch.profiler，每步換一台相機，12 步）"
+  if [ -n "$CK2" ]; then
+    $PY env PYTHONPATH="$T" python tools/check_lean_render.py profile --ckpt "$CK2" --lean 0 || bad=1
+    $PY env PYTHONPATH="$T" python tools/check_lean_render.py profile --ckpt "$CK2" --lean 1 || bad=1
+  fi
+  $PY env PYTHONPATH="$T" python tools/check_lean_render.py profile --ckpt "$CK" --lean 0 || bad=1
   if [ -n "$CK2" ]; then
     echo "════ 真實訓練迴圈逐段計時：從 $CK2（增生期，含 trim pass）各 1,200 步，lean 關／開 $(date)"
     for lean in false true; do
