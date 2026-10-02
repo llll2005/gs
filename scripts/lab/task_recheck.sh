@@ -16,6 +16,7 @@
 #   oracle    O0 oracle（凍結拓撲只重訓失敗 tile 的影響集，oracle_o0）
 #   tau       訓練後的逐點 tile 覆蓋 tau 與各 K 的 N_max（measure_tau；逐塊 cap 標定的輸入）
 #   coarseinit／coarse／coarsegeom   coarse 先驗閘門（見該段註解）
+#   freespace <塊> <跑次>   空區雕刻稽核（tools/freespace_audit.py；[solo]）
 #
 # 用法（佇列）：
 #   bash scripts/lab/task_recheck.sh geom <塊> <跑次...>          （跑次＝outputs/lab/ 底下的名稱，如 cs60_conic）
@@ -140,6 +141,11 @@ PYEOF
       echo "════ coarse：$c"
       $PY tools/measure_depth_bias.py --ckpt "$c" --block "$BLK" --block_dim 5 5 --content_bounds 2>&1 | tail -6
     done ;;
+  # ── 空區雕刻稽核（2026-10-02）：SfM「相機->點」光線標出的空區裡有多少顆粒、拿掉後 val／塊內 held-out 怎麼變（對照隨機移除）──
+  freespace)
+    r=${1:?跑次}
+    c=$(ck_at "$r" last); [ -n "$c" ] || { echo "⛔ $r 沒有 60k ckpt"; exit 2; }
+    $PY tools/freespace_audit.py --ckpt "$c" --block "$BLK" ;;
   *) echo "⛔ 不認得的模式：$MODE"; exit 2 ;;
 esac
 } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$L"
