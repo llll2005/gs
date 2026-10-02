@@ -147,6 +147,32 @@ case "$ARM" in
   sfmdup2)    P="sfmfill_sweep/dup2/block_${BLK}.ply"
               [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
+  # ══════════ 2026-10-02 配方各項在新年代重驗（使用者：增生比例／absgrad／opacity_reg／noise_gate／trim）══════════
+  #   這些設定都是**舊年代**（影像↔姿態錯開）選的，新年代沒有任何單變數測試（lab resolved config 全掃過：
+  #   opacity_reg 一直是 0.002、fast_noise/noise_gate 只在 init 20k 與 absgrad 一起關、densify 只有 50%）。
+  #   基準 = cs60_conic（conic 開、預設 SfM init）=> 每臂都帶 conic，只再改一項（diff vs cs_base 應為 2 項）。
+  #   cdu100/75/25  densify_until = 全長 x 1.0 / 0.75 / 0.25（50% 就是 cs60_conic）
+  #                 ⚠ 週期 trim 預設跟著 densify_until 停（renderer contribution_prune_until_iter=-1）=> 兩者一起動，
+  #                   這正是「增生到幾 %」在現行程式裡的完整意義
+  #   cag4 / cag0   absgrad_densify 4.0 / 0（2.0 是現行；0 = 新年代從沒量過 absgrad 本身有沒有用）
+  #   coreg0        opacity_reg 0（現行 0.002）
+  #   cnotrim       週期 trim 全關（diable_trimming；N 停在 cap 而不是 0.9 cap）
+  #   cnogate       noise_gate_eps 0（fast_noise 不必訓練：tools/check_noise_opts.py 在 5 個 ckpt 上量到
+  #                 與原算法只差浮點（相對差中位 ~6e-8）；gate 則有 ~1% 被跳過者噪音 >= 自身 Adam 步長 => 要訓練驗）
+  cdu100|cdu75|cdu25)
+              case "$ARM" in cdu100) DU=$STEPS ;; cdu75) DU=$((STEPS * 3 / 4)) ;; cdu25) DU=$((STEPS / 4)) ;; esac
+              EXTRA=(--model.renderer.init_args.exact_conic_aabb true
+                     --model.density.init_args.densify_until_iter "$DU");        EXP=2 ;;
+  cag4)       EXTRA=(--model.renderer.init_args.exact_conic_aabb true
+                     --model.density.init_args.absgrad_densify 4.0);            EXP=2 ;;
+  cag0)       EXTRA=(--model.renderer.init_args.exact_conic_aabb true
+                     --model.density.init_args.absgrad_densify 0.0);            EXP=2 ;;
+  coreg0)     EXTRA=(--model.renderer.init_args.exact_conic_aabb true
+                     --model.metric.init_args.opacity_reg 0.0);                 EXP=2 ;;
+  cnotrim)    EXTRA=(--model.renderer.init_args.exact_conic_aabb true
+                     --model.renderer.init_args.diable_trimming true);           EXP=2 ;;
+  cnogate)    EXTRA=(--model.renderer.init_args.exact_conic_aabb true
+                     --model.density.init_args.noise_gate_eps 0.0);             EXP=2 ;;
   costdir)    EXTRA=(--model.density.init_args.cost_add_densify 2.278);         EXP=1 ;;
   costdir_cal) EXTRA=(--model.density.init_args.cost_add_densify 4.0);          EXP=1 ;;
   costtaming) EXTRA=(--model.density.init_args.cost_add_densify -2.8);          EXP=1 ;;
@@ -239,7 +265,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|sfmdup5|sfmdup4j10|sfmdup4j025|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次

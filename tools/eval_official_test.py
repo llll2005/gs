@@ -196,10 +196,14 @@ def main():
 
     if a.save_dir:
         os.makedirs(a.save_dir, exist_ok=True)
-    ps, ss, ls, tr, tg = [], [], [], [], []
+    ps, ss, ls, tr, tg, ms = [], [], [], [], [], []
+    import time
+    torch.cuda.reset_peak_memory_stats()
     with torch.no_grad():
         for k, i in enumerate(sel):
+            torch.cuda.synchronize(); t0 = time.perf_counter()
             out = render(i)
+            torch.cuda.synchronize(); ms.append((time.perf_counter() - t0) * 1e3)
             gt = load_gt(names[i], out)          # 官方 test 集：相機與影像同名（見檔頭）
             tr.append(float(_grad_energy(out))); tg.append(float(_grad_energy(gt)))
 
@@ -217,6 +221,9 @@ def main():
     print(f"PSNR  {np.mean(ps):6.3f}   (min {np.min(ps):.2f} / max {np.max(ps):.2f})")
     print(f"SSIM  {np.mean(ss):6.4f}")
     print(f"LPIPS {np.mean(ls):6.4f}")
+    w = ms[5:] if len(ms) > 10 else ms                      # 前 5 幀暖身不計
+    print(f"渲染  {np.mean(w):6.2f} ms/幀（中位 {np.median(w):.2f}）=> {1e3 / np.mean(w):.1f} FPS"
+          f"   峰值 VRAM 配置 {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB（含模型；⚠ 計時要獨佔整卡才可比）")
     print(f"紋理比 逐張平均 {np.mean(np.array(tr) / np.maximum(tg, 1e-8)):6.4f}   能量加權 {np.sum(tr) / max(np.sum(tg), 1e-8):6.4f}"
           "（<1 偏糊、>1 多出不存在的細節；要與 LPIPS 一起看）")
 
