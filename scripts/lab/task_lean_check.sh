@@ -17,8 +17,21 @@
 #
 # 用法：[solo] bash scripts/lab/task_lean_check.sh            驗證＋計時（不動共用環境）
 #       [solo] bash scripts/lab/task_lean_check.sh install    驗證通過後才用：把新光柵器裝進 gspl（舊路徑已驗證不變）
+#       [solo] bash scripts/lab/task_lean_check.sh profile_runs <塊> <跑次...>   各跑次 60k ckpt 的 kernel 拆解
 set -u
 cd "$(dirname "$0")/../.." || exit 1
+if [ "${1:-}" = profile_runs ]; then      # profile_runs <塊> <跑次...>：對各跑次的 60k ckpt 做 kernel 拆解（共用環境的 .so）
+  shift; B=$1; shift
+  if [ -f .lab_machine ]; then PFX=lab/; else case "$(pwd)" in */hdd/11213/*) PFX=lab/ ;; *) PFX= ;; esac; fi
+  L=logs/profile_runs_b${B}_$(date +%m%d_%H%M).log
+  for r in "$@"; do
+    c=$(ls outputs/${PFX}$r/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1)
+    [ -n "$c" ] || { echo "（$r 沒有 60k ckpt，略過）"; continue; }
+    echo "════ $r"
+    conda run -n gspl --no-capture-output python tools/check_lean_render.py profile --ckpt "$c" --lean 0
+  done 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$L"
+  exit 0
+fi
 if [ "${1:-}" = install ]; then
   G=$(conda run -n gspl python -c "import sys;print(sys.prefix)" 2>/dev/null | tail -1)
   RAST=submodules/diff-surfel-rasterization-trim-pp
@@ -62,6 +75,10 @@ PY="conda run -n gspl --no-capture-output"
     $PY env PYTHONPATH="$T" python tools/check_lean_render.py profile --ckpt "$CK2" --lean 1 || bad=1
   fi
   $PY env PYTHONPATH="$T" python tools/check_lean_render.py profile --ckpt "$CK" --lean 0 || bad=1
+  # ★ fused Adam（optimizer.step 佔每步 9~13%）：等價（同梯度 1/50 步）＋計時，再看 lean＋fused 的整步拆解
+  echo "════ fused Adam"
+  $PY python tools/check_lean_render.py adamcheck --ckpt "$CK" || bad=1
+  [ -n "$CK2" ] && { $PY env PYTHONPATH="$T" python tools/check_lean_render.py profile --ckpt "$CK2" --lean 1 --fused 1 || bad=1; }
   if [ -n "$CK2" ]; then
     echo "════ 真實訓練迴圈逐段計時：從 $CK2（增生期，含 trim pass）各 1,200 步，lean 關／開 $(date)"
     for lean in false true; do

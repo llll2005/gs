@@ -13,7 +13,16 @@ class OptimizerConfig(InstantiatableConfig):
 
 @dataclass
 class Adam(OptimizerConfig):
+    fused: bool = False
+    """2026-10-02：True => torch 的 fused Adam（每個參數一個 kernel，讀 p/g/m/v 各一次、寫 p/m/v 各一次）。
+    預設（foreach）每個參數要 6~8 個逐元素 kernel 與暫存張量，記憶體流量約 2.5 倍；optimizer.step 佔每步 9~13%。
+    同一條 Adam 公式，只差浮點運算順序（與 backward 的 atomicAdd 順序不固定同一等級）。
+    ⚠ fused 的 state['step'] 是 GPU 張量：從 foreach 訓練的 ckpt **接續**（--ckpt_path）時會不相容；
+      initialize_from 只載權重、optimizer 從頭建 => 不受影響。驗證：tools/check_lean_render.py adamcheck。"""
+
     def instantiate(self, params, lr: float, *args, **kwargs) -> Any:
+        if self.fused:
+            kwargs["fused"] = True
         return torch.optim.Adam(
             params,
             lr,
