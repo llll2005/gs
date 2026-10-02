@@ -409,7 +409,13 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching
 // and rasterizing data.
-template <uint32_t CHANNELS>
+// ★ 2026-10-02 MODE（lean_render）：把「算了但沒人用」的部分拆成另外的實例，舊路徑的原始碼一字不動。
+//   MODE 0  原本的 kernel（幾何 7 通道＋顏色；record_transmittance 由執行期旗標決定）
+//   MODE 1  訓練用：只算顏色（＋alpha 通道）。現行配方 normal/dist/depth 權重全為 0 => 幾何通道沒有任何消費者
+//   MODE 2  trim pass（record_transmittance）用：只累積 T*alpha 與覆蓋數，不算顏色也不算幾何
+//           —— record 模式的呼叫端只取這兩個量，顏色與 7 個通道算完即丟
+//   三者的 T 序列、early-out（done）與 record 的計數條件完全相同（都只依賴 alpha 與 T）。
+template <uint32_t CHANNELS, int MODE>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -545,7 +551,7 @@ renderCUDA(
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix).
 			float alpha = min(0.99f, nor_o.w * exp(power));
-			if (record_transmittance){
+			if (MODE == 2 || (MODE == 0 && record_transmittance)){
 				atomicAdd(&transmittance[collected_id[j]], T * alpha);
 				atomicAdd(&num_covered_pixels[collected_id[j]], 1);
 			}
@@ -560,6 +566,7 @@ renderCUDA(
 
 
 #if RENDER_AXUTILITY
+			if (MODE == 0) {
 			// Render depth distortion map
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 			float A = 1-T;
@@ -580,9 +587,11 @@ renderCUDA(
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 			dist1 += mapped_depth * alpha * T;
 			dist2 += mapped_depth * mapped_depth * alpha * T;
+			}
 #endif
 
 			// Eq. (3) from 3D Gaussian splatting paper.
+			if (MODE != 2)
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
 			T = test_T;
@@ -595,7 +604,7 @@ renderCUDA(
 
 	// All threads that treat valid pixel write out their final
 	// rendering data to the frame and auxiliary buffers.
-	if (inside)
+	if (inside && MODE != 2)
 	{
 		final_T[pix_id] = T;
 		n_contrib[pix_id] = last_contributor;
@@ -603,6 +612,8 @@ renderCUDA(
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
 #if RENDER_AXUTILITY
+		if (MODE == 1) out_others[pix_id + ALPHA_OFFSET * H * W] = 1 - T;   // alpha 免費，留著
+		if (MODE == 0) {
 		n_contrib[pix_id + H * W] = median_contributor;
 		final_T[pix_id + H * W] = dist1;
 		final_T[pix_id + 2 * H * W] = dist2;
@@ -612,6 +623,7 @@ renderCUDA(
 		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
 		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
 		out_others[pix_id + MEDIAN_WEIGHT_OFFSET * H * W] = median_weight;
+		}
 #endif
 	}
 }
@@ -634,9 +646,15 @@ void FORWARD::render(
 	float* out_others,
 	float* transmittance,
 	int* num_covered_pixels,
-	bool record_transmittance)
+	bool record_transmittance,
+	int mode)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
+#define _RENDER_ARGS ranges, point_list, W, H, focal_x, focal_y, means2D, colors, transMats, depths, \
+		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance
+	if (mode == 1) { renderCUDA<NUM_CHANNELS, 1> << <grid, block >> > (_RENDER_ARGS); return; }
+	if (mode == 2) { renderCUDA<NUM_CHANNELS, 2> << <grid, block >> > (_RENDER_ARGS); return; }
+#undef _RENDER_ARGS
+	renderCUDA<NUM_CHANNELS, 0> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H,

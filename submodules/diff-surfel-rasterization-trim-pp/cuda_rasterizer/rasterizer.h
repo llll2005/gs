@@ -62,7 +62,8 @@ namespace CudaRasterizer
 			int* out_tiles = nullptr,
 			// ★ 2026-09-21 執行期旗標（見 auxiliary.h 的長註解）：編譯期版本讓 lab 的
 			//   三槽平行 A/B **無法同時跑**，且誤用不會報錯。
-			bool exact_conic_aabb = false);
+			bool exact_conic_aabb = false,
+			int lean = 0);
 
 		static void backward(
 			const int P, int D, int M, int R,
@@ -94,7 +95,8 @@ namespace CudaRasterizer
 			float* dL_dsh,
 			float* dL_dscale,
 			float* dL_drot,
-			bool debug);
+			bool debug,
+			bool geom_grad = true);
 	};
 };
 

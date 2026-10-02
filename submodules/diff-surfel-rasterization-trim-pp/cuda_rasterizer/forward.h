@@ -70,7 +70,8 @@ namespace FORWARD
 		float* out_others,
 		float* transmittance,
 		int* num_covered_pixels,
-		bool record_transmittance);
+		bool record_transmittance,
+		int mode = 0);
 }
 
 

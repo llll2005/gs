@@ -36,6 +36,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_value_per_cost_alpha: float = 1.0,
             trim_by_tile_topk: bool = False,
             trim_tile_k_soft: float = 32.0,
+            lean_train: bool = False,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -50,6 +51,17 @@ class SepDepthTrim2DGSRenderer(Renderer):
           且深度 loss 與 `rtg_stable_density_controller` 都要用。
         """
         super().__init__()
+
+        # ★ 2026-10-02 `lean_train`：剃除訓練與 trim pass 裡「算了但沒人用」的光柵器計算
+        #   （光柵器 lean_render，見 cuda_rasterizer/forward.cu 的 MODE、backward.cu 的 GEOM）。
+        #   訓練 forward 只算顏色＋alpha（不算深度／法線／中位深度／distortion 6 個通道），
+        #   backward 跳過幾何梯度（含每個 (像素,顆粒) 配對 3 個加 0 的 atomicAdd），
+        #   Python 端也不做法線轉換／nan_to_num 等全幅後處理；trim pass（record）只累積 T*alpha 與覆蓋數。
+        #   驗證／測試／檢視器走一般 forward，輸出不變。
+        #   ⚠ 失敗模式是大聲的：normal／dist／depth 任一權重 > 0 時，取幾何輸出會 KeyError，
+        #     或在 backward 被光柵器擋下（RuntimeError），不會安靜地算錯。
+        self.lean_train = lean_train
+        self._lean_announced = False
 
         # hyper-parameters for trimming
         self.depth_ratio = depth_ratio
@@ -152,6 +164,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ⚠ 舊 ckpt 還原出來的 renderer 是**直接反序列化**的物件，沒有後來新增的屬性
         #   => 一律用 getattr 取（稽核清單「ckpt 覆蓋 renderer 旗標」同一類）。
         _conic = getattr(self, "exact_conic_aabb", False)
+        # lean：訓練步（training_forward 傳 _lean=True）與 record（trim pass）才用；驗證／測試走完整輸出
+        _lean = bool(getattr(self, "lean_train", False)) and (bool(kwargs.get("_lean", False)) or record_transmittance)
+        if _lean and "lean_render" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError(
+                "設了 lean_train 但光柵器不認得 lean_render 欄位 —— 沒重編。\n"
+                "    rm -rf submodules/diff-surfel-rasterization-trim-pp/build 後重裝（lab 要強制 CUDA_HOME）")
         if _conic and "exact_conic_aabb" not in GaussianRasterizationSettings._fields:
             raise RuntimeError(
                 "設了 exact_conic_aabb 但光柵器不認得這個欄位 —— 沒重編。\n"
@@ -183,6 +201,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             # 2026-09-22：tiles 改成可選（保護共用環境裡其他 checkout 的 3 元組介面）
             **({"return_tiles": True}
                if "return_tiles" in GaussianRasterizationSettings._fields else {}),
+            **({"lean_render": True} if _lean else {}),
         )
 
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -260,6 +279,14 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # additional regularizations
         render_alpha = allmap[1:2]
 
+        if _lean:
+            # 只有顏色與 alpha 有算；其餘幾何通道是 0，不能交出去
+            if not self._lean_announced:
+                self._lean_announced = True
+                print("[lean] ✅ 首次觸發：訓練 forward 只算顏色＋alpha、backward 跳過幾何梯度、trim pass 只算 T*alpha 與覆蓋數", flush=True)
+            rets['rend_alpha'] = render_alpha
+            return rets
+
         # get normal map
         # transform normal from view space to world space
         render_normal = allmap[2:5]
@@ -305,6 +332,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
 
         return rets
     
+    def training_forward(self, step, module, viewpoint_camera, pc, bg_color, render_types=None, **kwargs):
+        return self(viewpoint_camera=viewpoint_camera, pc=pc, bg_color=bg_color, render_types=render_types,
+                    _lean=True, **kwargs)
+
     def before_training_step(
             self,
             step: int,

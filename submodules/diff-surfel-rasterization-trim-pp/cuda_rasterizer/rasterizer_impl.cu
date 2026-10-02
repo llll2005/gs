@@ -227,7 +227,8 @@ int CudaRasterizer::Rasterizer::forward(
 	int* radii,
 	bool debug,
 	int* out_tiles,
-	bool exact_conic_aabb)
+	bool exact_conic_aabb,
+	int lean)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -356,7 +357,9 @@ int CudaRasterizer::Rasterizer::forward(
 		out_others,
 		transmittance,
 		num_covered_pixels,
-		record_transmittance), debug)
+		record_transmittance,
+		// lean：訓練 => 只算顏色（MODE 1）；record => 只算 T*alpha 與覆蓋數（MODE 2）。見 forward.cu
+		lean ? (record_transmittance ? 2 : 1) : 0), debug)
 
 	return num_rendered;
 }
@@ -393,7 +396,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dsh,
 	float* dL_dscale,
 	float* dL_drot,
-	bool debug)
+	bool debug,
+	bool geom_grad)
 {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
@@ -437,7 +441,8 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)dL_dmean2D,
 		dL_dnormal,
 		dL_dopacity,
-		dL_dcolor), debug)
+		dL_dcolor,
+		geom_grad), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,

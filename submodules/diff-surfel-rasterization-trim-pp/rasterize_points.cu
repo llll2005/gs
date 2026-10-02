@@ -60,7 +60,8 @@ RasterizeGaussiansCUDA(
 	const bool prefiltered,
 	const bool record_transmittance,
 	const bool debug,
-	const bool exact_conic_aabb)
+	const bool exact_conic_aabb,
+	const bool lean)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
 	AT_ERROR("means3D must have dimensions (num_points, 3)");
@@ -150,7 +151,8 @@ RasterizeGaussiansCUDA(
 		radii.contiguous().data<int>(),
 		debug,
 		tiles.contiguous().data<int>(),
-		exact_conic_aabb);
+		exact_conic_aabb,
+		lean ? 1 : 0);
   }
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_occluder, tiles);
 }
@@ -179,7 +181,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const int R,
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,
-	const bool debug)
+	const bool debug,
+	const bool geom_grad)
 {
 
   CHECK_INPUT(background);
@@ -250,7 +253,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dsh.contiguous().data<float>(),
 	  dL_dscales.contiguous().data<float>(),
 	  dL_drotations.contiguous().data<float>(),
-	  debug);
+	  debug,
+	  geom_grad);
   }
 
   return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dscales, dL_drotations);

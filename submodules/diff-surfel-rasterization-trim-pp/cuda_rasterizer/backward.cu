@@ -140,7 +140,12 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 
 
 // Backward version of the rendering procedure.
-template <uint32_t C>
+// ★ 2026-10-02 GEOM（lean_render）：GEOM=true 就是原本的 kernel，原始碼一字不動。
+//   GEOM=false 給「幾何輸出（深度／alpha／法線／中位深度／distortion）沒有進 loss」的情況：
+//   那時 dL_depths 全為 0，原 kernel 仍逐（像素, 顆粒）做 3 個加 0 的法線 atomicAdd、
+//   深度／distortion／中位深度的梯度算術，以及次像素分支的一個加 0 的 transMat atomicAdd。
+//   它們對任何梯度的貢獻都恰為 0（x + 0 = x）=> 跳過後梯度數值相同。
+template <uint32_t C, bool GEOM>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -207,11 +212,11 @@ renderCUDA(
 	float dL_ddepth;
 	float dL_daccum;
 	float dL_dnormal2D[3];
-	const int median_contributor = inside ? n_contrib[pix_id + H * W] : 0;
+	const int median_contributor = (GEOM && inside) ? n_contrib[pix_id + H * W] : 0;
 	float dL_dmedian_depth;
 	float dL_dmax_dweight;
 
-	if (inside) {
+	if (GEOM && inside) {
 		dL_ddepth = dL_depths[DEPTH_OFFSET * H * W + pix_id];
 		dL_daccum = dL_depths[ALPHA_OFFSET * H * W + pix_id];
 		dL_dreg = dL_depths[DISTORTION_OFFSET * H * W + pix_id];
@@ -229,8 +234,8 @@ renderCUDA(
 	float accum_alpha_rec = 0;
 	float accum_normal_rec[3] = {0};
 	// for compute gradient with respect to the distortion map
-	const float final_D = inside ? final_Ts[pix_id + H * W] : 0;
-	const float final_D2 = inside ? final_Ts[pix_id + 2 * H * W] : 0;
+	const float final_D = (GEOM && inside) ? final_Ts[pix_id + H * W] : 0;
+	const float final_D2 = (GEOM && inside) ? final_Ts[pix_id + 2 * H * W] : 0;
 	const float final_A = 1 - T_final;
 	float last_dL_dT = 0;
 #endif
@@ -348,6 +353,7 @@ renderCUDA(
 			float dL_dz = 0.0f;
 			float dL_dweight = 0;
 #if RENDER_AXUTILITY
+			if (GEOM) {
 			float m_d = (FAR_PLANE * c_d - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d);
 			float dmd_dd = (FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d * c_d);
 			if (contributor == median_contributor-1) {
@@ -382,6 +388,7 @@ renderCUDA(
 				dL_dalpha += (normal[ch] - accum_normal_rec[ch]) * dL_dnormal2D[ch];
 				atomicAdd((&dL_dnormal3D[global_id * 3 + ch]), alpha * T * dL_dnormal2D[ch]);
 			}
+			}
 #endif
 
 			dL_dalpha *= T;
@@ -399,7 +406,7 @@ renderCUDA(
 			// Helpful reusable temporary variables
 			const float dL_dG = nor_o.w * dL_dalpha;
 #if RENDER_AXUTILITY
-			dL_dz += alpha * T * dL_ddepth; 
+			if (GEOM) dL_dz += alpha * T * dL_ddepth; 
 #endif
 
 			if (rho3d <= rho2d) {
@@ -456,7 +463,7 @@ renderCUDA(
 				float dG_ddely = -G * FilterInvSquare * d.y;
 				atomicAdd(&dL_dmean2D[global_id].x, dL_dG * dG_ddelx); // not scaled
 				atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely); // not scaled
-				atomicAdd(&dL_dtransMat[global_id * 9 + 8],  dL_dz); // propagate depth loss
+				if (GEOM) atomicAdd(&dL_dtransMat[global_id * 9 + 8],  dL_dz); // propagate depth loss
 			}
 
 			// Update gradients w.r.t. opacity of the Gaussian
@@ -757,9 +764,16 @@ void BACKWARD::render(
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dcolors)
+	float* dL_dcolors,
+	bool geom)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
+	if (!geom) {
+		renderCUDA<NUM_CHANNELS, false> << <grid, block >> >(ranges, point_list, W, H, focal_x, focal_y, bg_color,
+			means2D, normal_opacity, transMats, colors, depths, final_Ts, n_contrib, dL_dpixels, dL_depths,
+			dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dcolors);
+		return;
+	}
+	renderCUDA<NUM_CHANNELS, true> << <grid, block >> >(
 		ranges,
 		point_list,
 		W, H,

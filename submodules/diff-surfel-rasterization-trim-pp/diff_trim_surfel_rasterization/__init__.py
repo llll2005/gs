@@ -79,7 +79,8 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.prefiltered,
             raster_settings.record_transmittance,
             raster_settings.debug,
-            raster_settings.exact_conic_aabb
+            raster_settings.exact_conic_aabb,
+            bool(getattr(raster_settings, "lean_render", False)),
         )
 
         # Invoke C++/CUDA rasterizer
@@ -97,6 +98,11 @@ class _RasterizeGaussians(torch.autograd.Function):
         if raster_settings.record_transmittance:
             return transmittance, num_covered_pixels, radii
 
+        # ★ 2026-10-02 lean_render：幾何 7 通道沒算（只剩 alpha）=> backward 一律走 GEOM=false。
+        #   關掉 materialize_grads，沒進 loss 的輸出在 backward 拿到 None 而不是全 0 張量
+        #   => 有人把幾何輸出接進 loss 時 grad_depth 不是 None => 在 backward 當場報錯（不靜默算錯）。
+        if getattr(raster_settings, "lean_render", False):
+            ctx.set_materialize_grads(False)
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
@@ -118,6 +124,18 @@ class _RasterizeGaussians(torch.autograd.Function):
         raster_settings = ctx.raster_settings
         assert not raster_settings.record_transmittance, 'should not execute backward for calculate transmittance'
         colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
+
+        geom_grad = True
+        if getattr(raster_settings, "lean_render", False):
+            if grad_depth is not None:
+                raise RuntimeError(
+                    "lean_render=True 時幾何輸出（深度／法線／distortion，只有 alpha 有算）沒有計算，"
+                    "但它們被接進了 loss（normal／dist／depth 權重 > 0？）=> 關掉 lean_render")
+            geom_grad = False
+            grad_depth = torch.empty(0, device=means3D.device)
+            if grad_out_color is None:
+                grad_out_color = torch.zeros((3, raster_settings.image_height, raster_settings.image_width),
+                                             device=means3D.device)
 
         # Restructure args as C++ method expects them
         args = (raster_settings.bg,
@@ -142,7 +160,8 @@ class _RasterizeGaussians(torch.autograd.Function):
                 num_rendered,
                 binningBuffer,
                 imgBuffer,
-                raster_settings.debug)
+                raster_settings.debug,
+                geom_grad)
 
         # Compute gradients for relevant tensors by invoking backward method
         if raster_settings.debug:
@@ -196,6 +215,10 @@ class GaussianRasterizationSettings(NamedTuple):
     #   ⇒ 預設 False（回傳 3 個，與歷史一致）；要 tiles 的呼叫端自己開。
     #   本修正**只動 Python 包裝層**，C++ 本來就一直回傳 10 個 => **不需要重編**。
     return_tiles : bool = False
+    # ★ 2026-10-02：剃除沒人用的計算（見 forward.cu 的 MODE 與 backward.cu 的 GEOM）。
+    #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。
+    #   預設 False => 與舊行為完全相同（舊 kernel 的原始碼一字未動，只是多了模板參數）。
+    lean_render : bool = False
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):
