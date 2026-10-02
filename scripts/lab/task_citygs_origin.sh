@@ -68,7 +68,7 @@ OTRAIN=$GS/data/matrix_city/aerial/train/block_all_official       # 官方線專
 OTEST=$GS/data/matrix_city/aerial/test/block_all_test_official2
 OTRAIN_REL=data/matrix_city/aerial/train/block_all_official        # 相對 cityGS_origin（data -> gs/data）
 [ -d "$ORIG" ] || { echo "⛔ 找不到 $ORIG"; exit 2; }
-MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blockfix <N>|blockpaper <N>|merge|test|res|blockload|prune}
+MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blockfix <N>|blockpaper <N>|mergepaper|testpaper|merge|test|res|blockload|prune}
 BLKARG=${2:-}
 
 # ⚠ 執行期也要鎖 arch：容器設成含 10.0，torch 2.0.1 不認識，而 CUDA 後端第一次 densify 才 JIT 編譯
@@ -494,6 +494,31 @@ PY
     nt=$(grep -a -c 'Trimming' "$LOG"); echo "[檢查] Trimming 出現 $nt 次"
     [ "$nt" -ge 1 ] || { echo "⛔⛔ trim 沒有執行"; rc=5; }
     record "$BLKARG" "outputs/$NAMEP/blocks/block_$BLKARG"; exit "$rc" ;;
+  mergepaper|testpaper)
+    # 2026-10-02：照論文設定（blockpaper）的 16 塊合併與官方 held-out test。程式碼＝trimfix worktree（一行修正）；
+    #   merge／test 本身沒有改動，只是換目錄與跑次名。test 集＝prep_test_official 重建的官方 test。
+    FIX=/workspace/data/hdd/11213/cityGS_origin_trimfix
+    NAMEP=citygsv2_mc_aerial_sh2_paper
+    CFGP=$ORIG/outputs/$COARSE/config.yaml
+    [ -f "$CFGP" ] || CFGP=$(ls -d $ORIG/outputs/$COARSE/lightning_logs/version_*/config.yaml 2>/dev/null | sort -V | tail -1)
+    cd "$FIX" || exit 1
+    if [ "$MODE" = mergepaper ]; then
+      mkdir -p "outputs/$NAMEP/aborted_blocks"
+      for d in "outputs/$NAMEP/blocks/"*.aborted_*; do [ -d "$d" ] && mv "$d" "outputs/$NAMEP/aborted_blocks/"; done
+      miss=""; for b in $(seq 0 15); do ls "outputs/$NAMEP/blocks/block_$b/checkpoints/"*step=60000.ckpt >/dev/null 2>&1 || miss="$miss $b"; done
+      [ -z "$miss" ] || { echo "⛔ 這些塊沒有 60000 步 ckpt：$miss"; exit 2; }
+      echo "✅ 16 塊都有 60000 步 ckpt"
+      conda run -n "$OFFENV" --no-capture-output python utils/merge_citygs_ckpts.py "outputs/$NAMEP" 2>&1 | tee "$LOG"
+      exit "${PIPESTATUS[0]}"
+    fi
+    gpu_gate
+    echo "=== 照論文設定 官方 held-out test（$OTEST）$(date) ==="
+    run_measured conda run -n "$OFFENV" --no-capture-output python -u main.py test \
+      --config "$CFGP" -n $NAMEP --data.path "$OTEST" \
+      --data.parser.eval_image_select_mode ratio --data.parser.eval_ratio 1.0 --save_val --test_speed
+    rc=$?; record - "outputs/$NAMEP/checkpoints"
+    [ -f "outputs/$NAMEP/results.txt" ] && { echo "-- results.txt --"; cat "outputs/$NAMEP/results.txt"; }
+    exit "$rc" ;;
   blockload)
     # 2026-09-29：每塊在 30k（增生期結束附近）與 60k（終點）的離線 Load —— 我方跑次都有這一欄
     #   （同一支 cost_budget_calibrate、精確 Σtiles 與代理並列）。官方原始碼沒有訓練中 Load 打印，
