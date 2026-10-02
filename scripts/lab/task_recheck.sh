@@ -63,20 +63,21 @@ case "$MODE" in
     [ -n "$OFF_CK" ] || { echo "⛔ 找不到官方合併 ckpt"; exit 2; }
     echo "════ 官方合併模型 @ block $BLK 的視角：$OFF_CK"
     $PY tools/measure_depth_bias.py --ckpt "$OFF_CK" --block "$BLK" --block_dim 5 5 --content_bounds 2>&1 | tail -6 ;;
+  # ⚠ 2026-10-02 第一版用 `head -8` 截輸出 => 只留下進度行（...20/210 PSNR=...），最終指標被截掉、整批重跑
   heldout)
     for r in "$@"; do
       for s in 1499 last; do
         c=$(ck_at "$r" "$s"); [ -n "$c" ] || { echo "（$r 沒有 step $s 的 ckpt，略過）"; continue; }
         echo "════ $r @ $s　val⊂train：$(val_of "$r")"
         $PY tools/eval_official_test.py --ckpt "$c" --block "$BLK" --block_dim 5 5 2>&1 \
-          | grep -E "選視角|模型|PSNR|SSIM|LPIPS|紋理比|⛔" | head -8
+          | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR" | grep -E "選視角|模型|^PSNR|^SSIM|^LPIPS|^紋理比|^渲染|⛔"
       done
     done ;;
   heldoutoff)
     [ -n "$OFF_CK" ] || { echo "⛔ 找不到官方合併 ckpt"; exit 2; }
     echo "════ 官方合併模型（上界參照，同一批視角）：$OFF_CK"
     $PY tools/eval_official_test.py --ckpt "$OFF_CK" --block "$BLK" --block_dim 5 5 2>&1 \
-      | grep -E "選視角|模型|PSNR|SSIM|LPIPS|紋理比|⛔" | head -8 ;;
+      | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR" | grep -E "選視角|模型|^PSNR|^SSIM|^LPIPS|^紋理比|^渲染|⛔" ;;
   starttrim)
     r=${1:?跑次}; P=${2:?init PLY}
     c=$(ck_at "$r" 499); [ -n "$c" ] || { echo "⛔ $r 沒有 step 499 的 ckpt"; exit 2; }
