@@ -77,7 +77,38 @@ case "$MODE" in
       done
       [ -n "$ok" ] || { echo "⛔ block $b dup 1 仍超過 0.9cap"; exit 3; }
     done
-    echo "=== 起始顆數表 $TSV ==="; cat "$TSV" ;;
+    echo "=== 起始顆數表 $TSV ==="; cat "$TSV"
+    # ★ 由 prep 自己把 16 個 block 行＋merge/test/res 插進佇列（同 task_sfmfill_sweep2.sh gen 的做法）：
+    #   預先排的話，三槽平行下 block 行可能在 PLY 產完前就被空槽搶走 => rc=2 白白消耗。
+    #   插在第一個 [solo] 行之前 => 與其他訓練行連成一批平行跑；merge 是 [solo]，會等 16 塊都跑完。
+    Q=scripts/queue.txt
+    if grep -q "task_full44.sh block" "$Q" 2>/dev/null; then echo "（佇列已有 full44 block 行，不重複插入）"; exit 0; fi
+    _ins=$(mktemp)
+    {
+      for b in $(seq 0 15); do
+        echo "# ★★★★★★ 我方最佳解 4x4 全場景（conic＋dup init，60k；對照官方 CityGSV2 16 塊）：block $b"
+        echo "bash scripts/lab/task_full44.sh block $b"
+      done
+      echo "# ★★★★★★ 我方 4x4：合併 16 塊"
+      echo "[solo] bash scripts/lab/task_full44.sh merge"
+      echo "# ★★★★★★ 我方 4x4：官方 held-out 741 幀（＋同工具重評官方模型當交叉驗證；FPS 要獨佔）"
+      echo "[solo] bash scripts/lab/task_full44.sh test"
+      echo "# ★★★★★★ 我方 4x4：資源（逐塊逐步計時、合併模型離線 Load、儲存）"
+      echo "[solo] bash scripts/lab/task_full44.sh res"
+    } > "$_ins"
+    # 錨點：第一個 [solo] 行（Load 比較或官方 blockpaper）=> 插在獨佔批之前，與其他訓練行連成同一批平行跑
+    _ln=$(grep -nE "^\[solo\] " "$Q" | head -1 | cut -d: -f1)
+    if [ -n "$_ln" ]; then
+      while [ "$_ln" -gt 1 ] && [ "$(sed -n "$((_ln-1))p" "$Q" | cut -c1)" = "#" ]; do _ln=$((_ln-1)); done
+      _tmp=$(mktemp)
+      { head -n $((_ln-1)) "$Q"; cat "$_ins"; tail -n +"$_ln" "$Q"; } > "$_tmp"
+      mv "$_tmp" "$Q"
+      echo "✅ 已把 16 個 block 行＋merge/test/res 插到第一個 [solo] 行之前（第 $_ln 行）"
+    else
+      cat "$_ins" >> "$Q"
+      echo "✅ 已把 16 個 block 行＋merge/test/res 追加到佇列尾"
+    fi
+    rm -f "$_ins" ;;
 
   block)
     B=${2:?block id}

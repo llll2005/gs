@@ -85,6 +85,18 @@ case "$MODE" in
   failure)
     rs=(); for r in "$@"; do rs+=("${PFX}$r"); done
     $PY tools/failure_map.py "${rs[@]}" --blk "$BLK" --block-dim 5 5 ;;
+  # fail = pics（缺圖才存）-> failure -> oracle 串成一行：三槽平行下分成三行會在圖還沒存完時就開跑
+  fail)
+    rs=()
+    for r in "$@"; do
+      rs+=("${PFX}$r")
+      ls -d "outputs/${PFX}$r/blocks/block_$BLK/test/"*/ >/dev/null 2>&1 \
+        || bash scripts/lab/task_savepics.sh "${PFX}$r" "$BLK" | tail -3
+    done
+    echo "════ 失敗區（絕對門檻）"
+    $PY tools/failure_map.py "${rs[@]}" --blk "$BLK" --block-dim 5 5
+    echo "════ O0 oracle"
+    $PY tools/oracle_o0.py "${rs[@]}" --blk "$BLK" --model-run "${rs[0]}/blocks/block_$BLK" ;;
   oracle)
     rs=(); for r in "$@"; do rs+=("${PFX}$r"); done
     # ⚠ oracle_o0 用遞迴 glob 找 60k ckpt：多塊跑次會挑到字典序最前的塊（block_13 < block_6）=> 明給 --model-run
