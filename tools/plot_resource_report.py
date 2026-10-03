@@ -45,13 +45,15 @@ def save(fig, name):
     p = os.path.join(OUT, name); fig.tight_layout(); fig.savefig(p, bbox_inches="tight"); plt.close(fig); print("  ->", p)
 
 # ── 圖 1：每步時間拆解（增生期，trim 按真實週期 500 步攤平）──
+# 2026-10-03：拿掉 09-12 舊資料那一列（已被新年代量測取代）；加上 lab 的 lean 關／開（現行），trim 一律按真實週期 500 步攤平
 rows = [
-    ("09-12 舊資料 b12\nN 1.79M（284 台相機）", dict(backward=181.58, forward=118.29, trim=101.83, optimizer=51.56, loss=15.79, loopout=18.53, other=0)),
-    ("新年代 b6 低顆數\nN 0.63M（548 台相機）", dict(backward=99.48, forward=31.54, trim=30891.22/500, optimizer=14.37, loss=15.64, loopout=4.10, other=2.90)),
-    ("新年代 b6 高顆數\nN 1.54M", dict(backward=172.05, forward=95.79, trim=75512.24/500, optimizer=45.51, loss=15.91, loopout=9.00, other=2.66)),
-    ("新年代 b6 高顆數\n＋max_split_size_mb:128", dict(backward=176.60, forward=106.19, trim=76719.21/500, optimizer=57.91, loss=15.87, loopout=8.82, other=2.69)),
+    ("本機 4050 b6 低顆數\nN 0.63M（548 台相機）", dict(backward=99.48, forward=31.54, trim=30891.22/500, optimizer=14.37, loss=15.64, loopout=4.10, other=2.90)),
+    ("本機 4050 b6 高顆數\nN 1.54M", dict(backward=172.05, forward=95.79, trim=75512.24/500, optimizer=45.51, loss=15.91, loopout=9.00, other=2.66)),
+    ("本機 4050 b6 高顆數\n＋max_split_size_mb:128", dict(backward=176.60, forward=106.19, trim=76719.21/500, optimizer=57.91, loss=15.87, loopout=8.82, other=2.69)),
+    ("lab 3090 [solo] b6\nN 2.29M　lean 關", dict(backward=84.85, forward=36.69, trim=27875/500, optimizer=15.15, loss=5.02, loopout=8.00, other=3.33)),
+    ("★ 現行：lab 3090 [solo] b6\nN 2.29M　lean 開", dict(backward=68.64, forward=21.13, trim=27589/500, optimizer=15.15, loss=5.05, loopout=8.03, other=3.32)),
 ]
-fig, axes = plt.subplots(1, 2, figsize=(14, 4.8), gridspec_kw={"width_ratios": [3, 2]})
+fig, axes = plt.subplots(1, 2, figsize=(14, 5.8), gridspec_kw={"width_ratios": [3, 2]})
 for ax, pct in zip(axes, (False, True)):
     for i, (name, d) in enumerate(rows[::-1]):
         tot = sum(d.values()); left = 0
@@ -67,7 +69,7 @@ for ax, pct in zip(axes, (False, True)):
     ax.set_xlabel("佔每步時間 (%)" if pct else "每步時間 (ms，增生期)")
     if pct: ax.set_yticklabels([]); ax.set_xlim(0, 100)
 axes[0].legend(loc="upper center", bbox_to_anchor=(0.8, -0.14), ncol=4, fontsize=8, frameon=False)
-fig.suptitle("圖 1　訓練時間花在哪：運算（backward／forward／trim）為主，搬運只佔約 2%", fontsize=12)
+fig.suptitle("圖 1　訓練時間花在哪：運算（backward／forward／trim）為主，搬運只佔約 2%\n現行（lab、lean 開）增生期：backward 39%、週期 trim 31%（以真實每步為分母約 37%；下一個目標）、forward 12%", fontsize=12)
 save(fig, "fig1_time_breakdown.png")
 
 # ── 圖 2：max_split_size_mb:128 在真實迴圈上的代價 ──
@@ -129,12 +131,13 @@ save(fig, "fig4_ckpt_storage.png")
 
 # ── 圖 5：CPU RAM 影像快取 ──
 fig, axes = plt.subplots(1, 2, figsize=(13, 4.2))
-axes[0].bar(["現行（float32 影像＋深度圖）", "提案（uint8 RGB，不載深度）"], [17.28, 4.32], color="#4C72B0", label="影像")
-axes[0].bar(["現行（float32 影像＋深度圖）", "提案（uint8 RGB，不載深度）"], [8.29, 0], bottom=[17.28, 4.32], color="#C44E52", label="深度圖（權重 0 仍載入）")
+_x0 = ["舊預設（float32 影像＋深度圖）", "★ 現行（uint8 RGB、不載深度；09-21 起）"]
+axes[0].bar(_x0, [17.28, 4.32], color="#4C72B0", label="影像")
+axes[0].bar(_x0, [8.29, 0], bottom=[17.28, 4.32], color="#C44E52", label="深度圖（權重 0 仍載入）")
 axes[0].text(0, 26.2, "25.6 MB", ha="center"); axes[0].text(1, 5.0, "4.3 MB（-83%）", ha="center")
 axes[0].set_ylabel("MB／訓練視角"); axes[0].legend(fontsize=8); axes[0].set_ylim(0, 30)
 axes[0].set_title("每個視角（1600x900 影像；深度 1920x1080）\n載入時另有 float64 暫存 34.6 MB", fontsize=10)
-_lb = ["估算：現行 b6\n（548 台，含深度）", "估算：提案 b6", "估算：現行\nx lab 三槽", "估算：提案\nx lab 三槽", "本機實測 RSS\n原樣（未載深度）", "本機實測 RSS\nuint8＋不載深度"]
+_lb = ["估算：舊預設 b6\n（548 台，含深度）", "估算：現行 b6", "估算：舊預設\nx lab 三槽", "估算：現行\nx lab 三槽", "本機實測 RSS\n舊預設（未載深度）", "本機實測 RSS\n現行"]
 _v = [14.0, 2.37, 42.1, 7.1, 12.35, 4.71]
 axes[1].bar(_lb, _v, color=["#C44E52", "#55A868", "#C44E52", "#55A868", "#DD8452", "#64B5CD"])
 for i, v in enumerate(_v): axes[1].text(i, v + 0.8, f"{v:.1f} GB", ha="center", fontsize=8)
@@ -142,7 +145,7 @@ axes[1].tick_params(axis="x", labelsize=7)
 axes[1].axhline(62, color="k", ls="--", lw=1); axes[1].text(5.4, 58.5, "lab 實體 RAM 62 GB", ha="right", fontsize=8)
 axes[1].set_ylabel("GB"); axes[1].set_ylim(0, 70)
 axes[1].set_title("整塊快取（未含 val 與載入暫存；lab 實見每跑次 17~20 GB）", fontsize=10)
-fig.suptitle("圖 5　CPU RAM：lab 的快取把 float32 影像與「權重為 0 的深度圖」一起存（本機深度圖是舊檔、實際沒載入）；本機實測 uint8 即降 62%", fontsize=10)
+fig.suptitle("圖 5　CPU RAM：影像快取改 uint8＋不載權重為 0 的深度圖（09-21 起預設，訓練輸入逐位元不變）：每視角 25.6 → 4.3 MB、本機實測 RSS -62%", fontsize=10)
 save(fig, "fig5_ram_cache.png")
 
 # ── 圖 6：一個 60k 跑次目錄（lab speed3 b6，7.8 GB）──
@@ -161,14 +164,14 @@ save(fig, "fig6_run_dir.png")
 lab = {"b6 21,920 步\nN 1.85M": [10107, 9627, 9952, 10313, 9285, 8932, 8702],
        "60k 步\nN 2.34M": [28055, 22863, 23132, 21503, 17873, 29945, 30765, 29575],
        "20k 步 init\n機制全關": [6971, 7041, 5143, 6491, 7281, 7591]}
-loc = {"b6 21,920 步\nN 1.85M": [9943], "60k 步\nN 2.34M": [29403, 31614], "20k 步 init\n機制全關": []}
+loc = {"b6 21,920 步\nN 1.85M": [9943], "60k 步\nN 2.34M": [], "20k 步 init\n機制全關": []}   # 本機 60k 只有舊年代的計時 => 不畫
 fig, ax = plt.subplots(figsize=(10, 4.4))
 for i, k in enumerate(lab):
     ax.scatter([i - 0.12]*len(lab[k]), [v/3600 for v in lab[k]], color="#DD8452", s=28, label="lab 3090（三槽平行）" if i == 0 else None, zorder=3)
     if loc[k]: ax.scatter([i + 0.12]*len(loc[k]), [v/3600 for v in loc[k]], color="#4C72B0", s=40, marker="s", label="本機 4050（獨佔）" if i == 0 else None, zorder=3)
 ax.set_xticks(range(len(lab))); ax.set_xticklabels(list(lab)); ax.set_ylabel("牆鐘時間（小時）")
 ax.legend(fontsize=8); ax.grid(axis="y", alpha=0.3)
-ax.set_title("圖 7　單跑牆鐘：lab 三槽平行時與本機相近（22k）到略快（60k）；lab 的優勢是一次 3 個\n（本機 60k 為舊年代計時；計時不經過影像配對，仍有效）", fontsize=10)
+ax.set_title("圖 7　單跑牆鐘：lab 三槽平行時與本機獨佔相近（22k）；lab 的優勢是一次 3 個\n（60k 只有 lab 的數字；本機 60k 尚無新年代計時）", fontsize=10)
 save(fig, "fig7_wall_time.png")
 # ── 圖 8：trim 判準 v vs v/c 的時間與成本（同塊、同 N、60k 終點模型）──
 # 數據＝scripts/lab/task_60k_cost.sh（lab [solo]，tools/step_breakdown.py 與 cost_budget_calibrate.py）

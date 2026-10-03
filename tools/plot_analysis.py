@@ -61,7 +61,7 @@ def n05_cap60k(d):
     ax.plot([c for c, v in zip(caps, b13) if v == v], [v for v in b13 if v == v], "-o", color=C2, lw=2,
             label="b13：只調 cap（1.7M 跑中）")
     arms = [("v/c trim", 30.31, 29.80, "v"), ("fastgrow", 30.59, 30.10, "^"),
-            ("dup2", 30.58, 30.13, "s"), ("dup4", 30.75, 30.32, "D")]
+            ("dup2", 30.58, 30.13, "s"), ("dup4\n★現行最佳", 30.75, 30.32, "D")]
     for i, (nm, a, b, m) in enumerate(arms):
         x = 2.75 + 0.13 * i
         ax.plot(x, a, m, color=C1, ms=7); ax.plot(x, b, m, color=C2, ms=7)
@@ -69,9 +69,35 @@ def n05_cap60k(d):
     ax.axvline(2.68, color=MUTED, lw=0.8, ls=":")
     ax.text(2.69, 28.45, "同 cap 2.6M 的各臂\n（藍 b6／橙 b13）", fontsize=7.5, color=INK2)
     ax.set_xlabel("cap_max（百萬顆；終點 N 約為 0.9 倍）"); ax.set_ylabel("val PSNR（dB，val⊂train）")
-    ax.set_xlim(0.55, 3.25); ax.legend(loc="upper left", fontsize=8)
+    ax.set_xlim(0.55, 3.25); ax.set_ylim(28.35, 31.0); ax.legend(loc="upper left", fontsize=8)
     ax.set_title("60k：只調 cap 的品質曲線，與同 cap 2.6M 下各臂（右側點）", fontsize=10.5)
     save(fig, d, "n05_cap60k.png")
+
+
+def n02_current(d):
+    """現行配方的 VRAM：峰值隨 N 的斜率與 6GB 上限、lean 的峰值配置。"""
+    fig, axs = plt.subplots(1, 2, figsize=(13, 4.2), gridspec_kw={"width_ratios": [3, 2]})
+    ax = axs[0]
+    n = np.array([1.85, 2.34]); pk = np.array([3.26, 4.48])          # lab 同塊（09-13）：cs_base 22k、speed3 60k
+    k = (pk[1] - pk[0]) / (n[1] - n[0])
+    xx = np.linspace(1.6, 3.15, 50)
+    ax.plot(xx, pk[0] + k * (xx - n[0]), "--", color=MUTED, lw=1.2, label=f"線性外推（{k:.2f} GB／百萬顆）")
+    ax.plot(n, pk, "o", color=C1, ms=8, label="lab 實測峰值實佔（cs_base 22k／speed3 60k）")
+    ax.errorbar([2.34], [4.335], yerr=[[0.065], [0.065]], fmt="D", color=C3, ms=8, capsize=5,
+                label="★ 現行最佳 cs60_sfmdup4 等 60k 臂（4.27~4.40）")
+    ax.axhline(6.1, color="k", lw=1, ls="--"); ax.text(1.62, 6.17, "本機 6.1 GiB 牆", fontsize=8)
+    ax.axhline(5.66, color=C2, lw=1, ls=":"); ax.text(1.62, 5.45, "lab 上限 5.66 GiB（只管 PyTorch 配置器，光柵器另約 +0.28）", fontsize=7.5, color=C2)
+    ax.axvspan(2.9, 3.0, color=C2, alpha=0.12); ax.text(2.92, 3.0, "6GB 內\n可行上限\n約 2.9~3.0M", fontsize=8, color=INK2)
+    ax.axvline(2.34, color=MUTED, lw=0.6, ls=":"); ax.text(2.36, 2.75, "現行 cap 2.6M\n交付 2.34M", fontsize=7.5, color=INK2)
+    ax.set_xlabel("終點顆數 N（百萬，sh3）"); ax.set_ylabel("峰值實佔（GiB，台帳）"); ax.set_ylim(2.5, 6.6)
+    ax.legend(fontsize=7.5, loc="center left", bbox_to_anchor=(0.01, 0.52))
+    ax.set_title("峰值隨 N：VRAM 由顆數主導；cap 再往上加就出 6GB 信封", fontsize=10)
+    ax = axs[1]
+    barlabels(ax, ax.bar(["lean 關", "★ lean 開（現行）"], [4022, 3821], color=[MUTED, C3], width=0.55), fmt="{:,.0f}")
+    ax.set_ylim(0, 4700); ax.set_ylabel("峰值配置（MiB）")
+    ax.set_title("lean_render：峰值配置 -5%（lab b6 N 2.29M、1,200 步）", fontsize=10)
+    fig.suptitle("現行配方的 VRAM（lab 鎖 5.66 GiB）", fontsize=11)
+    save(fig, d, "n02_current.png")
 
 
 def n07_sampling(d):
@@ -81,13 +107,14 @@ def n07_sampling(d):
     ps = [29.141, 29.006, 28.821, 28.833]
     ld = [7.69, 6.99, 6.22, 5.91]
     ax.plot(w, ps, "-o", color=C1, lw=2)
+    ax.annotate("★ 現行 w=0", (0, ps[list(w).index(0)]), xytext=(8, 8), textcoords="offset points", fontsize=8, color=INK2)
     ax.set_xlabel("cost_add_densify 權重 w（負＝偏好貴，Taming 方向）"); ax.set_ylabel("PSNR（dB）", color=C1)
     ax2 = ax.twinx(); ax2.plot(w, ld, "--s", color=C2, lw=1.6); ax2.set_ylabel("Load 中位（百萬，代理單位）", color=C2)
     ax2.grid(False)
     ax.set_title("寬鬆預算（cap 2.6M）：w 是成本↔品質旋鈕", fontsize=10)
     ax = axs[1]
     pts = [("refc 固定 0.5", 97.6, 26.94, C2), ("refh1 前鬆後緊", 62.5, 27.26, C1),
-           ("refh2 前緊後鬆", 91.2, 27.34, C3), ("無預算基準", 145.9, 29.00, MUTED)]
+           ("refh2 前緊後鬆", 91.2, 27.34, C3), ("★ 現行：無預算", 145.9, 29.00, MUTED)]
     for nm, x, y, c in pts:
         ax.plot(x, y, "o", color=c, ms=9)
         ax.annotate(f"{nm}\n{y:.2f}", (x, y), xytext=(6, -4), textcoords="offset points", fontsize=8, color=INK2)
@@ -119,7 +146,7 @@ def n08_init20k(d):
 
 
 def n08_init60k(d):
-    arms = ["sfmfill", "fastgrow\n(add_ratio 1.2)", "dup2", "dup4"]
+    arms = ["sfmfill", "fastgrow\n(add_ratio 1.2)", "dup2", "★ dup4\n（現行最佳）"]
     b6 = [0.04, 0.11, 0.10, 0.27]
     b13 = [0.01, 0.10, 0.13, 0.32]
     x = np.arange(len(arms)); wd = 0.38
@@ -178,7 +205,7 @@ def n10_lean_loop(d):
                 ax.text(left + v / 2, i, f"{v:.0f}", ha="center", va="center", fontsize=8, color="white")
             left += v
         ax.text(left + 2, i, f"段落和 {left:.0f} ms／真實每步 {real:.1f} ms", va="center", fontsize=8.5)
-    ax.set_yticks([0, 1]); ax.set_yticklabels(["lean 關", "lean 開"]); ax.invert_yaxis()
+    ax.set_yticks([0, 1]); ax.set_yticklabels(["lean 關", "★ lean 開（現行）"]); ax.invert_yaxis()
     ax.set_xlim(0, 230); ax.set_xlabel("每步 wall ms（逐段同步計時；b6、N 2.29M、增生期 1,200 步含 1 次 trim）")
     ax.legend(ncol=7, fontsize=7.5, loc="upper center", bbox_to_anchor=(0.5, -0.32))
     ax.set_title("lean_render 真實訓練迴圈：每步 152.3 -> 120.5 ms（-20.9%）；trim 幾乎沒變", fontsize=10.5)
@@ -194,7 +221,7 @@ def n10_kernels(d):
     fig, axs = plt.subplots(1, 2, figsize=(14, 4.2), gridspec_kw={"width_ratios": [3, 1.3]})
     ax = axs[0]
     barlabels(ax, ax.bar(x - wd / 2, off, wd, color=MUTED, label="lean 關"), fmt="{:.1f}")
-    barlabels(ax, ax.bar(x + wd / 2, on, wd, color=C3, label="lean 開"), fmt="{:.1f}")
+    barlabels(ax, ax.bar(x + wd / 2, on, wd, color=C3, label="★ lean 開（現行）"), fmt="{:.1f}")
     ax.set_xticks(x); ax.set_xticklabels(cats, fontsize=8.5); ax.set_ylabel("kernel 時間（ms/步，含 1 台相機的 record）")
     ax.legend(fontsize=8)
     ax.set_title("kernel 拆解（profiler，b6 @14,999，N 2.6M；已扣掉 autograd 包裝列的重複計時）", fontsize=10)
@@ -276,14 +303,14 @@ def n12_recheck(d):
     barlabels(ax, ax.bar(xx - wd2 / 2, b6, wd2, color=C1, label="b6（11,952 tile）"), fmt="{:.2f}%")
     barlabels(ax, ax.bar(xx + wd2 / 2, b13, wd2, color=C2, label="b13（16,853 tile）"), fmt="{:.2f}%")
     ax.set_xticks(xx); ax.set_xticklabels(arms, fontsize=8.5); ax.set_ylabel("失敗 tile（%）"); ax.legend(fontsize=8)
-    ax.set_title("失敗區（GT std≥0.1、corr<0.6）：1.3~2.3%（舊年代報 46%）", fontsize=10)
+    ax.set_title("失敗區（GT std≥0.1、corr<0.6）：1.3~2.3%，現行最佳 dup4 最少", fontsize=10)
     save(fig, d, "n12_recheck.png")
 
 
 # ══════════════ 組合 ══════════════
 DOCS = {
     "01_訓練時間組成": ["fig1_time_breakdown", "fig9_scaling_phase", "fig7_wall_time"],
-    "02_VRAM與配置器": ["fig2_maxsplit_ab", "fig3_vram_segments"],
+    "02_VRAM與配置器": ["fig2_maxsplit_ab", "fig3_vram_segments", "n02_current"],
     "03_儲存與RAM": ["fig4_ckpt_storage", "fig6_run_dir", "fig5_ram_cache"],
     "04_外接盒與binning成本": ["cc1_quality_delta", "cc2_time", "cc3_load_vram", "cc4_proxy_decoupled"],
     "05_成本品質前緣與vc_trim": ["f1_frontier_22k", "f2_60k_vpc_init", "n05_cap60k", "fig8_trimvpc_time"],
@@ -329,7 +356,7 @@ def main():
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stdout[-2000:], r.stderr[-2000:]); raise SystemExit(f"⛔ {sc} 失敗")
-    for f in (n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks,
+    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck):
         f(tmp)
     for doc, panels in DOCS.items():

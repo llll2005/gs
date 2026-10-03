@@ -65,7 +65,7 @@ for ax, (k, v) in zip(axes, d.items()):
     for i, x in enumerate(v):
         ax.text(i, x, f"{x:+.3g}", ha="center",
                 va="bottom" if x >= 0 else "top", fontsize=8)
-fig.suptitle("品質：新（exact_conic_aabb=true）− 舊（false）　正值＝新版較好　"
+fig.suptitle("品質：conic 開（exact_conic_aabb，現行預設）− conic 關　正值＝conic 開較好　"
              "16 個差沒有一個是負的", fontsize=11)
 save(fig, "cc1_quality_delta.png")
 
@@ -75,8 +75,8 @@ for ax, (blk, n, fo, fn_, bo, bn) in zip(axes, [
         ("b6", "N=1,850,094", 26.35, 19.44, 73.88, 62.32),
         ("b13", "N=2,302,234", 40.47, 29.98, 101.25, 83.98)]):
     x = np.arange(2); w = 0.36
-    ax.bar(x - w/2, [fo, bo], w, label="舊（conic off）", color=OLD)
-    ax.bar(x + w/2, [fn_, bn], w, label="新（conic on）", color=NEW)
+    ax.bar(x - w/2, [fo, bo], w, label="conic 關", color=OLD)
+    ax.bar(x + w/2, [fn_, bn], w, label="conic 開（現行預設）", color=NEW)
     for i, (a, b) in enumerate([(fo, fn_), (bo, bn)]):
         ax.text(i + w/2, b, f"{b:.1f}\n{100*(b/a-1):+.1f}%", ha="center", va="bottom", fontsize=8)
         ax.text(i - w/2, a, f"{a:.1f}", ha="center", va="bottom", fontsize=8)
@@ -92,8 +92,8 @@ lab = ["b6 max", "b6 中位", "b13 max", "b13 中位"]
 old = [7345817, 5089279, 10108848, 6476070]
 new = [5149466, 3046590, 5669418, 3512081]
 x = np.arange(4); w = 0.36
-ax.bar(x - w/2, np.array(old)/1e6, w, label="舊", color=OLD)
-ax.bar(x + w/2, np.array(new)/1e6, w, label="新", color=NEW)
+ax.bar(x - w/2, np.array(old)/1e6, w, label="conic 關", color=OLD)
+ax.bar(x + w/2, np.array(new)/1e6, w, label="conic 開（現行）", color=NEW)
 for i, (a, b) in enumerate(zip(old, new)):
     ax.text(i + w/2, b/1e6, f"{100*(b/a-1):+.1f}%", ha="center", va="bottom", fontsize=8)
 ax.set_xticks(x); ax.set_xticklabels(lab, fontsize=8)
@@ -103,8 +103,8 @@ ax = axes[1]
 lab2 = ["b13 22k", "b6 60k", "b13 60k"]
 o2, n2 = [4.10, 4.58, 4.68], [3.94, 4.35, 4.37]
 x = np.arange(3)
-ax.bar(x - w/2, o2, w, label="舊", color=OLD)
-ax.bar(x + w/2, n2, w, label="新", color=NEW)
+ax.bar(x - w/2, o2, w, label="conic 關", color=OLD)
+ax.bar(x + w/2, n2, w, label="conic 開（現行）", color=NEW)
 for i, (a, b) in enumerate(zip(o2, n2)):
     ax.text(i + w/2, b, f"{b:.2f}\n{100*(b/a-1):+.1f}%", ha="center", va="bottom", fontsize=8)
 ax.set_xticks(x); ax.set_xticklabels(lab2, fontsize=9)
@@ -117,8 +117,8 @@ fig, ax = plt.subplots(figsize=(6.4, 3.8))
 lab3 = ["b6", "b13"]
 o3, n3 = [1.282, 1.070], [2.272, 2.234]
 x = np.arange(2)
-ax.bar(x - w/2, o3, w, label="舊（conic off）", color=OLD)
-ax.bar(x + w/2, n3, w, label="新（conic on）", color="#C44E52")
+ax.bar(x - w/2, o3, w, label="conic 關", color=OLD)
+ax.bar(x + w/2, n3, w, label="conic 開（現行預設）", color="#C44E52")
 ax.axhline(1.0, color="k", lw=0.8, ls="--")
 ax.axhline(1.8, color="#C44E52", lw=0.8, ls=":")
 ax.text(1.45, 1.83, "控制器警告門檻 1.8", fontsize=7, color="#C44E52")
@@ -127,7 +127,7 @@ for i, (a, b) in enumerate(zip(o3, n3)):
     ax.text(i + w/2, b, f"{b:.2f}", ha="center", va="bottom", fontsize=8)
 ax.set_xticks(x); ax.set_xticklabels(lab3)
 ax.set_ylabel("代理 Σ(2r/16)² ÷ 精確 Σtiles")
-ax.set_title("⚠ 副作用：新版讓代理成本指標脫鉤\n"
+ax.set_title("⚠ 副作用：conic 開讓代理成本指標脫鉤\n"
              "（radii 被刻意凍結成線性化半徑以保護尺寸語意）", fontsize=10)
 ax.legend(fontsize=8)
 save(fig, "cc4_proxy_decoupled.png")

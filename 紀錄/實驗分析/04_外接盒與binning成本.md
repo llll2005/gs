@@ -1,8 +1,8 @@
 # 04 外接盒與 binning 成本（conic 精確外接盒、精確 Σtiles、代理的誤差）
 
-> **圖**：`04_外接盒與binning成本.png`（同名，4 個面板）　｜　**年代**：新年代；時間／記憶體／檔案大小的量測**不經過影像↔姿態配對**，標「舊資料」的計時仍有效
+> **圖**：`04_外接盒與binning成本.png`（同名，4 個面板）　｜　**年代**：新年代（2026-10-03 起圖表與表格不再放舊資料時代的數字）
 > **資料**：`tools/bbox_rect_ceiling.py`（離線天花板）；本機 CUDA 實測；lab `task_cmp.sh conic`（22k／60k，b6／b13）；`task_load_compare.sh`；`tools/cost_budget_calibrate.py`
-> **重現**：`python tools/plot_analysis.py`（面板 a~d＝舊 cc1~cc4）
+> **重現**：`python tools/plot_analysis.py`（面板 a~d＝cc1~cc4）
 
 ## 圖表對照
 
@@ -15,6 +15,7 @@
 
 ## 結論
 
+- **現行（10-03）**：`exact_conic_aabb: true` 已寫進 config（所有新跑次預設開）；成本一律用精確 Σtiles（`exact_tile_cost`）。
 - 上游（3DGS/2DGS/CityGS 全家族）的 `truncated_R * extent(1)` 是**線性化**；2DGS 的 ray-splat 是投影映射，精確解是對偶圓錐 `(R^2, R^2, -1)` 的**不對稱外接盒**。
 - `exact_conic_aabb`（**現行預設**）：離線 Σtile **-41.2%**、實測中位 Load **-40.1%／-45.8%**、forward **-26%**、fwd+bwd **-15~17%**（本機與 3090、兩塊一致，同 N）；品質 4/4 組比較沒有負的（22k b6 29.05 vs 29.05）。
 - `tiles_touched`（精確的逐顆 binning 成本）已接出；**代理 Σ(2r/16)² 與精確值沒有固定倍率**（0.28~4.40，訓練中會變號），conic 開啟後方向甚至相反 ⇒ 新年代的成本機制一律 `exact_tile_cost`。
@@ -35,7 +36,7 @@ config 只是被對齊過去，讓新腳本與 `main.py fit --config` 不會吃�
 
 ⇒ 對「用任務腳本啟動的跑次」而言，**新舊 config 的差完全等於 `exact_conic_aabb` 的差**。
 
-- ✅ 本組圖 ＝ conic off（舊）vs conic on（新）的乾淨 A/B：**2 塊 x 2 長度、兩臂同 N、同一個 .so**
+- ✅ 本組圖 ＝ conic 關 vs conic 開（現行預設）的乾淨 A/B：**2 塊 x 2 長度、兩臂同 N、同一個 .so**
 - ⛔ 本組圖**不是**「舊 config 整體 vs 新 config 整體」。那個比較**沒有乾淨資料**，
   因為新年代裡從來沒有任何一次跑次真的用過那 6 項的舊值（腳本全都覆寫掉了）。
   要有那個比較，得專門去跑一次舊值 —— 目前判斷**沒有必要**（它只影響「忘記傳旗標」的情境）。
@@ -47,7 +48,7 @@ config 只是被對齊過去，讓新腳本與 `main.py fit --config` 不會吃�
 | (a) | 4 組比較 x 4 指標的 Δ | **16 個差沒有一個是負的**；黃帶＝同配方重複樣本的實測差（噪音底） |
 | (b) | forward / forward+backward（`step_breakdown`，`[solo]`，同 N） | forward **−26%**、fwd+bwd **−16~17%** |
 | (c) | 離線精確 Σtiles（全部相機）＋ 峰值 VRAM | Load 中位 **−40.1% / −45.8%**；VRAM **−3.9~−6.6%** |
-| (d) | 代理 ÷ 精確 成本比 | ⚠ **副作用**：新版讓代理指標脫鉤（1.07~1.28 → 2.23~2.27） |
+| (d) | 代理 ÷ 精確 成本比 | ⚠ **副作用**：conic 開讓代理指標脫鉤（1.07~1.28 → 2.23~2.27） |
 
 ### 引用時必須一起講的三件事
 

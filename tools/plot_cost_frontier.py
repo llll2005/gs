@@ -72,7 +72,7 @@ def fig1():
         ax.plot(a, b, "*", color=C3, ms=14, mec="#fcfcfb", mew=1.2, zorder=5)
         lab(ax, a, b, s, dx=(-8 if "0.5" in s else 6), dy=(-14 if "0.5" in s else 5), ha=("right" if "0.5" in s else "left"), color=INK2)
     ax.plot([], [], "*", color=C3, ms=12, label="v/c trim（價值÷成本剪枝）")
-    ax.set_title("conic 關（舊外接盒）", fontsize=10.5)
+    ax.set_title("conic 關", fontsize=10.5)
     ax.set_xlabel("渲染成本：精確 Load 中位（百萬 tile-顆對／視角，對數軸）")
     ax.set_ylabel("val PSNR（dB，21,920 步）")
     ax.legend(fontsize=8, loc="lower right")
@@ -106,8 +106,8 @@ def fig2():
     rows = [  # (標籤, 前 Load, 後 Load, 前 PSNR, 後 PSNR, 顏色, 是否推估)
         ("v/c trim　b6", 4.729, 2.391, 30.45, 30.19, C3, False),
         ("v/c trim　b13", 6.123, 2.955, 29.86, 29.32, C3, False),
-        ("dup4 init　b6", 2.773, 2.616, 30.48, 30.75, C2, False),
-        ("dup4 init　b13", 3.337, 3.059, 30.00, 30.32, C2, False),
+        ("★ dup4 init（現行最佳）　b6", 2.773, 2.616, 30.48, 30.75, C2, False),
+        ("★ dup4 init（現行最佳）　b13", 3.337, 3.059, 30.00, 30.32, C2, False),
     ]
     # 對照：只調 cap 省下與 v/c trim 相同比例的成本，依 22k 斜率推估的 PSNR 變化
     for blk, bx, vx in (("b6", 4.729, 2.391), ("b13", 6.123, 2.955)):
@@ -235,7 +235,7 @@ def fig4():
         for k, v in d.items():
             ax.plot(st, v, "-" + mk[k], color=col[k], lw=2, ms=5, label=k)
             if k == "dup4":
-                lab(ax, st[-1], v[-1], f"dup4 {v[-1]:.2f}", dx=-4, dy=6, ha="right")
+                lab(ax, st[-1], v[-1], f"★ dup4（現行最佳）{v[-1]:.2f}", dx=-4, dy=6, ha="right")
         lab(ax, st[-1], d["預設 SfM"][-1], f"預設 {d['預設 SfM'][-1]:.2f} ≈ sfmfill {d['sfmfill'][-1]:.2f}", dx=-4, dy=-14, ha="right")
         ax.set_title(f"{t}：val PSNR（60k，N 終點都 2.34M）", fontsize=10); ax.set_xlabel("步數"); ax.set_ylabel("PSNR（dB）")
         ax.legend(fontsize=8, loc="lower right")

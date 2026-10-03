@@ -1,8 +1,8 @@
 # 03 儲存與 RAM
 
-> **圖**：`03_儲存與RAM.png`（同名，3 個面板）　｜　**年代**：新年代；時間／記憶體／檔案大小的量測**不經過影像↔姿態配對**，標「舊資料」的計時仍有效
+> **圖**：`03_儲存與RAM.png`（同名，3 個面板）　｜　**年代**：新年代（2026-10-03 起圖表與表格不再放舊資料時代的數字）
 > **資料**：ckpt 拆解（本機與 lab）；`tools/run_storage_audit.py`（不載入張量）；`scripts/task_bitcheck_data.sh`／`task_bitcheck_pipeline.sh`
-> **重現**：`python tools/plot_analysis.py`（面板 a=舊 fig4、b=fig6、c=fig5）；`python3 tools/run_storage_audit.py <ckpt 或跑次目錄>`
+> **重現**：`python tools/plot_analysis.py`（面板 a=fig4、b=fig6、c=fig5）；`python3 tools/run_storage_audit.py <ckpt 或跑次目錄>`
 
 ## 圖表對照
 
@@ -10,10 +10,11 @@
 |---|---|---|
 | (a) | ckpt 的組成：2/3 是 Adam；參數裡主要是 SH 高階 | §1.1 |
 | (b) | 一個 60k 跑次目錄：中間 ckpt 佔大宗 | §1.2 |
-| (c) | CPU RAM 影像快取：每視角 25.6 MB → uint8 4.3 MB | §2 |
+| (c) | CPU RAM 影像快取：舊預設每視角 25.6 MB → 現行 uint8＋不載深度 4.3 MB | §2 |
 
 ## 結論
 
+- **現行（10-03）**：影像快取 uint8＋不載未用深度是預設（09-21 起）；ckpt 大小只看 N —— 現行最佳（N 2.34M）的 60k ckpt 約 1.52 GiB。
 - **ckpt 的 2/3 是 Adam 狀態**；參數 232 B/顆，其中 **SH 高階 180 B（77.6%）**。`run_storage_audit.py` 在 speed3 b6 60k 重量一致（參數 232 B／Adam 464 B／顆）。
 - 一個 60k 跑次 7.8~8.0 GB，**中間 ckpt 佔 78~89%**；`-xyz_rgb.ply` 不是可渲染的模型（2026-09-18 起預設不輸出）。
 - lab 被 RAM 綁住的原因：快取每視角存 float32 影像 17.3 MB ＋ 權重為 0 的深度圖 8.3 MB ⇒ **uint8＋不載未用深度**後每視角 4.3 MB（本機 RSS 12.6 → 4.8 GB），**送進訓練的影像逐位元不變**（三層驗證），已設為預設。
