@@ -147,18 +147,23 @@ def n08_init20k(d):
 
 
 def n08_init60k(d):
-    arms = ["sfmfill", "fastgrow\n(add_ratio 1.2)", "dup2", "★ dup4\n（現行最佳）"]
-    b6 = [0.04, 0.11, 0.10, 0.27]
-    b13 = [0.01, 0.10, 0.13, 0.32]
+    # 10-03：dup5（起始 > cap）與 dup4 抖動 1.0／0.25 只跑了 b6（b13 在佇列，4x4 之後）
+    arms = ["sfmfill", "fastgrow\n(add_ratio 1.2)", "dup2", "★ dup4\n（現行最佳）", "dup5\n（起始 > cap）", "dup4\n抖動 1.0", "dup4\n抖動 0.25"]
+    b6 = [0.04, 0.11, 0.10, 0.27, 0.28, 0.29, 0.18]
+    b13 = [0.01, 0.10, 0.13, 0.32, np.nan, np.nan, np.nan]
     x = np.arange(len(arms)); wd = 0.38
-    fig, ax = plt.subplots(figsize=(8.6, 4.2))
+    fig, ax = plt.subplots(figsize=(11, 4.4))
     barlabels(ax, ax.bar(x - wd / 2, b6, wd, color=C1, label="b6"), fmt="{:+.2f}")
-    barlabels(ax, ax.bar(x + wd / 2, b13, wd, color=C2, label="b13"), fmt="{:+.2f}")
+    bb = ax.bar(x + wd / 2, [v if v == v else 0 for v in b13], wd, color=C2, label="b13")
+    barlabels(ax, [r for r, v in zip(bb, b13) if v == v], fmt="{:+.2f}")
+    for xi, v in zip(x, b13):
+        if v != v:
+            ax.text(xi + wd / 2, 0.01, "b13\n排隊中", ha="center", va="bottom", fontsize=7, color=INK2)
     ax.axhspan(-0.24, 0.24, color="#f1e3a6", alpha=0.35, lw=0, label="22k 噪音底 3sd（60k 未量）")
-    ax.axhline(0, color=MUTED, lw=1)
-    ax.set_xticks(x); ax.set_xticklabels(arms); ax.set_ylabel("ΔPSNR vs 預設 SfM（dB）")
+    ax.axhline(0, color=MUTED, lw=1); ax.axvline(3.5, color=MUTED, lw=0.8, ls=":")
+    ax.set_xticks(x); ax.set_xticklabels(arms, fontsize=8.5); ax.set_ylabel("ΔPSNR vs 預設 SfM（dB）")
     ax.legend(fontsize=8, loc="upper left")
-    ax.set_title("60k 完整配方（conic 開、同 N 2.34M）：相對預設 SfM init 的差", fontsize=10.5)
+    ax.set_title("60k 完整配方（conic 開、同 N 2.34M）：相對預設 SfM init 的差；dup4 之後再加份數或改抖動都持平", fontsize=10.5)
     save(fig, d, "n08_init60k.png")
 
 
