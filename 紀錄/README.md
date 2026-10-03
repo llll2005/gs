@@ -50,7 +50,7 @@ GT 錯位         < 2026-08-12 10:08:37    每張影像對到鄰幀
 - val⊂train 只做**同塊、同評分集**的相對比較；對外只用官方 741 幀 held-out（官方評的是合併模型）。
 - 噪音底：22k PSNR 3sd = 0.24 dB；60k 未量（cs_tilecal／cn_tilecal 是現成的重複樣本）。
 - 比較前：`tools/run_status.py` 確認跑完（`results.txt` 不寫步數）、`tools/diff_resolved_config.py` 確認單變數。
-- 時間只用 `[solo]` 量（三槽平行只影響牆鐘與 it/s；品質、離線 Load、峰值 VRAM 不受影響）。
+- 訓練預設 `[solo]`（10-04 起；多解法單純比分數、少步數功能測試除外），lab 不鎖 VRAM、看峰值。10-04 前的 lab 時間／保留 VRAM 欄不可跨界比。
 - 成本欄：精確 Load 中位（`scripts/task_load_compare.sh`，離線、同工具同相機）。
 
 ## 操作速查
@@ -61,7 +61,7 @@ lab 排程    scripts/runner.sh ＋ lab 上的 scripts/queue.txt（RUNNER_SLOTS=
 同步        本機 commit＋push => JTOK=<token> bash scripts/setup/lab_pull.sh [--no-build]
             ⛔ token 只能放在單一指令的環境變數，不可寫進任何檔案或 commit
 lab 狀態    由使用者看；Claude 不輪詢、不開監控（要看時：JTOK=<token> python scripts/setup/lab.py q）
-訓練        一律在 lab（鎖 CITYGS_VRAM_CAP_GB=5.66）；本機只做 CPU 分析與階段最優解的 6GB 絕對驗證
+訓練        一律在 lab：預設 [solo]、不鎖 VRAM、看峰值（10-04）；本機只做 CPU 分析與階段最優解的 6GB 絕對驗證
 煙霧測試    STEPS 至少 2102（< 2100 步沒有任何驗證點，results.txt 不會產生）
 畫圖        python tools/plot_analysis.py  => 重生 實驗分析/ 全部 12 張圖
 ```

@@ -29,8 +29,11 @@ Read those before proposing mechanisms — this section is a summary and goes st
 
 **⛔⛔ 2026-09-13 third era boundary: images and poses were misaligned.** Every *local* training score in
 `outputs/` — including the speed3 / SfM-init / sched30 / absgrad numbers further down this file — is
-invalid; see `紀錄/研究總覽.md` §10 (item list: `紀錄/new_archived/倖存清單_2026-09-13.md`). New-era numbers live in `outputs/lab/` (the lab machine, **kept locked to the 6GB envelope with
-`CITYGS_VRAM_CAP_GB=5.66`** — the proposition is 6GB feasibility, so a recipe that only fits in 24GB is useless).
+invalid; see `紀錄/研究總覽.md` §10 (item list: `紀錄/new_archived/倖存清單_2026-09-13.md`). New-era numbers live in `outputs/lab/` (the lab machine).
+**Lab protocol, revised by the user 2026-10-04 (supersedes the 09-18 cap/parallel rules below): no VRAM cap — judge 6GB feasibility
+by the recorded peak; training runs default to `[solo]` (exceptions: several recipes compared purely on scores, and short functional
+tests), so every run's time and VRAM numbers are directly usable. Lab runs before 10-04 had cap 5.66 + max_split and mostly ran in
+parallel => their wall-time / reserved-VRAM columns are not comparable across that boundary (quality and peak allocated are).**
 **Two-machine protocol (user, 2026-09-18): lab = relative comparison (which recipe is better, lab vs lab), kept at
 3 parallel slots because throughput is ~2x and parallelism does NOT affect results — quality, offline Load and peak
 VRAM are all neighbour-independent (only wall time and it/s are, and those have dedicated `[solo]` tools).
