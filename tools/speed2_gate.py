@@ -10,7 +10,10 @@
   R lean vs lean+record_reduce     渲染／radii／覆蓋數逐位元相同，梯度在容許值內，trim 遮罩重疊 >= 99%
   T lean vs lean+rr+tile_cull      同上，且 binning 配對要變少
   梯度容許值 = max(10 x 噪音底 N 那一組的同名相對差, 2e-5)   （lean 驗證時 C 組最差是噪音底的 5 倍）
-  真實迴圈（同一個起點 1,200 步）：旗標要讓真實步時間至少快 1% 才開
+  真實迴圈（同一個起點 1,200 步）：旗標要讓**增生期每步時間**至少快 1% 才開
+    增生期每步 = 真實步時間 + 每次 trim ÷ 500（trim 每 500 步一次）
+    ⚠ 2026-10-03 修正：第一版只比「真實步時間」，而那個欄位**不含週期 trim**（trim 在 after_training_step，另列）
+      => record_reduce 把每次 trim 從 27.6 s 降到 18.0 s（-35%）完全沒被看到，判成 no_gain。
 任何一組正確性沒過 => status=fail（不裝、不開 4x4，等使用者看）；正確但都沒變快 => status=no_gain（不裝，4x4 只開 lean）。
 
 輸出：印出逐項判定；寫 logs/speed2_gate.json {status, flags, real_ms, checks}；fail 時 exit 1。
@@ -24,10 +27,12 @@ import sys
 
 GRAD = re.compile(r"^\s{4}(\S+)\s+最大絕對差 (\S+)\s+相對(?:（÷最大幅度）)?\s*(\S+)")
 REAL = re.compile(r"（真實步時間·含重疊）\s+([\d.]+)")
+TRIM = re.compile(r"^11 週期性 trim.*?\s{2,}[\d.]+\s+[\d.]+\s+[\d,]+\s+([\d.]+)\s")   # 欄位：GPU ms/步、wall ms/步、次數、每次 wall ms
+TRIM_PERIOD = 500
 
 
 def parse(text):
-    blocks, cur, loops, cfg = {}, None, {}, None
+    blocks, cur, loops, cfg, trims = {}, None, {}, None, {}
     for ln in text.split("\n"):
         m = re.match(r"^══ (\S+) ", ln)
         if m:
@@ -37,6 +42,9 @@ def parse(text):
         m = re.match(r"^── step_cost（(\S+)）", ln)
         if m:
             cfg, cur = m.group(1), None
+            continue
+        if cfg and TRIM.match(ln):
+            trims[cfg] = float(TRIM.match(ln).group(1))
             continue
         if cfg and REAL.search(ln):
             loops[cfg] = float(REAL.search(ln).group(1)); cfg = None
@@ -59,18 +67,20 @@ def parse(text):
             m = GRAD.match(ln)
             if m:
                 cur["grads"][m.group(1)] = float(m.group(3))
-    return blocks, loops
+    # 增生期每步 = 真實步時間（不含 trim）+ 每次 trim ÷ 週期
+    return blocks, {k: v + trims.get(k, 0.0) / TRIM_PERIOD for k, v in loops.items()}, loops, trims
 
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else max(glob.glob("logs/speed2_check_*.log") or [""], key=os.path.getmtime, default="")
     if not path or not os.path.exists(path):
         print("⛔ 找不到 speed2_check 報告"); return 1
-    blocks, loops = parse(open(path, encoding="utf-8", errors="ignore").read())
+    blocks, loops, raw, trims = parse(open(path, encoding="utf-8", errors="ignore").read())
     print(f"報告：{path}")
     need = ["B", "N", "R", "T"]
     miss = [k for k in need if k not in blocks]
-    out = {"report": path, "status": "fail", "flags": [], "real_ms": loops, "checks": {}}
+    out = {"report": path, "status": "fail", "flags": [], "densify_step_ms": loops, "real_ms_excl_trim": raw,
+           "trim_event_ms": trims, "checks": {}}
     if miss or not all(k in loops for k in ("L", "LR", "LRT")):
         print(f"⛔ 報告不完整：缺比對 {miss}、缺真實迴圈 {[k for k in ('L', 'LR', 'LRT') if k not in loops]}")
         json.dump(out, open("logs/speed2_gate.json", "w"), ensure_ascii=False, indent=1); return 1
@@ -99,7 +109,11 @@ def main():
     okR = check("R", need_overlap=True)
     okT = check("T", need_overlap=True, need_fewer_pairs=True)
     L, LR, LRT = loops["L"], loops["LR"], loops["LRT"]
-    print(f"── 真實迴圈（真實步 ms）：lean {L:.2f}／+record_reduce {LR:.2f}（{100 * (LR / L - 1):+.1f}%）"
+    for k in ("L", "LR", "LRT"):
+        print(f"   {k:<4} 真實步（不含 trim）{raw[k]:.2f} ms ＋ 每次 trim {trims.get(k, float('nan')) / 1e3:.2f} s ÷ {TRIM_PERIOD}")
+    if len(trims) < 3:
+        print("⚠ 有設定沒抓到 trim 時間 => 該設定的增生期每步會少算 trim")
+    print(f"── 增生期每步（ms）：lean {L:.2f}／+record_reduce {LR:.2f}（{100 * (LR / L - 1):+.1f}%）"
           f"／+record_reduce+tile_cull {LRT:.2f}（{100 * (LRT / L - 1):+.1f}%）")
     if not (okB and okR and okT):
         print("⛔ 判定：正確性沒過 => 不裝、不自動開 4x4（等使用者看報告）")

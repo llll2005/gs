@@ -15,8 +15,8 @@
 
 ## 結論
 
-- **現行（10-03）**：lean_render 已裝進 lab（每步 -20.9%，不比時間的臂開啟）；第二批 `record_reduce`／`tile_cull` 的等價驗證已排（[solo]），
-  之後由 `tools/speed2_gate.py` 依 §4 的判定規則自動決定裝不裝（正確性全過、真實迴圈快 ≥1% 才開該旗標），4x4 全場景接在它後面。
+- **現行（10-03）**：lean_render＋**record_reduce** 已裝進 lab；`record_reduce` 讓每次 trim 27.6 → 18.0 s（-35%）、增生期每步 -10.9%，4x4 全場景開啟。
+  `tile_cull` 正確但**淨變慢**（配對 -36%，forward 反而 +30%）=> 不開（§6）。
 - **lean_render（剃除沒有消費者的幾何通道）：真實迴圈每步 152.3 → 120.5 ms（-20.9%）**；backward -19%、forward -42%、峰值配置 4,022 → 3,821 MiB。
   渲染、radii、覆蓋數逐位元相同；梯度差在浮點加總順序級。**已裝進 lab 共用環境（10-03）**，不比時間的臂開啟（`CITYGS_LEAN=1`）。
 - **時間大頭是逐 (像素, 顆粒) 配對的光柵 kernel，約佔 kernel 時間 63%**；Adam 6%、SSIM 4% => 參數壓縮（sh2/sh0）主要收益是 VRAM，不是速度。
@@ -94,10 +94,10 @@ profiler，b6 @14,999（N 2.6M），每步換一台相機、12 步，含 1 台�
 | 1 | lean_render | 幾何通道＋trim 顏色 | **實測 -20.9%／步** | 否（逐位元／atomic 順序級） | ✅ 已裝 gspl |
 | 3 | fused Adam | optimizer | **實測慢 2.3~3.2 倍** | 浮點級 | ⛔ |
 | 4 | sh3 → sh2／sh0 | 逐顆＋VRAM | sh2 VRAM -0.79 GB、sh0 -1.68 GB（@2.34M） | **會** | ⏳ `csh2`／`csh0` 60k |
-| 5 | block／warp 內先加總再 atomic | 逐配對（trim record 2 個、backward 14 個） | record 版優先 | 浮點加總順序 | ⏳ `record_reduce` 已實作，驗證已排 |
+| 5 | block／warp 內先加總再 atomic | 逐配對（trim record 2 個、backward 14 個） | **實測：每次 trim -35%、增生期每步 -10.9%** | 浮點加總順序（trim 遮罩重疊 99.9987%） | ✅ record 版已裝；backward 版 💤 |
 | 6 | PyTorch 升級（只換環境的單變數） | 配置器、optimizer、編譯 | 未知 | 浮點級 | 💤 提案 |
 | 7 | 每步 3 個 GPU→CPU 同步點 | CPU/GPU 重疊 | <2% | 否 | 💤 低優先 |
-| 8 | tile 精確剔除（StopThePop 2DGS 版） | 逐配對 | **上限 30~42% 配對** | 渲染逐位元相同 | ⏳ `tile_cull` 已實作，驗證已排 |
+| 8 | tile 精確剔除（StopThePop 2DGS 版） | 逐配對 | 配對實測 -35.7%，但 **forward +30%、淨 +3.6%／步** | 渲染逐位元相同 | ⛔ 現行實作不划算（§6） |
 | 9 | per-splat backward（Taming §4.1） | 光柵 backward | 大（Taming 的主要來源） | 數值等價 | 💤 #5 的強化版 |
 | 10 | SH dc／高階分開傳入（不 cat） | forward 逐顆複製 | 小 | 等價 | 💤 |
 | 11 | SH 高階每 16 步更新（Taming §4.2） | Adam | Adam 大降，但 Adam 只佔 6% | **會** | 💤 |
@@ -116,6 +116,28 @@ profiler，b6 @14,999（N 2.6M），每步換一台相機、12 步，含 1 台�
   重寫要重新移植並重驗幾十個機制，且所有基準要重跑。
 - **參數壓縮／latent**：SH 在光柵化前就逐顆解成 3 個顏色 => 壓縮只打得到逐顆那一塊（主要是 VRAM）；把混合搬到 latent／低解析度才打得到逐配對，但細節由解碼器生成，與我方「虛假細節」病灶同型。
 - **灰階先訓**：前提（亮度主導幾何）已量：梯度能量亮度 85.6%、色差邊中亮度不變的只有 5.2%；與 YCbCr、sh2/sh0 同屬「顏色參數變少」，先等 sh2/sh0 的品質代價。
+
+## §6 第二批驗證（10-03，lab [solo]，`logs/speed2_check_1003_0604.log`；cs60_conic b6）
+
+| 比對 | 渲染／radii／覆蓋數 | trim 遮罩重疊 | binning 配對 | 單相機計時（ms，中位） |
+|---|---|---|---|---|
+| B 共用環境 vs 新 .so（lean 關） | 逐位元相同 | 100% | 不變 | 不變（+0.1~0.2%） |
+| N 噪音底（新 .so lean 兩次） | 逐位元相同 | 100% | 不變 | — |
+| R lean vs +record_reduce | 逐位元相同 | 99.9987%（9 顆不同） | 不變 | record 20.46 → **12.01（-41%）** |
+| T lean vs +record_reduce+tile_cull | 逐位元相同 | 99.9987% | **-35.7%** | forward+loss 15.03 → **22.64（+51%）**、backward -3%、record -41% |
+
+**真實迴圈**（@14,999 起 1,200 步，含 1 次 trim）：
+
+| 設定 | 真實步（不含 trim） | 每次 trim | 增生期每步（trim ÷ 500） |
+|---|---:|---:|---:|
+| lean | 120.57 ms | 27.64 s | 175.9 ms |
+| + record_reduce | 120.69 | **17.97（-35%）** | **156.6（-10.9%）** |
+| + record_reduce + tile_cull | 124.96（forward 21.1 → 27.6） | 18.08 | 161.1（-8.4%） |
+
+- record_reduce：整趟 60k（trim 只在前 30k）約省 3%；4x4 開啟。
+- tile_cull：省下的配對抵不過逐 tile 判斷本身（每個候選 (tile, 顆粒) 都要做單應映射＋四邊形距離）=> 現行實作淨變慢。
+  改良方向（未做）：只對大足跡的顆粒做判斷、或把判斷併進 duplicateWithKeys 免一次額外掃描。
+- ⚠ 判定器第一版的 bug：拿來比的「真實步時間」**不含週期 trim**（trim 另列）=> 判成 no_gain；已修為「真實步 + 每次 trim ÷ 500」並重判。
 
 ## 限制
 - lean 的計時是單一塊（b6）、增生期 1,200 步；收割期（沒有 trim）的比例不同。

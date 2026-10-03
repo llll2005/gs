@@ -129,6 +129,11 @@ case "$MODE" in
 
   block)
     B=${2:?block id}; shift 2   # 其餘參數（例：record_reduce／tile_cull 旗標）原樣轉給 task_cmp.sh（最後者勝）
+    # ★ 2026-10-03：速度旗標在**開跑時**讀判定（logs/speed2_gate.json），不只看 prep 當時寫進佇列行的。
+    #   原因：第一版判定器漏算 trim（判成 no_gain），修正重判時 prep 已經在跑、佇列行已定 => 開跑時讀才跟得上。
+    #   旗標仍會出現在 resolved config（renderer.init_args），可追溯。
+    GF=$(python3 -c "import json;d=json.load(open('$GATE'));print(' '.join('--model.renderer.init_args.%s true' % f for f in d['flags']) if d['status']=='installed' else '')" 2>/dev/null)
+    [ -n "$GF" ] && echo "速度旗標（$GATE）：$GF"
     [ -f "$TSV" ] || { echo "⛔ 缺 $TSV（先跑 prep）"; exit 2; }
     K=$(awk -v b="$B" '$1==b{print $2}' "$TSV")
     [ -n "$K" ] || { echo "⛔ $TSV 沒有 block $B"; exit 2; }
@@ -140,7 +145,7 @@ case "$MODE" in
       bash scripts/lab/task_cmp.sh "$B" conic \
         --data.parser.block_dim "[4,4]" \
         --data.parser.points_from ply --data.parser.ply_file "$P" \
-        --model.density.init_args.churn_report true "$@" ;;
+        --model.density.init_args.churn_report true "$@" $GF ;;
 
   merge)
     n=0; bad=
