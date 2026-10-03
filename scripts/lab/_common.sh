@@ -5,7 +5,14 @@
 #   例：`-n lab/speed3` + `--data.parser.block_id 6`
 #       -> outputs/lab/speed3/blocks/block_6/
 #   這樣同一個配方的多個塊會收在同一個 run 目錄下，合併/比較都方便。
-# ★★ 2026-09-18 定案的比較協定（當天先改成不鎖，同日**改回鎖**）：
+# ★★★ 2026-10-04 使用者改協定（取代下方 09-18 的版本）：
+#   ① **lab 不再鎖 VRAM**，只看峰值（台帳 DONE 行的「峰值實佔」）—— `CITYGS_VRAM_CAP_GB` 預設不設；
+#      max_split 跟著上限連動（09-17 拍板「鎖上限才開」）=> 預設也不開。要臨時鎖：`CITYGS_VRAM_CAP_GB=5.66 bash ...`
+#   ② **預設 [solo]**：除了「好幾個解法單純比分數」與「少步數的功能測試」之外，訓練一律獨佔（佇列行加 [solo]）
+#      => 時間與 VRAM 欄直接可用，不必另外量。
+#   ⚠ 政策界線：10-04 之前的 lab 跑次帶 cap 5.66＋max_split（每步約貴 8%、保留多 1.67 GB）且多半三槽平行
+#      => **時間與保留 VRAM 欄跨界不可比**；峰值配置與品質仍可比（cap 不改訓練行為）。
+# ★★ 2026-09-18 的比較協定（當天先改成不鎖，同日**改回鎖**）——已由上方 10-04 版取代，保留理由供查：
 #   **lab 維持鎖 `CITYGS_VRAM_CAP_GB=5.66`** —— 本專案整篇的立論是 6GB 可行性，
 #   在 24GB 上調出放不進 6GB 的配方，對命題沒有意義（而且會讓「階段最優解」拉回本機時放不下）。
 #   **本機 = 絕對驗證**：階段最優解定案後拉回本機重跑，用它宣稱信封。
@@ -18,12 +25,9 @@
 #     品質（PSNR/SSIM/LPIPS/紋理比）仍可比 —— 機制稽核確認沒有任何訓練路徑依賴可用 VRAM 或鄰居。
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
-# ⚠ 用 ${VAR-default}（**沒有冒號**）：這樣「明確設成空字串」會被尊重
-#   => 本機（原生 6GB）可以用 `CITYGS_VRAM_CAP_GB= bash ...` 關掉上限，
-#      而 lab 不帶這個變數時仍然自動鎖 5.66。
-export CITYGS_VRAM_CAP_GB=${CITYGS_VRAM_CAP_GB-5.66}
+# 2026-10-04：預設不鎖（使用者：「不要再限制 vram 我們看峰值即可」）；明確給值才鎖
 [ -z "${CITYGS_VRAM_CAP_GB:-}" ] && unset CITYGS_VRAM_CAP_GB
-echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制}]（政策：lab 鎖 6GB 信封＋記峰值；階段最優解拉回本機驗）"
+echo "CITYGS_VRAM_CAP_GB=[${CITYGS_VRAM_CAP_GB:-未設 => 不限制}]（政策 10-04：lab 不鎖、看峰值；預設 [solo]）"
 # ⚠⚠ 2026-09-13：配置器碎片是**新年代的真瓶頸**。lab 的 speed3/block_13 在
 #   Epoch 21（約 step 14,000、N 頂到 cap 2.60M）真 OOM 死掉：
 #     Tried to allocate 478 MiB | 3.61 GiB allocated | 5.66 GiB allowed | **5.25 GiB reserved**
