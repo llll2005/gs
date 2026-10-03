@@ -18,7 +18,7 @@
 - **ckpt 的 2/3 是 Adam 狀態**；參數 232 B/顆，其中 **SH 高階 180 B（77.6%）**。`run_storage_audit.py` 在 speed3 b6 60k 重量一致（參數 232 B／Adam 464 B／顆）。
 - 一個 60k 跑次 7.8~8.0 GB，**中間 ckpt 佔 78~89%**；`-xyz_rgb.ply` 不是可渲染的模型（2026-09-18 起預設不輸出）。
 - lab 被 RAM 綁住的原因：快取每視角存 float32 影像 17.3 MB ＋ 權重為 0 的深度圖 8.3 MB ⇒ **uint8＋不載未用深度**後每視角 4.3 MB（本機 RSS 12.6 → 4.8 GB），**送進訓練的影像逐位元不變**（三層驗證），已設為預設。
-- 官方線與我方的儲存對照（同一支工具）已排 lab：`task_citygs_origin.sh storage`。
+- **官方 vs 我方（同一支工具）**：官方 sh2 每顆參數 148 B＋Adam 296 B（＋density 緩衝 12 B），我方 sh3 232＋464 B；官方整條線輸出 164 GB，我方一個 60k 家族（b6＋b13）16~20 GB（§4.5）。
 
 ---
 
@@ -84,6 +84,24 @@ optimizer_states：opt[0]（means 專用）0.041 GiB；opt[1]（其餘 5 群）0
 `outputs/lab` 151 GB；使用者手動的官方設定跑次：coarse 3.3 GB、trim 13 GB（最終 ckpt 5,217,365,741 B）。
 
 ---
+
+### 4.5 官方 vs 我方（lab，`task_citygs_origin.sh storage`＝`tools/run_storage_audit.py`，不載入張量）
+
+| ckpt | N | 參數 B／顆 | Adam B／顆 | 其他 B／顆 | ckpt 大小 |
+|---|---:|---:|---:|---|---:|
+| 官方 coarse（sh2、30k） | 4,695,995 | 148（37 float） | 296 | density 緩衝 12（max_radii2D／梯度累積／denom） | 2.0 GB |
+| 官方 block_6（sh2、60k、trim 從未執行） | 7,109,940 | 148 | 296 | — | 3.0 GB |
+| 我方 cs60（sh3、60k） | 2,340,000 | 232（58 float） | 464 | — | 約 1.52 GiB |
+
+| 目錄（du） | 大小 | 備註 |
+|---|---:|---|
+| 官方 coarse | 3.3 GB | 終點＋1 個中間 ckpt＋PLY |
+| 官方 16 塊＋合併（原版） | 164 GB | block_6 為 6.4 GB（終點＋1 個中間 ckpt，各 3.0 GB）；合併模型 41 GB |
+| 官方論文設定線（目前 2 塊） | 7.7 GB | |
+| 我方 cs60_conic（b6＋b13） | 16 GB | 每塊 6 個 ckpt（499／1,499／14,999／29,999／41,999／60,000） |
+| 我方 cs60_sfmdup4（b6＋b13） | 20 GB | 同上；比 cs60_conic 多 4 GB，推測是 dup4 從 step 0 就有 2.4M 顆、早期 ckpt 也大（未逐檔核對） |
+
+=> 每顆的位元組差在 SH 階數（sh2 vs sh3）；官方的磁碟大是因為**顆數**（每塊 5~10M）與合併模型。
 
 ## 5. CPU RAM：影像快取（面板 c）
 

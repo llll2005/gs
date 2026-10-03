@@ -55,11 +55,11 @@ def barlabels(ax, bars, fmt="{:.2f}", dy=2, size=7.5):
 def n05_cap60k(d):
     caps = [0.7, 1.2, 1.7, 2.6]
     b6 = [28.61, 29.39, 29.90, 30.48]
-    b13 = [28.37, 29.06, np.nan, 30.00]          # cap 1.7M b13 跑中（10-03）
+    b13 = [28.37, 29.06, 29.46, 30.00]
     fig, ax = plt.subplots(figsize=(8.6, 4.6))
     ax.plot(caps, b6, "-o", color=C1, lw=2, label="b6：只調 cap（conic 開、預設 SfM）")
     ax.plot([c for c, v in zip(caps, b13) if v == v], [v for v in b13 if v == v], "-o", color=C2, lw=2,
-            label="b13：只調 cap（1.7M 跑中）")
+            label="b13：只調 cap（conic 開、預設 SfM）")
     arms = [("v/c trim", 30.31, 29.80, "v"), ("fastgrow", 30.59, 30.10, "^"),
             ("dup2", 30.58, 30.13, "s"), ("dup4\n★現行最佳", 30.75, 30.32, "D")]
     for i, (nm, a, b, m) in enumerate(arms):
@@ -307,6 +307,48 @@ def n12_recheck(d):
     save(fig, d, "n12_recheck.png")
 
 
+def n12_heldout(d):
+    """塊內 held-out（官方 test 中相機落在本塊 AABB 內的幀：b6 210、b13 276）。單塊模型 => 絕對值是下界。"""
+    runs = ["speed3", "+v/c", "+v/c+elong", "elong 硬剪", "elong 搬移", "cs60_base", "conic", "fastgrow", "★ dup4", "sfmfill"]
+    h = {6: {"e": [16.912, 16.863, 16.480, 16.940, 16.957, 16.999, 17.002, 17.251, 15.294, 16.904],
+             "l": [18.211, 17.193, 16.304, 17.506, 18.368, 17.871, 18.210, 17.990, 18.186, 18.012],
+             "lp": [.6505, .6642, .6905, .6640, .6488, .6557, .6507, .6549, .6370, .6509],
+             "v": [30.45, 30.19, 29.77, 30.30, 30.43, 30.42, 30.48, 30.59, 30.75, 30.52]},
+         13: {"e": [17.942, 17.456, 17.436, 17.549, 17.946, 17.879, 18.022, 18.110, 15.644, 17.865],
+              "l": [20.173, 19.175, 18.935, 20.046, 20.022, 19.841, 19.924, 19.892, 20.170, 20.116],
+              "lp": [.4542, .4633, .4805, .4623, .4639, .4610, .4555, .4553, .4325, .4552],
+              "v": [29.86, 29.32, 28.92, 29.64, 29.78, 29.84, 30.00, 30.10, 30.32, 30.01]}}
+    fig, axs = plt.subplots(1, 3, figsize=(17, 4.9), gridspec_kw={"width_ratios": [1.4, 1, 1.4]})
+    x = np.arange(len(runs))
+    ax = axs[0]
+    for blk, c, dx in [(6, C1, -0.12), (13, C2, 0.12)]:
+        ax.scatter(x + dx, h[blk]["e"], color=c, alpha=0.45, s=22, label=f"b{blk} @1,499")
+        ax.scatter(x + dx, h[blk]["l"], color=c, s=30, marker="D", label=f"b{blk} @60k")
+        for xi, a, b in zip(x + dx, h[blk]["e"], h[blk]["l"]):
+            ax.annotate("", (xi, b), (xi, a), arrowprops=dict(arrowstyle="->", color=c, alpha=0.5, lw=0.9))
+    ax.set_xticks(x); ax.set_xticklabels(runs, rotation=30, ha="right", fontsize=8)
+    ax.set_ylabel("塊內 held-out PSNR（dB，下界）"); ax.legend(fontsize=7.5, ncol=2, loc="lower left")
+    ax.set_title("@1,499 → @60k：每個跑次都進步（唯一例外 +v/c+elong b6）", fontsize=10)
+    ax = axs[1]
+    for blk, c in [(6, C1), (13, C2)]:
+        ax.scatter(h[blk]["v"], h[blk]["l"], color=c, s=30, label=f"b{blk}")
+        for nm, a, b in zip(runs, h[blk]["v"], h[blk]["l"]):
+            if nm in ("+v/c", "+v/c+elong", "★ dup4", "speed3"):
+                ax.annotate(nm, (a, b), xytext=(4, -10 if nm == "speed3" else 3), textcoords="offset points", fontsize=7.5, color=INK2)
+    ax.set_xlabel("val⊂train PSNR（dB，60k）"); ax.set_ylabel("塊內 held-out PSNR（dB，60k）"); ax.legend(fontsize=8)
+    ax.set_title("v/c trim 在 held-out 掉約 1 dB（val 只 -0.27／-0.54）", fontsize=10)
+    ax = axs[2]
+    wd = 0.38
+    barlabels(ax, ax.bar(x - wd / 2, h[6]["lp"], wd, color=C1, label="b6"), fmt="{:.3f}", size=6)
+    barlabels(ax, ax.bar(x + wd / 2, h[13]["lp"], wd, color=C2, label="b13"), fmt="{:.3f}", size=6)
+    ax.set_xticks(x); ax.set_xticklabels(runs, rotation=30, ha="right", fontsize=8)
+    ax.set_ylim(0.35, 0.72); ax.set_ylabel("塊內 held-out LPIPS（60k，越低越好）"); ax.legend(fontsize=8)
+    ax.set_title("LPIPS：現行最佳 dup4 兩塊都最好", fontsize=10)
+    fig.suptitle("塊內官方 held-out（b6 210 幀／b13 276 幀）——絕對值是下界：單塊模型看不到鄰塊內容；"
+                 "官方合併模型在同一批視角約 27.3／26.4（只量到前 120 幀，完整重跑已排）", fontsize=10.5)
+    save(fig, d, "n12_heldout.png")
+
+
 # ══════════════ 組合 ══════════════
 DOCS = {
     "01_訓練時間組成": ["fig1_time_breakdown", "fig9_scaling_phase", "fig7_wall_time"],
@@ -320,7 +362,7 @@ DOCS = {
     "09_官方參考線": ["n09_official_blocks", "f7_official_trim", "f5_official_prune"],
     "10_速度優化_lean與kernel拆解": ["n10_lean_loop", "n10_kernels"],
     "11_逐配對工作量上限": ["n11_tiles"],
-    "12_新年代重測_幾何floater失敗區": ["n12_recheck"],
+    "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout"],
 }
 
 
@@ -357,7 +399,7 @@ def main():
         if r.returncode != 0:
             print(r.stdout[-2000:], r.stderr[-2000:]); raise SystemExit(f"⛔ {sc} 失敗")
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks,
-              n10_lean_loop, n10_kernels, n11_tiles, n12_recheck):
+              n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
