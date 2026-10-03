@@ -4,6 +4,7 @@
 #   base＝不剪（對照「多跑 5k 步」本身的效果）。fine-tune＝用 Lightning **接續**（--ckpt_path）60k -> 65k：
 #   學習率停在最終值、增生與 trim 在 30k 後本來就停 => 純低學習率 fine-tune（見 tools/prune_resume_ckpt.py 檔頭）。
 # 用法：task_prune_ft.sh make ｜ ft <arm> ｜ eval
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 source "$(dirname "$0")/_common.sh"
 BASE=outputs/lab/cs60_conic/blocks/block_6

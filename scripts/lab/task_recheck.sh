@@ -1,5 +1,5 @@
 #!/bin/bash
-# ★★★★ 舊結論在新年代補測（2026-10-02 使用者要求「3. 補測 4. 這些也都測」；清單 = 紀錄/倖存清單_2026-09-13.md 的 ⛔／⚠ 段）
+# ★★★★ 舊結論在新年代補測（2026-10-02 使用者要求「3. 補測 4. 這些也都測」；清單 = 紀錄/new_archived/倖存清單_2026-09-13.md 的 ⛔／⚠ 段；結果＝紀錄/實驗分析/12）
 #
 # 這些結論當初都是在影像↔姿態錯開的資料上量的；工具本身沒有壞（都不經過 GT 配對，或只經過 val 影像），
 # 所以這裡**不改工具**，只換成新年代的模型重跑，並且每項都加量**官方合併模型**當參照：
@@ -29,6 +29,7 @@
 #   bash scripts/lab/task_recheck.sh oracle <塊> <跑次...>
 #   bash scripts/lab/task_recheck.sh tau <塊> <跑次...>
 #   [cpu] bash scripts/lab/task_recheck.sh coarseinit 0 ；[solo] ... coarse null ；[solo] ... coarsegeom <塊>
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 MODE=${1:?用法見檔頭}; BLK=${2:?塊}; shift 2

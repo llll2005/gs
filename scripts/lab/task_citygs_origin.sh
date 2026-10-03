@@ -1,4 +1,6 @@
 #!/bin/bash
+# 官方 CityGaussianV2 參考線（未修改原始碼＋官方套件 gspl_official）：prep → coarse → 4x4 分區 → 16 塊 → 合併 → held-out，與同一套資源量測
+#
 # ⛔⛔ 2026-09-24：本條線改跑 **gspl_official**（`scripts/lab/setup_official_env.sh` 照官方
 #   doc/installation.md 三行 requirements 建的），prep／coarse／partition／16 塊／merge／test **全部重跑**。
 #   先前的全部作廢（資源與「是否官方」都不乾淨）：
@@ -49,7 +51,11 @@
 #   整卡最大    每 20 秒 nvidia-smi memory.used；⚠ 只有 [solo] 的模式（coarse/test）才有歸屬意義
 #   其他        牆鐘秒數、結束碼、N、ckpt 大小 => logs/citygs_origin_resources.tsv
 #
-# 用法：task_citygs_origin.sh prep|coarse|partition|merge|test|res ／ task_citygs_origin.sh block <N>
+# 用法：bash scripts/lab/task_citygs_origin.sh <模式> [塊]（模式清單見 --help；官方 block 一律 [solo]）
+#   流程   prep → prep_test_official → coarse → partition → block <N>（x16）→ merge → test
+#   論文設定線（ω 0.9、prune 0.025）  blockpaper <N> → mergepaper → testpaper；CITYGS_OFF_LINE=paper 讓量測模式改量這條線
+#   量測   res／blockload／prune／stepprof [N]／evalours／storage
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 OFFENV=${CITYGS_OFF_ENV:-gspl_official}
 ORIG=/workspace/data/hdd/11213/cityGS_origin

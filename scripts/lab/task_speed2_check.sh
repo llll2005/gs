@@ -12,6 +12,7 @@
 #   T   lean vs lean＋record_reduce＋tile_cull     => 渲染逐位元相同、binning 配對減少多少、梯度在噪音底內
 # 真實迴圈（@14,999 起 1,200 步，含 1 次 trim）：lean／lean+rr／lean+rr+tc 三組逐段計時
 # 用法：[solo] bash scripts/lab/task_speed2_check.sh
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 if [ -f .lab_machine ]; then PFX=lab/; else case "$(pwd)" in */hdd/11213/*) PFX=lab/ ;; *) PFX= ;; esac; fi

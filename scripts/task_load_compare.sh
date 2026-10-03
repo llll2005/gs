@@ -11,6 +11,7 @@
 # 用法：task_load_compare.sh <block> <run> [<run> ...]
 #   跑次名**不帶** lab/；ckpt 須先拉回本機：lab.py get lab/<run> <block> <step>
 #   每個跑次自動取該塊**步數最大**的 ckpt。
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/_help.sh" "$0" ;; "") bash "$(dirname "$0")/_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/.." || exit 1
 BLK=${1:?用法: task_load_compare.sh <block> <run> [<run> ...]}; shift

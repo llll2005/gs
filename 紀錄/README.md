@@ -56,10 +56,11 @@ GT 錯位         < 2026-08-12 10:08:37    每張影像對到鄰幀
 ## 操作速查
 
 ```
+指令速查    bash scripts/help.sh（任一常用腳本加 --help：臂／模式清單與環境變數從腳本本身讀出；CITYGS_DRY=1 乾跑）
 lab 排程    scripts/runner.sh ＋ lab 上的 scripts/queue.txt（RUNNER_SLOTS=3；[solo] 獨佔、[cpu] 不等卡）
 同步        本機 commit＋push => JTOK=<token> bash scripts/setup/lab_pull.sh [--no-build]
             ⛔ token 只能放在單一指令的環境變數，不可寫進任何檔案或 commit
-lab 狀態    由使用者看；Claude 不輪詢、不開監控
+lab 狀態    由使用者看；Claude 不輪詢、不開監控（要看時：JTOK=<token> python scripts/setup/lab.py q）
 訓練        一律在 lab（鎖 CITYGS_VRAM_CAP_GB=5.66）；本機只做 CPU 分析與階段最優解的 6GB 絕對驗證
 煙霧測試    STEPS 至少 2102（< 2100 步沒有任何驗證點，results.txt 不會產生）
 畫圖        python tools/plot_analysis.py  => 重生 實驗分析/ 全部 12 張圖

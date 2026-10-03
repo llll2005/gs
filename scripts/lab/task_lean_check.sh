@@ -18,6 +18,7 @@
 # 用法：[solo] bash scripts/lab/task_lean_check.sh            驗證＋計時（不動共用環境）
 #       [solo] bash scripts/lab/task_lean_check.sh install    驗證通過後才用：把新光柵器裝進 gspl（舊路徑已驗證不變）
 #       [solo] bash scripts/lab/task_lean_check.sh profile_runs <塊> <跑次...>   各跑次 60k ckpt 的 kernel 拆解
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 if [ "${1:-}" = profile_runs ]; then      # profile_runs <塊> <跑次...>：對各跑次的 60k ckpt 做 kernel 拆解（共用環境的 .so）

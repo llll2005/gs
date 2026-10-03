@@ -9,6 +9,7 @@
 #
 # 用法：task_step_timing.sh <step> <run> [<run> ...]
 #   跑次名要能被 outputs/<run>/**/*step=<step>.ckpt 找到 => lab 拉回來的要帶 lab/
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/_help.sh" "$0" ;; "") bash "$(dirname "$0")/_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/.." || exit 1
 STEP=${1:?用法: task_step_timing.sh <step> <run> [<run> ...]}; shift

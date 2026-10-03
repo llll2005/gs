@@ -7,7 +7,7 @@
 一次把 O0 的臂標成「參數冗餘稽核」）。本工具把「標籤 ↔ 指令」的對應**明確印出來**，
 錯位就一眼看得到。
 
-用法: python tools/queue_status.py
+用法: python3 tools/queue_status.py   （＝ bash scripts/runner.sh status；lab 從本機看：lab.py q）
 """
 import os
 import re
@@ -80,6 +80,81 @@ def running():
     return [(et, key) for key, et in best.items()]
 
 
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+TS = re.compile(r"^(\d\d-\d\d \d\d:\d\d:\d\d) \| ")
+
+
+def _age(ts):
+    """runner.log 的時間戳（mm-dd HH:MM:SS，沒有年份）到現在幾秒。"""
+    import datetime as dt
+    now = dt.datetime.now()
+    t = dt.datetime.strptime(f"{now.year}-{ts}", "%Y-%m-%d %H:%M:%S")
+    if t > now:                                    # 跨年
+        t = t.replace(year=now.year - 1)
+    return int((now - t).total_seconds())
+
+
+def runner_running():
+    """runner.log 裡最後一次「runner 啟動」之後、還沒有 DONE/FAIL 的 START。
+
+    ⚠ 2026-10-03：平行模式**啟動前就把該行從佇列移除**（避免兩槽搶同一行）
+      => 跑中的任務不在 queue.txt 裡，只看佇列會以為「沒在跑」。台帳才是準的。
+    回傳 [(槽或 None, 標籤, 指令, 已跑秒數, slot log 路徑或 None)]"""
+    if not os.path.exists(LOG):
+        return []
+    lines = open(LOG, errors="ignore").read().split("\n")
+    k0 = max([i for i, ln in enumerate(lines) if "runner 啟動" in ln] or [0])
+    run = {}                                       # key = 槽（序列模式用 None）
+    for i in range(k0, len(lines)):
+        ln = lines[i]
+        m = TS.match(ln)
+        if not m:
+            continue
+        body = ln[m.end():]
+        ms = re.match(r"▶ START\s+(?:\[槽 (\d+)\] )?(.*)$", body)
+        if ms:
+            slot = ms.group(1)
+            cmd, slog = "", None
+            if i + 1 < len(lines):
+                nxt = TS.sub("", lines[i + 1]).strip()
+                mo = re.match(r"(.*?)\s+（輸出 -> (\S+)）$", nxt)
+                cmd, slog = (mo.group(1), mo.group(2)) if mo else (nxt, None)
+            run[slot] = (slot, ms.group(2).strip(), cmd, _age(m.group(1)), slog)
+            continue
+        md = re.match(r"[✔✘] (?:DONE|FAIL)\s+(?:\[槽 (\d+)\] )?", body)
+        if md:
+            run.pop(md.group(1), None)
+    return sorted(run.values(), key=lambda r: (r[0] or ""))
+
+
+def last_progress(path, nbytes=65536):
+    """slot log 尾端最後一個像進度的片段（tqdm 的 n/N、step、val）。"""
+    try:
+        with open(os.path.join(ROOT, path), "rb") as f:
+            f.seek(0, 2); f.seek(max(0, f.tell() - nbytes))
+            tail = f.read().decode("utf-8", "ignore")
+    except Exception:
+        return ""
+    segs = [ANSI.sub("", x).strip() for x in re.split(r"[\r\n]", tail)]
+    segs = [x for x in segs if x and "pkg_resources" not in x and "declare_namespace" not in x]
+    for x in reversed(segs):
+        if re.search(r"\d+/\d+ \[|step|val|PSNR|Epoch", x):
+            return x[-120:]
+    return segs[-1][-120:] if segs else ""
+
+
+def runner_alive():
+    try:
+        ps = subprocess.run(["ps", "-eo", "pid,etimes,cmd"], capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None
+    for ln in ps.splitlines():
+        if "scripts/runner.sh" in ln and "grep" not in ln and "status" not in ln and "--help" not in ln:
+            f = ln.split()
+            return f"pid {f[0]}，已跑 {int(f[1])//3600}h{int(f[1])%3600//60:02d}m"
+    return ""
+
+
 def recent_ledger(n=6):
     if not os.path.exists(LOG):
         return []
@@ -93,9 +168,23 @@ def recent_ledger(n=6):
 def main():
     q = parse_queue()
     run = running()
+    rr = runner_running()
+    alive = runner_alive()
 
+    print(f"\n=== runner ===")
+    print(f"  {'執行中（' + alive + '）' if alive else ('⚠ 沒有在跑 —— 佇列不會前進' if alive == '' else '（無法判斷）')}")
     print(f"\n=== 現在在跑 ===")
-    if run:
+    if rr and alive == "":
+        print("  ⚠ runner 已不在，下面是它最後一次啟動後沒收到 DONE/FAIL 的任務 —— 可能已死、或是孤兒行程仍在跑")
+    if rr:
+        for slot, lbl, cmd, age, slog in rr:
+            print(f"  {'[槽 ' + slot + '] ' if slot else ''}{lbl[:90]}")
+            print(f"      $ {cmd}   已跑 {age//3600}h{age%3600//60:02d}m")
+            if slog:
+                pg = last_progress(slog)
+                if pg:
+                    print(f"      … {pg}")
+    elif run:
         for et, path in run:
             print(f"  {path}   已跑 {et//3600}h{et%3600//60:02d}m")
     else:
@@ -119,7 +208,8 @@ def main():
         ct = cmd.split()
         mark = ("▶ 執行中" if any(len(pt := p.split()) <= len(ct) and ct[-len(pt):] == pt
                                    for _, p in run) else f"  {k}.")
-        print(f"{mark} {title[:74]}")
+        tag = " [solo 獨佔]" if cmd.startswith("[solo]") else (" [cpu]" if cmd.startswith("[cpu]") else "")
+        print(f"{mark} {title[:74]}{tag}")
         print(f"      $ {cmd}" + ("" if nblk else "   ⚠ 這行**沒有註解區塊** => 台帳會顯示上一個區塊的標題"))
 
     print(f"\n=== 最近完成 ===")
@@ -127,14 +217,14 @@ def main():
         print("  " + ln[:118])
 
     print("""
-=== 你可以自己看的三個指令 ===
-  python tools/queue_status.py     本畫面
-  $EDITOR scripts/queue.txt        直接編輯（**跑中也可以改**，只有正在執行的那一行是固定的）
-  tail -f logs/runner.log          即時輸出
-  cat outputs/<name>/blocks/block_*/train_status.txt    跑動中跑次的進度與最近 val
-
-  touch scripts/queue.stop         做完目前這個就停
+=== 指令 ===
+  bash scripts/runner.sh status        本畫面（lab 上從本機看：JTOK=... python scripts/setup/lab.py q）
+  bash scripts/runner.sh --help        佇列行的寫法（[cpu]／[solo]／標籤）
+  $EDITOR scripts/queue.txt            直接編輯（跑中也可以改；平行模式下跑中的那行已不在檔裡）
+  tail -f logs/runner.log              runner 的事件；各槽輸出在 logs/runner.slot<N>.log
+  touch scripts/queue.stop             做完目前的就停
 """)
+
 
 
 if __name__ == "__main__":

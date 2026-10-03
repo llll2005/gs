@@ -1,6 +1,8 @@
 #!/bin/bash
 # ★★★★★★★ 對比實驗的**標準骨架**（使用者 2026-09-13 定調：一律以 2 萬多步為基準長度）
-# 用法：task_cmp.sh <block_id> <arm>
+# 用法：bash scripts/lab/task_cmp.sh <塊> <臂> [額外 CLI 覆寫...]（最後者勝；臂清單見 --help）
+#   環境變數：STEPS（全長）／CITYGS_FAMILY（家族前綴，預設 cs_；60k 用 cs60_ 且 STEPS=60000）／CITYGS_LEAN=1（lean_train）／
+#             CITYGS_CAP（cap_max）／CITYGS_RUN_NAME（覆寫跑次名）／CITYGS_DRY=1（只印指令不執行）
 #
 # ## 為什麼是「2 萬多步」而不是 60k
 # 60k 一趟 7.6h（lab）/ 8.8h（本機）。而判準是**四個指標的正負號模式**
@@ -51,6 +53,7 @@
 # ⚠ 旗標 docstring 建議的 **2.278** 是用**舊資料**（ceiling(1/ĉ)=10.89x）算的
 #   ⇒ 在新資料上只有目標強度的 0.57 倍。而「強度沒對齊」正是我指認為原始否證主因的東西
 #   ⇒ 沿用舊值等於用相反方向重蹈同一個錯。**校準值要跟著資料重算。**
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 source "$(dirname "$0")/_common.sh"
 # ⚠⚠ 2026-09-22：這三支先前**都不轉傳多餘參數**（沒有 "$@"）=> 從佇列想覆寫單一設定時

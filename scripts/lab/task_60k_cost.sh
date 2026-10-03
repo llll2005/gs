@@ -8,6 +8,7 @@
 #   load  離線 Load（tools/cost_budget_calibrate.py --max-cam 100000）；幾何量，三槽平行也不受干擾
 #   time  穩態每步時間＋VRAM 分項（tools/step_breakdown.py --block）；⚠ 計時必須排 [solo]
 # 用法：task_60k_cost.sh <塊> load|time
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 BLK=${1:?用法: task_60k_cost.sh <塊> load|time}; MODE=${2:?同上}

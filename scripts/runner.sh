@@ -6,9 +6,11 @@
 # the runner is working, and none of your edits get clobbered. The only line you cannot change is
 # the one currently executing.
 #
-#   start:   setsid nohup bash scripts/runner.sh > /dev/null 2>&1 < /dev/null &
-#   stop:    touch scripts/queue.stop      (finishes the current task, then exits)
-#   status:  tail logs/runner.log
+# 用法：
+#   啟動    setsid nohup bash scripts/runner.sh > /dev/null 2>&1 < /dev/null &      （lab：前面加 RUNNER_SLOTS=3）
+#   現況    bash scripts/runner.sh status          （＝ python3 tools/queue_status.py：跑中的槽／佇列／最近完成）
+#   停止    touch scripts/queue.stop               （做完目前的就停；平行模式會等全部槽跑完）
+#   佇列行  [cpu] 不等卡、[solo] 獨佔整卡；任務上方緊鄰的註解區塊第一行＝台帳標籤
 #
 # GPU serialisation lives HERE, not in the task scripts. This is a single-card project, so every
 # GPU task has to wait for the card, and twelve task scripts had each grown their own copy of the
@@ -19,6 +21,10 @@
 # Idle cost is one `head` on a small file every 60s.
 set -u
 cd "$(dirname "$0")/.." || exit 1
+case "${1:-}" in
+  -h|--help) exec bash scripts/_help.sh scripts/runner.sh ;;   # 說明全部從本檔讀出
+  status)    exec python3 tools/queue_status.py ;;
+esac
 
 # ⚠⚠ 2026-09-13：**bash 是逐段讀取腳本檔的**。任務跑到一半若腳本被原地覆寫
 #   （`git pull`、編輯器、甚至重寫成同樣內容都算），bash 會從錯的位元組偏移繼續讀。

@@ -7,6 +7,7 @@
 #     （`--config` 後面接了整串重複的指令，且路徑是絕對的 `/outputs/...` 少了 repo 根）
 #     => 長指令一律進腳本，佇列行只呼叫它（這正是本專案的排程鐵律）。
 # ⚠ 用 `test` 不是 `validate`：`validate` 會覆蓋 results.txt。
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 # ⚠ 2026-09-14 修：本檔在 scripts/lab/ 底下，`/..` 只回到 scripts/，要 `/../..` 才是 repo 根目錄
 #   （原本照抄頂層 scripts/task_*.sh 的寫法 => 相對路徑的 config 找不到 => exit 1，lab 上 rc=1 / 90 秒）

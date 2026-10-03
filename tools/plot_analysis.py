@@ -342,4 +342,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if any(x in ("-h", "--help") for x in sys.argv[1:]):
+        print(__doc__)
+    else:
+        main()

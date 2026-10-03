@@ -15,6 +15,7 @@
 #
 # 用法：task_sfmfill_sweep2.sh gen              產生 PLY（純 CPU；排 [solo] 讓 run 等它）
 #       task_sfmfill_sweep2.sh run <塊> <變體>   訓練（task_initcmp.sh 的 sfmsweep_<變體> 臂）
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 D=data/matrix_city/aerial/train/block_all

@@ -18,6 +18,7 @@
 #   torch 會直接丟 CUDA_MISMATCH 拒編。gspl 環境內自己就有 nvcc 11.8。
 set -u
 cd "$(dirname "$0")/../.." || exit 1
+case "${1:-}" in -h|--help) exec bash scripts/_help.sh scripts/setup/lab_pull.sh ;; esac   # 說明全部從本檔讀出
 [ -n "${JTOK:-}" ] || { echo "⛔ 需要環境變數 JTOK"; exit 1; }
 BUILD=1; [ "${1:-}" = "--no-build" ] && BUILD=0
 RAST=submodules/diff-surfel-rasterization-trim-pp

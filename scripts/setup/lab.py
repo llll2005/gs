@@ -1,44 +1,43 @@
 #!/usr/bin/env python
-"""lab 主機的遠端操作（只有 Jupyter、沒有 ssh）：短指令直跑、長工作背景化 + 輪詢 log。
+r"""lab 主機的遠端操作（只有 Jupyter、沒有 ssh）。在**本機**執行；token 只用環境變數 JTOK 帶，**不寫檔、不進 commit**。
 
-## 為什麼不直接用 deploy.py 的 sh()
+用法: JTOK=... python scripts/setup/lab.py <子指令> ...      （`-h`／`help` 不需要 JTOK）
 
-`deploy.py` 的 `sh()` 走 Jupyter 終端機 websocket，對**短**指令沒問題，但：
+## 最常用（2026-10-03）
 ```
-① finally 裡 `s.delete(terminal, timeout=30)` 逾時會把整個呼叫變成例外
-   —— 指令其實已經成功了（2026-09-12 實測，check 就是這樣掛的）
-② 下載 / 編譯 / 訓練這種幾十分鐘的工作綁在 websocket 上，斷線就沒了
+同步程式碼   JTOK=... bash scripts/setup/lab_pull.sh [--no-build]     本機 commit+push 後一律用這個（取代逐檔 put）
+看佇列       lab.py q                    = lab 上的 python3 tools/queue_status.py（跑中的槽／待跑／最近完成）
+排一個任務   lab.py run "cd gs && printf '%s\n' '# 標籤' '<佇列行>' >> scripts/queue.txt"
+             （佇列行的寫法：bash scripts/runner.sh --help；臂／模式：bash scripts/lab/task_cmp.sh --help）
+看某支 log   lab.py run "cd gs && tail -n 40 logs/<檔名>"
+對比家族     lab.py run "cd gs && python tools/lab_cmp_report.py --blk 6"
 ```
-本工具：短指令用 websocket（並把 DELETE 變成非致命），長工作用
-`setsid nohup ... > log 2>&1 &` 丟到背景，再用 **contents API** 讀 log
-（不吃 websocket，斷線也沒差）。
 
 ## 子指令
-
 ```
-run  <cmd>                 短指令（預設 180s）
-bg   <name> <cmd>          背景執行，log 寫到 <root>/labrun/<name>.log
-log  <name> [行數]         讀 log 尾部（contents API）
-ps                         看背景工作還在不在（用 labrun/*.pid）
-ls   <相對路徑>            列目錄（contents API）
-put  <本機檔> <遠端相對路徑>  上傳單一小檔（contents API，<10MB）
-                           ⚠⚠ **路徑基準與 get/getfile 不同**：`put`/`bg`/`ls` 相對於
-                           `ROOT`（hdd/11213），而 `get`/`getfile`/`ckpts` 相對於
-                           `ROOT/REPO`（hdd/11213/gs）⇒ 傳 repo 裡的檔要自己加 `gs/`，
-                           少加會拿到 **HTTP 500**（父目錄不存在），不是「找不到檔案」。
-ckpts <run>                看某個跑次有哪些 block / step / 大小
-get  <run> <block> <step> [本機目錄]   抓某個跑次的特定 ckpt（含同名 PLY）
-pull [run|*]               把 lab 上所有 ckpt 抓回 outputs/lab/（跳過 aborted 與已存在的）
-getfile <repo相對路徑> [本機路徑]       抓任意單一檔案
+run  <cmd>                 短指令（預設逾時 180 s，`T=600` 加長）；工作目錄＝ROOT（hdd/11213），repo 在 gs/
+                           輸出已去掉終端機的回顯、提示字元與控制碼，只留指令本身的輸出；結尾印 [rc=N]
+q                          看 lab 佇列（同上「看佇列」）
+bg   <name> <cmd>          背景執行（setsid nohup），log 寫到 <ROOT>/labrun/<name>.log
+log  <name> [行數]         讀 bg 的 log 尾部（contents API）
+ps                         bg 工作還在不在（labrun/*.pid）
+ls   <相對路徑>            列目錄（相對 ROOT；contents API）
+put  <本機檔> <遠端相對路徑>  上傳單一小檔（<10MB；相對 ROOT，repo 裡的檔要自己加 gs/）
+                           ⚠ 就地覆寫（inode 不變）=> 不可拿來改正在執行的腳本；程式碼一律走 lab_pull.sh
+ckpts <run>                某個跑次有哪些 block / step / 大小（run 要帶 lab/，例：lab/cs60_conic）
+get  <run> <block> <step> [本機目錄]   抓特定 ckpt（含同名 PLY）
+pull [run|*]               把 lab 上的 ckpt 抓回 outputs/lab/（跳過 aborted 與已存在的；run 不帶 lab/）
+getfile <repo相對路徑> [本機路徑]       抓任意單一檔案（相對 ROOT/gs）
 ```
-⚠ **web view 要 ckpt，不是 PLY** —— `-xyz_rgb.ply` 只有 x/y/z + 法線 + RGB，沒有
-  opacity/scale/rotation/SH，不是 Gaussian splat 模型（2026-09-13 使用者指出並查證）。
-⚠ `get`/`getfile` 走 **`/files/` 端點（原始位元組）**，不是 contents API
-  —— contents API 會 base64，多 33% 流量，大檔還可能讓 Jupyter 記憶體爆掉。
-  實測我們的下行 **10.18 MiB/s（81 Mbps）**，一個 1.7 GB 的 ckpt 約 2.9 分鐘。
-token 從環境變數 `JTOK` 讀，**不寫檔、不進 commit**。
+⚠ 路徑基準：`run`／`bg`／`ls`／`put` 相對 ROOT（hdd/11213）；`get`／`getfile`／`ckpts` 相對 ROOT/gs。
+  少加 `gs/` 拿到的是 **HTTP 500**（父目錄不存在），不是「找不到檔案」。
+⚠ **web view 要 ckpt，不是 PLY** —— `-xyz_rgb.ply` 只有 x/y/z＋法線＋RGB，沒有 opacity/scale/rotation/SH。
+⚠ `get`／`getfile` 走 `/files/` 端點（原始位元組，先寫 .part、比對大小才改名）；下行實測約 10 MiB/s。
+⚠ lab 狀態由使用者自己看；Claude 不輪詢、不開監控（使用者 2026-09-14）。
 
-用法: JTOK=... python scripts/setup/lab.py run "nvidia-smi -L"
+## 為什麼短指令走 websocket、長工作走背景
+`run` 走 Jupyter 終端機 websocket：對短指令沒問題，但下載／編譯／訓練這種幾十分鐘的工作綁在 websocket 上，
+斷線就沒了 => 那些用 `bg`（或排進 runner 佇列）。終端機清理（DELETE）逾時不視為失敗（2026-09-12 實測，指令其實已成功）。
 """
 import base64
 import json
@@ -62,21 +61,48 @@ def sess():
     return s
 
 
+# 終端機的控制碼：CSI（顏色、bracketed paste 的 ESC[?2004h…）、OSC（視窗標題 ESC]0;…BEL）、其他兩字元序列
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>78]")
+
+
+def _clean(txt):
+    """去掉控制碼；同一行裡被 \r 覆蓋的進度列只留最後一段。"""
+    out = []
+    for ln in _ANSI.sub("", txt.replace("\r\n", "\n")).split("\n"):
+        if "\r" in ln:
+            parts = [p for p in ln.split("\r") if p.strip()]
+            ln = parts[-1] if parts else ""
+        out.append(ln)
+    return "\n".join(out)
+
+
 def sh(cmd, timeout=180, stream=True):
+    """在 lab 的終端機執行 cmd，回傳 (rc, 輸出)。
+
+    ⚠ 2026-10-03：以前把終端機原樣印出 —— 每一行指令的回顯、`(base) root@…#` 提示字元、
+      bracketed paste 與視窗標題的控制碼全混在輸出裡（lab_pull.sh 的回報因此很難讀）。
+      現在：先關回顯與提示字元（並把終端機寬度設成 1000、關掉 pager —— 否則 git 經 less 輸出時，
+      寬字元碰到第 80 欄會被補空白），再用「開始／結束」兩個標記夾住指令，只取中間那段，並去掉控制碼。
+      標記由 `$S` 組出來，所以終端機回顯的那行（字面上是 `$S`）不會被誤認成標記。"""
     import websocket
     s = sess()
     name = s.post(f"{BASE}/api/terminals", timeout=60).json()["name"]
     tag = "__L_" + uuid.uuid4().hex[:8]
-    want = re.compile(re.escape(tag) + r"_(\d+)")
-    buf = ""
+    beg = re.compile(re.escape(tag) + r"_B\r?\n")
+    end = re.compile(re.escape(tag) + r"_E(\d+)")
+    buf, start, shown, done = "", None, 0, False
     try:
         ws = websocket.create_connection(
             f"{BASE.replace('http://', 'ws://')}/terminals/websocket/{name}",
             header=[f"Authorization: token {TOK}"], timeout=60)
         time.sleep(1.0)
-        ws.send(json.dumps(["stdin", f"S={tag}\n"])); time.sleep(0.3)
+        ws.send(json.dumps(["stdin", "stty -echo cols 1000 2>/dev/null; export PS1= PS2= PROMPT_COMMAND= PAGER=cat GIT_PAGER=cat; "
+                                     "bind 'set enable-bracketed-paste off' 2>/dev/null; "
+                                     f"S={tag}\n"]))
+        time.sleep(0.3)
+        ws.send(json.dumps(["stdin", 'printf "%s_B\\n" "$S"\n']))
         ws.send(json.dumps(["stdin", f"cd {shlex.quote(ROOT)} 2>/dev/null; {cmd}\n"]))
-        ws.send(json.dumps(["stdin", 'echo "${S}_$?"\n']))
+        ws.send(json.dumps(["stdin", 'echo "${S}_E$?"\n']))
         t0 = time.time(); ws.settimeout(5)
         while time.time() - t0 < timeout:
             try:
@@ -86,9 +112,25 @@ def sh(cmd, timeout=180, stream=True):
             if k != "stdout":
                 continue
             buf += p
+            if start is None:
+                m = beg.search(buf)
+                if not m:
+                    continue
+                start = m.end()
+            seg = buf[start:]
+            me = end.search(seg)
+            body = seg[:me.start()] if me else seg[:seg.rfind("\n") + 1]
+            lines = _clean(body).split("\n")
+            if not me:
+                lines = lines[:-1]              # 最後一段還沒換行 => 先不印
+            elif lines and lines[-1] == "":
+                lines = lines[:-1]
             if stream:
-                sys.stdout.write(p); sys.stdout.flush()
-            if want.search(buf):
+                for ln in lines[shown:]:
+                    print(ln, flush=True)
+            shown = len(lines)
+            if me:
+                done = True
                 break
         ws.close()
     finally:
@@ -96,9 +138,17 @@ def sh(cmd, timeout=180, stream=True):
             s.delete(f"{BASE}/api/terminals/{name}", timeout=60)
         except Exception:
             pass          # ⚠ 清理失敗不該讓已成功的指令變成例外（原本的坑）
-    txt = buf.replace("\r\n", "\n")
-    m = want.search(txt)
-    return (int(m.group(1)) if m else 1), (txt[:m.start()] if m else txt)
+    if start is None:
+        return 1, f"⚠ 沒等到開始標記（終端機 {timeout}s 內沒有回應）"
+    seg = buf[start:]
+    me = end.search(seg)
+    out = _clean(seg[:me.start()] if me else seg).rstrip("\n")
+    if not done:
+        msg = f"⚠ 逾時（{timeout}s）：沒等到結束標記 —— 指令可能還在 lab 上跑；要等久一點用 T=<秒>"
+        if stream:
+            print(msg, flush=True)
+        return 124, out
+    return int(me.group(1)), out
 
 
 def contents(path):
@@ -121,14 +171,18 @@ def listdir(path):
 
 
 def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
     if not TOK:
-        raise SystemExit("需要環境變數 JTOK")
-    if len(sys.argv) < 2:
-        raise SystemExit(__doc__)
+        raise SystemExit("⛔ 需要環境變數 JTOK（只能放在單一指令前面，例：JTOK=... python scripts/setup/lab.py q）")
     c = sys.argv[1]
     if c == "run":
         rc, _ = sh(" ".join(sys.argv[2:]), timeout=int(os.environ.get("T", "180")))
-        print(f"\n[rc={rc}]")
+        print(f"[rc={rc}]")
+        return 0 if rc == 0 else 1
+    if c == "q":
+        rc, _ = sh(f"cd {shlex.quote(REPO)} && python3 tools/queue_status.py", timeout=int(os.environ.get("T", "120")))
         return 0 if rc == 0 else 1
     if c == "bg":
         name, cmd = sys.argv[2], " ".join(sys.argv[3:])
@@ -327,7 +381,7 @@ def main():
         r.raise_for_status()
         print(f"  上傳 {len(raw):,} bytes -> {rp}")
         return 0
-    raise SystemExit(f"未知子指令 {c}")
+    raise SystemExit(f"⛔ 未知子指令 {c}（看全部：python scripts/setup/lab.py --help）")
 
 
 if __name__ == "__main__":

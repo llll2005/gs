@@ -3,6 +3,7 @@
 #   ① tile 精確剔除（StopThePop）能省多少配對 ② 遮擋尾巴 ③ 誤差引導 tile 抽樣的工作量上限 ④ 完美 tile 之後還完美嗎
 #   光柵器 audit kernel（forward.cu auditCUDA）只在另外裝的 logs/rast_audit_pkg 裡，用 PYTHONPATH 指過去 => 不動共用環境。
 # 用法：[solo] bash scripts/lab/task_tile_audit.sh [塊=6] [跑次=cs60_conic]
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 if [ -f .lab_machine ]; then PFX=lab/; else case "$(pwd)" in */hdd/11213/*) PFX=lab/ ;; *) PFX= ;; esac; fi

@@ -86,6 +86,14 @@ esac
 echo "TORCH_CUDA_ARCH_LIST=[${TORCH_CUDA_ARCH_LIST:-未設}]"
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
+  # ★ 2026-10-03 乾跑：CITYGS_DRY=1 只印出完整的訓練指令（寫指令、查某臂到底加了什麼時用），
+  #   不拿鎖、不搬舊輸出、不執行。印的就是下面 conda run 那一行收到的參數（最後者勝）。
+  if [ "${CITYGS_DRY:-0}" = 1 ]; then
+    echo "（乾跑，不執行）跑次 $name／塊 $blk"
+    printf '  conda run -n gspl --no-capture-output python -u main.py fit --config %s --data.parser.block_id %s -n %s' "$CFG" "$blk" "$name"
+    local a; for a in "$@"; do case "$a" in --*) printf ' \\\n    %s' "$a" ;; *) printf ' %q' "$a" ;; esac; done; echo
+    return 0
+  fi
   # ⚠ 2026-09-13：`internal/cli.py:101` 斷言輸出目錄不存在，而前幾輪失敗的跑次
   #   留下了殘留（都有 step=499 的 ckpt）=> 重排同一個任務會
   #   `AssertionError: checkpoint or point cloud output already exists`。
