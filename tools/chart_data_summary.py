@@ -46,7 +46,7 @@ def main():
     a = ap.parse_args()
     cols = ["跑次", "塊", "步數", "valPSNR", "valSSIM", "valLPIPS", "val紋理比",
             "精確Load中位", "精確Loadmax", "代理Load中位", "代理Load平均",
-            "hoPSNR", "hoSSIM", "hoLPIPS", "ho紋理比", "ho_ms", "ho@1499PSNR",
+            "hoPSNR", "hoSSIM", "hoLPIPS", "ho紋理比", "ho_ms(非獨佔不準)", "ho@1499PSNR",
             "slope", "corr", "slope@1499", "corr@1499", "失敗率%", "tau_mean", "ckptGB", "N", "fwd_ms", "fwdbwd_ms"]
     rows = []
     for cd in sorted(glob.glob("outputs/**/blocks/block_*/chart_data", recursive=True)):
