@@ -13,8 +13,10 @@
 #   heldout1499、geom1499、failure、tau   只對 >= 60,000 步的跑次（`12` 的圖只用 60k）
 #     failure   失敗 tile（先存 val 渲染圖）                            `12` §3          task_savepics.sh＋tools/failure_map.py
 #     tau       訓練後 tile 覆蓋 tau                                    `12` §5          tools/measure_tau.py
-#   timing      forward／fwd+bwd ms 與 VRAM 分項 —— **只有 [solo] 才準**（`04`、`05`）  tools/step_breakdown.py
-#               => 平時只登記到 logs/chart_timing_pending.txt，由 solo_batch（[solo]）一次量完
+#   timing      forward／fwd+bwd ms 與 VRAM 分項 —— **只有獨佔才準**（`04`、`05`）       tools/step_breakdown.py
+#               => 量測當下 GPU 上沒有別的行程（[solo] 訓練跑完）就直接量；否則登記到 logs/chart_timing_pending.txt，
+#                  由 solo_batch（[solo]）一次量完。每次都寫 context.txt（當下其他 GPU 行程數）供判斷時間欄能不能用
+#   全場景（block null）只量 load／storage（timing 登記），塊相關項目跳過
 #
 # 用法：
 #   bash scripts/lab/post_run_data.sh run <跑次（含 lab/ 前綴）> <塊>     一個跑次（run_fit 自動呼叫）
@@ -54,7 +56,13 @@ PYEOF
 )
   [ -n "$dim" ] || dim="5 5"
   set -- $dim; x=$1; y=$2
-  echo "════ 圖表資料包：$run block $b（step $st、${x}x${y}）→ $out"
+  # 量測當下 GPU 上有沒有別的行程：0 ＝獨佔 => 時間類數字（計時、held-out 的 ms／幀）可用；記進 context.txt
+  local others mem; others=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -c .)
+  #   容器外的佔用（lab 出現過 10~16 GB 的間歇佔用）不會列在行程清單 => 顯存已用 > 1.5 GB 也當非獨佔
+  mem=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+  [ "$others" = 0 ] && [ "${mem:-0}" -gt 1500 ] 2>/dev/null && others="外部佔用${mem}MiB"
+  printf '量測時間 %s\n量測當下 GPU 上其他行程數 %s（0＝獨佔：計時與 ms／幀可用）\n' "$(date '+%F %T')" "$others" > "$out/context.txt"
+  echo "════ 圖表資料包：$run block $b（step $st、${x}x${y}；其他 GPU 行程 $others）→ $out"
   _do () {   # _do <項目> <指令...>：已有就跳過；失敗不留半個檔
     local it="$1"; shift
     skip "$it" && { echo "  略過 $it（CITYGS_POSTDATA_SKIP）"; return 0; }
@@ -70,9 +78,10 @@ PYEOF
   _do storage $PY tools/run_storage_audit.py "$bd" "$ck"
   _heldout () { $PY tools/eval_official_test.py --ckpt "$1" --block "$b" --block_dim "$x" "$y" | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR"; }
   _geom () { $PY tools/measure_depth_bias.py --ckpt "$1" --block "$b" --block_dim "$x" "$y" --content_bounds; [ "$2" = last ] && $PY tools/audit_geometry.py "$run" --block "$b" | tail -6; return 0; }
-  _do heldout _heldout "$ck"
-  _do geom _geom "$ck" last
-  if [ "$st" -ge 60000 ]; then
+  # 全場景（block null，例：coarse）沒有塊視角 => 只量 load／storage／timing
+  case "$b" in ''|*[!0-9]*) BLOCKWISE=0 ;; *) BLOCKWISE=1 ;; esac
+  [ "$BLOCKWISE" = 1 ] && { _do heldout _heldout "$ck"; _do geom _geom "$ck" last; }
+  if [ "$BLOCKWISE" = 1 ] && [ "$st" -ge 60000 ]; then
     local c1499; c1499=$(ls "$bd"/checkpoints/*step=1499.ckpt 2>/dev/null | head -1)
     if [ -n "$c1499" ]; then
       _do heldout1499 _heldout "$c1499"
@@ -86,9 +95,17 @@ PYEOF
     _bl="$D/partition/partitions-dim_${x}_${y}_visibility_0.08/$(printf '%03d_%03d' $((b % x)) $((b / x))).txt"
     [ -f "$_bl" ] && _do tau $PY tools/measure_tau.py --run "$run/blocks/block_$b" --block-list "$_bl"
   fi
-  # 計時只在 [solo] 下才準 => 登記，等 solo_batch（4x4 的 res 模式自己會逐塊量，不重複登記）
+  # 計時只在獨佔下才準：此刻獨佔（others=0，例如 [solo] 訓練跑完接著量）就直接量；否則登記等 solo_batch
+  #   （4x4 的 res 模式自己會逐塊量，不重複）
   if ! skip timing && [ ! -s "$out/timing.txt" ]; then
-    case "$run" in *full44*) ;; *) grep -qxF "$run $b" "$PEND" 2>/dev/null || echo "$run $b" >> "$PEND"; echo "  登記 timing（等 [solo] solo_batch）" ;; esac
+    case "$run" in
+      *full44*) ;;
+      *) if [ "$others" = 0 ] && [ "$BLOCKWISE" = 1 ]; then
+           _do timing $PY tools/step_breakdown.py --run "$run" --block "$b" --repeat 20
+         else
+           grep -qxF "$run $b" "$PEND" 2>/dev/null || echo "$run $b" >> "$PEND"; echo "  登記 timing（非獨佔或全場景 => 等 [solo] solo_batch）"
+         fi ;;
+    esac
   fi
   return 0
 }
@@ -114,7 +131,8 @@ case "$1" in
       out="outputs/$r/blocks/block_$b/chart_data"; mkdir -p "$out"
       if [ ! -s "$out/timing.txt" ]; then
         echo "════ 計時 $r block $b"
-        $PY tools/step_breakdown.py --run "$r" --block "$b" --repeat 20 2>&1 | grep -vE "$FILT" > "$out/timing.tmp" \
+        case "$b" in ''|*[!0-9]*) BA=() ;; *) BA=(--block "$b") ;; esac   # 全場景（block null）不帶 --block
+        $PY tools/step_breakdown.py --run "$r" "${BA[@]}" --repeat 20 2>&1 | grep -vE "$FILT" > "$out/timing.tmp" \
           && mv "$out/timing.tmp" "$out/timing.txt" || mv "$out/timing.tmp" "$out/timing.failed"
       fi
       grep -vxF "$r $b" "$PEND" > "$PEND.new"; mv "$PEND.new" "$PEND"
