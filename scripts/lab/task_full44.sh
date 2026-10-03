@@ -18,15 +18,20 @@
 #   test 官方 held-out 741 幀（同一份 block_all_test_official2、同一支評分工具），並用同一支工具**重評官方合併模型**
 #        當交叉驗證：工具對官方模型要重現官方 main.py test 的 25.79/0.833/0.176，我方數字才可與之並列。
 #
+# ★ 2026-10-03 使用者：「等速度第二批裝好再開」，且排在單變數 60k 臂之前 =>
+#   prep 先讀 logs/speed2_gate.json（task_speed2_check.sh gate 寫的）：installed／no_gain 才開，fail 或沒有判定就拒絕（exit 3）；
+#   16 個 block 行插到**佇列最前**，每行帶 CITYGS_LEAN=1 與判定通過的旗標（寫在佇列行上 => resolved config 看得到）。
+#   要跳過這道閘門：FULL44_SKIP_SPEED2=1（只開 lean）。
 # 用法（佇列）：
 #   [cpu] bash scripts/lab/task_full44.sh prep
-#   bash scripts/lab/task_full44.sh block <0..15>
+#   CITYGS_LEAN=1 bash scripts/lab/task_full44.sh block <0..15> [額外 CLI 覆寫...]
 #   [solo] bash scripts/lab/task_full44.sh merge
 #   [solo] bash scripts/lab/task_full44.sh test
 #   [solo] bash scripts/lab/task_full44.sh res
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 MODE=${1:?用法: task_full44.sh prep | block <id> | merge | test | res}
+GATE=logs/speed2_gate.json
 D=data/matrix_city/aerial/train/block_all
 PART=$D/partition/partitions-dim_4_4_visibility_0.08
 INIT=$D/sfmfill_sweep44
@@ -49,6 +54,17 @@ EOF
 
 case "$MODE" in
   prep)
+    FL=
+    if [ "${FULL44_SKIP_SPEED2:-0}" != 1 ]; then
+      st=$(python3 -c "import json;print(json.load(open('$GATE'))['status'])" 2>/dev/null)
+      case "$st" in
+        installed|no_gain) ;;
+        *) echo "⛔ 速度第二批還沒裝好（$GATE status=[${st:-沒有判定}]）=> 不開 4x4"
+           echo "   （使用者 10-03：等速度第二批裝好再開；看 logs/speed2_check_*.log；要只開 lean 硬開：FULL44_SKIP_SPEED2=1）"; exit 3 ;;
+      esac
+      FL=$(python3 -c "import json;d=json.load(open('$GATE'));print(' '.join('--model.renderer.init_args.%s true' % f for f in d['flags']) if d['status']=='installed' else '')")
+      echo "速度第二批判定：$st；4x4 每塊開 lean${FL:+ ＋ $FL}"
+    fi
     if [ ! -f "$PART/partitions.pt" ]; then
       echo "=== 4x4 切塊（我方 partition_from_colmap；輸出 $PART）==="
       conda run -n gspl --no-capture-output python utils/partition_from_colmap.py "$D" --block_dim 4 4 --content_threshold 0.08 || exit $?
@@ -87,7 +103,7 @@ case "$MODE" in
     {
       for b in $(seq 0 15); do
         echo "# ★★★★★★ 我方最佳解 4x4 全場景（conic＋dup init，60k；對照官方 CityGSV2 16 塊）：block $b"
-        echo "bash scripts/lab/task_full44.sh block $b"
+        echo "CITYGS_LEAN=1 bash scripts/lab/task_full44.sh block $b${FL:+ $FL}"
       done
       echo "# ★★★★★★ 我方 4x4：合併 16 塊"
       echo "[solo] bash scripts/lab/task_full44.sh merge"
@@ -96,16 +112,15 @@ case "$MODE" in
       echo "# ★★★★★★ 我方 4x4：資源（逐塊逐步計時、合併模型離線 Load、儲存）"
       echo "[solo] bash scripts/lab/task_full44.sh res"
     } > "$_ins"
-    # 錨點：第一個 [solo] Load 比較行（找不到才退到第一個 [solo] 行）=> 插在獨佔批之前，與其他訓練行連成同一批平行跑
-    #   ⚠ 不直接用「第一個 [solo]」：佇列頂端可能有短的 [solo] 分析，插到那裡會讓 16 塊跳到所有訓練之前
-    _ln=$(grep -nE "^\[solo\] bash scripts/task_load_compare\.sh " "$Q" | head -1 | cut -d: -f1)
-    [ -n "$_ln" ] || _ln=$(grep -nE "^\[solo\] " "$Q" | head -1 | cut -d: -f1)
-    if [ -n "$_ln" ]; then
+    # ★ 2026-10-03 使用者：排在單變數 60k 臂之前 => 插到佇列**最前面**（prep 本身是 [cpu]，平行模式下啟動時已從佇列移除）
+    #   （舊錨點是第一個 [solo] Load 比較行＝排在所有單變數臂之後，已不符使用者的順序）
+    _ln=1
+    if [ -s "$Q" ]; then
       while [ "$_ln" -gt 1 ] && [ "$(sed -n "$((_ln-1))p" "$Q" | cut -c1)" = "#" ]; do _ln=$((_ln-1)); done
       _tmp=$(mktemp)
       { head -n $((_ln-1)) "$Q"; cat "$_ins"; tail -n +"$_ln" "$Q"; } > "$_tmp"
       mv "$_tmp" "$Q"
-      echo "✅ 已把 16 個 block 行＋merge/test/res 插到獨佔批（[solo] Load 比較）之前（第 $_ln 行）"
+      echo "✅ 已把 16 個 block 行＋merge/test/res 插到佇列最前"
     else
       cat "$_ins" >> "$Q"
       echo "✅ 已把 16 個 block 行＋merge/test/res 追加到佇列尾"
@@ -113,7 +128,7 @@ case "$MODE" in
     rm -f "$_ins" ;;
 
   block)
-    B=${2:?block id}
+    B=${2:?block id}; shift 2   # 其餘參數（例：record_reduce／tile_cull 旗標）原樣轉給 task_cmp.sh（最後者勝）
     [ -f "$TSV" ] || { echo "⛔ 缺 $TSV（先跑 prep）"; exit 2; }
     K=$(awk -v b="$B" '$1==b{print $2}' "$TSV")
     [ -n "$K" ] || { echo "⛔ $TSV 沒有 block $B"; exit 2; }
@@ -125,7 +140,7 @@ case "$MODE" in
       bash scripts/lab/task_cmp.sh "$B" conic \
         --data.parser.block_dim "[4,4]" \
         --data.parser.points_from ply --data.parser.ply_file "$P" \
-        --model.density.init_args.churn_report true ;;
+        --model.density.init_args.churn_report true "$@" ;;
 
   merge)
     n=0; bad=

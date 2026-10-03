@@ -11,10 +11,32 @@
 #   R   lean vs lean＋record_reduce               => 覆蓋數逐位元相同、T*alpha 浮點級、trim 遮罩重疊
 #   T   lean vs lean＋record_reduce＋tile_cull     => 渲染逐位元相同、binning 配對減少多少、梯度在噪音底內
 # 真實迴圈（@14,999 起 1,200 步，含 1 次 trim）：lean／lean+rr／lean+rr+tc 三組逐段計時
-# 用法：[solo] bash scripts/lab/task_speed2_check.sh
+# 用法：[solo] bash scripts/lab/task_speed2_check.sh          等價驗證＋真實迴圈計時（不動共用環境）
+#       [solo] bash scripts/lab/task_speed2_check.sh gate     依事先寫好的規則判定（tools/speed2_gate.py）；正確性全過且有變快才把新光柵器裝進 gspl
+#                                                            結果寫 logs/speed2_gate.json（task_full44.sh prep 讀它決定開不開 4x4、開哪些旗標）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
+if [ "${1:-}" = gate ]; then
+  # ★ 2026-10-03 使用者：「等速度第二批裝好再開 4x4」—— 判定要能在佇列裡自己跑（lab 由使用者看，Claude 不輪詢）。
+  #   [solo]：安裝時不能有別的訓練在用共用環境。正確性沒過 => exit 1（不裝，4x4 prep 也會拒絕開）。
+  conda run -n gspl --no-capture-output python tools/speed2_gate.py 2>&1 | grep -vE 'pkg_resources|declare_namespace' || exit 1
+  st=$(python3 -c "import json;print(json.load(open('logs/speed2_gate.json'))['status'])" 2>/dev/null)
+  [ "$st" = fail ] || [ -z "$st" ] && { echo "⛔ 判定沒過（status=[$st]）=> 不安裝"; exit 1; }
+  if [ "$st" = install ]; then
+    G=$(conda run -n gspl python -c "import sys;print(sys.prefix)" 2>/dev/null | tail -1)
+    RAST=submodules/diff-surfel-rasterization-trim-pp
+    rm -rf $RAST/build
+    conda run -n gspl env CUDA_HOME="$G" CUDA_PATH="$G" TORCH_CUDA_ARCH_LIST=8.6 pip install --no-build-isolation --no-deps --force-reinstall $RAST 2>&1 | tail -2
+    conda run -n gspl python -c "import diff_trim_surfel_rasterization as m,os,time;p=os.path.dirname(m.__file__);f=[x for x in os.listdir(p) if x.endswith('.so')][0];print('so:',f,time.strftime('%m-%d %H:%M',time.localtime(os.path.getmtime(os.path.join(p,f)))));F=m.GaussianRasterizationSettings._fields;assert all(k in F for k in ('lean_render','record_reduce','tile_cull'));print('✅ lean_render／record_reduce／tile_cull 欄位都在')" \
+      || { echo "⛔ 安裝後驗證失敗"; exit 1; }
+    python3 -c "import json;d=json.load(open('logs/speed2_gate.json'));d['status']='installed';json.dump(d,open('logs/speed2_gate.json','w'),ensure_ascii=False,indent=1)"
+    echo "✅ 已裝進 gspl；4x4 會開：$(python3 -c "import json;print('＋'.join(json.load(open('logs/speed2_gate.json'))['flags']))")"
+  else
+    echo "（正確但沒有變快 => 不裝；4x4 只開 lean）"
+  fi
+  exit 0
+fi
 if [ -f .lab_machine ]; then PFX=lab/; else case "$(pwd)" in */hdd/11213/*) PFX=lab/ ;; *) PFX= ;; esac; fi
 G=$(conda run -n gspl python -c "import sys;print(sys.prefix)" 2>/dev/null | tail -1)
 T=logs/rast_speed2_pkg; S=logs/rast_speed2_src; O=logs/speed2_check
