@@ -51,9 +51,11 @@ rows = [
     ("本機 4050 b6 高顆數\nN 1.54M", dict(backward=172.05, forward=95.79, trim=75512.24/500, optimizer=45.51, loss=15.91, loopout=9.00, other=2.66)),
     ("本機 4050 b6 高顆數\n＋max_split_size_mb:128", dict(backward=176.60, forward=106.19, trim=76719.21/500, optimizer=57.91, loss=15.87, loopout=8.82, other=2.69)),
     ("lab 3090 [solo] b6\nN 2.29M　lean 關", dict(backward=84.85, forward=36.69, trim=27875/500, optimizer=15.15, loss=5.02, loopout=8.00, other=3.33)),
-    ("★ 現行：lab 3090 [solo] b6\nN 2.29M　lean 開", dict(backward=68.64, forward=21.13, trim=27589/500, optimizer=15.15, loss=5.05, loopout=8.03, other=3.32)),
+    ("lab 3090 [solo] b6\nN 2.29M　lean 開", dict(backward=68.64, forward=21.13, trim=27589/500, optimizer=15.15, loss=5.05, loopout=8.03, other=3.32)),
+    # 10-03 speed2_check：lean＋record_reduce（同起點 1,200 步；logs/speed2_check_1003_0604.log）
+    ("★ 現行：lab 3090 [solo] b6\nN 2.29M　lean＋record_reduce", dict(backward=68.75, forward=21.15, trim=17974.84/500, optimizer=15.14, loss=5.06, loopout=8.02, other=2.79)),
 ]
-fig, axes = plt.subplots(1, 2, figsize=(14, 5.8), gridspec_kw={"width_ratios": [3, 2]})
+fig, axes = plt.subplots(1, 2, figsize=(14, 6.6), gridspec_kw={"width_ratios": [3, 2]})
 for ax, pct in zip(axes, (False, True)):
     for i, (name, d) in enumerate(rows[::-1]):
         tot = sum(d.values()); left = 0
@@ -69,7 +71,7 @@ for ax, pct in zip(axes, (False, True)):
     ax.set_xlabel("佔每步時間 (%)" if pct else "每步時間 (ms，增生期)")
     if pct: ax.set_yticklabels([]); ax.set_xlim(0, 100)
 axes[0].legend(loc="upper center", bbox_to_anchor=(0.8, -0.14), ncol=4, fontsize=8, frameon=False)
-fig.suptitle("圖 1　訓練時間花在哪：運算（backward／forward／trim）為主，搬運只佔約 2%\n現行（lab、lean 開）增生期：backward 39%、週期 trim 31%（以真實每步為分母約 37%；下一個目標）、forward 12%", fontsize=12)
+fig.suptitle("圖 1　訓練時間花在哪：運算（backward／forward／trim）為主，搬運只佔約 2%\n現行（lab、lean＋record_reduce）增生期每步約 157 ms：backward 44%、週期 trim 23%（lean 時 31%）、forward 13%、optimizer 10%", fontsize=12)
 save(fig, "fig1_time_breakdown.png")
 
 # ── 圖 2：max_split_size_mb:128 在真實迴圈上的代價 ──

@@ -9,8 +9,8 @@
 
 | 面板 | 內容 | 對應本文 |
 |---|---|---|
-| (a) | 真實訓練迴圈逐段時間：lean 關 vs 開 | §1 |
-| (b) 左 | kernel 拆解（profiler）：逐配對的光柵 kernel vs 逐顆／逐像素 | §2 |
+| (a) | 真實訓練迴圈逐段時間：不開 lean／開 lean（10-02）／★ 開 lean＋record_reduce（現行）／＋tile_cull（不採用）（10-03） | §1、§6 |
+| (b) 左 | kernel 拆解（profiler）：逐配對的光柵 kernel vs 逐顆／逐像素（⚠ 沒重量 record_reduce） | §2 |
 | (b) 右 | optimizer.step：foreach（現行）vs fused | §3 |
 
 ## 結論

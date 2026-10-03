@@ -93,9 +93,10 @@ def n02_current(d):
     ax.legend(fontsize=7.5, loc="center left", bbox_to_anchor=(0.01, 0.52))
     ax.set_title("峰值隨 N：VRAM 由顆數主導；cap 再往上加就出 6GB 信封", fontsize=10)
     ax = axs[1]
-    barlabels(ax, ax.bar(["lean 關", "★ lean 開（現行）"], [4022, 3821], color=[MUTED, C3], width=0.55), fmt="{:,.0f}")
-    ax.set_ylim(0, 4700); ax.set_ylabel("峰值配置（MiB）")
-    ax.set_title("lean_render：峰值配置 -5%（lab b6 N 2.29M、1,200 步）", fontsize=10)
+    barlabels(ax, ax.bar(["lean 關", "lean 開", "★ lean＋\nrecord_reduce\n（現行）", "＋tile_cull\n（不採用）"],
+                         [4022, 3821, 3821, 3730], color=[MUTED, "#86d0b4", C3, MUTED], width=0.6), fmt="{:,.0f}")
+    ax.set_ylim(0, 4700); ax.set_ylabel("峰值配置（MiB）"); ax.tick_params(axis="x", labelsize=8)
+    ax.set_title("峰值配置：lean -5%；record_reduce 不變；tile_cull 再 -2%（但淨變慢）", fontsize=10)
     fig.suptitle("現行配方的 VRAM（lab 鎖 5.66 GiB）", fontsize=11)
     save(fig, d, "n02_current.png")
 
@@ -193,22 +194,25 @@ def n09_official_blocks(d):
 
 def n10_lean_loop(d):
     segs = ["backward", "forward", "週期 trim\n(1 次/1000 步窗)", "optimizer", "迴圈外", "loss", "其他"]
-    off = [84.85, 36.69, 27.87, 15.15, 8.00, 5.02, 3.33]
-    on = [68.64, 21.13, 27.59, 15.15, 8.03, 5.05, 3.32]
+    rows = [  # (段落, 名稱, 真實步 ms（不含 trim）, 每次 trim s)
+        ([84.85, 36.69, 27.87, 15.15, 8.00, 5.02, 3.33], "不開 lean（10-02）", 152.30, 27.87),
+        ([68.64, 21.13, 27.59, 15.15, 8.03, 5.05, 3.32], "開 lean（10-02）", 120.54, 27.59),
+        ([68.75, 21.15, 17.97, 15.14, 8.02, 5.06, 2.79], "★ 開 lean＋record_reduce（現行，10-03）", 120.69, 17.97),
+        ([66.62, 27.59, 18.08, 15.14, 8.02, 5.05, 2.88], "＋tile_cull（不採用，10-03）", 124.96, 18.08)]
     cols = ["#4C72B0", "#55A868", "#C44E52", "#8172B2", "#64B5CD", "#CCB974", "#B0B0B0"]
-    fig, ax = plt.subplots(figsize=(11, 3.4))
-    for i, (row, nm, real) in enumerate([(off, "lean 關", 152.30), (on, "lean 開", 120.54)]):
+    fig, ax = plt.subplots(figsize=(11.5, 4.6))
+    for i, (row, nm, real, trim_s) in enumerate(rows):
         left = 0
         for v, c, s in zip(row, cols, segs):
             ax.barh(i, v, left=left, color=c, edgecolor="white", label=s if i == 0 else None)
             if v > 8:
                 ax.text(left + v / 2, i, f"{v:.0f}", ha="center", va="center", fontsize=8, color="white")
             left += v
-        ax.text(left + 2, i, f"段落和 {left:.0f} ms／真實每步 {real:.1f} ms", va="center", fontsize=8.5)
-    ax.set_yticks([0, 1]); ax.set_yticklabels(["lean 關", "★ lean 開（現行）"]); ax.invert_yaxis()
-    ax.set_xlim(0, 230); ax.set_xlabel("每步 wall ms（逐段同步計時；b6、N 2.29M、增生期 1,200 步含 1 次 trim）")
-    ax.legend(ncol=7, fontsize=7.5, loc="upper center", bbox_to_anchor=(0.5, -0.32))
-    ax.set_title("lean_render 真實訓練迴圈：每步 152.3 -> 120.5 ms（-20.9%）；trim 幾乎沒變", fontsize=10.5)
+        ax.text(left + 2, i, f"段落和 {left:.0f}／真實步 {real:.1f}（不含 trim）／增生期每步 {real + trim_s * 2:.0f} ms", va="center", fontsize=8)
+    ax.set_yticks(range(len(rows))); ax.set_yticklabels([r[1] for r in rows], fontsize=8.5); ax.invert_yaxis()
+    ax.set_xlim(0, 285); ax.set_xlabel("每步 wall ms（逐段同步計時；b6、N 2.29M、@14,999 起 1,200 步含 1 次 trim；增生期每步＝真實步＋每次 trim÷500）")
+    ax.legend(ncol=7, fontsize=7.5, loc="upper center", bbox_to_anchor=(0.5, -0.2))
+    ax.set_title("真實訓練迴圈：lean 每步 -20.9%；record_reduce 每次 trim -35%（增生期每步 -10.9%）；tile_cull 讓 forward +30% => 不採用", fontsize=10)
     save(fig, d, "n10_lean_loop.png")
 
 
@@ -220,8 +224,8 @@ def n10_kernels(d):
     x = np.arange(len(cats)); wd = 0.38
     fig, axs = plt.subplots(1, 2, figsize=(14, 4.2), gridspec_kw={"width_ratios": [3, 1.3]})
     ax = axs[0]
-    barlabels(ax, ax.bar(x - wd / 2, off, wd, color=MUTED, label="lean 關"), fmt="{:.1f}")
-    barlabels(ax, ax.bar(x + wd / 2, on, wd, color=C3, label="★ lean 開（現行）"), fmt="{:.1f}")
+    barlabels(ax, ax.bar(x - wd / 2, off, wd, color=MUTED, label="不開 lean"), fmt="{:.1f}")
+    barlabels(ax, ax.bar(x + wd / 2, on, wd, color=C3, label="開 lean（未含 record_reduce）"), fmt="{:.1f}")
     ax.set_xticks(x); ax.set_xticklabels(cats, fontsize=8.5); ax.set_ylabel("kernel 時間（ms/步，含 1 台相機的 record）")
     ax.legend(fontsize=8)
     ax.set_title("kernel 拆解（profiler，b6 @14,999，N 2.6M；已扣掉 autograd 包裝列的重複計時）", fontsize=10)
@@ -243,8 +247,9 @@ def n11_tiles(d):
     for nm, a, b, c in [("b6", [41.5, 36.3, 34.4], [30.0, 30.1, 20.2], C1), ("b13", [35.9, 31.3, 30.3], [36.1, 39.9, 30.6], C2)]:
         ax.plot(steps, a, "-o", color=c, lw=2, label=f"{nm} ① tile 內沒有任何像素 alpha≥1/255")
         ax.plot(steps, b, "--s", color=c, lw=1.5, label=f"{nm} ② tile 已飽和後才輪到")
-    ax.set_xlabel("訓練步數（千）"); ax.set_ylabel("佔 binning 配對（%）"); ax.set_ylim(0, 50); ax.legend(fontsize=7.5)
-    ax.set_title("可剃掉的配對（渲染逐位元不變）", fontsize=10)
+    ax.plot([60], [35.7], "*", color=C3, ms=15, mec="k", mew=0.6, label="b6 tile_cull 實測 -35.7%（6 視角）")
+    ax.set_xlabel("訓練步數（千）"); ax.set_ylabel("佔 binning 配對（%）"); ax.set_ylim(0, 50); ax.legend(fontsize=7)
+    ax.set_title("可剃掉的配對：tile_cull 實測與上限相符（但淨變慢，`10` §6）", fontsize=10)
     ax = axs[1]
     thr = [0.005, 0.01, 0.02, 0.03, 0.05]
     for nm, t, w, c in [("b6", [2.4, 15.3, 61.7, 85.5, 95.5], [0.8, 12.3, 62.4, 88.2, 97.5], C1),
