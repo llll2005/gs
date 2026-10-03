@@ -28,6 +28,8 @@
 #   [solo] bash scripts/lab/task_full44.sh merge
 #   [solo] bash scripts/lab/task_full44.sh test
 #   [solo] bash scripts/lab/task_full44.sh res
+#   [solo] bash scripts/lab/task_full44.sh stepprof [塊...]   每塊兩段真實迴圈逐段計時 => 推算獨佔下整趟 60k 要多久（見該模式註解）
+case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 MODE=${1:?用法: task_full44.sh prep | block <id> | merge | test | res}
@@ -197,5 +199,66 @@ case "$MODE" in
       done
       exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$L"
     exit "${PIPESTATUS[0]}" ;;
+  stepprof)
+    # ★ 2026-10-03 使用者：「當前 lab 在跑當前最佳解 你沒設 solo 嗎 這樣怎麼測時間」
+    #   4x4 的 16 塊是三槽平行訓練（品質／Load／峰值 VRAM 與鄰居無關），**牆鐘被鄰居拉長、不可當訓練時間**；
+    #   res 模式的 step_breakdown 只量單一相機的 forward／backward，不含 trim／optimizer／資料載入。
+    #   => 每塊從自己的 ckpt 接著跑兩段真實迴圈（_StepProfiler，每標記點同步；[solo]、不鎖 VRAM，同官方 stepprof）：
+    #        grow     @14,999 起 1,200 步、densify 開（含週期 trim）  => 增生期每步＝真實步＋每次 trim ÷ 500
+    #        harvest  @41,999 起 1,200 步、densify 關（無 trim）     => 收割期每步
+    #      推算整趟 ≈ 30,000 x 增生期每步 + 30,000 x 收割期每步（不含 val／存 ckpt；每標記點同步會略高估）
+    #   結果寫進該塊 chart_data/stepprof_{grow,harvest}.txt，最後印逐塊推算表；量完刪掉暫存跑次（ckpt 每個約 1.5 GB）。
+    shift; BL=("$@"); [ ${#BL[@]} -gt 0 ] || BL=($(seq 0 15))
+    GF=$(python3 -c "import json;d=json.load(open('$GATE'));print(' '.join('--model.renderer.init_args.%s true' % f for f in d['flags']) if d['status']=='installed' else '')" 2>/dev/null)
+    bad=0
+    for B in "${BL[@]}"; do
+      bd="$OUT/blocks/block_$B"; mkdir -p "$bd/chart_data"
+      for ph in grow harvest; do
+        [ -s "$bd/chart_data/stepprof_$ph.txt" ] && { echo "（block $B $ph 已量過）"; continue; }
+        if [ "$ph" = grow ]; then ck=$(ls "$bd"/checkpoints/*step=14999.ckpt 2>/dev/null | head -1); DU=30000
+        else ck=$(ls "$bd"/checkpoints/*step=41999.ckpt 2>/dev/null | head -1); DU=0; fi
+        [ -n "$ck" ] || { echo "⛔ block $B 沒有 $ph 用的 ckpt"; bad=1; continue; }
+        n="${NAME}_prof_${ph}"; rm -rf "outputs/$n/blocks/block_$B"
+        echo "════ block $B $ph（$ck，1,200 步）$(date)"
+        ( unset CITYGS_VRAM_CAP_GB PYTORCH_CUDA_ALLOC_CONF
+          CITYGS_STEP_PROFILE=1 CITYGS_KEEP_CFG_RENDERER=1 conda run -n gspl --no-capture-output python -u main.py fit \
+            --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml --data.parser.block_id "$B" --data.parser.block_dim "[4,4]" -n "$n" \
+            --model.initialize_from "$ck" --trainer.max_steps 1200 \
+            --data.image_uint8 true --data.skip_unused_depth true \
+            --model.density.init_args.cap_max 2600000 --model.density.init_args.densify_until_iter $DU \
+            --model.density.init_args.absgrad_densify 2.0 --model.density.init_args.fast_noise true \
+            --model.density.init_args.noise_gate_eps 0.001 --model.metric.init_args.opacity_reg 0.002 \
+            --model.metric.init_args.lambda_normal 0.0 --model.metric.init_args.depth_loss_weight.init 0.0 \
+            --model.renderer.init_args.exact_conic_aabb true --model.renderer.init_args.lean_train true $GF ) 2>&1 \
+          | grep -E "Trimming done|Error|error|⛔" | head -4
+        if [ -s "outputs/$n/blocks/block_$B/step_cost.txt" ]; then
+          cp "outputs/$n/blocks/block_$B/step_cost.txt" "$bd/chart_data/stepprof_$ph.txt"
+        else echo "⛔ block $B $ph 沒有 step_cost.txt"; bad=1; fi
+        rm -rf "outputs/$n/blocks/block_$B"
+      done
+    done
+    echo "════ 逐塊推算：獨佔下整趟 60k 的訓練時間（不含 val／存 ckpt）"
+    python3 - "$OUT" <<'PYEOF'
+import glob, os, re, sys
+out = sys.argv[1]
+REAL = re.compile(r"（真實步時間·含重疊）\s+([\d.]+)")
+TRIM = re.compile(r"^11 週期性 trim.*?\s{2,}[\d.]+\s+[\d.]+\s+[\d,]+\s+([\d.]+)\s", re.M)
+tot = []
+print(f"{'塊':>4} {'增生期 ms/步':>12} {'收割期 ms/步':>12} {'推算 h':>8}")
+for b in range(16):
+    cd = f"{out}/blocks/block_{b}/chart_data"
+    try:
+        g = open(f"{cd}/stepprof_grow.txt", encoding="utf-8").read(); h = open(f"{cd}/stepprof_harvest.txt", encoding="utf-8").read()
+    except OSError:
+        continue
+    gr = float(REAL.search(g).group(1)); m = TRIM.search(g); tr = float(m.group(1)) / 500 if m else 0.0
+    hv = float(REAL.search(h).group(1))
+    hours = (30000 * (gr + tr) + 30000 * hv) / 3.6e6
+    tot.append(hours)
+    print(f"{b:>4} {gr + tr:>12.1f} {hv:>12.1f} {hours:>8.2f}")
+if tot:
+    print(f"合計 {sum(tot):.1f} h（逐塊序列）／平均每塊 {sum(tot) / len(tot):.2f} h —— 對照官方逐塊獨佔牆鐘 3.3~4.9 h（含 val／存檔）")
+PYEOF
+    exit "$bad" ;;
   *) echo "⛔ 不認得的模式：$MODE"; exit 2 ;;
 esac
