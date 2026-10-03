@@ -24,4 +24,8 @@
 - **val⊂train** 只做同塊、同評分集的相對比較；對外比較只用官方 held-out（`09`）。
 - 成本欄若沒有特別標，都是**精確 Load 中位**（光柵器實際 binning 的 (tile, 顆) 對數，每視角取中位）；代理單位會明標。
 - 噪音底：22k 的 PSNR 3sd = 0.24 dB；60k 未量。
+- **每個跑次的圖表資料包**（2026-10-03 起）：lab 上每個訓練跑完，`run_fit` 自動呼叫 `scripts/lab/post_run_data.sh`，把各圖要用的量測
+  （離線 Load、塊內 held-out、幾何、儲存；60k 另加 @1,499、失敗區、tau）存到 `outputs/<跑次>/blocks/block_<塊>/chart_data/`；
+  計時只在 [solo] 才準，先登記、由 `[solo] post_run_data.sh solo_batch` 一次量完。舊跑次用 `post_run_data.sh backfill` 補。
+  畫圖前用 `python tools/chart_data_summary.py [--filter 跑次] [--tsv 輸出]` 取一張彙整表 => **不用為了畫圖重跑任何東西**。
 - 新的實驗組結果出來時：更新對應文件的表＋腳本裡的數字，跑一次 `tools/plot_analysis.py`；新主題就加一份 `13_…md` 並在腳本的 `DOCS` 加同名項。

@@ -148,5 +148,12 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   else
     echo "（略過 resolved config diff：基準 [${base:-未設}] 不存在或就是自己）"
   fi
+  # ★ 2026-10-03 使用者：每個跑次都要輸出所有圖表要用的數據，要用時才不用重跑 => 圖表資料包
+  #   （離線 Load、塊內 held-out、幾何、儲存；60k 另加 @1,499、失敗區、tau；計時登記給 [solo] solo_batch）
+  #   失敗不影響這個訓練的結果與 rc（缺的之後用 `post_run_data.sh backfill` 補）。CITYGS_POSTDATA=0 可關。
+  if [ "${CITYGS_POSTDATA:-1}" = 1 ]; then
+    bash scripts/lab/post_run_data.sh run "$name" "$blk" 2>&1 | tail -30 \
+      || echo "⚠ 圖表資料包有項目失敗（不影響訓練結果；可用 post_run_data.sh backfill 補）"
+  fi
   return 0
 }
