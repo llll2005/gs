@@ -29,6 +29,7 @@
 #   [solo] bash scripts/lab/task_full44.sh test
 #   [solo] bash scripts/lab/task_full44.sh res
 #   [solo] bash scripts/lab/task_full44.sh offheldout [塊...]  官方逐塊模型在**我方同一批塊視角**上的 held-out（同塊對照；預設 0~3）
+#          CITYGS_OFF_LINE=paper 改評照論文設定那條線（trim 執行＋ω 0.9、prune 0.025）=> official_heldout_paper.txt
 #   [solo] bash scripts/lab/task_full44.sh stepprof [塊...]   每塊兩段真實迴圈逐段計時 => 推算獨佔下整趟 60k 要多久（見該模式註解）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
@@ -204,19 +205,25 @@ case "$MODE" in
     # ★ 2026-10-04 使用者：同樣的塊在原版的 val／塊內 held-out／峰值／獨佔時間，作個對照。
     #   兩邊同格位的訓練相機只重疊 52~70%（我方 visibility 0.08、官方 0.05，定界方式也不同）=> val 的評分影像不同、只能參考；
     #   held-out 才公平：同一支工具、**同一批視角**（eval_official_test --block 用我方 block_all 的 4x4 分區選視角），
-    #   評官方逐塊模型（未修改原始碼、trim 從未執行的原版）。結果寫進我方該塊 chart_data/official_heldout.txt。
+    #   評官方逐塊模型（未修改原始碼、trim 從未執行的原版）。結果寫進我方該塊 chart_data/official_heldout.txt（論文設定線 official_heldout_paper.txt）。
     shift; BL=("$@"); [ ${#BL[@]} -gt 0 ] || BL=(0 1 2 3)
-    OB=../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/blocks
+    #   CITYGS_OFF_LINE=paper（10-05）：改評「照論文設定」那條線（trim 真的執行＋ω 0.9、prune 0.025；task_citygs_origin.sh blockpaper），
+    #   寫進 official_heldout_paper.txt；預設 orig＝官方原版。
+    case "${CITYGS_OFF_LINE:-orig}" in
+      orig)  OB=../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/blocks; OHF=official_heldout.txt; OLBL=官方原版 ;;
+      paper) OB=../cityGS_origin_trimfix/outputs/citygsv2_mc_aerial_sh2_paper/blocks; OHF=official_heldout_paper.txt; OLBL=論文設定 ;;
+      *) echo "⛔ CITYGS_OFF_LINE 只能是 orig 或 paper"; exit 2 ;;
+    esac
     bad=0
     for B in "${BL[@]}"; do
       ck=$(ls "$OB/block_$B"/checkpoints/*step=60000.ckpt 2>/dev/null | head -1)
-      [ -n "$ck" ] || { echo "⛔ 官方 block $B 沒有 60k ckpt"; bad=1; continue; }
+      [ -n "$ck" ] || { echo "⛔ $OLBL block $B 沒有 60k ckpt"; bad=1; continue; }
       mkdir -p "$OUT/blocks/block_$B/chart_data"
-      echo "════ 官方原版 block $B：$ck"
+      echo "════ $OLBL block $B：$ck"
       conda run -n gspl --no-capture-output python tools/eval_official_test.py --ckpt "$ck" --block "$B" --block_dim 4 4 2>&1 \
-        | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR|pkg_resources|declare_namespace" | tee "$OUT/blocks/block_$B/chart_data/official_heldout.txt" \
+        | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR|pkg_resources|declare_namespace" | tee "$OUT/blocks/block_$B/chart_data/$OHF" \
         | grep -E "選視角|模型|^PSNR|^SSIM|^LPIPS|^紋理比|^渲染|⛔"
-      grep -q "^PSNR" "$OUT/blocks/block_$B/chart_data/official_heldout.txt" || bad=1
+      grep -q "^PSNR" "$OUT/blocks/block_$B/chart_data/$OHF" || bad=1
     done
     exit "$bad" ;;
   stepprof)
