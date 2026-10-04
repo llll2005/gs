@@ -185,6 +185,10 @@ case "$ARM" in
   #   sh0 若與 sh3 在噪音內 => 高階 SH 在空拍不值它的 VRAM（2.34M 顆約 −1.68 GB），連 YCbCr 都不用做。
   csh0)       EXTRA=(--model.renderer.init_args.exact_conic_aabb true
                      --model.gaussian.init_args.sh_degree 0);                   EXP=2 ;;
+  # ★ 2026-10-04 SH 曲線補中間點（使用者同意）：sh1 = 一階視角相依，每顆 58 -> 22 float（−62%，2.34M 顆約 −1.35 GB）。
+  #   與 csh2／csh0 合成完整的 sh0~3 曲線；csh0 的結果決定 SB／lobe／YCbCr 要不要重測（研究總覽 §11）。
+  csh1)       EXTRA=(--model.renderer.init_args.exact_conic_aabb true
+                     --model.gaussian.init_args.sh_degree 1);                   EXP=2 ;;
   # ★ 2026-10-02「硬度」：2DGS 自帶的 depth distortion loss（把每條光線上的權重壓成一薄層＝實心表面），
   #   我方 config 一直是 0、**整個專案從沒開過**。2DGS 原文：有界場景 1000、無界場景 100（從第 3,000 步開始）。
   #   ⚠ 需要幾何通道 => 這兩臂不可開 lean_render（開了會在 backward 當場報錯）。
@@ -283,7 +287,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次

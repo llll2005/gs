@@ -93,7 +93,7 @@ profiler，b6 @14,999（N 2.6M），每步換一台相機、12 步，含 1 台�
 |---|---|---|---|---|---|
 | 1 | lean_render | 幾何通道＋trim 顏色 | **實測 -20.9%／步** | 否（逐位元／atomic 順序級） | ✅ 已裝 gspl |
 | 3 | fused Adam | optimizer | **實測慢 2.3~3.2 倍** | 浮點級 | ⛔ |
-| 4 | sh3 → sh2／sh0 | 逐顆＋VRAM | sh2 VRAM -0.79 GB、sh0 -1.68 GB（@2.34M） | **會** | ⏳ `csh2`／`csh0` 60k |
+| 4 | sh3 → sh2／sh1／sh0 | 逐顆＋VRAM | sh2 VRAM -0.79 GB、sh1 -1.35 GB、sh0 -1.68 GB（@2.34M） | **會** | ⏳ `csh2`／`csh1`／`csh0` 60k |
 | 5 | block／warp 內先加總再 atomic | 逐配對（trim record 2 個、backward 14 個） | **實測：每次 trim -35%、增生期每步 -10.9%** | 浮點加總順序（trim 遮罩重疊 99.9987%） | ✅ record 版已裝；backward 版 💤 |
 | 6 | PyTorch 升級（只換環境的單變數） | 配置器、optimizer、編譯 | 未知 | 浮點級 | 💤 提案 |
 | 7 | 每步 3 個 GPU→CPU 同步點 | CPU/GPU 重疊 | <2% | 否 | 💤 低優先 |
@@ -102,8 +102,8 @@ profiler，b6 @14,999（N 2.6M），每步換一台相機、12 步，含 1 台�
 | 10 | SH dc／高階分開傳入（不 cat） | forward 逐顆複製 | 小 | 等價 | 💤 |
 | 11 | SH 高階每 16 步更新（Taming §4.2） | Adam | Adam 大降，但 Adam 只佔 6% | **會** | 💤 |
 | 12 | 誤差引導 tile 抽樣 | 逐配對 | 上限受「何時開始」限制（`11`） | **會** | 💤 排在 #5 #8 之後 |
-| 13 | 灰階先訓、最後上色 | 逐顆（VRAM -1.2 GB）＋顏色 | 前提已量：等亮度邊僅約 0.24% 像素 | **會** | 💤 等 sh2/sh0 結果 |
-| 14 | YCbCr（亮度 SH3＋色度 SH0） | 逐顆 | 每顆顏色 48 → 18 float | **會** | 💤 等 sh2/sh0 結果 |
+| 13 | 灰階先訓、最後上色 | 逐顆（VRAM -1.2 GB）＋顏色 | 前提已量：等亮度邊僅約 0.24% 像素 | **會** | 💤 等 SH 曲線（sh3／2／1／0）結果 |
+| 14 | YCbCr（亮度 SH3＋色度 SH0） | 逐顆 | 每顆顏色 48 → 18 float | **會** | 💤 等 SH 曲線（sh3／2／1／0）結果 |
 | 15 | `skip_surf_normal`（不算 surf normal） | forward 後處理 | **實測 -1%** | 否（`tools/check_skip_surf_normal.py`，b6/b13 8 台：渲染與 loss 逐位元同、梯度在噪音底內） | ✅ 驗過；等目前比較家族跑完再改預設（避免同家族 resolved config 前後不一） |
 
 **判定規則（寫在結果出來前）**：等價類（#5、#8）要求渲染／radii／覆蓋數逐位元相同（record_reduce 只要求覆蓋數相同、T*alpha 浮點級、trim 遮罩重疊接近 100%），
