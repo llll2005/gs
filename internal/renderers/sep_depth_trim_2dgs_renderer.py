@@ -42,6 +42,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             absgrad_gate: bool = False,
             bwd_sat_skip: bool = False,
             bwd_reduce: bool = False,
+            trim_schedule: str = "",
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -83,6 +84,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   bwd_reduce    每個 (像素,顆粒) 的梯度先在 warp／block 內加總，每批每顆只做一次全域 atomic（浮點加總順序級）
         self.bwd_sat_skip = bwd_sat_skip
         self.bwd_reduce = bwd_reduce
+        # ★ 2026-10-09 `trim_schedule`＝"步數:門檻,..."（使用者的三次門檻剪）：只在這幾步 trim，剪掉 v <= 門檻的（v＝現行判準：
+        #   最佳視角的每像素平均 T·α），不再固定比例、也不再每 500 步。空字串＝原本的週期 trim。
+        self.trim_schedule = trim_schedule
         self._absgrad_announced = False
 
         # hyper-parameters for trimming
@@ -463,7 +467,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         until = self.contribution_prune_until_iter
         if until < 0:
             until = module.density_controller.config.densify_until_iter
-        if self.diable_trimming or (step > until) \
+        _sch = str(getattr(self, "trim_schedule", "") or "").strip()
+        _tau = None
+        if _sch:
+            _tau = dict((int(a), float(b)) for a, b in (x.split(":") for x in _sch.split(",") if x.strip())).get(int(step))
+            if self.diable_trimming or _tau is None:
+                return
+        elif self.diable_trimming or (step > until) \
            or (step < self.contribution_prune_from_iter) \
            or (step % self.contribution_prune_interval != 0):
            return
@@ -601,8 +611,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
                     score = _comb
                 else:
                     score = _tk_score
-            tile = torch.quantile(score, self.prune_ratio)
-            prune_mask = (score <= tile)
+            if _tau is not None:
+                # 門檻剪：判準固定用 v（contribution），不用 v/c —— 剪了不補時 v/c 最差（實驗分析/06）
+                tile = torch.tensor(_tau, device=contribution.device)
+                prune_mask = (contribution <= tile)
+            else:
+                tile = torch.quantile(score, self.prune_ratio)
+                prune_mask = (score <= tile)
             # 診斷（2026-08-25）：`<=` 在有並列時會超剪。零貢獻的來源是 EXACT_SUPPORT ——
             # opacity <= 1/255 的粒子根本不進 binning，貢獻恆為 0。若零貢獻佔比 > prune_ratio，
             # 這一刀就會把它們**全部**剪掉，遠超過名目比例，破平衡公式的 0.9x 假設隨之失效。

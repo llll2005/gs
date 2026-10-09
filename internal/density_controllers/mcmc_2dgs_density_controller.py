@@ -351,6 +351,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     ⚠ 不要與 `elongation_prune` 同時開 —— 那會變成兩個變數。
     """
 
+    relocate_absgrad: float = 0.0
+    """★ 2026-10-09（使用者的定額 MCMC 構想）：>0 時 relocate 抽宿主也乘上 AbsGS 權重
+    `probs = o * (1 + w * |g|/mean|g|)`（原本 relocate 只按 opacity 抽，absgrad 只作用在 add_new_gs）。
+    不增生（add_ratio 1.0）時 absgrad 只能透過這裡起作用。需要 |g| 有在累積（absgrad_densify 或 absgrad_report > 0）。"""
+
     absgrad_densify: float = 0.0
     """>0 時把 AbsGS 的 `|g|` 當**增生取樣權重**：`probs *= (1 + w * |g|/mean|g|)`。
     需要光柵器以 `ABSGRAD 1` 編譯（`|g|` 累加在 `viewspace_points.grad[:,2]`）。
@@ -1337,6 +1342,24 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                   f"stride[med/max]={float(stride.median()):.4f}/{float(stride.max()):.4f} "
                   f"clipped={100*sat:.1f}% | o<0.005={100*float((o_now<0.005).float().mean()):.1f}% "
                   f"o<0.05={100*float((o_now<0.05).float().mean()):.1f}%")
+
+    def _relocate_probs(self, gaussian_model, alive_indices):
+        probs = gaussian_model.get_opacities()[alive_indices, 0]
+        w = float(getattr(self.config, "relocate_absgrad", 0.0) or 0.0)
+        if w <= 0:
+            return probs
+        g = getattr(self, "_absgrad_accum", None)
+        if g is None or g.shape[0] != gaussian_model.n_gaussians or float(g.sum()) <= 0:
+            if not getattr(self, "_reloc_ab_warned", False):
+                self._reloc_ab_warned = True
+                print("⚠⚠ [relocate-absgrad] 拿不到 |g|（absgrad_densify／absgrad_report 沒開，或光柵器沒算）=> 這次退回只按 opacity")
+            return probs
+        ga = g[alive_indices]
+        if not getattr(self, "_reloc_ab_announced", False):
+            self._reloc_ab_announced = True
+            print(f"[relocate-absgrad] ✅ 首次觸發：w={w}，|g| ceiling(top5%)/mean = "
+                  f"{float(torch.topk(ga, max(1, ga.numel() // 20)).values.mean() / ga.mean().clamp_min(1e-30)):.2f}x")
+        return probs * (1.0 + w * ga / ga.mean().clamp_min(1e-30))
 
     def _value_per_cost_mask(self, gaussian_model, global_step: int):
         """Bottom-`vpc_prune_frac` mask by v/c, or None when disabled/unavailable.

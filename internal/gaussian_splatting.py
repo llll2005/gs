@@ -232,6 +232,7 @@ class GaussianSplatting(LightningModule):
             strip_safety: float = 0.6,
             strip_max: int = 8,
             grad_checkpoint: bool = False,
+            train_res_schedule: str = "",
     ) -> None:
         super().__init__()
         self.automatic_optimization = False
@@ -635,6 +636,45 @@ class GaussianSplatting(LightningModule):
             )
         return super().on_train_batch_start(batch, batch_idx)
 
+    def _train_res_scale(self, step: int) -> float:
+        """`train_res_schedule`＝"到第幾步:倍率,..."（例 "15000:0.5,30000:0.75" => <15k 用 0.5、<30k 用 0.75、之後 1.0）。空字串＝關。"""
+        sch = getattr(self, "_res_sch", None)
+        if sch is None:
+            txt = str(self.hparams.get("train_res_schedule", "") or "").strip()
+            sch = sorted((int(a), float(b)) for a, b in (x.split(":") for x in txt.split(",") if x.strip()))
+            self._res_sch = sch
+        for until, sc in sch:
+            if step < until:
+                return sc
+        return 1.0
+
+    def _downscale_batch(self, camera, batch, s: float, step: int):
+        """訓練相機與 GT 同比例縮小：內參（fx、fy、cx、cy、寬高）按實際取整後的比例縮放；fov 與投影矩陣不變。
+        GT 用 area 內插（等於平均池化，不混疊）。驗證／測試與 trim 的 record 不經過這裡 => 一律全解析度。"""
+        import dataclasses
+        import torch.nn.functional as F
+        W, H = int(camera.width), int(camera.height)
+        w, h = max(16, int(round(W * s))), max(16, int(round(H * s)))
+        sx, sy = w / W, h / H
+        cam = dataclasses.replace(
+            camera,
+            width=torch.tensor(w, dtype=camera.width.dtype, device=camera.width.device),
+            height=torch.tensor(h, dtype=camera.height.dtype, device=camera.height.device),
+            fx=camera.fx * sx, fy=camera.fy * sy, cx=camera.cx * sx, cy=camera.cy * sy)
+        cam0, (name, gt, mask), extra = batch
+        if gt is not None:
+            gt = F.interpolate(gt[None].float(), size=(h, w), mode="area")[0].to(gt.dtype)
+        if mask is not None:
+            mask = F.interpolate(mask[None].float(), size=(h, w), mode="nearest")[0].to(mask.dtype)
+        if extra is not None and not getattr(self, "_res_extra_warned", False):
+            self._res_extra_warned = True
+            print("⚠⚠ [train-res] batch 帶有額外資料（深度圖等）而它沒有跟著縮小 —— 用到深度 loss 時不可開 train_res_schedule")
+        last = getattr(self, "_res_last", None)
+        if last != (w, h):
+            self._res_last = (w, h)
+            print(f"[train-res] ✅ step {step}: 訓練解析度 {W}x{H} -> {w}x{h}（x{s:g}）")
+        return cam, (cam, (name, gt, mask), extra)
+
     def training_step(self, batch, batch_idx):
         # ★ 2026-09-18 驗證用（預設關）：CITYGS_BATCH_HASH_STEPS=N => 前 N 步印出送進訓練的 GT 影像雜湊
         #   用來證明資料管線改動（uint8 快取等）對訓練輸入逐位元不變 —— 不受 GPU 運算非確定性影響
@@ -651,6 +691,10 @@ class GaussianSplatting(LightningModule):
         # image_name, gt_image, masked_pixels = image_info
 
         global_step = self.trainer.global_step + 1  # must start from 1 to prevent densify at the beginning
+        # ★ 2026-10-09 低解析度起步（使用者：DLSS 式，前期顆數多時壓低逐像素／逐配對負載）
+        _rs = self._train_res_scale(global_step)
+        if _rs < 1.0:
+            camera, batch = self._downscale_batch(camera, batch, _rs, global_step)
 
         # get optimizers and schedulers
         optimizers = self.optimizers()

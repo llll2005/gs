@@ -145,13 +145,29 @@ case "$ARM" in
   #   各組現況：init＝dup4（dup5／抖動持平）；conic＝預設；absgrad 2.0 維持（4.0／關 在噪音內）；trim 判準＝v（預設）；
   #   cdu／cnotrim／cnogate／csh／coreg0／cdist 尚未出結果 => 維持預設。vpctilek、oent 在 cs60_conic 上：
   #   vpctilek val 平、Load -37%；oent val -0.62／-0.13 但 held-out +0.22／+0.42、Load -50%（實驗分析/05 §0）。
-  best|bestvt|bestoe|bestvo)
+  # ★ 2026-10-09 bestres：低解析度起步（DLSS 式）＝<15k 用 1/2、<30k 用 3/4、之後全解析度；val／test／trim 一律全解析度
+  # ★ 2026-10-09 besttrim3：使用者的「定額 MCMC＋三次門檻剪」
+  #   init＝dup5 隨機抽到 cap 2.6M（dupcap）、add_ratio 1.0（不再增生，只靠 relocate；relocate 也用 absgrad 抽宿主）、
+  #   週期 trim 改成三次門檻剪 15k:3e-4／30k:1e-3／45k:3e-3（v＝最佳視角每像素平均 T·α；剪了不補）。
+  #   門檻依 zeroprune（cs60_sfmdup4 b6，事後剪不重訓）：15k 刪 4.5%／Load -15%／val 0；30k 6.6%／-32%／-0.008；42k 12%／-17%／-0.15
+  besttrim3)  P="sfmfill_sweep/dupcap/block_${BLK}.ply"
+              if [ ! -f "data/matrix_city/aerial/train/block_all/$P" ]; then
+                conda run -n gspl --no-capture-output python tools/subsample_ply.py \
+                  "data/matrix_city/aerial/train/block_all/sfmfill_sweep/dup5/block_${BLK}.ply" \
+                  "data/matrix_city/aerial/train/block_all/$P" --n 2600000 || exit 2
+              fi
+              EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"
+                     --model.density.init_args.add_ratio 1.0
+                     --model.density.init_args.relocate_absgrad 2.0
+                     --model.renderer.init_args.trim_schedule "15000:3e-4,30000:1e-3,45000:3e-3"); EXP=5 ;;
+  best|bestvt|bestoe|bestvo|bestres)
               P="sfmfill_sweep/dup4/block_${BLK}.ply"
               [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=2
               case "$ARM" in bestvt|bestvo)
                 EXTRA+=(--model.renderer.init_args.trim_by_value_per_cost true --model.renderer.init_args.trim_by_tile_topk true)
                 EXP=$((EXP + 2)) ;; esac
+              [ "$ARM" = bestres ] && { EXTRA+=(--model.train_res_schedule "15000:0.5,30000:0.75"); EXP=$((EXP + 1)); }
               case "$ARM" in bestoe|bestvo)
                 EXTRA+=(--model.metric.init_args.opacity_entropy_reg 0.002 --model.metric.init_args.opacity_entropy_from_iter 1000)
                 EXP=$((EXP + 2)) ;; esac ;;
@@ -301,7 +317,7 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次

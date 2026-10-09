@@ -277,8 +277,8 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         if alive_indices.shape[0] <= 0:
             return
 
-        # sample from alive ones based on opacity
-        probs = (gaussian_model.get_opacities()[alive_indices, 0])
+        # sample from alive ones based on opacity（2026-10-09：抽成方法，子類可改權重；預設行為不變）
+        probs = self._relocate_probs(gaussian_model, alive_indices)
         # `reinit_idx` are the sampled alive indices; `ratio` are the values of sample frequency, `ratio[index]=frequency`
         reinit_idx, ratio = self._sample_alives(alive_indices=alive_indices, probs=probs, num=dead_indices.shape[0])
 
@@ -300,6 +300,9 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         # `dead_indices` = the Gaussians that were moved = paper's "source" -> deliberately
         # left alone. Applying it to dead_indices too would delete the exploration mechanism.
         self.replace_tensors_to_optimizers(gaussian_model, optimizers=optimizers, inds=reinit_idx)
+
+    def _relocate_probs(self, gaussian_model, alive_indices):
+        return gaussian_model.get_opacities()[alive_indices, 0]
 
     def add_new_gs(self, gaussian_model, optimizers):
         cap_max = self.config.cap_max
