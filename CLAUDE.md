@@ -163,7 +163,9 @@ pure time-compressed proxies (three time scales cannot all be preserved), `notri
 (b12 wins, b7 reverses).
 
 **Hard constraints (these are 鐵律, violating them invalidates results):**
-- **GT-free**: method uses images + SfM + pseudo-depth only.
+- **Pose input (decided by the user 2026-10-09): we use the same pose input as the official CityGaussian pipeline**
+  (`sparse/0` = MatrixCity GT poses x1/100). The old "GT-free" wording is retired; claims must say "same pose input as official".
+  Method otherwise uses images + those poses + SfM points + pseudo-depth.
   ⚠ **Two claims here were refuted (2026-08-01, memory `data_poses_are_gt`) and are kept only
   as history**: (a) the "~150x Sim3-misaligned official test set" — the official 741 frames are
   100% alignable; (b) "GT is not used at all" — `sparse/0` poses ARE the GT poses x1/100
