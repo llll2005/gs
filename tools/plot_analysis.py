@@ -147,10 +147,10 @@ def n08_init20k(d):
 
 
 def n08_init60k(d):
-    # 10-03：dup5（起始 > cap）與 dup4 抖動 1.0／0.25 只跑了 b6（b13 在佇列，4x4 之後）
+    # 10-08：dup5（起始 > cap）與 dup4 抖動 1.0／0.25 的 b13 出來了（vs cs60_conic b13 30.00）
     arms = ["sfmfill", "fastgrow\n(add_ratio 1.2)", "dup2", "★ dup4\n（現行最佳）", "dup5\n（起始 > cap）", "dup4\n抖動 1.0", "dup4\n抖動 0.25"]
     b6 = [0.04, 0.11, 0.10, 0.27, 0.28, 0.29, 0.18]
-    b13 = [0.01, 0.10, 0.13, 0.32, np.nan, np.nan, np.nan]
+    b13 = [0.01, 0.10, 0.13, 0.32, 0.30, 0.33, 0.19]
     x = np.arange(len(arms)); wd = 0.38
     fig, ax = plt.subplots(figsize=(11, 4.4))
     barlabels(ax, ax.bar(x - wd / 2, b6, wd, color=C1, label="b6"), fmt="{:+.2f}")
@@ -163,7 +163,7 @@ def n08_init60k(d):
     ax.axhline(0, color=MUTED, lw=1); ax.axvline(3.5, color=MUTED, lw=0.8, ls=":")
     ax.set_xticks(x); ax.set_xticklabels(arms, fontsize=8.5); ax.set_ylabel("ΔPSNR vs 預設 SfM（dB）")
     ax.legend(fontsize=8, loc="upper left")
-    ax.set_title("60k 完整配方（conic 開、同 N 2.34M）：相對預設 SfM init 的差；dup4 之後再加份數或改抖動都持平", fontsize=10.5)
+    ax.set_title("60k 完整配方（conic 開、同 N 2.34M）：相對預設 SfM init 的差；dup4 之後再加份數或改抖動都持平（兩塊都確認）", fontsize=10.5)
     save(fig, d, "n08_init60k.png")
 
 
@@ -195,6 +195,103 @@ def n09_official_blocks(d):
     ax.set_ylabel("val PSNR（dB，val⊂train）"); ax.legend(fontsize=8)
     ax.set_title("同上：val PSNR（論文設定：顆數少 25~42%、val 反而高）", fontsize=10)
     save(fig, d, "n09_official_blocks.png")
+
+
+# 10-09：我方最佳解 4x4（16 塊 [solo]、lean＋record_reduce、dup4、cap 2.6M）vs 官方 release vs 官方論文設定
+#   資料：lab outputs/lab/full44_best（chart_data、台帳）、cityGS_origin(_trimfix)/outputs/*/blocks、logs/citygs_official_resources.tsv
+#   峰值實佔一律 GB（1e9）：官方 MiB x 1.048576 / 1000；時間 = 分鐘（我方台帳 START->DONE；官方 wall_s）
+F44 = {
+    'oh': [20.239, 19.675, 22.011, 20.452, 19.714, 17.9, 19.316, 19.017, 21.96, 19.767, 20.406, 21.354, 22.545, 22.073, 21.824, 22.738],
+    'rh': [20.114, 19.947, 21.322, 17.15, 20.025, 18.357, 19.171, 16.871, 21.124, 17.491, 18.43, 18.961, 26.387, 22.869, 22.206, 23.212],
+    'ph': [19.811, 19.81, 20.99, 16.638, 19.569, 18.22, 18.898, 16.401, 20.665, 17.074, 18.112, 18.613, 26.191, 22.521, 21.809, 23.076],
+    'ohl': [0.5392, 0.5408, 0.3863, 0.4693, 0.567, 0.6447, 0.4906, 0.5315, 0.4726, 0.5475, 0.4944, 0.4427, 0.3642, 0.4181, 0.4438, 0.3911],
+    'rhl': [0.4457, 0.4051, 0.3079, 0.4466, 0.4524, 0.4634, 0.3987, 0.4723, 0.3772, 0.4976, 0.4537, 0.4212, 0.1671, 0.2942, 0.346, 0.3043],
+    'phl': [0.4894, 0.4324, 0.332, 0.5285, 0.5038, 0.4947, 0.4269, 0.5356, 0.3979, 0.5355, 0.4894, 0.4687, 0.1631, 0.3136, 0.3647, 0.324],
+    'opk': [4.12, 4.1, 4.09, 4.11, 4.07, 4.09, 4.05, 4.14, 4.11, 4.17, 4.05, 4.08, 4.05, 4.13, 4.07, 4.11],
+    'rpk': [10.81, 9.5, 8.39, 7.65, 12.43, 10.23, 9.7, 8.59, 14.56, 12.78, 11.16, 10.21, 13.35, 14.03, 14.17, 9.33],
+    'ppk': [7.34, 7.06, 6.89, 5.24, 9.57, 8.4, 8.25, 6.19, 10.14, 9.65, 8.47, 6.47, 9.79, 11.23, 9.74, 6.79],
+    'omin': [108, 120, 118, 119, 122, 112, 109, 121, 117, 114, 117, 122, 112, 111, 111, 107],
+    'rmin': [245, 219, 206, 198, 271, 244, 240, 224, 291, 280, 269, 352, 291, 317, 300, 358],
+    'pmin': [259, 248, 237, 215, 340, 278, 275, 255, 351, 323, 308, 273, 360, 396, 351, 459],
+    'rext': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5302, 16251, 6174, 7128, 8914, 18161],
+    'pext': [8290, 5722, 3674, 4610, 7358, 5108, 7712, 6448, 7698, 8278, 14854, 11654, 14704, 8696, 12228, 17351],
+}
+LBL3 = ["★ 我方 4x4", "官方 release", "官方論文設定"]
+
+
+def n09_full44_merged(d):
+    """合併模型、官方 741 幀 held-out，三者同一支工具（tools/eval_official_test.py）。"""
+    q = {"PSNR": [27.739, 27.261, 27.280], "SSIM": [0.8790, 0.8671, 0.8697], "LPIPS（越低越好）": [0.1293, 0.1540, 0.1467]}
+    r = {"N（百萬）": [17.63, 24.48, 24.72], "渲染 FPS": [35.6, 21.9, 21.9],
+         "16 塊總 N（百萬）": [37.44, 129.55, 87.89]}
+    fig, axs = plt.subplots(1, 6, figsize=(17, 3.6))
+    cols = [C1, MUTED, C2]
+    for ax, (k, v) in zip(axs, list(q.items()) + list(r.items())):
+        bars = ax.bar(range(3), v, color=cols, width=0.65)
+        fmt = "{:.3f}" if max(v) < 1 else ("{:.2f}" if max(v) < 50 else "{:.1f}")
+        barlabels(ax, bars, fmt=fmt, size=8)
+        lo = min(v); hi = max(v)
+        if k in ("PSNR", "SSIM", "LPIPS（越低越好）"):
+            ax.set_ylim(lo - (hi - lo) * 1.2, hi + (hi - lo) * 0.6)
+        ax.set_xticks(range(3)); ax.set_xticklabels(["我方", "release", "論文\n設定"], fontsize=8.5)
+        ax.set_title(k, fontsize=10)
+    fig.suptitle("合併模型・官方 741 幀 held-out（三者同一支評分工具）：我方三項全贏、顆數少 28%、FPS 1.6 倍"
+                 "　⚠ 同一個 release 模型，官方工具量 25.79／我方工具 27.26（差 1.47 dB，原因未查）", fontsize=10.5)
+    save(fig, d, "n09_full44_merged.png")
+
+
+def n09_full44_blocks(d):
+    x = np.arange(16); wd = 0.27
+    fig, axs = plt.subplots(1, 3, figsize=(18, 4.4))
+    ax = axs[0]
+    for k, c, dx, lb in [("oh", C1, -wd, LBL3[0]), ("rh", MUTED, 0, LBL3[1]), ("ph", C2, wd, LBL3[2])]:
+        ax.bar(x + dx, F44[k], wd, color=c, label=lb)
+    ax.set_ylim(15, 27.5); ax.set_xticks(x); ax.set_xticklabels([str(i) for i in x], fontsize=8)
+    ax.set_xlabel("4x4 block"); ax.set_ylabel("同塊 held-out PSNR（dB，下界）"); ax.legend(fontsize=7.5, ncol=3, loc="upper left")
+    ax.set_title("同塊 held-out（我方塊視角）：平均 20.69／20.23／19.90；LPIPS 官方 16 塊全較好\n"
+                 "⚠ 偏向官方：官方單塊從全場景 coarse 起步、看得到塊外", fontsize=9.5)
+    ax = axs[1]
+    for k, c, mk, lb in [("opk", C1, "o", LBL3[0]), ("rpk", MUTED, "s", LBL3[1]), ("ppk", C2, "^", LBL3[2])]:
+        ax.plot(x, F44[k], marker=mk, color=c, lw=1.2, ms=5, label=lb)
+    ax.axhline(6.44, color="#c0392b", lw=1, ls="--"); ax.text(15.4, 6.6, "6 GiB 卡", color="#c0392b", fontsize=8, ha="right")
+    ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7.5)
+    ax.set_title("峰值實佔：我方 4.05~4.17；release 7.65~14.56；論文設定 5.24~11.23（只有 b3、b7 低於 6 GiB）", fontsize=9.5)
+    ax = axs[2]
+    for k, c, dx, lb in [("omin", C1, -wd, LBL3[0]), ("rmin", MUTED, 0, LBL3[1]), ("pmin", C2, wd, LBL3[2])]:
+        bars = ax.bar(x + dx, [m / 60 for m in F44[k]], wd, color=c, label=lb)
+        if k != "omin":
+            ext = F44["rext" if k == "rmin" else "pext"]
+            for b_, e in zip(bars, ext):
+                if e > 2000:
+                    b_.set_hatch("///"); b_.set_alpha(0.45)
+    ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練時間（h）"); ax.legend(fontsize=7.5, loc="upper left")
+    ax.set_title("訓練時間（斜線＝期間外部佔卡 > 2 GB，不可引用）\nblock 0~9 乾淨：我方 19.3 h vs release 40.3 h（0.48 倍）", fontsize=9.5)
+    save(fig, d, "n09_full44_blocks.png")
+
+
+def n09_stepprof(d):
+    """同 N 附近的每步逐段時間（每標記點同步）：官方 stepprof b6（開頭 1,500 步）vs 我方 b6 @14,999 起 1,200 步。"""
+    segs = ["forward", "backward", "optimizer", "loss", "週期 trim\n（÷500 攤平）", "其他"]
+    ours = [21.15, 68.75, 15.14, 5.06, 35.95, 10.81]
+    rel = [47.45, 137.96, 15.66, 6.11, 0.0, 6.55]
+    pap = [41.61, 127.95, 10.74, 6.13, 58.20, 0.0]   # 官方 stepprof 的 trim 列已是每步攤平（1,500 步窗）；其他欄為負值（-14.8）記 0
+    names = ["★ 我方 b6\nN 2.29M（lean＋rr）", "官方 release b6\nN 2.50M（trim 不跑）", "官方論文設定 b6\nN 1.75M（含 trim）"]
+    fig, ax = plt.subplots(figsize=(12, 3.8))
+    cols = [C1, C2, C3, C4, "#c9b458", MUTED]
+    for i, row in enumerate([ours, rel, pap]):
+        left = 0
+        for j, v in enumerate(row):
+            if v > 0:
+                ax.barh(i, v, left=left, color=cols[j], label=segs[j] if i == 0 else None)
+                if v > 9:
+                    ax.text(left + v / 2, i, f"{v:.0f}", ha="center", va="center", fontsize=8, color="white")
+                left += v
+        ax.text(left + 3, i, f"{left:.0f} ms", va="center", fontsize=9, color=INK2)
+    ax.set_yticks(range(3)); ax.set_yticklabels(names, fontsize=8.5); ax.invert_yaxis()
+    ax.set_xlabel("每步 ms（逐段同步計時）"); ax.legend(fontsize=8, ncol=6, loc="upper center", bbox_to_anchor=(0.5, -0.2))
+    ax.set_title("同 N 附近：官方每步做 2 次 backward（loss 與 depth 的 extra_loss 各一次，各約 64~69 ms）、forward 帶幾何通道；"
+                 "我方 depth／normal 權重 0 => 1 次 backward＋lean", fontsize=9.5)
+    save(fig, d, "n09_stepprof.png")
 
 
 def n10_lean_loop(d):
@@ -355,7 +452,7 @@ def n12_heldout(d):
     ax.set_ylim(0.35, 0.72); ax.set_ylabel("塊內 held-out LPIPS（60k，越低越好）"); ax.legend(fontsize=8)
     ax.set_title("LPIPS：現行最佳 dup4 兩塊都最好", fontsize=10)
     fig.suptitle("塊內官方 held-out（b6 210 幀／b13 276 幀）——絕對值是下界：單塊模型看不到鄰塊內容；"
-                 "官方合併模型在同一批視角約 27.3／26.4（只量到前 120 幀，完整重跑已排）", fontsize=10.5)
+                 "我方 vs 官方的全場景比較見 `09`（合併模型 741 幀）", fontsize=10.5)
     save(fig, d, "n12_heldout.png")
 
 
@@ -369,7 +466,7 @@ DOCS = {
     "06_事後剪枝與fine-tune": ["f3_tile_topk_posthoc", "f6_prune_finetune"],
     "07_成本感知取樣與預算": ["n07_sampling"],
     "08_初始化": ["n08_init20k", "f4_init60k", "n08_init60k"],
-    "09_官方參考線": ["n09_official_blocks", "f7_official_trim", "f5_official_prune"],
+    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_stepprof", "n09_official_blocks", "f7_official_trim", "f5_official_prune"],
     "10_速度優化_lean與kernel拆解": ["n10_lean_loop", "n10_kernels"],
     "11_逐配對工作量上限": ["n11_tiles"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout"],
@@ -408,7 +505,7 @@ def main():
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stdout[-2000:], r.stderr[-2000:]); raise SystemExit(f"⛔ {sc} 失敗")
-    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks,
+    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_stepprof,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout):
         f(tmp)
     for doc, panels in DOCS.items():

@@ -39,7 +39,7 @@ parallel => their wall-time / reserved-VRAM columns are not comparable across th
 VRAM are all neighbour-independent (only wall time and it/s are, and those have dedicated `[solo]` tools).
 The laptop = absolute verification: re-run the stage winner there to claim the envelope.**
 
-**★★★ Current state of the proposition (2026-09-17, with 2026-10-03 additions; lab, blocks b6/b12/b13; authority = `紀錄/研究總覽.md` §0):**
+**★★★ Current state of the proposition (2026-09-17, with 2026-10-03/10-09 additions; lab, blocks b6/b12/b13; authority = `紀錄/研究總覽.md` §0):**
 ```
 2026-10-03       current best = cs60_sfmdup4 (conic exact AABB is the default + task_cmp.sh common flags + dup4 init):
                    60k val b6 30.75 / b13 30.32; lean_train (-20.9%/step, render bit-identical) installed on lab
@@ -47,6 +47,10 @@ The laptop = absolute verification: re-run the stage winner there to claim the e
                  v/c trim with conic on: 60k -0.17/-0.20, LPIPS better; on the 22k cost-quality frontier it beats cap-only
                    by ~+1.2 dB at equal Load; cost_budget (proxy or exact units) does NOT beat simply lowering cap
                  new-era rechecks: almost no floaters, failure tiles 1.3~2.3%, geometry improves with training
+2026-10-09       ★ full scene 4x4 (cs60_sfmdup4, 16 blocks [solo]): merged 741-frame held-out 27.74/.879/.129 (17.63M, 35.6 FPS,
+                   train peak <=4.17 GB) beats official release 27.26/.867/.154 and paper setting 27.28/.870/.147 -- SAME eval tool
+                   (tools/eval_official_test.py). ⚠ same release model: official tool 25.79 vs ours 27.26 (1.47 dB gap, uninvestigated).
+                   Official does 2 backward passes/step (depth extra_loss) => 214 vs 121 ms/step at ~same N. => 紀錄/實驗分析/09 §0
 pruning side     trim criterion v -> v/c (`renderer.init_args.trim_by_value_per_cost`)
                  short recipe (22k~27k, 3 blocks): same N, offline Load median -64~-67%, VRAM -7%, LPIPS better 3/3,
                    PSNR -0.002/-0.08/-0.17
