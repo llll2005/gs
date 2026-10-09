@@ -146,6 +146,7 @@ def main():
     ap.add_argument("--down_sample", type=float, default=1.2)
     ap.add_argument("--margin", type=float, default=0.0, help="expand the block AABB by this much")
     ap.add_argument("--save_dir", default=None)
+    ap.add_argument("--per_image_csv", default=None, help="逐張 name,psnr,ssim,lpips,bright_ratio（2026-10-09：對官方工具逐幀比對）")
     a = ap.parse_args()
 
     dev = "cuda"
@@ -196,7 +197,7 @@ def main():
 
     if a.save_dir:
         os.makedirs(a.save_dir, exist_ok=True)
-    ps, ss, ls, tr, tg, ms = [], [], [], [], [], []
+    ps, ss, ls, tr, tg, ms, br = [], [], [], [], [], [], []
     import time
     torch.cuda.reset_peak_memory_stats()
     with torch.no_grad():
@@ -210,6 +211,7 @@ def main():
             ps.append(float(-10 * torch.log10(((out - gt) ** 2).mean().clamp_min(1e-12))))
             ss.append(float(ssim_fn(out, gt)))
             ls.append(float(lpips_fn(out.unsqueeze(0), gt.unsqueeze(0))))
+            br.append(float(out.mean() / gt.mean().clamp_min(1e-6)))
             if a.save_dir:
                 both = torch.cat([gt, out], dim=2).permute(1, 2, 0).cpu().numpy()
                 Image.fromarray((both * 255).astype(np.uint8)).save(
@@ -239,6 +241,12 @@ def main():
             ix = groups[g]
             print(f"{g:>14} {len(ix):>5} {np.mean([ps[j] for j in ix]):>7.3f} "
                   f"{np.mean([ss[j] for j in ix]):>7.4f} {np.mean([ls[j] for j in ix]):>7.4f}")
+    if a.per_image_csv:
+        with open(a.per_image_csv, "w") as f:
+            f.write("name,psnr,ssim,lpips,bright_ratio\n")
+            for j, i in enumerate(sel):
+                f.write(f"{names[i]},{ps[j]:.5f},{ss[j]:.5f},{ls[j]:.5f},{br[j]:.4f}\n")
+        print(f"[逐張] {a.per_image_csv}")
     if a.save_dir:
         print(f"[圖] {a.save_dir}（左=GT 右=渲染）")
 
