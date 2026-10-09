@@ -1,9 +1,10 @@
 # 05 成本-品質前緣與 v/c trim
 
-> **圖**：`05_成本品質前緣與vc_trim.png`（同名，4 個面板）　｜　**年代**：新年代（2026-09-13 後的資料），val⊂train 只做同塊相對比較
+> **圖**：`05_成本品質前緣與vc_trim.png`（同名，5 個面板）　｜　**年代**：新年代（2026-09-13 後的資料），val⊂train 只做同塊相對比較
 > **資料**：lab 離線精確 Load（`tools/cost_budget_calibrate.py`、`scripts/task_load_compare.sh`；`logs/load_compare_b6_0927_2234.log`、`0930_1010`、`0930_2125`）；
 > 60k 成本欄 `scripts/lab/task_60k_cost.sh`；各跑次 `train_status.txt`
-> **重現**：`python tools/plot_analysis.py`（a=舊 f1、b=f2、c=新、d=舊 fig8）
+> 60k 單變數臂：各跑次 `chart_data/{load,heldout}.txt`（lab `outputs/lab/cs60_*`）
+> **重現**：`python tools/plot_analysis.py`（a=`n05_arms60k`、b=舊 f1、c=f2、d=`n05_cap60k`、e=舊 fig8）
 
 **怎麼讀**：往左＝更便宜、往上＝品質更好；**同成本比較看同一個 x 位置誰比較高**。每個點是一個跑完的模型，連線只是把同一組設定連起來，不是訓練過程。
 成本一律是**精確 Load 中位**＝光柵器實際 binning 的 (tile, 顆) 對數 Σtiles，每視角取中位（同工具、同相機）。
@@ -12,14 +13,22 @@
 
 | 面板 | 內容 | 對應本文 |
 |---|---|---|
-| (a) | 22k b6 同成本比較：只調 cap 的曲線 vs 預算閘門 vs v/c trim（左 conic 關、右 conic 開） | §1 |
-| (b) | 60k 前→後對照：v/c trim 與 dup4 init 的成本變化％與品質變化 dB；灰斜線＝只調 cap 省同樣成本的推估 | §2 |
-| (c) | 60k 只調 cap 的品質曲線（conic 開），與同 cap 2.6M 下各臂 | §3 |
-| (d) | v/c trim 的時間與成本（60k 終點、同 N 2.34M、[solo] step_breakdown） | §2 |
+| (a) | ★ 60k 單變數臂（vpctilek／oent／absgrad 4／absgrad 關／dup4）vs cs60_conic：val、塊內 held-out、held-out LPIPS 對精確 Load | §0 |
+| (b) | 22k b6 同成本比較：只調 cap 的曲線 vs 預算閘門 vs v/c trim（左 conic 關、右 conic 開） | §1 |
+| (c) | 60k 前→後對照：v/c trim 與 dup4 init 的成本變化％與品質變化 dB；灰斜線＝只調 cap 省同樣成本的推估 | §2 |
+| (d) | 60k 只調 cap 的品質曲線（conic 開），與同 cap 2.6M 下各臂 | §3 |
+| (e) | v/c trim 的時間與成本（60k 終點、同 N 2.34M、[solo] step_breakdown） | §2 |
 
 ## 結論
 
-- **現行（10-03）**：現行最佳＝cs60_sfmdup4（60k 同 N：b6 30.75／b13 30.32，圖中 ★）；v/c trim 是成本選項（conic 關時 Load -49~-52%、PSNR -0.26／-0.54；conic 開 -0.17／-0.20，60k 精確 Load 已排量測）。⚠ 但塊內 held-out 上 v/c 掉約 1 dB（`12` §6）。
+- **現行（10-09）★ 新的 60k 單變數臂（同 N、vs cs60_conic，面板 a）**：
+  - **oent（opacity 二元熵正則 0.002）**：val **-0.62／-0.13**，但塊內 held-out **+0.22／+0.42**、held-out LPIPS 兩塊最好（-0.024／-0.032），精確 Load 中位 **-48／-52%**
+    => **val 與 held-out 方向相反**（與 v/c 剛好相反：v/c 是 val 小輸、held-out 大輸）；是目前同 N 下最便宜、held-out 最好的臂。
+  - **vpctilek（v/c × tile 名次）**：val **-0.03／-0.01**（平手）、Load 中位 **-37／-38%**、held-out -0.34／-0.12（b13 在噪音 ±0.2 內）、held-out LPIPS 較好
+    => 比單純 v/c（speed3 配方 held-out -1.0）好得多。
+  - absgrad 4.0（cag4）+0.02／-0.03、absgrad 關（cag0，b6）-0.07 => 新年代 absgrad 強度在噪音內。
+  - ⚠ 每臂單次、held-out 噪音約 ±0.2（dup 變體散布）；oent 與 vpctilek 都還沒有疊在 dup4 上量過。
+- **10-03 現行最佳**＝cs60_sfmdup4（60k 同 N：b6 30.75／b13 30.32，圖中 ★）；v/c trim 是成本選項（conic 關時 Load -49~-52%、PSNR -0.26／-0.54；conic 開 -0.17／-0.20，60k 精確 Load 已排量測）。⚠ 但塊內 held-out 上 v/c 掉約 1 dB（`12` §6）。
 - **v/c trim（週期 trim 的判準 v → v/c＝價值÷成本，背包的貪婪近似）在前緣上是贏的**：22k b6 精確 Load -46%、PSNR 只 -0.04；同 Load 下 cap 線推估約 **+1.2 dB**。
 - 60k 有品質代價：conic 關（speed3 配方）**-0.27／-0.54 dB**、成本 -49~-52%（Load 中位 -74~-77%、fwd+bwd -20~-22%）；**conic 開時代價縮小到 -0.17／-0.20 dB、LPIPS 反而較好**（conicvpc）。
 - ⚠⚠ **塊內 held-out 上代價大得多**（speed3 配方，conic 關）：b6 -1.02、b13 -1.00 dB（val 只 -0.27／-0.54），SSIM -0.07／-0.05、LPIPS +0.014／+0.009
@@ -30,6 +39,25 @@
 - ⚠ VRAM 只省 5~9%：同 N 下 VRAM 由逐顆儲存主導；c_i 主要是**時間**成本。
 
 ---
+
+## §0 60k 單變數臂（10-09，面板 a；同 N 2.34M、conic 開、預設 SfM init，基準 cs60_conic）
+
+| 臂 | 塊 | val PSNR / SSIM / LPIPS | Δval | 塊內 held-out PSNR / LPIPS | Δheld-out | 精確 Load 中位 | ΔLoad |
+|---|---|---|---:|---|---:|---:|---:|
+| cs60_conic（基準） | b6 | 30.48 / .889 / .125 | — | 18.210 / .6507 | — | 2.77M | — |
+| vpctilek | b6 | 30.45 / .890 / .120 | -0.03 | 17.874 / .6475 | -0.34 | 1.74M | -37% |
+| oent | b6 | 29.86 / .877 / .132 | -0.62 | 18.430 / .6264 | **+0.22** | 1.44M | **-48%** |
+| cag4（absgrad 4） | b6 | 30.50 / .890 / .124 | +0.02 | 18.359 / .6477 | +0.15 | 2.71M | -2% |
+| cag0（absgrad 關） | b6 | 30.41 / .887 / .129 | -0.07 | 18.076 / .6544 | -0.13 | 2.66M | -4% |
+| ★ dup4（現行最佳） | b6 | 30.75 / .894 / .115 | +0.27 | 18.186 / .6370 | -0.02 | 2.62M | -6% |
+| cs60_conic（基準） | b13 | 30.00 / .896 / .125 | — | 19.924 / .4555 | — | 3.34M | — |
+| vpctilek | b13 | 29.99 / .898 / .118 | -0.01 | 19.800 / .4467 | -0.12 | 2.08M | -38% |
+| oent | b13 | 29.87 / .892 / .121 | -0.13 | 20.346 / .4239 | **+0.42** | 1.60M | **-52%** |
+| cag4（absgrad 4） | b13 | 29.97 / .896 / .125 | -0.03 | 20.081 / .4524 | +0.16 | 3.31M | -1% |
+| ★ dup4（現行最佳） | b13 | 30.32 / .904 / .111 | +0.32 | 20.170 / .4325 | +0.25 | 3.06M | -8% |
+
+- 塊內 held-out 的噪音參考：dup4／dup5／抖動 1.0／抖動 0.25 在 b13 是 20.17／20.46／20.07／20.17（散布約 ±0.2）。
+- 下一步候選（未排，等決定）：oent 疊在 dup4 上（品質＋成本兩邊都可能加成）；vpctilek 疊在 dup4 上。
 
 ## §1 22k 同成本比較（b6，面板 a）
 

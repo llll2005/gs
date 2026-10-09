@@ -236,7 +236,7 @@ def n09_full44_merged(d):
         ax.set_xticks(range(3)); ax.set_xticklabels(["我方", "release", "論文\n設定"], fontsize=8.5)
         ax.set_title(k, fontsize=10)
     fig.suptitle("合併模型・官方 741 幀 held-out（三者同一支評分工具）：我方三項全贏、顆數少 28%、FPS 1.6 倍"
-                 "　⚠ 同一個 release 模型，官方工具量 25.79／我方工具 27.26（差 1.47 dB，原因未查）", fontsize=10.5)
+                 "　（PSNR 領先保守估計 +0.1~+0.5 dB：見面板 d 的光柵器偏差）", fontsize=10.5)
     save(fig, d, "n09_full44_merged.png")
 
 
@@ -292,6 +292,78 @@ def n09_stepprof(d):
     ax.set_title("同 N 附近：官方每步做 2 次 backward（loss 與 depth 的 extra_loss 各一次，各約 64~69 ms）、forward 帶幾何通道；"
                  "我方 depth／normal 權重 0 => 1 次 backward＋lean", fontsize=9.5)
     save(fig, d, "n09_stepprof.png")
+
+
+def n09_evalgap(d):
+    """評分工具落差 1.47 dB 的二分（10-09）。資料＝紀錄/實驗分析/data/evalgap/（lab logs/evalgap/ 的副本）。"""
+    import csv
+    E = os.path.join(DST, "data", "evalgap")
+    off = {r["name"]: (float(r["psnr"]), float(r["bright_ratio"])) for r in csv.DictReader(open(os.path.join(E, "official_release_brightness.tsv")), delimiter="\t")}
+    our = {r["name"]: float(r["psnr"]) for r in csv.DictReader(open(os.path.join(E, "ours_release.csv")))}
+    n = sorted(set(off) & set(our))
+    xo = np.array([off[k][0] for k in n]); yo = np.array([our[k] for k in n]); br = np.array([off[k][1] for k in n])
+    rd = lambda f: list(csv.DictReader(open(os.path.join(E, f)), delimiter="\t"))
+    A, B = rd("official_env_direct.tsv"), rd("official_code_our_env.tsv")
+    fig, axs = plt.subplots(1, 3, figsize=(18, 4.8), gridspec_kw={"width_ratios": [1.05, 1.45, 1]})
+    ax = axs[0]
+    sc = ax.scatter(xo, yo, c=np.clip(br, 0, 1.1), cmap="viridis", s=9, vmin=0, vmax=1.1)
+    ax.plot([8, 36], [8, 36], color=MUTED, lw=0.8, ls="--")
+    ax.set_xlabel("官方工具（官方光柵器）逐幀 PSNR"); ax.set_ylabel("我方工具（我方光柵器）逐幀 PSNR")
+    cb = fig.colorbar(sc, ax=ax, fraction=0.046); cb.set_label("官方渲染亮度／GT 亮度", fontsize=8)
+    ax.set_title("　　同一個官方 release 模型、741 幀\n　　左上角那群＝官方渲染變暗／全黑的幀", fontsize=9.5)
+    ax = axs[1]
+    x = np.arange(len(A)); wd = 0.4
+    ax.bar(x - wd / 2, [float(r["psnr"]) for r in A], wd, color=MUTED, label="官方程式碼＋官方光柵器（直接渲染）")
+    ax.bar(x + wd / 2, [float(r["psnr"]) for r in B], wd, color=C1, label="官方程式碼＋只換我方光柵器")
+    ax.axvline(15.5, color=INK2, lw=0.8, ls=":")
+    ax.text(7.5, 33, "官方 test 最暗的 16 幀", ha="center", fontsize=8.5, color=INK2)
+    ax.text(18.5, 33, "正常幀 6 張", ha="center", fontsize=8.5, color=INK2)
+    ax.set_xticks(x); ax.set_xticklabels([r["name"][:4] for r in A], rotation=60, fontsize=7.5); ax.set_ylim(0, 35)
+    ax.set_ylabel("PSNR（dB）"); ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=2)
+    ax.set_title("二分：繞過 test 迴圈仍重現（0184 10.31，逐位數相同）；只換光柵器即恢復\n暗幀 alpha 0.9997（畫面是滿的）=> 壞在顏色路徑", fontsize=9.5)
+    ax = axs[2]
+    est = [("官方工具（原數字）", 25.79, MUTED), ("官方工具・只算正常幀\n（亮度比 ≥0.85，645 幀）", 27.18, MUTED),
+           ("我方工具（暗幀已正常）", 27.26, MUTED), ("我方工具＋正常幀光柵器偏差補回\n（+0.35，上界）", 27.61, MUTED),
+           ("★ 我方 4x4（我方工具）", 27.74, C1)]
+    for i, (lb, v, c) in enumerate(est):
+        ax.barh(i, v, color=c, height=0.6); ax.text(v + 0.03, i, f"{v:.2f}", va="center", fontsize=9)
+    ax.set_yticks(range(len(est))); ax.set_yticklabels([e[0] for e in est], fontsize=8); ax.invert_yaxis()
+    ax.set_xlim(25.5, 28.2); ax.set_xlabel("官方 741 幀 PSNR（dB）")
+    ax.set_title("官方 release 的合理分數 ≈ 27.2~27.6\n=> 我方領先 +0.1~+0.5 dB（論文報告 27.23）", fontsize=9.5)
+    save(fig, d, "n09_evalgap.png")
+
+
+def n05_arms60k(d):
+    """60k 單變數臂 vs cs60_conic（同 N 2.34M）：val、塊內 held-out、精確 Load 中位。"""
+    arms = ["vpctilek", "oent", "cag4（absgrad 4）", "cag0（absgrad 關）", "★ dup4"]
+    dv = {6: [-0.03, -0.62, 0.02, -0.07, 0.27], 13: [-0.01, -0.13, -0.03, np.nan, 0.32]}
+    dh = {6: [-0.336, 0.220, 0.149, -0.134, -0.024], 13: [-0.124, 0.422, 0.157, np.nan, 0.246]}
+    dl = {6: [-37.3, -47.9, -2.2, -3.9, -5.6], 13: [-37.7, -52.0, -0.7, np.nan, -8.3]}
+    dlp = {6: [-0.0032, -0.0243, -0.0030, 0.0037, -0.0137], 13: [-0.0088, -0.0316, -0.0031, np.nan, -0.0230]}
+    fig, axs = plt.subplots(1, 3, figsize=(18, 4.6))
+    mk = ["o", "s", "^", "v", "*"]
+    for ax, D, yl, tt in [(axs[0], dv, "Δ val PSNR（dB）", "val⊂train"), (axs[1], dh, "Δ 塊內 held-out PSNR（dB）", "塊內 held-out")]:
+        for blk, c in [(6, C1), (13, C2)]:
+            for j, a in enumerate(arms):
+                if D[blk][j] == D[blk][j]:
+                    ax.scatter(dl[blk][j], D[blk][j], color=c, marker=mk[j], s=70 if mk[j] == "*" else 40,
+                               label=f"{a}" if blk == 6 else None)
+                    ax.annotate(f"b{blk}", (dl[blk][j], D[blk][j]), xytext=(4, 3), textcoords="offset points", fontsize=7, color=c)
+        ax.axhline(0, color=MUTED, lw=1); ax.axvline(0, color=MUTED, lw=0.8)
+        if D is dh:
+            ax.axhspan(-0.2, 0.2, color="#f1e3a6", alpha=0.35, lw=0, label="held-out 噪音約 ±0.2（dup 變體散布）")
+        ax.set_xlabel("Δ 精確 Load 中位（%，越左越便宜）"); ax.set_ylabel(yl)
+        ax.set_title(f"{tt}：vs cs60_conic（同 N）", fontsize=10)
+    h_, l_ = axs[1].get_legend_handles_labels()
+    fig.legend(h_, l_, loc="upper center", bbox_to_anchor=(0.36, 0.0), ncol=6, fontsize=8)
+    ax = axs[2]; x = np.arange(len(arms)); wd = 0.38
+    ax.bar(x - wd / 2, dlp[6], wd, color=C1, label="b6"); ax.bar(x + wd / 2, [0 if v != v else v for v in dlp[13]], wd, color=C2, label="b13")
+    ax.axhline(0, color=MUTED, lw=1); ax.set_xticks(x); ax.set_xticklabels(arms, rotation=20, fontsize=8)
+    ax.set_ylabel("Δ 塊內 held-out LPIPS（越負越好）"); ax.legend(fontsize=8)
+    ax.set_title("held-out LPIPS：oent 兩塊最好、vpctilek 也較好", fontsize=10)
+    fig.suptitle("60k 單變數臂：oent 的 val 輸但 held-out 贏且 Load 減半（val 與 held-out 反向）；vpctilek 同 val、Load -37%；absgrad 強度在噪音內",
+                 fontsize=10.5)
+    save(fig, d, "n05_arms60k.png")
 
 
 def n10_lean_loop(d):
@@ -462,11 +534,11 @@ DOCS = {
     "02_VRAM與配置器": ["fig2_maxsplit_ab", "fig3_vram_segments", "n02_current"],
     "03_儲存與RAM": ["fig4_ckpt_storage", "fig6_run_dir", "fig5_ram_cache"],
     "04_外接盒與binning成本": ["cc1_quality_delta", "cc2_time", "cc3_load_vram", "cc4_proxy_decoupled"],
-    "05_成本品質前緣與vc_trim": ["f1_frontier_22k", "f2_60k_vpc_init", "n05_cap60k", "fig8_trimvpc_time"],
+    "05_成本品質前緣與vc_trim": ["n05_arms60k", "f1_frontier_22k", "f2_60k_vpc_init", "n05_cap60k", "fig8_trimvpc_time"],
     "06_事後剪枝與fine-tune": ["f3_tile_topk_posthoc", "f6_prune_finetune"],
     "07_成本感知取樣與預算": ["n07_sampling"],
     "08_初始化": ["n08_init20k", "f4_init60k", "n08_init60k"],
-    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_stepprof", "n09_official_blocks", "f7_official_trim", "f5_official_prune"],
+    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "f7_official_trim", "f5_official_prune"],
     "10_速度優化_lean與kernel拆解": ["n10_lean_loop", "n10_kernels"],
     "11_逐配對工作量上限": ["n11_tiles"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout"],
@@ -505,7 +577,7 @@ def main():
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stdout[-2000:], r.stderr[-2000:]); raise SystemExit(f"⛔ {sc} 失敗")
-    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_stepprof,
+    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_stepprof, n09_evalgap, n05_arms60k,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout):
         f(tmp)
     for doc, panels in DOCS.items():

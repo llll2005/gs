@@ -123,3 +123,8 @@ date,run,block,psnr,ssim,lpips,points,era,status,note
 2026-10-08,lab/cs60_sfmdup4j025,13,30.19,0.901,0.115,,配對修正後,有效,dup4 抖動 0.25 b13；持平
 2026-10-08,lab/cs60_oent,6,29.86,0.877,0.132,,配對修正後,有效,opacity 二元熵正則 0.002；vs cs60_conic 30.48 => -0.62（輸）
 2026-10-09,lab/cs60_vpctilek,6,30.45,0.890,0.120,,配對修正後,有效,v/c × tile 名次合成判別式；vs cs60_conic 30.48 => 平手
+2026-10-09,lab/cs60_vpctilek,13,29.99,0.898,0.118,,配對修正後,有效,v/c×tile 名次；vs cs60_conic 30.00 平；Load 中位 -38%；held-out -0.12
+2026-10-09,lab/cs60_oent,13,29.87,0.892,0.121,,配對修正後,有效,opacity 熵；val -0.13 但 held-out +0.42、Load -52%（val 與 held-out 反向）
+2026-10-09,lab/cs60_cag4,6,30.50,0.890,0.124,,配對修正後,有效,absgrad 4.0；vs 30.48 平
+2026-10-09,lab/cs60_cag4,13,29.97,0.896,0.125,,配對修正後,有效,absgrad 4.0；vs 30.00 平
+2026-10-09,lab/cs60_cag0,6,30.41,0.887,0.129,,配對修正後,有效,absgrad 關；vs 30.48 -0.07（噪音內）

@@ -23,7 +23,7 @@
 - lean 對 trim 的 record pass 幾乎沒省（27.9 → 27.6 s／次）；lean 後 **trim 約佔增生期每步 37%** —— 它每個被評估的配對做 2 個 global atomicAdd，是下一個目標。
 - **fused Adam 在 torch 2.0.1 反而慢 2.3~3.2 倍** => 不採用。
 - fast_noise（MCMC 噪音的代數改寫）與原算法只差浮點捨入（5 個 ckpt，相對差中位 ~6e-8）；noise_gate 跳過的顆粒中約 1% 噪音 ≥ 自身 Adam 步長 => 要訓練驗（`cnogate` 已排）。
-- ⏳ 第二批（光柵器新旗標，預設關）已排 [solo] 驗證：`record_reduce`（trim record 在 block 內先加總）、`tile_cull`（逐 tile 精確剔除，上限去掉 30~42% 配對，`11`）。
+- 第二批（10-03 驗完，§6）：`record_reduce` 採用（4x4 全場景用它）；`tile_cull` 正確但淨變慢、不採用。
 
 ---
 
