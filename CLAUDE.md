@@ -49,7 +49,8 @@ The laptop = absolute verification: re-run the stage winner there to claim the e
                  new-era rechecks: almost no floaters, failure tiles 1.3~2.3%, geometry improves with training
 2026-10-09       ★ full scene 4x4 (cs60_sfmdup4, 16 blocks [solo]): merged 741-frame held-out 27.74/.879/.129 (17.63M, 35.6 FPS,
                    train peak <=4.17 GB) beats official release 27.26/.867/.154 and paper setting 27.28/.870/.147 -- SAME eval tool
-                   (tools/eval_official_test.py). ⚠ same release model: official tool 25.79 vs ours 27.26 (1.47 dB gap, uninvestigated).
+                   (tools/eval_official_test.py). Tool gap 25.79 vs 27.26 RESOLVED: the official rasterizer renders 8~13% of test views
+                   with wrong (dark/black) colours; swapping only the rasterizer fixes them => official release ≈ 27.2~27.3.
                    Official does 2 backward passes/step (depth extra_loss) => 214 vs 121 ms/step at ~same N. => 紀錄/實驗分析/09 §0
 pruning side     trim criterion v -> v/c (`renderer.init_args.trim_by_value_per_cost`)
                  short recipe (22k~27k, 3 blocks): same N, offline Load median -64~-67%, VRAM -7%, LPIPS better 3/3,
