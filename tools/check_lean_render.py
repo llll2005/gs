@@ -43,6 +43,12 @@ def cmd_dump(a):
     renderer._lean_announced = True
     renderer.record_reduce = bool(getattr(a, "record_reduce", 0))
     renderer.tile_cull = bool(getattr(a, "tile_cull", 0))
+    # ★ 2026-10-09 absgrad_gate 驗證：--absgrad 0/1 明確指定 backward 要不要做 absgrad 的 atomicAdd（-1＝不碰，舊行為）
+    _ab = int(getattr(a, "absgrad", -1))
+    if _ab >= 0:
+        renderer.absgrad_gate = True
+        renderer._absgrad_announced = True
+    TF = {"_absgrad": bool(_ab)} if _ab >= 0 else {}
     ck = torch.load(a.ckpt, map_location="cpu")
     dmh = ck["datamodule_hyper_parameters"]
     cams = dmh["parser"].instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)),
@@ -59,14 +65,14 @@ def cmd_dump(a):
     def step(cam, tgt):
         for p in params.values():
             p.grad = None
-        out = renderer.training_forward(0, None, cam, model, bg)
+        out = renderer.training_forward(0, None, cam, model, bg, **TF)
         img = out["render"]
         loss = 0.8 * (img - tgt).abs().mean() + 0.2 * (1 - ssim(img, tgt))
         loss.backward()
         return out
 
     res = {"renders": [], "radii": [], "trans": [], "cover": [], "tiles": [], "N": N,
-           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}"}
+           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}{('+ab' + str(_ab)) if _ab >= 0 else ''}"}
     gsum = {k: torch.zeros_like(p, dtype=torch.float64) for k, p in params.items()}
     vsum = None
     for c in idx:
@@ -98,7 +104,7 @@ def cmd_dump(a):
             p.grad = None
         e0, e1, e2 = (torch.cuda.Event(enable_timing=True) for _ in range(3))
         e0.record()
-        out = renderer.training_forward(0, None, cam, model, bg)
+        out = renderer.training_forward(0, None, cam, model, bg, **TF)
         img = out["render"]
         loss = 0.8 * (img - tgt).abs().mean() + 0.2 * (1 - ssim(img, tgt))
         e1.record()
@@ -312,6 +318,11 @@ def cmd_compare(a):
         print(f"    {k:<14} 最大絕對差 {m:.3e}  相對（÷最大幅度）{rel:.2e}  不同 {n:,}/{tot:,}")
     m, rel, n, tot = _cmp(A["vgrad"], B["vgrad"])
     print(f"    {'viewspace(+absgrad)':<14} 最大絕對差 {m:.3e}  相對 {rel:.2e}  不同 {n:,}/{tot:,}")
+    if A["vgrad"].shape[-1] >= 3:   # ★ 2026-10-09：xy（真的梯度）與 z（absgrad 累加器）分開報
+        m, rel, n, tot = _cmp(A["vgrad"][:, :2], B["vgrad"][:, :2])
+        print(f"    {'viewspace xy':<14} 最大絕對差 {m:.3e}  相對 {rel:.2e}  不同 {n:,}/{tot:,}")
+        za, zb = A["vgrad"][:, 2], B["vgrad"][:, 2]
+        print(f"    {'absgrad z':<14} A 非零 {int((za != 0).sum()):,}  B 非零 {int((zb != 0).sum()):,}  （關掉的一邊應該是 0）")
     print("  計時（ms）：" + "  ".join(f"{k} {A['time'][k]:.2f} -> {B['time'][k]:.2f}（{100 * (B['time'][k] / A['time'][k] - 1):+.1f}%）"
                                     for k in A["time"]))
     print(f"  forward+backward 峰值增量 MiB：{A['peak_fb_MiB']:.0f} -> {B['peak_fb_MiB']:.0f}")
@@ -326,6 +337,7 @@ def main():
     d.add_argument("--repeat", type=int, default=10)
     d.add_argument("--record-reduce", dest="record_reduce", type=int, default=0)
     d.add_argument("--tile-cull", dest="tile_cull", type=int, default=0)
+    d.add_argument("--absgrad", type=int, default=-1, help="1/0＝absgrad_gate 開且明確要／不要 absgrad 累加；-1＝不碰")
     c = sp.add_parser("compare"); c.add_argument("a"); c.add_argument("b"); c.add_argument("--label", default="")
     pr = sp.add_parser("profile"); pr.add_argument("--ckpt", required=True); pr.add_argument("--lean", type=int, default=0)
     pr.add_argument("--steps", type=int, default=12); pr.add_argument("--fused", type=int, default=0)

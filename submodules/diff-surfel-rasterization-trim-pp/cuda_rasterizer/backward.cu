@@ -145,7 +145,9 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 //   那時 dL_depths 全為 0，原 kernel 仍逐（像素, 顆粒）做 3 個加 0 的法線 atomicAdd、
 //   深度／distortion／中位深度的梯度算術，以及次像素分支的一個加 0 的 transMat atomicAdd。
 //   它們對任何梯度的貢獻都恰為 0（x + 0 = x）=> 跳過後梯度數值相同。
-template <uint32_t C, bool GEOM>
+// ★ 2026-10-09 ABS：執行期開關（absgrad_gate）。ABS=false 時不做 absgrad 那一次 atomicAdd（dL_dmean2D.z 維持 0）；
+//   其他梯度與 ABS=true 完全相同（.z 從來沒被讀）。編譯期 ABSGRAD=0 仍可整個拿掉。
+template <uint32_t C, bool GEOM, bool ABS>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -430,7 +432,7 @@ renderCUDA(
 				//   單位不同，混在同一個累加器會讓排序失去意義。次像素粒子讀到 0 是對的
 				//   （本來就不該往那裡增生）。
 #if ABSGRAD
-				atomicAdd(&dL_dmean2D[global_id].z, fabsf(dL_ds.x) + fabsf(dL_ds.y));
+				if (ABS) atomicAdd(&dL_dmean2D[global_id].z, fabsf(dL_ds.x) + fabsf(dL_ds.y));
 #endif
 				float3 dz_dTw = {s.x, s.y, 1.0};
 				float dsx_pz = dL_ds.x / p.z;
@@ -765,15 +767,23 @@ void BACKWARD::render(
 	float* dL_dnormal3D,
 	float* dL_dopacity,
 	float* dL_dcolors,
-	bool geom)
+	int flags)
 {
+	// flags：bit0 = geom（幾何梯度）、bit1 = 關掉 absgrad（舊呼叫端傳 true/false => bit1=0 => absgrad 照舊開）
+	const bool geom = (flags & 1) != 0;
+	const bool absg = (flags & 2) == 0;
+#define RCUDA_ARGS ranges, point_list, W, H, focal_x, focal_y, bg_color, means2D, normal_opacity, transMats, colors, depths, final_Ts, n_contrib, dL_dpixels, dL_depths, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dcolors
 	if (!geom) {
-		renderCUDA<NUM_CHANNELS, false> << <grid, block >> >(ranges, point_list, W, H, focal_x, focal_y, bg_color,
-			means2D, normal_opacity, transMats, colors, depths, final_Ts, n_contrib, dL_dpixels, dL_depths,
-			dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dcolors);
+		if (absg) renderCUDA<NUM_CHANNELS, false, true> << <grid, block >> >(RCUDA_ARGS);
+		else renderCUDA<NUM_CHANNELS, false, false> << <grid, block >> >(RCUDA_ARGS);
 		return;
 	}
-	renderCUDA<NUM_CHANNELS, true> << <grid, block >> >(
+	if (!absg) {
+		renderCUDA<NUM_CHANNELS, true, false> << <grid, block >> >(RCUDA_ARGS);
+		return;
+	}
+#undef RCUDA_ARGS
+	renderCUDA<NUM_CHANNELS, true, true> << <grid, block >> >(
 		ranges,
 		point_list,
 		W, H,

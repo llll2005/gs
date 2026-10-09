@@ -167,7 +167,8 @@ class _RasterizeGaussians(torch.autograd.Function):
                 binningBuffer,
                 imgBuffer,
                 raster_settings.debug,
-                geom_grad)
+                # ★ 2026-10-09 int 旗標：bit0 = geom、bit1 = 關 absgrad（absgrad_gate；舊 bool 介面等價於 bit1=0）
+                (1 if geom_grad else 0) | (0 if getattr(raster_settings, "absgrad", True) else 2))
 
         # Compute gradients for relevant tensors by invoking backward method
         if raster_settings.debug:
@@ -221,6 +222,7 @@ class GaussianRasterizationSettings(NamedTuple):
     #   ⇒ 預設 False（回傳 3 個，與歷史一致）；要 tiles 的呼叫端自己開。
     #   本修正**只動 Python 包裝層**，C++ 本來就一直回傳 10 個 => **不需要重編**。
     return_tiles : bool = False
+    absgrad : bool = True   # ★ 2026-10-09：False => backward 不做 absgrad 的 atomicAdd（只有 dL_dmean2D.z 變 0）
     # ★ 2026-10-02：剃除沒人用的計算（見 forward.cu 的 MODE 與 backward.cu 的 GEOM）。
     #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。
     #   預設 False => 與舊行為完全相同（舊 kernel 的原始碼一字未動，只是多了模板參數）。

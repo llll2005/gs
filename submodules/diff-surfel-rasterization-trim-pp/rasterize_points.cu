@@ -182,7 +182,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,
 	const bool debug,
-	const bool geom_grad)
+	const int geom_grad)
 {
 
   CHECK_INPUT(background);

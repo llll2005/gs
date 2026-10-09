@@ -39,6 +39,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             lean_train: bool = False,
             record_reduce: bool = False,
             tile_cull: bool = False,
+            absgrad_gate: bool = False,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -71,6 +72,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #                  ⚠ `tiles`（逐顆 tile 數）會變成剔除後的數 => exact_tile_cost 類機制的成本語意會變
         self.record_reduce = record_reduce
         self.tile_cull = tile_cull
+        # ★ 2026-10-09 `absgrad_gate`：光柵器 backward 每個有效 (像素,顆粒) 配對多做一次 atomicAdd 累加 |dL/ds|（AbsGS），
+        #   只有 density controller 在增生期（absgrad_densify > 0，或 harvest_relocate）才讀它；收割期與 absgrad_densify=0 時
+        #   照算沒人用。開啟後只在需要的步驟才算（光柵器 absgrad 欄位）；其他梯度逐位元不受影響（.z 從沒被讀）。
+        self.absgrad_gate = absgrad_gate
+        self._absgrad_announced = False
 
         # hyper-parameters for trimming
         self.depth_ratio = depth_ratio
@@ -211,12 +217,16 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"return_tiles": True}
                if "return_tiles" in GaussianRasterizationSettings._fields else {}),
             **({"lean_render": True} if _lean else {}),
+            **({"absgrad": bool(kwargs.get("_absgrad", True))}
+               if (getattr(self, "absgrad_gate", False) and "absgrad" in GaussianRasterizationSettings._fields) else {}),
             # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
             **({"audit_tiles": True} if kwargs.get("_audit", False) else {}),
             **({"record_reduce": True} if (record_transmittance and getattr(self, "record_reduce", False)) else {}),
             **({"tile_cull": True} if (not record_transmittance and not kwargs.get("_audit", False)
                                        and getattr(self, "tile_cull", False)) else {}),
         )
+        if getattr(self, "absgrad_gate", False) and "absgrad" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError("設了 absgrad_gate 但光柵器不認得 absgrad 欄位 —— 沒重編")
         for _f in ("record_reduce", "tile_cull"):
             if getattr(self, _f, False) and _f not in GaussianRasterizationSettings._fields:
                 raise RuntimeError(f"設了 {_f} 但光柵器不認得這個欄位 —— 沒重編")
@@ -354,6 +364,17 @@ class SepDepthTrim2DGSRenderer(Renderer):
         return rets
     
     def training_forward(self, step, module, viewpoint_camera, pc, bg_color, render_types=None, **kwargs):
+        if getattr(self, "absgrad_gate", False) and "_absgrad" not in kwargs:   # 呼叫端明確指定時（驗證工具）不覆寫
+            # 誰會讀 |dL/ds|：MCMC 的 add_new_gs（增生期）、harvest_relocate（收割期續搬）、absgrad_report（只印）
+            cfg = getattr(getattr(module, "density_controller", None), "config", None)
+            w = float(getattr(cfg, "absgrad_densify", 0.0) or 0.0)
+            rep = int(getattr(cfg, "absgrad_report", 0) or 0)
+            until = int(getattr(cfg, "densify_until_iter", 0) or 0)
+            need = rep > 0 or (w > 0 and (step < until or bool(getattr(cfg, "harvest_relocate", False))))
+            kwargs["_absgrad"] = need
+            if not self._absgrad_announced and not need:
+                self._absgrad_announced = True
+                print(f"[absgrad-gate] ✅ 首次關閉 absgrad 累加：step {step}（absgrad_densify={w}、densify_until={until}）")
         return self(viewpoint_camera=viewpoint_camera, pc=pc, bg_color=bg_color, render_types=render_types,
                     _lean=True, **kwargs)
 

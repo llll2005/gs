@@ -96,7 +96,7 @@ namespace CudaRasterizer
 			float* dL_dscale,
 			float* dL_drot,
 			bool debug,
-			bool geom_grad = true);
+			int geom_grad = 1);   // bit0 geom、bit1 關 absgrad
 	};
 };
 

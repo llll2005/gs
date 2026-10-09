@@ -41,7 +41,7 @@ namespace BACKWARD
 		float* dL_dnormal3D,
 		float* dL_dopacity,
 		float* dL_dcolors,
-		bool geom = true);
+		int flags = 1);   // bit0 geom、bit1 關 absgrad（見 backward.cu）
 
 	void preprocess(
 		int P, int D, int M,
