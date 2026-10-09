@@ -128,3 +128,4 @@ date,run,block,psnr,ssim,lpips,points,era,status,note
 2026-10-09,lab/cs60_cag4,6,30.50,0.890,0.124,,配對修正後,有效,absgrad 4.0；vs 30.48 平
 2026-10-09,lab/cs60_cag4,13,29.97,0.896,0.125,,配對修正後,有效,absgrad 4.0；vs 30.00 平
 2026-10-09,lab/cs60_cag0,6,30.41,0.887,0.129,,配對修正後,有效,absgrad 關；vs 30.48 -0.07（噪音內）
+2026-10-09,lab/cs60_cag0,13,29.95,0.894,0.129,,配對修正後,有效,absgrad 關；vs 30.00 -0.05；held-out +0.03；Load 中位 -12%
