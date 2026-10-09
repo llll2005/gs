@@ -526,10 +526,12 @@ PY
       conda run -n "$OFFENV" --no-capture-output python utils/merge_citygs_ckpts.py "outputs/$NAMEP" 2>&1 | tee "$LOG"
       exit "${PIPESTATUS[0]}"
     fi
+    # ⛔ 10-08 第一次失敗：coarse 的 resolved config 寫死 `output: <cityGS_origin>/outputs`（絕對路徑）=> -n 的跑次
+    #   被找到原版目錄底下（不存在）=> "not a checkpoint or point cloud can be found"。=> 明確給 --output 指回 trimfix。
     gpu_gate
     echo "=== 照論文設定 官方 held-out test（$OTEST）$(date) ==="
     run_measured conda run -n "$OFFENV" --no-capture-output python -u main.py test \
-      --config "$CFGP" -n $NAMEP --data.path "$OTEST" \
+      --config "$CFGP" -n $NAMEP --data.path "$OTEST" --output "$FIX/outputs" \
       --data.parser.eval_image_select_mode ratio --data.parser.eval_ratio 1.0 --save_val --test_speed
     rc=$?; record - "outputs/$NAMEP/checkpoints"
     [ -f "outputs/$NAMEP/results.txt" ] && { echo "-- results.txt --"; cat "outputs/$NAMEP/results.txt"; }
