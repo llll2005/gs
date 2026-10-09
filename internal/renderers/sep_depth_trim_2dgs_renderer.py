@@ -40,6 +40,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             record_reduce: bool = False,
             tile_cull: bool = False,
             absgrad_gate: bool = False,
+            bwd_sat_skip: bool = False,
+            bwd_reduce: bool = False,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -76,6 +78,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   只有 density controller 在增生期（absgrad_densify > 0，或 harvest_relocate）才讀它；收割期與 absgrad_densify=0 時
         #   照算沒人用。開啟後只在需要的步驟才算（光柵器 absgrad 欄位）；其他梯度逐位元不受影響（.z 從沒被讀）。
         self.absgrad_gate = absgrad_gate
+        # ★ 2026-10-09 backward 最佳化（光柵器 backward.cu renderCUDA_opt；只在 lean_train 開時生效）：
+        #   bwd_sat_skip  從 tile 內最大的最後貢獻者開始，飽和後的配對不再整批載入（處理的配對與順序完全相同）
+        #   bwd_reduce    每個 (像素,顆粒) 的梯度先在 warp／block 內加總，每批每顆只做一次全域 atomic（浮點加總順序級）
+        self.bwd_sat_skip = bwd_sat_skip
+        self.bwd_reduce = bwd_reduce
         self._absgrad_announced = False
 
         # hyper-parameters for trimming
@@ -217,6 +224,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"return_tiles": True}
                if "return_tiles" in GaussianRasterizationSettings._fields else {}),
             **({"lean_render": True} if _lean else {}),
+            **({"bwd_sat_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_sat_skip", False)) else {}),
+            **({"bwd_reduce": True} if (_lean and not record_transmittance and getattr(self, "bwd_reduce", False)) else {}),
             **({"absgrad": bool(kwargs.get("_absgrad", True))}
                if (getattr(self, "absgrad_gate", False) and "absgrad" in GaussianRasterizationSettings._fields) else {}),
             # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
@@ -225,6 +234,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"tile_cull": True} if (not record_transmittance and not kwargs.get("_audit", False)
                                        and getattr(self, "tile_cull", False)) else {}),
         )
+        for _f in ("bwd_sat_skip", "bwd_reduce"):
+            if getattr(self, _f, False) and _f not in GaussianRasterizationSettings._fields:
+                raise RuntimeError(f"設了 {_f} 但光柵器不認得這個欄位 —— 沒重編")
         if getattr(self, "absgrad_gate", False) and "absgrad" not in GaussianRasterizationSettings._fields:
             raise RuntimeError("設了 absgrad_gate 但光柵器不認得 absgrad 欄位 —— 沒重編")
         for _f in ("record_reduce", "tile_cull"):

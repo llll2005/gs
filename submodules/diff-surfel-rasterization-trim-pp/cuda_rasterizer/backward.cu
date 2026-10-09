@@ -474,6 +474,215 @@ renderCUDA(
 	}
 }
 
+// ★★ 2026-10-09 lean 路徑（GEOM=false）專用的最佳化 backward（原 renderCUDA 一字不動 => 預設路徑零擾動）。
+//   SAT：飽和跳過 —— 先取 tile 內 256 個像素「最後貢獻者」的最大值 M，只載入清單前 M 個（M 之後對所有像素都是被擋住的，
+//        原 kernel 也會逐一跳過它們，只是仍然整批載入）。處理的配對與順序完全相同。
+//   RED：block 內先加總 —— 每個 (像素,顆粒) 的梯度先在 warp 內 cg::reduce、再 atomicAdd 到 shared memory，
+//        每批結束時每顆只做一次全域 atomic（同 forward.cu recordReduceCUDA 的模式）。只差浮點加總順序。
+//   梯度量（逐顆 16 個）：顏色 3、transMat 9（ray-splat 分支）、mean2D.xy 2（次像素 fallback）、absgrad 1、opacity 1。
+#define OPT_NG 16
+template <uint32_t C, bool ABS, bool SAT, bool RED>
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+renderCUDA_opt(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ point_list,
+	int W, int H,
+	const float* __restrict__ bg_color,
+	const float2* __restrict__ points_xy_image,
+	const float4* __restrict__ normal_opacity,
+	const float* __restrict__ transMats,
+	const float* __restrict__ colors,
+	const float* __restrict__ final_Ts,
+	const uint32_t* __restrict__ n_contrib,
+	const float* __restrict__ dL_dpixels,
+	float * __restrict__ dL_dtransMat,
+	float3* __restrict__ dL_dmean2D,
+	float* __restrict__ dL_dopacity,
+	float* __restrict__ dL_dcolors)
+{
+	auto block = cg::this_thread_block();
+	auto warp = cg::tiled_partition<32>(block);
+	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	const uint32_t pix_id = W * pix.y + pix.x;
+	const float2 pixf = { (float)pix.x + 0.5, (float)pix.y + 0.5};
+	const bool inside = pix.x < W && pix.y < H;
+	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	const int last_contributor = inside ? n_contrib[pix_id] : 0;
+
+	int span = range.y - range.x;
+	__shared__ int s_max;
+	if (SAT) {
+		if (block.thread_rank() == 0) s_max = 0;
+		block.sync();
+		const int wm = cg::reduce(warp, last_contributor, cg::greater<int>());
+		if (warp.thread_rank() == 0) atomicMax(&s_max, wm);
+		block.sync();
+		span = min(span, s_max);
+	}
+	const int rounds = (span + BLOCK_SIZE - 1) / BLOCK_SIZE;
+	int toDo = span;
+
+	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
+	__shared__ float collected_colors[C * BLOCK_SIZE];
+	__shared__ float3 collected_Tu[BLOCK_SIZE];
+	__shared__ float3 collected_Tv[BLOCK_SIZE];
+	__shared__ float3 collected_Tw[BLOCK_SIZE];
+	__shared__ float s_g[RED ? OPT_NG : 1][RED ? BLOCK_SIZE : 1];
+	__shared__ int s_cnt[RED ? BLOCK_SIZE : 1];
+
+	const float T_final = inside ? final_Ts[pix_id] : 0;
+	float T = T_final;
+	uint32_t contributor = toDo;
+	float accum_rec[C] = { 0 };
+	float dL_dpixel[C] = { 0 };
+	if (inside)
+		for (int i = 0; i < C; i++)
+			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
+	float bg_dot_dpixel = 0;
+	for (int i = 0; i < C; i++)
+		bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
+	float last_alpha = 0;
+	float last_color[C] = { 0 };
+
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	{
+		block.sync();
+		const int progress = i * BLOCK_SIZE + block.thread_rank();
+		if (progress < span)
+		{
+			const int coll_id = point_list[range.x + span - progress - 1];
+			collected_id[block.thread_rank()] = coll_id;
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
+			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
+			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
+			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+			for (int c = 0; c < C; c++)
+				collected_colors[c * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + c];
+		}
+		if (RED) {
+			for (int k = 0; k < OPT_NG; k++) s_g[k][block.thread_rank()] = 0.f;
+			s_cnt[block.thread_rank()] = 0;
+		}
+		block.sync();
+
+		const int nj = min(BLOCK_SIZE, toDo);
+		for (int j = 0; j < nj; j++)
+		{
+			contributor--;
+			// 每個 lane 都要走到歸約點（warp 集體操作）=> 用 valid 取代原本的 continue
+			bool valid = inside && (contributor < (uint32_t)last_contributor);
+			float g[OPT_NG];
+			for (int k = 0; k < OPT_NG; k++) g[k] = 0.f;
+			if (valid) {
+				const float3 Tu = collected_Tu[j], Tv = collected_Tv[j], Tw = collected_Tw[j];
+				const float3 k3 = {-Tu.x + pixf.x * Tw.x, -Tu.y + pixf.x * Tw.y, -Tu.z + pixf.x * Tw.z};
+				const float3 l3 = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
+				const float3 p = crossProduct(k3, l3);
+#if BACKFACE_CULL
+				if (p.z == 0.0) valid = false;
+#endif
+				if (valid) {
+					const float2 s = {p.x / p.z, p.y / p.z};
+					const float rho3d = (s.x * s.x + s.y * s.y);
+					const float2 xy = collected_xy[j];
+					const float2 d = {xy.x - pixf.x, xy.y - pixf.y};
+					const float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+					const float rho = min(rho3d, rho2d);
+					const float c_d = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z;
+					const float4 nor_o = collected_normal_opacity[j];
+					const float power = -0.5f * rho;
+					const float G = exp(power);
+					const float alpha = min(0.99f, nor_o.w * G);
+					if (c_d < NEAR_PLANE || power > 0.0f || alpha < 1.0f / 255.0f) valid = false;
+					if (valid) {
+						T = T / (1.f - alpha);
+						const float dchannel_dcolor = alpha * T;
+						float dL_dalpha = 0.0f;
+						for (int ch = 0; ch < C; ch++) {
+							const float c = collected_colors[ch * BLOCK_SIZE + j];
+							accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+							last_color[ch] = c;
+							dL_dalpha += (c - accum_rec[ch]) * dL_dpixel[ch];
+							g[ch] = dchannel_dcolor * dL_dpixel[ch];
+						}
+						dL_dalpha *= T;
+						last_alpha = alpha;
+						dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
+						const float dL_dG = nor_o.w * dL_dalpha;
+						if (rho3d <= rho2d) {
+							const float2 dL_ds = { dL_dG * -G * s.x, dL_dG * -G * s.y };
+							if (ABS) g[14] = fabsf(dL_ds.x) + fabsf(dL_ds.y);
+							const float dsx_pz = dL_ds.x / p.z;
+							const float dsy_pz = dL_ds.y / p.z;
+							const float3 dL_dp = {dsx_pz, dsy_pz, -(dsx_pz * s.x + dsy_pz * s.y)};
+							const float3 dL_dk = crossProduct(l3, dL_dp);
+							const float3 dL_dl = crossProduct(dL_dp, k3);
+							g[3] = -dL_dk.x; g[4] = -dL_dk.y; g[5] = -dL_dk.z;
+							g[6] = -dL_dl.x; g[7] = -dL_dl.y; g[8] = -dL_dl.z;
+							g[9]  = pixf.x * dL_dk.x + pixf.y * dL_dl.x;
+							g[10] = pixf.x * dL_dk.y + pixf.y * dL_dl.y;
+							g[11] = pixf.x * dL_dk.z + pixf.y * dL_dl.z;
+						} else {
+							g[12] = dL_dG * (-G * FilterInvSquare * d.x);
+							g[13] = dL_dG * (-G * FilterInvSquare * d.y);
+						}
+						g[15] = G * dL_dalpha;
+					}
+				}
+			}
+			const int gid = collected_id[j];
+			if (RED) {
+				const unsigned m = warp.ballot(valid);
+				if (m == 0) continue;
+				if (__popc(m) >= 3) {
+					for (int k = 0; k < OPT_NG; k++) {
+						if (!ABS && k == 14) continue;
+						const float v = cg::reduce(warp, g[k], cg::plus<float>());
+						if (warp.thread_rank() == 0 && v != 0.f) atomicAdd(&s_g[k][j], v);
+					}
+					if (warp.thread_rank() == 0) atomicAdd(&s_cnt[j], 1);
+				} else if (valid) {
+					for (int k = 0; k < OPT_NG; k++)
+						if (g[k] != 0.f) atomicAdd(&s_g[k][j], g[k]);
+					atomicAdd(&s_cnt[j], 1);
+				}
+			} else if (valid) {
+				for (int ch = 0; ch < C; ch++) atomicAdd(&dL_dcolors[gid * C + ch], g[ch]);
+				if (g[12] != 0.f || g[13] != 0.f) {
+					atomicAdd(&dL_dmean2D[gid].x, g[12]);
+					atomicAdd(&dL_dmean2D[gid].y, g[13]);
+				} else {
+					for (int k = 0; k < 9; k++) atomicAdd(&dL_dtransMat[gid * 9 + k], g[3 + k]);
+#if ABSGRAD
+					if (ABS) atomicAdd(&dL_dmean2D[gid].z, g[14]);
+#endif
+				}
+				atomicAdd(&dL_dopacity[gid], g[15]);
+			}
+		}
+		if (RED) {
+			block.sync();
+			const int t = block.thread_rank();
+			if (progress < span && s_cnt[t] > 0) {
+				const int gid = collected_id[t];
+				for (int ch = 0; ch < C; ch++) if (s_g[ch][t] != 0.f) atomicAdd(&dL_dcolors[gid * C + ch], s_g[ch][t]);
+				for (int k = 0; k < 9; k++) if (s_g[3 + k][t] != 0.f) atomicAdd(&dL_dtransMat[gid * 9 + k], s_g[3 + k][t]);
+				if (s_g[12][t] != 0.f) atomicAdd(&dL_dmean2D[gid].x, s_g[12][t]);
+				if (s_g[13][t] != 0.f) atomicAdd(&dL_dmean2D[gid].y, s_g[13][t]);
+#if ABSGRAD
+				if (ABS && s_g[14][t] != 0.f) atomicAdd(&dL_dmean2D[gid].z, s_g[14][t]);
+#endif
+				if (s_g[15][t] != 0.f) atomicAdd(&dL_dopacity[gid], s_g[15][t]);
+			}
+		}
+	}
+}
+
 inline __device__ void computeTransMat(
 	const glm::vec3 & p_world,
 	const glm::vec4 & quat,
@@ -772,6 +981,17 @@ void BACKWARD::render(
 	// flags：bit0 = geom（幾何梯度）、bit1 = 關掉 absgrad（舊呼叫端傳 true/false => bit1=0 => absgrad 照舊開）
 	const bool geom = (flags & 1) != 0;
 	const bool absg = (flags & 2) == 0;
+	const bool sat = (flags & 4) != 0;
+	const bool red = (flags & 8) != 0;
+	if (!geom && (sat || red)) {
+#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors
+#define OPT_L(A, S, R) renderCUDA_opt<NUM_CHANNELS, A, S, R> << <grid, block >> >(OPT_ARGS)
+		if (absg) { if (sat && red) OPT_L(true, true, true); else if (sat) OPT_L(true, true, false); else OPT_L(true, false, true); }
+		else      { if (sat && red) OPT_L(false, true, true); else if (sat) OPT_L(false, true, false); else OPT_L(false, false, true); }
+#undef OPT_L
+#undef OPT_ARGS
+		return;
+	}
 #define RCUDA_ARGS ranges, point_list, W, H, focal_x, focal_y, bg_color, means2D, normal_opacity, transMats, colors, depths, final_Ts, n_contrib, dL_dpixels, dL_depths, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dcolors
 	if (!geom) {
 		if (absg) renderCUDA<NUM_CHANNELS, false, true> << <grid, block >> >(RCUDA_ARGS);

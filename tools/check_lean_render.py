@@ -49,6 +49,8 @@ def cmd_dump(a):
         renderer.absgrad_gate = True
         renderer._absgrad_announced = True
     TF = {"_absgrad": bool(_ab)} if _ab >= 0 else {}
+    renderer.bwd_sat_skip = bool(getattr(a, "bwd_sat", 0))   # ★ 2026-10-09 backward 最佳化
+    renderer.bwd_reduce = bool(getattr(a, "bwd_red", 0))
     ck = torch.load(a.ckpt, map_location="cpu")
     dmh = ck["datamodule_hyper_parameters"]
     cams = dmh["parser"].instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)),
@@ -72,7 +74,7 @@ def cmd_dump(a):
         return out
 
     res = {"renders": [], "radii": [], "trans": [], "cover": [], "tiles": [], "N": N,
-           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}{('+ab' + str(_ab)) if _ab >= 0 else ''}"}
+           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}{('+ab' + str(_ab)) if _ab >= 0 else ''}{'+sat' if renderer.bwd_sat_skip else ''}{'+red' if renderer.bwd_reduce else ''}"}
     gsum = {k: torch.zeros_like(p, dtype=torch.float64) for k, p in params.items()}
     vsum = None
     for c in idx:
@@ -337,6 +339,7 @@ def main():
     d.add_argument("--repeat", type=int, default=10)
     d.add_argument("--record-reduce", dest="record_reduce", type=int, default=0)
     d.add_argument("--tile-cull", dest="tile_cull", type=int, default=0)
+    d.add_argument("--bwd-sat", dest="bwd_sat", type=int, default=0); d.add_argument("--bwd-red", dest="bwd_red", type=int, default=0)
     d.add_argument("--absgrad", type=int, default=-1, help="1/0＝absgrad_gate 開且明確要／不要 absgrad 累加；-1＝不碰")
     c = sp.add_parser("compare"); c.add_argument("a"); c.add_argument("b"); c.add_argument("--label", default="")
     pr = sp.add_parser("profile"); pr.add_argument("--ckpt", required=True); pr.add_argument("--lean", type=int, default=0)
