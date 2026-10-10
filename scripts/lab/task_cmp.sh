@@ -69,7 +69,21 @@ shift 2
 #   b6  speed3@14999   N≈2.60M  B0 = 17,987,534  (B/N 6.92)
 #   b12 gate15000@15000 N=2.34M B0 = 14,177,821  (B/N 6.06)
 #   ⚠ 不可沿用 tools/cost_budget_probe.py 的 23.1M —— 那支用解析投影，而生效的是光柵器 radii。
-case "$BLK" in
+# ★★ 2026-10-10 使用者：之後的跑次都改 4x4（方便跟官方 CityGSV2 的 4x4 同塊比較）。`CITYGS_GRID=44`：
+#   block_dim [4,4]、相機數取自 4x4 分區檔、init PLY 用 sfmfill_sweep44（best 系列的 dup 份數照 logs/full44_init.tsv，
+#   與 full44_best 同一份）。4x4 上的「當前最佳」＝ outputs/lab/full44_best/blocks/block_<B>（不必重跑）。
+GRID=${CITYGS_GRID:-55}
+G44=()
+if [ "$GRID" = 44 ]; then
+  _pf="data/matrix_city/aerial/train/block_all/partition/partitions-dim_4_4_visibility_0.08/$(printf '%03d_%03d' $((BLK % 4)) $((BLK / 4))).txt"
+  [ -f "$_pf" ] || { echo "⛔ 缺 4x4 分區檔 $_pf"; exit 2; }
+  NCAM=$(grep -cv '^\s*$' "$_pf"); B0=0
+  K44=$(awk -v b="$BLK" '$1==b{print $2}' logs/full44_init.tsv 2>/dev/null)
+  [ -n "$K44" ] || { echo "⛔ logs/full44_init.tsv 沒有 block $BLK 的 dup 份數"; exit 2; }
+  G44=(--data.parser.block_dim "[4,4]")
+  echo "4x4 網格：block $BLK、$NCAM 台相機、best 系列 init＝sfmfill_sweep44/dup$K44"
+fi
+[ "$GRID" = 44 ] || case "$BLK" in
   6)  NCAM=548; B0=17987534 ;;
   12) NCAM=653; B0=14177821 ;;
   13) NCAM=667; B0=0 ;;
@@ -80,7 +94,29 @@ STEPS=${STEPS:-$(( ( (20000 + PERIOD - 1) / PERIOD ) * PERIOD ))}
 HALF=$((STEPS / 2))
 echo "block $BLK：$NCAM 台相機 / val 每 $PERIOD 步 => 全長 $STEPS 步、densify_until $HALF"
 
-case "$ARM" in
+# ★★ 2026-10-10 使用者：coreg0（opacity_reg 0）val +0.90／+1.32、LPIPS 大幅變好、Load -36% => 當前最佳系列改疊在 oreg0 上。
+#   best0*＝對應的 best* 配方再加 opacity_reg 0；best0notrim＝dup init＋oreg0＋trim 全關（besttrim3 的對照）。
+#   best0 加單變數：best0cdu100／75／25（densify 長度）、best0nogate、best0sh2／sh1／sh0、best0dist100／1000
+CASEARM=$ARM; OREG0=0
+case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; esac
+_bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
+  if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
+case "$CASEARM" in
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim)
+              P=$(_bestply)
+              EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
+              case "$CASEARM" in
+                bestcdu100)  EXTRA+=(--model.density.init_args.densify_until_iter "$STEPS") ;;
+                bestcdu75)   EXTRA+=(--model.density.init_args.densify_until_iter $((STEPS * 3 / 4))) ;;
+                bestcdu25)   EXTRA+=(--model.density.init_args.densify_until_iter $((STEPS / 4))) ;;
+                bestnogate)  EXTRA+=(--model.density.init_args.noise_gate_eps 0.0) ;;
+                bestsh2)     EXTRA+=(--model.gaussian.init_args.sh_degree 2) ;;
+                bestsh1)     EXTRA+=(--model.gaussian.init_args.sh_degree 1) ;;
+                bestsh0)     EXTRA+=(--model.gaussian.init_args.sh_degree 0) ;;
+                bestdist100) EXTRA+=(--model.metric.init_args.lambda_dist 100) ;;
+                bestdist1000) EXTRA+=(--model.metric.init_args.lambda_dist 1000) ;;
+                bestnotrim)  EXTRA+=(--model.renderer.init_args.diable_trimming true) ;;
+              esac ;;
   base)       EXTRA=();                                                        EXP=0 ;;
   # ★ 參考軌跡（2026-09-14）：行為與 base 完全相同，只多兩個純打印旗標 ——
   #   `cost_budget_report 150`（每個 densify 間隔印：區間最壞視角 + 報告區間平均 Load）
@@ -150,25 +186,35 @@ case "$ARM" in
   #   init＝dup5 隨機抽到 cap 2.6M（dupcap）、add_ratio 1.0（不再增生，只靠 relocate；relocate 也用 absgrad 抽宿主）、
   #   週期 trim 改成三次門檻剪 15k:3e-4／30k:1e-3／45k:3e-3（v＝最佳視角每像素平均 T·α；剪了不補）。
   #   門檻依 zeroprune（cs60_sfmdup4 b6，事後剪不重訓）：15k 刪 4.5%／Load -15%／val 0；30k 6.6%／-32%／-0.008；42k 12%／-17%／-0.15
-  besttrim3)  P="sfmfill_sweep/dupcap/block_${BLK}.ply"
-              if [ ! -f "data/matrix_city/aerial/train/block_all/$P" ]; then
-                conda run -n gspl --no-capture-output python tools/subsample_ply.py \
-                  "data/matrix_city/aerial/train/block_all/sfmfill_sweep/dup5/block_${BLK}.ply" \
-                  "data/matrix_city/aerial/train/block_all/$P" --n 2600000 || exit 2
+  besttrim3)  _S=sfmfill_sweep; [ "$GRID" = 44 ] && _S=sfmfill_sweep44
+              P="$_S/dupcap/block_${BLK}.ply"
+              _DD=data/matrix_city/aerial/train/block_all
+              if [ ! -f "$_DD/$P" ]; then
+                # 起始要 >= cap 2.6M：從 dup5 抽；4x4 的 dup5 若不存在就先產（同 full44 prep 的參數），不夠 2.6M 再加份數
+                for _k in 5 6 7 8; do
+                  _F="$_DD/$_S/dup$_k/block_${BLK}.ply"
+                  if [ ! -f "$_F" ]; then
+                    _BD=(); [ "$GRID" = 44 ] && _BD=(--block_dim 4 4)
+                    conda run -n gspl --no-capture-output python tools/make_sfm_fill_init.py "$_DD" --blocks "$BLK" "${_BD[@]}" \
+                      --out-dir "$_DD/$_S/dup$_k" --fill-ratio 0.35 --fill-voxel 0.35 --dup "$_k" | tail -1 || exit 2
+                  fi
+                  conda run -n gspl --no-capture-output python tools/subsample_ply.py "$_F" "$_DD/$P" --n 2600000 && break
+                done
+                [ -f "$_DD/$P" ] || { echo "⛔ 產不出 2.6M 的 dupcap"; exit 2; }
               fi
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"
                      --model.density.init_args.add_ratio 1.0
                      --model.density.init_args.relocate_absgrad 2.0
                      --model.renderer.init_args.trim_schedule "15000:3e-4,30000:1e-3,45000:3e-3"); EXP=5 ;;
   best|bestvt|bestoe|bestvo|bestres)
-              P="sfmfill_sweep/dup4/block_${BLK}.ply"
+              P=$(_bestply)
               [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=2
-              case "$ARM" in bestvt|bestvo)
+              case "$CASEARM" in bestvt|bestvo)
                 EXTRA+=(--model.renderer.init_args.trim_by_value_per_cost true --model.renderer.init_args.trim_by_tile_topk true)
                 EXP=$((EXP + 2)) ;; esac
-              [ "$ARM" = bestres ] && { EXTRA+=(--model.train_res_schedule "15000:0.5,30000:0.75"); EXP=$((EXP + 1)); }
-              case "$ARM" in bestoe|bestvo)
+              [ "$CASEARM" = bestres ] && { EXTRA+=(--model.train_res_schedule "15000:0.5,30000:0.75"); EXP=$((EXP + 1)); }
+              case "$CASEARM" in bestoe|bestvo)
                 EXTRA+=(--model.metric.init_args.opacity_entropy_reg 0.002 --model.metric.init_args.opacity_entropy_from_iter 1000)
                 EXP=$((EXP + 2)) ;; esac ;;
   # ★ 2026-10-01：dup 系列更激進（scripts/lab/gen_dup_variants.sh 產的 PLY）——
@@ -317,8 +363,10 @@ case "$ARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|best0*（＝best* 加 oreg0；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
+[ "$OREG0" = 1 ] && { EXTRA+=(--model.metric.init_args.opacity_reg 0.0); EXP=$((EXP + 1)); echo "opacity_reg=0（best0 系列）"; }
+[ "$GRID" = 44 ] && { EXTRA+=("${G44[@]}"); EXP=$((EXP + 1)); }
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次
 #   （例：60k 判決用 `cs60_`）。⚠ 它**保留 RUN_PREFIX** —— 直接用 `CITYGS_RUN_NAME` 會
@@ -328,7 +376,7 @@ esac
 #   使用者規則：同家族已有舊跑次且**要比時間**的臂不開（牆鐘／it/s 會不可比）；需要幾何通道的臂（cdist*）不可開。
 #   resolved config 會多一項 lean_train => diff 的預期變數數 +1。
 if [ "${CITYGS_LEAN:-0}" = 1 ]; then
-  case "$ARM" in cdist*) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
+  case "$ARM" in cdist*|best0dist*|bestdist*) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
   EXTRA+=(--model.renderer.init_args.lean_train true); EXP=$((EXP + 1))
   echo "lean_train=true（CITYGS_LEAN=1）"
 fi
