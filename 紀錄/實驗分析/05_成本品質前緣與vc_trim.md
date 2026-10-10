@@ -1,10 +1,9 @@
 # 05 成本-品質前緣與 v/c trim
 
 > **圖**：`05_成本品質前緣與vc_trim.png`（同名，5 個面板）　｜　**年代**：新年代（2026-09-13 後的資料），val⊂train 只做同塊相對比較
-> **資料**：lab 離線精確 Load（`tools/cost_budget_calibrate.py`、`scripts/task_load_compare.sh`；`logs/load_compare_b6_0927_2234.log`、`0930_1010`、`0930_2125`）；
-> 60k 成本欄 `scripts/lab/task_60k_cost.sh`；各跑次 `train_status.txt`
-> 60k 單變數臂：各跑次 `chart_data/{load,heldout}.txt`（lab `outputs/lab/cs60_*`）
-> **重現**：`python tools/plot_analysis.py`（a=`n05_arms60k`、b=舊 f1、c=f2、d=`n05_cap60k`、e=舊 fig8）
+> **資料**：60k 各跑次 `chart_data/{load,heldout}.txt`（lab `outputs/lab/cs60_*`）；只調 cap 四組 `cs60_cap*`；mergeview = `scripts/lab/task_mergeview.sh`；
+> 全場景 = `tools/eval_official_test.py`（三者同一支工具）＋合併模型的精確 Σtiles（同 600 台相機）；(e) = `scripts/lab/task_60k_cost.sh`
+> **重現**：`python tools/plot_analysis.py`（a=n05_main、b=n05_official、c=n05_frontier60k、d=n05_cap60k、e=fig8）；10-10 改版：舊的 22k 推估前緣（f1）與 60k 前後對照（f2）拿掉，改用 60k 實測
 
 **怎麼讀**：往左＝更便宜、往上＝品質更好；**同成本比較看同一個 x 位置誰比較高**。每個點是一個跑完的模型，連線只是把同一組設定連起來，不是訓練過程。
 成本一律是**精確 Load 中位**＝光柵器實際 binning 的 (tile, 顆) 對數 Σtiles，每視角取中位（同工具、同相機）。
@@ -13,31 +12,52 @@
 
 | 面板 | 內容 | 對應本文 |
 |---|---|---|
-| (a) | ★ 60k 單變數臂（vpctilek／oent／absgrad 4／absgrad 關／dup4）vs cs60_conic：val、塊內 held-out、held-out LPIPS 對精確 Load | §0 |
-| (b) | 22k b6 同成本比較：只調 cap 的曲線 vs 預算閘門 vs v/c trim（左 conic 關、右 conic 開） | §1 |
-| (c) | 60k 前→後對照：v/c trim 與 dup4 init 的成本變化％與品質變化 dB；灰斜線＝只調 cap 省同樣成本的推估 | §2 |
-| (d) | 60k 只調 cap 的品質曲線（conic 開），與同 cap 2.6M 下各臂 | §3 |
+| (a) | 主要跑次 vs 預設 cs60_conic（b6／b13 平均，同 N 2.34M）：val、塊內 held-out、合併後會留下部分的 held-out（mergeview）；右 = 精確 Load 變化 | §0、§0.1 |
+| (b) | 全場景對官方 CityGSV2：合併模型渲染成本 vs 官方 741 幀 held-out（我方 4x4／release／論文設定） | §0.2、`09` §0 |
+| (c) | 60k 實測成本－品質前緣：只調 cap 的曲線（實測）＋各臂；數字＝同 Load 下比只調 cap 高多少（log 內插） | §0.3 |
+| (d) | 60k 只調 cap 的品質曲線；cap 2.6M 處的點＝同顆數下的各臂 | §3 |
 | (e) | v/c trim 的時間與成本（60k 終點、同 N 2.34M、[solo] step_breakdown） | §2 |
 
 ## 結論
 
-- **現行（10-09）★ 新的 60k 單變數臂（同 N、vs cs60_conic，面板 a）**：
-  - **oent（opacity 二元熵正則 0.002）**：val **-0.62／-0.13**，但塊內 held-out **+0.22／+0.42**、held-out LPIPS 兩塊最好（-0.024／-0.032），精確 Load 中位 **-48／-52%**
-    => **val 與 held-out 方向相反**（與 v/c 剛好相反：v/c 是 val 小輸、held-out 大輸）；是目前同 N 下最便宜、held-out 最好的臂。
-  - **vpctilek（v/c × tile 名次）**：val **-0.03／-0.01**（平手）、Load 中位 **-37／-38%**、held-out -0.34／-0.12（b13 在噪音 ±0.2 內）、held-out LPIPS 較好
-    => 比單純 v/c（speed3 配方 held-out -1.0）好得多。
-  - absgrad：4.0（cag4）val +0.02／-0.03、held-out +0.15／+0.16；**關掉（cag0）val -0.07／-0.05、val LPIPS 兩塊都 +0.004、SSIM 都 -0.002**，held-out -0.13／+0.03（不一致），Load 中位 -4%／-12%
-    => val 上有小而一致的正效果（約在噪音邊緣），held-out 看不出來；關掉反而省 Load。**降為可選元件**，不當成主要貢獻（每臂單次）。
-  - ⚠ 每臂單次、held-out 噪音約 ±0.2（dup 變體散布）；oent 與 vpctilek 都還沒有疊在 dup4 上量過。
-- **10-03 現行最佳**＝cs60_sfmdup4（60k 同 N：b6 30.75／b13 30.32，圖中 ★）；v/c trim 是成本選項（conic 關時 Load -49~-52%、PSNR -0.26／-0.54；conic 開 -0.17／-0.20，60k 精確 Load 已排量測）。⚠ 但塊內 held-out 上 v/c 掉約 1 dB（`12` §6）。
-- **v/c trim（週期 trim 的判準 v → v/c＝價值÷成本，背包的貪婪近似）在前緣上是贏的**：22k b6 精確 Load -46%、PSNR 只 -0.04；同 Load 下 cap 線推估約 **+1.2 dB**。
-- 60k 有品質代價：conic 關（speed3 配方）**-0.27／-0.54 dB**、成本 -49~-52%（Load 中位 -74~-77%、fwd+bwd -20~-22%）；**conic 開時代價縮小到 -0.17／-0.20 dB、LPIPS 反而較好**（conicvpc）。
-- ⚠⚠ **塊內 held-out 上代價大得多**（speed3 配方，conic 關）：b6 -1.02、b13 -1.00 dB（val 只 -0.27／-0.54），SSIM -0.07／-0.05、LPIPS +0.014／+0.009
-  => v/c 剪掉的東西對新視角更重要；「以小 PSNR 換一半 Load」在泛化上不成立（`12` §6）。conic 開的 v/c（conicvpc）held-out 還沒量。
-- 只調 cap 在 60k：cap 0.7／1.2／1.7／2.6M → b6 28.61／29.39／29.90／30.48、b13 28.37／29.06／29.46／30.00；同成本若只調 cap，依 22k 斜率推估要付 1.6~1.7 dB。60k 精確 Load 已排量測。
-- **預算閘門（代理或精確單位）同成本下都在 cap 線下方** => 約束端沒有贏過「直接調低 cap」（詳見 `07`）。
+- **主要跑次（面板 a；Δ vs cs60_conic，b6／b13 平均）**：
+
+  | 臂 | Δ val | Δ 塊內 held-out | Δ held-out 合併後留下的部分 | Δ Load 中位 |
+  |---|---|---|---|---|
+  | ★ dup4（現行配方） | +0.30 | +0.11 | — | -7% |
+  | **oreg0（opacity_reg 0）** | **+1.11** | **+0.51** | — | -36% |
+  | vpctilek | -0.02 | -0.23 | -0.16 | -38% |
+  | oent | -0.38 | +0.32 | -0.16 | -50% |
+  | v/c trim（conic 開） | -0.19 | -0.82 | — | -45% |
+
+  - **oreg0 是唯一 val／held-out／成本三項同時變好的**（失敗區 1.49／2.30% → 0.02／0.12%，幾何 corr 也較好，`12`）⇒ 10-10 起基底改為 best0（dup4＋oreg0）、改在 4x4 上續測。
+  - mergeview（用 merge 的同一套規則切塊內顆粒）：vpctilek／oent 在單塊 held-out 的差，大半出在**塊外像素**；只算合併後會留下的部分，兩者都約 -0.16
+    ⇒ vpctilek 的 held-out 損失合併後大致會消失，oent 的 held-out **增益**也大多在塊外（合併後不會留下）。
+  - v/c trim（conic 開，conicvpc）塊內 held-out b6 -1.02、b13 -0.62：v/c 剪掉的東西對新視角比較重要。
+- **全場景對官方（面板 b）**：我方 4x4 27.74／LPIPS .129、N 17.6M、合併模型 Load 中位 2.52M；官方 release 27.26／.154、論文設定 27.28／.147，Load 都 5.92M
+  ⇒ **渲染成本 -57%、品質同級或略好**（release 合理分數 27.2~27.6，扣掉光柵器偏差後我方領先 +0.1~+0.5 dB，`09` §0.1）。
+- **60k 實測前緣（面板 c）**：同 Load 下比只調 cap 高 —— oreg0 **+2.2／+2.3 dB**、v/c +1.5／+1.2、vpctilek +1.3／+1.0、oent +1.2（b6；b13 的 Load 比 cap 最低點還低，在內插範圍外）、dup4 +0.4／+0.5；
+  conic 關（×）在 cap 線下方。⇒ **「減少成本」最好的手段是改配方，不是調低 cap**；但除了 oreg0 之外，同 N 下的 val 都沒有贏過基準（只是用更低成本換到差不多的品質）。
+- **v/c trim 在 60k 有品質代價**：conic 關（speed3 配方）val -0.27／-0.54、held-out -1.02／-1.00；conic 開 val -0.17／-0.20、held-out -1.02／-0.62；
+  成本 Load 中位 -74~-77%（conic 關）、fwd+bwd -20~-22%（面板 e）。⇒ 定位是成本選項，不是預設。
+- **預算閘門（代理或精確單位）同成本下都在 cap 線下方** ⇒ 約束端沒有贏過「直接調低 cap」（`07`）。
 - ⚠ v/c 只在 **MCMC** 配方有效：官方 vanilla 配方 b3 -2.62、b6 -3.77 dB（`09`）—— MCMC 會把名額重新分配，vanilla 沒有補位。
-- ⚠ VRAM 只省 5~9%：同 N 下 VRAM 由逐顆儲存主導；c_i 主要是**時間**成本。
+- ⚠ VRAM 只省 5~9%：同 N 下 VRAM 由逐顆儲存主導；c_i 主要是**時間**成本（`02`）。
+- ⚠ 每臂單次；塊內 held-out 噪音約 ±0.2。absgrad 臂（cag4／cag0）見 §0：降為可選元件。
+
+## §0.3 60k 實測前緣的數字（面板 c）
+
+| 跑次 | b6 Load 中位 | b6 val | 比 cap 線 | b13 Load 中位 | b13 val | 比 cap 線 |
+|---|---|---|---|---|---|---|
+| 只調 cap 0.7／1.2／1.7／2.6M | 1.419／1.883／2.195／2.773 | 28.61／29.39／29.90／30.48 | — | 1.637／2.151／2.601／3.337 | 28.37／29.06／29.46／30.00 | — |
+| ★ dup4 | 2.616 | 30.75 | +0.41 | 3.059 | 30.32 | +0.51 |
+| oreg0 | 1.773 | 31.38 | +2.16 | 2.131 | 31.32 | +2.28 |
+| vpctilek | 1.739 | 30.45 | +1.28 | 2.078 | 29.99 | +1.02 |
+| oent | 1.444 | 29.86 | +1.20 | 1.603 | 29.87 | （範圍外） |
+| v/c trim（conic 開） | 1.536 | 30.31 | +1.48 | 1.795 | 29.80 | +1.20 |
+| conic 關（cs60_base） | 4.666 | 30.42 | （範圍外） | 6.180 | 29.84 | （範圍外） |
+
+「比 cap 線」= 在 val 對 ln(Load) 的分段線性內插上，同 Load 的只調 cap 品質差。
 
 ---
 
@@ -61,7 +81,7 @@
 - 塊內 held-out 的噪音參考：dup4／dup5／抖動 1.0／抖動 0.25 在 b13 是 20.17／20.46／20.07／20.17（散布約 ±0.2）。
 - 下一步候選（未排，等決定）：oent 疊在 dup4 上（品質＋成本兩邊都可能加成）；vpctilek 疊在 dup4 上。
 
-## §1 22k 同成本比較（b6，面板 a）
+## §1 22k 同成本比較（b6；10-10 起不在圖上，改用 60k 實測前緣 §0.3）
 
 | 臂 | conic | N | 精確 Load 中位 | PSNR |
 |---|---|---|---:|---:|
@@ -118,7 +138,7 @@ PSNR 3/3 都是負的：單塊都在噪音底內、配對 t≈-1.7（df=2，不�
 **⛔ 曾被錯誤關掉一次**（09-12「兩判準遮罩重疊 100%」）：量在 step 60,000（trim 在 30k 就停），且 EXACT_SUPPORT 讓 o≤1/255 的貢獻恰為 0 => 並列使重疊恆為 100%。
 訓練期零貢獻只有 0.15~8.44%，重量得重疊 59.25%。`tools/binning_and_trim_probe.py` 已加退化偵測。
 
-## §2 60k：v/c trim 與 init（面板 b、d）
+## §2 60k：v/c trim 與 init（面板 e；前後對照圖 10-10 移除）
 
 | 塊 | 臂 | 精確 Load 中位 | PSNR / SSIM / LPIPS / 紋理比 |
 |---|---|---:|---|
@@ -155,7 +175,7 @@ PSNR 3/3 都是負的：單塊都在噪音底內、配對 t≈-1.7（df=2，不�
    搬移臂的「平手」可能只是「幾乎沒作用」：首次觸發（step 1,050）只命中 0~1 顆（長寬比中位 1.06、p99 1.9）。
 4. dup4 同 N 下品質更好、渲染也更便宜（`08`）。
 
-## §3 60k 只調 cap（面板 c；conic 開、預設 SfM init）
+## §3 60k 只調 cap（面板 d；conic 開、預設 SfM init）
 
 | cap_max | b6 PSNR / SSIM / LPIPS / 紋理比 | b13 PSNR / SSIM / LPIPS / 紋理比 |
 |---|---|---|

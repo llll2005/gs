@@ -135,6 +135,22 @@ def block_bounds(train_dir, block_id, block_dim, content_threshold=0.08):
     return C.min(0), C.max(0), len(C)
 
 
+def fail_tiles(gt, out, t, min_std, r_min):
+    """與 tools/failure_map.py 同判準（灰階＝PIL 'L' 的係數、uint8 量化；tile t px）：回傳 (全部 tile, 過對比門檻, 失敗)。
+    ⚠ failure_map 另外只算「有 SfM 觀測點」的 tile（要映射世界座標）；held-out 影像不在 SfM 裡 => 這裡分母是全部 tile，數字不可與 `12` 的 val 失敗率直接比，只比同一批視角上的模型。"""
+    def gray(x):
+        q = (x.clamp(0, 1) * 255).round()
+        return ((q[0] * 299 + q[1] * 587 + q[2] * 114) / 1000).floor().cpu().numpy() / 255.
+    g, r = gray(gt), gray(out)
+    h, w = g.shape
+    G = g[:h // t * t, :w // t * t].reshape(h // t, t, w // t, t).transpose(0, 2, 1, 3).reshape(-1, t * t)
+    R = r[:h // t * t, :w // t * t].reshape(h // t, t, w // t, t).transpose(0, 2, 1, 3).reshape(-1, t * t)
+    sg, sr = G.std(1), R.std(1)
+    corr = ((G - G.mean(1, keepdims=True)) * (R - R.mean(1, keepdims=True))).mean(1) / np.maximum(sg * sr, 1e-8)
+    keep = sg >= min_std
+    return G.shape[0], int(keep.sum()), int((keep & (corr < r_min)).sum())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ckpt", required=True)
@@ -147,6 +163,12 @@ def main():
     ap.add_argument("--margin", type=float, default=0.0, help="expand the block AABB by this much")
     ap.add_argument("--save_dir", default=None)
     ap.add_argument("--per_image_csv", default=None, help="逐張 name,psnr,ssim,lpips,bright_ratio（2026-10-09：對官方工具逐幀比對）")
+    ap.add_argument("--fail_tile", type=int, default=48, help="失敗 tile 判準（同 tools/failure_map.py）：tile 邊長 px；GT std>=--fail_min_std 且 corr<--fail_r_min")
+    ap.add_argument("--fail_min_std", type=float, default=0.10)
+    ap.add_argument("--fail_r_min", type=float, default=0.60)
+    ap.add_argument("--opacity_keep", type=float, nargs="+", default=None,
+                    help="2026-10-10（09g）：依 opacity 由高到低只留這些比例（如 1.0 0.9 0.75 0.5 0.25），載入一次、逐一評分；"
+                         "並列依索引（穩定排序），與 tools/official_prune_ckpt.py 同規則，但評分用本工具 => 我方與官方同一把尺")
     a = ap.parse_args()
 
     dev = "cuda"
@@ -197,58 +219,84 @@ def main():
 
     if a.save_dir:
         os.makedirs(a.save_dir, exist_ok=True)
-    ps, ss, ls, tr, tg, ms, br = [], [], [], [], [], [], []
-    import time
-    torch.cuda.reset_peak_memory_stats()
-    with torch.no_grad():
-        for k, i in enumerate(sel):
-            torch.cuda.synchronize(); t0 = time.perf_counter()
-            out = render(i)
-            torch.cuda.synchronize(); ms.append((time.perf_counter() - t0) * 1e3)
-            gt = load_gt(names[i], out)          # 官方 test 集：相機與影像同名（見檔頭）
-            tr.append(float(_grad_energy(out))); tg.append(float(_grad_energy(gt)))
+    orig_props = {k: v for k, v in model.properties.items()}
+    N0 = model.get_xyz.shape[0]
+    op_order = None
+    curve = []
+    for keep in (a.opacity_keep or [1.0]):
+        if keep < 1.0:
+            if op_order is None:
+                op = model.get_opacity.detach().reshape(-1)
+                op_order = torch.argsort(op, descending=True, stable=True)
+            m = torch.zeros(N0, dtype=torch.bool, device=op_order.device)
+            m[op_order[:int(round(N0 * keep))]] = True
+            model.properties = {k: v[m] for k, v in orig_props.items()}
+        else:
+            model.properties = orig_props
+        if a.opacity_keep:
+            print(f"\n════ opacity 保留 {100 * keep:.0f}%：N={model.get_xyz.shape[0]:,} ════")
+        ps, ss, ls, tr, tg, ms, br = [], [], [], [], [], [], []
+        fs = [0, 0, 0]   # 全部 tile／過對比門檻／失敗
+        import time
+        torch.cuda.reset_peak_memory_stats()
+        with torch.no_grad():
+            for k, i in enumerate(sel):
+                torch.cuda.synchronize(); t0 = time.perf_counter()
+                out = render(i)
+                torch.cuda.synchronize(); ms.append((time.perf_counter() - t0) * 1e3)
+                gt = load_gt(names[i], out)          # 官方 test 集：相機與影像同名（見檔頭）
+                tr.append(float(_grad_energy(out))); tg.append(float(_grad_energy(gt)))
 
-            ps.append(float(-10 * torch.log10(((out - gt) ** 2).mean().clamp_min(1e-12))))
-            ss.append(float(ssim_fn(out, gt)))
-            ls.append(float(lpips_fn(out.unsqueeze(0), gt.unsqueeze(0))))
-            br.append(float(out.mean() / gt.mean().clamp_min(1e-6)))
-            if a.save_dir:
-                both = torch.cat([gt, out], dim=2).permute(1, 2, 0).cpu().numpy()
-                Image.fromarray((both * 255).astype(np.uint8)).save(
-                    os.path.join(a.save_dir, f"{names[i].rsplit('.',1)[0]}_gt_vs_render.png"))
-            if (k + 1) % 20 == 0:
-                print(f"  ...{k+1}/{len(sel)}  PSNR={np.mean(ps):.2f}")
+                ps.append(float(-10 * torch.log10(((out - gt) ** 2).mean().clamp_min(1e-12))))
+                ss.append(float(ssim_fn(out, gt)))
+                ls.append(float(lpips_fn(out.unsqueeze(0), gt.unsqueeze(0))))
+                br.append(float(out.mean() / gt.mean().clamp_min(1e-6)))
+                ft = fail_tiles(gt, out, a.fail_tile, a.fail_min_std, a.fail_r_min); fs[0] += ft[0]; fs[1] += ft[1]; fs[2] += ft[2]
+                if a.save_dir:
+                    both = torch.cat([gt, out], dim=2).permute(1, 2, 0).cpu().numpy()
+                    Image.fromarray((both * 255).astype(np.uint8)).save(
+                        os.path.join(a.save_dir, f"{names[i].rsplit('.',1)[0]}_gt_vs_render.png"))
+                if (k + 1) % 20 == 0:
+                    print(f"  ...{k+1}/{len(sel)}  PSNR={np.mean(ps):.2f}")
 
-    print(f"\n=== 官方 held-out test（{len(sel)} 幀）===")
-    print(f"PSNR  {np.mean(ps):6.3f}   (min {np.min(ps):.2f} / max {np.max(ps):.2f})")
-    print(f"SSIM  {np.mean(ss):6.4f}")
-    print(f"LPIPS {np.mean(ls):6.4f}")
-    w = ms[5:] if len(ms) > 10 else ms                      # 前 5 幀暖身不計
-    print(f"渲染  {np.mean(w):6.2f} ms/幀（中位 {np.median(w):.2f}）=> {1e3 / np.mean(w):.1f} FPS"
-          f"   峰值 VRAM 配置 {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB（含模型；⚠ 計時要獨佔整卡才可比）")
-    print(f"紋理比 逐張平均 {np.mean(np.array(tr) / np.maximum(tg, 1e-8)):6.4f}   能量加權 {np.sum(tr) / max(np.sum(tg), 1e-8):6.4f}"
-          "（<1 偏糊、>1 多出不存在的細節；要與 LPIPS 一起看）")
+        print(f"\n=== 官方 held-out test（{len(sel)} 幀）===")
+        print(f"PSNR  {np.mean(ps):6.3f}   (min {np.min(ps):.2f} / max {np.max(ps):.2f})")
+        print(f"SSIM  {np.mean(ss):6.4f}")
+        print(f"LPIPS {np.mean(ls):6.4f}")
+        print(f"失敗 tile {100 * fs[2] / max(fs[0], 1):.2f}% 全部 tile（{100 * fs[2] / max(fs[1], 1):.2f}% 過對比門檻者；"
+              f"tile {a.fail_tile}px、GT std>={a.fail_min_std}、corr<{a.fail_r_min}；共 {fs[0]:,} tile、過門檻 {fs[1]:,}）")
+        w = ms[5:] if len(ms) > 10 else ms                      # 前 5 幀暖身不計
+        print(f"渲染  {np.mean(w):6.2f} ms/幀（中位 {np.median(w):.2f}）=> {1e3 / np.mean(w):.1f} FPS"
+              f"   峰值 VRAM 配置 {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB（含模型；⚠ 計時要獨佔整卡才可比）")
+        print(f"紋理比 逐張平均 {np.mean(np.array(tr) / np.maximum(tg, 1e-8)):6.4f}   能量加權 {np.sum(tr) / max(np.sum(tg), 1e-8):6.4f}"
+              "（<1 偏糊、>1 多出不存在的細節；要與 LPIPS 一起看）")
 
-    # Break down by which MatrixCity block each test view came from -- difficulty varies a lot
-    # across the city, so a shift in the mix can move the average on its own.
-    src = source_blocks(a.test_dir)
-    groups = {}
-    for j, i in enumerate(sel):
-        groups.setdefault(src.get(names[i], "?"), []).append(j)
-    if len(groups) > 1:
-        print(f"\n{'來源區塊':>14} {'幀':>5} {'PSNR':>7} {'SSIM':>7} {'LPIPS':>7}")
-        for g in sorted(groups, key=lambda x: -len(groups[x])):
-            ix = groups[g]
-            print(f"{g:>14} {len(ix):>5} {np.mean([ps[j] for j in ix]):>7.3f} "
-                  f"{np.mean([ss[j] for j in ix]):>7.4f} {np.mean([ls[j] for j in ix]):>7.4f}")
-    if a.per_image_csv:
-        with open(a.per_image_csv, "w") as f:
-            f.write("name,psnr,ssim,lpips,bright_ratio\n")
-            for j, i in enumerate(sel):
-                f.write(f"{names[i]},{ps[j]:.5f},{ss[j]:.5f},{ls[j]:.5f},{br[j]:.4f}\n")
-        print(f"[逐張] {a.per_image_csv}")
-    if a.save_dir:
-        print(f"[圖] {a.save_dir}（左=GT 右=渲染）")
+        # Break down by which MatrixCity block each test view came from -- difficulty varies a lot
+        # across the city, so a shift in the mix can move the average on its own.
+        src = source_blocks(a.test_dir)
+        groups = {}
+        for j, i in enumerate(sel):
+            groups.setdefault(src.get(names[i], "?"), []).append(j)
+        if len(groups) > 1:
+            print(f"\n{'來源區塊':>14} {'幀':>5} {'PSNR':>7} {'SSIM':>7} {'LPIPS':>7}")
+            for g in sorted(groups, key=lambda x: -len(groups[x])):
+                ix = groups[g]
+                print(f"{g:>14} {len(ix):>5} {np.mean([ps[j] for j in ix]):>7.3f} "
+                      f"{np.mean([ss[j] for j in ix]):>7.4f} {np.mean([ls[j] for j in ix]):>7.4f}")
+        if a.per_image_csv:
+            with open(a.per_image_csv, "w") as f:
+                f.write("name,psnr,ssim,lpips,bright_ratio\n")
+                for j, i in enumerate(sel):
+                    f.write(f"{names[i]},{ps[j]:.5f},{ss[j]:.5f},{ls[j]:.5f},{br[j]:.4f}\n")
+            print(f"[逐張] {a.per_image_csv}")
+        if a.save_dir:
+            print(f"[圖] {a.save_dir}（左=GT 右=渲染）")
+        if a.opacity_keep:
+            curve.append((keep, model.get_xyz.shape[0], np.mean(ps), np.mean(ss), np.mean(ls)))
+    if curve:
+        print("\n[剪枝曲線] keep\tN\tpsnr\tssim\tlpips")
+        for k_, n_, p_, s_, l_ in curve:
+            print(f"[剪枝曲線] {k_:.2f}\t{n_}\t{p_:.3f}\t{s_:.4f}\t{l_:.4f}")
 
 
 if __name__ == "__main__":

@@ -116,17 +116,17 @@ save(fig, "fig3_vram_segments.png")
 
 # ── 圖 4：ckpt 裡存了什麼 ──
 fig, axes = plt.subplots(1, 2, figsize=(13, 3.8), gridspec_kw={"width_ratios": [1, 2]})
-axes[0].bar(["ckpt（N 1.85M）"], [0.400], color="#4C72B0", label="參數 0.400 GiB（33%）")
-axes[0].bar(["ckpt（N 1.85M）"], [0.799], bottom=[0.400], color="#C44E52", label="Adam 狀態 0.799 GiB（67%）")
-axes[0].set_ylabel("GiB"); axes[0].legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.08)); axes[0].set_ylim(0, 1.4)
-fields = [("SH 高階 shs_rest", 180), ("rotations", 16), ("means", 12), ("SH 常數 shs_dc", 12), ("scales（2DGS 2 軸）", 8), ("opacities", 4), ("Adam exp_avg", 232), ("Adam exp_avg_sq", 232)]
-cols = ["#C44E52", "#55A868", "#55A868", "#DD8452", "#55A868", "#55A868", "#B0B0B0", "#8C8C8C"]
+axes[0].bar(["60k 終點 ckpt（N 2.34M）"], [0.506], color="#4C72B0", label="參數 0.506 GiB（33%）")
+axes[0].bar(["60k 終點 ckpt（N 2.34M）"], [1.011], bottom=[0.506], color="#C44E52", label="Adam 狀態 1.011 GiB（67%）")
+axes[0].set_ylabel("GiB"); axes[0].legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.08)); axes[0].set_ylim(0, 1.8)
+fields = [("SH 高階 shs_rest", 180), ("SH0", 12), ("幾何", 40), ("Adam exp_avg", 232), ("Adam exp_avg_sq", 232)]   # 幾何 = 旋轉 16＋位置 12＋縮放 8＋不透明度 4
+cols = ["#C44E52", "#DD8452", "#55A868", "#B0B0B0", "#8C8C8C"]
 left = 0
 for (n, v), c in zip(fields, cols):
     axes[1].barh(0, v, left=left, color=c, edgecolor="white")
     if v >= 12: axes[1].text(left + v/2, 0, f"{n}\n{v} B", ha="center", va="center", fontsize=7, color="white" if v > 30 else "black")
     left += v
-axes[1].set_yticks([]); axes[1].set_xlabel("bytes／顆（ckpt 合計約 696 B／顆）")
+axes[1].set_yticks([]); axes[1].set_xlabel("bytes／顆（ckpt 合計約 696 B／顆；幾何 40 B＝旋轉 16＋位置 12＋縮放 8＋不透明度 4）")
 axes[1].set_title("參數 232 B／顆：SH 高階佔 77.6%，幾何（位置／旋轉／縮放／不透明度）只有 40 B", fontsize=10)
 fig.suptitle("圖 4　成果檔的組成：2/3 是優化器狀態；參數裡主要是顏色（SH3）", fontsize=11)
 save(fig, "fig4_ckpt_storage.png")

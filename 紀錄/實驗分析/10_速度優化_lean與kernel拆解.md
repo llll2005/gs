@@ -1,17 +1,17 @@
 # 10 速度優化：lean_render、kernel 拆解與候選清單
 
-> **圖**：`10_速度優化_lean與kernel拆解.png`（同名，2 個面板）　｜　**年代**：新年代（時間量測，不經過影像↔姿態配對）
+> **圖**：`10_速度優化_lean與kernel拆解.png`（同名，1 個面板；10-10 起逐段迴圈時間併入 `01`(a)，這裡不再重複）　｜　**年代**：新年代（時間量測，不經過影像↔姿態配對）
 > **資料**：lab [solo] `scripts/lab/task_lean_check.sh`（`logs/lean_check_1002_1031.log`）：`tools/check_lean_render.py`（dump／compare／profile／adamcheck）；
 > 真實迴圈 `_StepProfiler`（cs60_conic b6 @14,999 起 1,200 步，含 1 次 trim）；`tools/check_noise_opts.py`
-> **重現**：`python tools/plot_analysis.py`（a=`n10_lean_loop`、b=`n10_kernels`）
+> **重現**：`python tools/plot_analysis.py`（`n10_kernels`）
 
 ## 圖表對照
 
 | 面板 | 內容 | 對應本文 |
 |---|---|---|
-| (a) | 真實訓練迴圈逐段時間：不開 lean／開 lean（10-02）／★ 開 lean＋record_reduce（現行）／＋tile_cull（不採用）（10-03） | §1、§6 |
-| (b) 左 | kernel 拆解（profiler）：逐配對的光柵 kernel vs 逐顆／逐像素（⚠ 沒重量 record_reduce） | §2 |
-| (b) 右 | optimizer.step：foreach（現行）vs fused | §3 |
+| （已移到 `01`(a)） | 真實訓練迴圈逐段時間：lean 關／lean／lean＋record_reduce／＋飽和跳過＋先加總，加上官方兩條線 | §1、§6、§7 |
+| 左 | kernel 拆解（profiler，**10-02 資料**）：逐配對的光柵 kernel vs 逐顆／逐像素（⚠ 沒重量 record_reduce 與 10-10 的 backward 改動） | §2 |
+| 右 | optimizer.step：foreach（現行）vs fused | §3 |
 
 ## 結論
 
@@ -24,6 +24,9 @@
 - **fused Adam 在 torch 2.0.1 反而慢 2.3~3.2 倍** => 不採用。
 - fast_noise（MCMC 噪音的代數改寫）與原算法只差浮點捨入（5 個 ckpt，相對差中位 ~6e-8）；noise_gate 跳過的顆粒中約 1% 噪音 ≥ 自身 Adam 步長 => 要訓練驗（`cnogate` 已排）。
 - 第二批（10-03 驗完，§6）：`record_reduce` 採用（4x4 全場景用它）；`tile_cull` 正確但淨變慢、不採用。
+- **第三批（10-09／10，§7）：backward 飽和跳過（SAT）＋ warp 內先加總（RED）**：backward 68.75 → **40.86 ms**、真實每步 120.7 → **90.5 ms**（satred，b6 @14,999、N 2.58M、唯一沒被外部佔卡污染的一組）。
+  正確性：大元素逐元素相對誤差 p99.9 1.8e-4（噪音底 1.7e-5 的 10.5 倍，形式上超過門檻，原因是加總順序改變）；2,000 步訓練層級的 held-out 都在 base／base2 的噪音 0.47 dB 內。
+  ⇒ 共用環境已裝（欄位 `bwd_sat_skip`／`bwd_reduce`，預設關）；**60k 分數判定 `best0fast`（4x4 b6／b12）出來前不進預設**。
 
 ---
 
@@ -142,3 +145,19 @@ profiler，b6 @14,999（N 2.6M），每步換一台相機、12 步，含 1 台�
 ## 限制
 - lean 的計時是單一塊（b6）、增生期 1,200 步；收割期（沒有 trim）的比例不同。
 - profiler 的「其他」含 runtime API 的計時，可能有重複，只當量級。
+
+## §7 backward 飽和跳過＋warp 內先加總（10-09／10）
+
+實作：`renderCUDA_opt<C,ABS,SAT,RED>`（只走 lean 路徑）。
+- **SAT**：每個 tile 從「tile 內最大的最後貢獻者」開始往回走，跳過 forward 時已經飽和（T 低於門檻）之後才輪到的配對 —— 這些配對在 forward 沒有貢獻，backward 對它們的梯度恆為 0。
+- **RED**：同一顆粒在一個 tile 內被 256 個像素各自 `atomicAdd` 到同一個全域位址；改成 warp 內 `cg::reduce` → shared atomics → 每批一次全域 atomic，減少同址衝突。
+
+| 量測（lab b6 @14,999、N 2.58M、[solo]） | base | satred |
+|---|---|---|
+| backward（逐段同步） | 68.75 ms | **40.86 ms** |
+| 真實每步（不同步） | 120.7 ms | **90.5 ms** |
+| 段內峰值配置（backward） | — | 3,868 MiB |
+
+驗證（`scripts/lab/task_bwdopt_check.sh verify2`）：渲染逐位元相同；梯度大元素 p99.9 相對誤差 1.8e-4 vs 自身噪音 1.7e-5；
+2,000 步 held-out 都在噪音內。⚠ 第一輪計時被外部佔卡污染，只有 satred 這組乾淨；sat／red 單獨的貢獻沒有乾淨數字。
+60k 判定：`CITYGS_GRID=44 ... task_cmp.sh <6|12> best0fast`（已排在 g44 best0 之後）。

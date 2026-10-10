@@ -113,7 +113,7 @@ ax.set_title("峰值 VRAM（同 N）　⚠ b6 22k 未取到", fontsize=10)
 save(fig, "cc3_load_vram.png")
 
 # ── 4. 副作用：代理成本指標在新版下會脫鉤 ──────────────────────────────────
-fig, ax = plt.subplots(figsize=(6.4, 3.8))
+fig, ax = plt.subplots(figsize=(13, 3.4))
 lab3 = ["b6", "b13"]
 o3, n3 = [1.282, 1.070], [2.272, 2.234]
 x = np.arange(2)
@@ -121,14 +121,14 @@ ax.bar(x - w/2, o3, w, label="conic 關", color=OLD)
 ax.bar(x + w/2, n3, w, label="conic 開（現行預設）", color="#C44E52")
 ax.axhline(1.0, color="k", lw=0.8, ls="--")
 ax.axhline(1.8, color="#C44E52", lw=0.8, ls=":")
-ax.text(1.45, 1.83, "控制器警告門檻 1.8", fontsize=7, color="#C44E52")
+ax.text(1.42, 1.83, "控制器警告門檻 1.8", fontsize=7, color="#C44E52")
 for i, (a, b) in enumerate(zip(o3, n3)):
     ax.text(i - w/2, a, f"{a:.2f}", ha="center", va="bottom", fontsize=8)
     ax.text(i + w/2, b, f"{b:.2f}", ha="center", va="bottom", fontsize=8)
 ax.set_xticks(x); ax.set_xticklabels(lab3)
 ax.set_ylabel("代理 Σ(2r/16)² ÷ 精確 Σtiles")
-ax.set_title("⚠ 副作用：conic 開讓代理成本指標脫鉤\n"
+ax.set_title("⚠ 副作用：conic 開讓代理成本指標脫鉤"
              "（radii 被刻意凍結成線性化半徑以保護尺寸語意）", fontsize=10)
-ax.legend(fontsize=8)
+ax.set_ylim(0, 2.7); ax.legend(fontsize=8, loc="upper left")
 save(fig, "cc4_proxy_decoupled.png")
 print("完成。⚠ 本圖＝conic on/off 的 A/B，不是「舊 config 整體 vs 新 config 整體」—— 見檔頭。")

@@ -8,6 +8,8 @@
 
 make：python tools/prune_resume_ckpt.py make --ckpt <base> --out <目錄> --K 32 64
       產出 <目錄>/<臂>/checkpoints/<原檔名>：tk{K}（逐 tile 前 K 名）、op{K}（同 N、opacity 最高）、base（不剪，對照「多 5k 步」）
+      --arms 選要產生哪幾組（預設 tk op base；10-10 加 v／vc：同 N、現行 trim 判準 v＝max 每像素平均 T·α、v/c＝v ÷ Σ覆蓋 tile，
+      與 tools/tile_topk_prune.py 的定義相同 => 06(b) 補「v 與 v/c 剪完再 fine-tune」）
 eval：python tools/prune_resume_ckpt.py eval <ckpt> [<ckpt> ...]
       每個 ckpt：N、val PSNR/SSIM/LPIPS（val⊂train，相對比較用）、精確 Load 中位（Σtiles）
 """
@@ -59,20 +61,26 @@ def cmd_make(a):
     N = model.n_gaussians
     bg = torch.zeros(3, device=dev)
     best = torch.full((N,), NEVER, dtype=torch.int64, device=dev)
+    v_trim = torch.zeros(N, device=dev); cost_sum = torch.zeros(N, device=dev)
     with torch.no_grad():
         for i in range(len(outs.train_set)):
             cam = outs.train_set.cameras[i].to_device(dev)
             trans, cov, radii = renderer(cam, model, bg_color=bg, record_transmittance=True,
                                          record_coverage=True, record_radii=True)
             update_best_rank(best, trans * cov.float(), radii, model.get_xyz, cam)
+            v_trim = torch.maximum(v_trim, trans.reshape(-1)); cost_sum += cov.reshape(-1).float()
     op = model.get_opacity.detach().reshape(-1)
     name = os.path.basename(a.ckpt)
-    arms = {"base": torch.ones(N, dtype=torch.bool, device=dev)}
+    vpc = v_trim / torch.clamp_min(cost_sum, 1.0)
+    arms = {"base": torch.ones(N, dtype=torch.bool, device=dev)} if "base" in a.arms else {}
     for K in a.K:
         m = best < K
         n = int(m.sum())
-        arms[f"tk{K}"] = m
-        arms[f"op{K}"] = op >= torch.topk(op, n).values[-1]
+        top = lambda x: x >= torch.topk(x, n).values[-1]
+        cand = {"tk": m, "op": top(op), "v": top(v_trim), "vc": top(vpc)}
+        for k in a.arms:
+            if k in cand:
+                arms[f"{k}{K}"] = cand[k]
     for arm, m in arms.items():
         new, cnt = prune_tree(ck, m.cpu(), N)
         d = os.path.join(a.out, arm, "checkpoints"); os.makedirs(d, exist_ok=True)
@@ -118,6 +126,7 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
     m = sp.add_parser("make"); m.add_argument("--ckpt", required=True); m.add_argument("--out", required=True)
     m.add_argument("--K", type=int, nargs="+", default=[32, 64])
+    m.add_argument("--arms", nargs="+", default=["tk", "op", "base"], choices=["tk", "op", "v", "vc", "base"])
     e = sp.add_parser("eval"); e.add_argument("ckpts", nargs="+")
     a = ap.parse_args()
     cmd_make(a) if a.cmd == "make" else cmd_eval(a)

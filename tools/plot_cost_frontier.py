@@ -256,13 +256,13 @@ def fig5():
     kept = [100, 90, 75, 50, 25]
     n = [24.48, 22.03, 18.36, 12.24, 6.12]
     ps = [25.789, 25.789, 25.754, 24.404, 19.004]
-    fig, ax = plt.subplots(figsize=(7.2, 4.4))
+    fig, ax = plt.subplots(figsize=(13, 3.8))
     ax.plot(n, ps, "-o", color=C1, lw=2, ms=7)
     for a, b, k in zip(n, ps, kept):
         lab(ax, a, b, f"留 {k}%（{a:.1f}M）\n{b:.2f}", dx=6, dy=(8 if k == 100 else (-28 if k in (90, 75) else 4)))
     ax.set_ylim(18.5, 26.6)
     ax.set_xlabel("保留顆數 N（百萬）"); ax.set_ylabel("held-out PSNR（dB）")
-    ax.set_title("圖 5　官方模型依 opacity 剪枝（官方 test 評分）：前 25%（≈610 萬顆）幾乎白付", fontsize=10.5)
+    ax.set_title("官方 release 依 opacity 剪枝（官方評分工具，含暗幀偏差 → 絕對值偏低約 1.5 dB，只看形狀）：前 25%（≈610 萬顆）幾乎白付；我方同類曲線待量（09g）", fontsize=10.5)
     ax.invert_xaxis()
     save(fig, "f5_official_prune.png")
 

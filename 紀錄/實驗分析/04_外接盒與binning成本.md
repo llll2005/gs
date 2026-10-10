@@ -1,16 +1,16 @@
 # 04 外接盒與 binning 成本（conic 精確外接盒、精確 Σtiles、代理的誤差）
 
 > **圖**：`04_外接盒與binning成本.png`（同名，4 個面板）　｜　**年代**：新年代（2026-10-03 起圖表與表格不再放舊資料時代的數字）
-> **資料**：`tools/bbox_rect_ceiling.py`（離線天花板）；本機 CUDA 實測；lab `task_cmp.sh conic`（22k／60k，b6／b13）；`task_load_compare.sh`；`tools/cost_budget_calibrate.py`
-> **重現**：`python tools/plot_analysis.py`（面板 a~d＝cc1~cc4）
+> **資料**：`tools/bbox_rect_ceiling.py`（離線天花板）；lab `task_cmp.sh conic`（22k／60k，b6／b13）；60k 終點模型的 `tools/step_breakdown.py`（[solo]）與 `task_load_compare.sh`；`tools/cost_budget_calibrate.py`
+> **重現**：`python tools/plot_analysis.py`（面板 a=cc1、b=n04_time、c=n04_load、d=cc4）；10-10 改版：b／c 換成 60k [solo] 實測（舊版是 22k 三槽平行）
 
 ## 圖表對照
 
 | 面板 | 內容 | 對應本文 |
 |---|---|---|
 | (a) | conic 開 vs 關：4 組比較 x 4 指標的 Δ（黃帶＝同配方重複樣本的差） | §0、§9.9b |
-| (b) | forward／forward+backward 時間（[solo]，同 N） | §9.5、§9.9b |
-| (c) | 離線精確 Σtiles（全部相機）與峰值 VRAM | §9.9b |
+| (b) | forward／forward+backward 時間（60k 終點、同 N 2.34M、lab [solo]） | §0.1、§9.5 |
+| (c) | 精確 Σtiles（中位與 max）與訓練峰值 VRAM（60k 終點、同 N） | §0.1、§9.9b |
 | (d) | 副作用：代理 ÷ 精確 成本比脫鉤 | §9.9b、§9.9e |
 
 ## 結論
@@ -21,10 +21,25 @@
 - `tiles_touched`（精確的逐顆 binning 成本）已接出；**代理 Σ(2r/16)² 與精確值沒有固定倍率**（0.28~4.40，訓練中會變號），conic 開啟後方向甚至相反 ⇒ 新年代的成本機制一律 `exact_tile_cost`。
 - γ（每相交位元組）實測 36.27（程式寫死 24）；但 binning 項只佔峰值模型可切分部分約 6% ⇒ 對 K 的決策是捨入誤差。
 - 再往下一步（StopThePop 式逐 tile 剔除）的上限是再去掉 30~42% 配對 —— 見 `11_逐配對工作量上限.md`。
+- **10-10 的 60k [solo] 實測（面板 b、c）**：forward b6 24.49 → 20.56（-16.0%）、b13 37.59 → 28.13（-25.2%）；forward＋backward b6 64.90 → 55.99（-13.7%）、b13 92.21 → 76.55（-17.0%）。
+  Load 中位 b6 4.666 → 2.773（-41%）、b13 6.180 → 3.337（-46%）；max 7.586 → 5.190（-32%）、9.821 → 5.712（-42%）。
+  **峰值 VRAM 只 -5~-7%**（4.58 → 4.35、4.68 → 4.37 GB）⇒ conic 省的是**時間與渲染成本**，不是 VRAM（VRAM 由 N 主導，見 `02`）。
 
 ---
 
 > 本文 §編號沿用原《資源與效能量測彙整》（2026-10-03 拆成 01~04 四份，原檔已歸檔）：§1 時間、§2.x 平行 → `01`；§2 max_split、§3 VRAM → `02`；§4 儲存、§5 RAM、§6 改善項 → `03`；§9 外接盒與成本量測 → `04`。「v2 §x」指 `new_archived/研究總覽_v2_至2026-10-03.md`、「研究總覽 §11.x／§13.x」指舊版 `new_archived/研究總覽_v1_至2026-09-13.md`（現行正文 `研究總覽.md` 的章節編號不同）。
+
+## 0.1 60k [solo] 實測（10-10 改版，面板 b、c）
+
+| | b6 conic 關 | b6 conic 開 | b13 conic 關 | b13 conic 開 |
+|---|---|---|---|---|
+| 光柵化 forward（ms） | 24.49 | 20.56（-16.0%） | 37.59 | 28.13（-25.2%） |
+| forward＋backward（ms） | 64.90 | 55.99（-13.7%） | 92.21 | 76.55（-17.0%） |
+| 精確 Load 中位（百萬） | 4.666 | 2.773（-41%） | 6.180 | 3.337（-46%） |
+| 精確 Load max（百萬） | 7.586 | 5.190（-32%） | 9.821 | 5.712（-42%） |
+| 訓練峰值實佔（GB） | 4.58 | 4.35（-5%） | 4.68 | 4.37（-7%） |
+
+60k 終點、同 N 2.34M（cs60_base vs cs60_conic）、lean 關、單台相機中位。
 
 ## 0. conic A/B 的定位
 ### ⚠⚠ 這組圖「是什麼」與「不是什麼」

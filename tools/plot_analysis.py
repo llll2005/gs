@@ -56,21 +56,19 @@ def n05_cap60k(d):
     caps = [0.7, 1.2, 1.7, 2.6]
     b6 = [28.61, 29.39, 29.90, 30.48]
     b13 = [28.37, 29.06, 29.46, 30.00]
-    fig, ax = plt.subplots(figsize=(8.6, 4.6))
+    fig, ax = plt.subplots(figsize=(13, 4.4))
     ax.plot(caps, b6, "-o", color=C1, lw=2, label="b6：只調 cap（conic 開、預設 SfM）")
     ax.plot([c for c, v in zip(caps, b13) if v == v], [v for v in b13 if v == v], "-o", color=C2, lw=2,
             label="b13：只調 cap（conic 開、預設 SfM）")
-    arms = [("v/c trim", 30.31, 29.80, "v"), ("fastgrow", 30.59, 30.10, "^"),
-            ("dup2", 30.58, 30.13, "s"), ("dup4\n★現行最佳", 30.75, 30.32, "D")]
+    # 10-10 修正：各臂都是 cap 2.6M，放回 x=2.6（只做左右小錯開避免重疊；舊版放在 2.75~3.15 看起來像別的 cap）
+    arms = [("v/c trim", 30.31, 29.80, "v"), ("dup4 ★現行", 30.75, 30.32, "*"), ("oreg0", 31.38, 31.32, "D")]
     for i, (nm, a, b, m) in enumerate(arms):
-        x = 2.75 + 0.13 * i
-        ax.plot(x, a, m, color=C1, ms=7); ax.plot(x, b, m, color=C2, ms=7)
-        ax.annotate(nm, (x, max(a, b)), xytext=(0, 8), textcoords="offset points", fontsize=7.5, color=INK2, ha="center")
-    ax.axvline(2.68, color=MUTED, lw=0.8, ls=":")
-    ax.text(2.69, 28.45, "同 cap 2.6M 的各臂\n（藍 b6／橙 b13）", fontsize=7.5, color=INK2)
+        x = 2.6 + 0.045 * (i - 1)
+        ax.plot(x, a, m, color=C1, ms=9 if m == "*" else 7, mec="k", mew=0.4); ax.plot(x, b, m, color=C2, ms=9 if m == "*" else 7, mec="k", mew=0.4)
+        ax.annotate(f"{nm}（b6 {a:.2f}／b13 {b:.2f}）", (x, min(a, b) if m == "v" else max(a, b)), xytext=(-14 if m == "v" else 14, -14 if m == "v" else 0), textcoords="offset points", fontsize=8, color=INK2, va="center", ha="right" if m == "v" else "left")
     ax.set_xlabel("cap_max（百萬顆；終點 N 約為 0.9 倍）"); ax.set_ylabel("val PSNR（dB，val⊂train）")
-    ax.set_xlim(0.55, 3.25); ax.set_ylim(28.35, 31.0); ax.legend(loc="upper left", fontsize=8)
-    ax.set_title("60k：只調 cap 的品質曲線，與同 cap 2.6M 下各臂（右側點）", fontsize=10.5)
+    ax.set_xlim(0.55, 3.25); ax.set_ylim(28.3, 31.6); ax.legend(loc="upper left", fontsize=8)
+    ax.set_title("60k：只調 cap 的品質曲線；cap 2.6M 處的點＝同顆數下的各臂（藍 b6／橙 b13）", fontsize=10.5)
     save(fig, d, "n05_cap60k.png")
 
 
@@ -118,17 +116,19 @@ def n07_sampling(d):
            ("refh2 前緊後鬆", 91.2, 27.34, C3), ("★ 現行：無預算", 145.9, 29.00, MUTED)]
     for nm, x, y, c in pts:
         ax.plot(x, y, "o", color=c, ms=9)
-        ax.annotate(f"{nm}\n{y:.2f}", (x, y), xytext=(6, -4), textcoords="offset points", fontsize=8, color=INK2)
+        ax.annotate(f"{nm}\nPSNR {y:.2f}｜成本 {x:.1f}B", (x, y), xytext=(6, -4), textcoords="offset points", fontsize=8, color=INK2)
+    ax.annotate("", (145.9, 28.6), (97.6, 28.6), arrowprops=dict(arrowstyle="<->", color=MUTED, lw=0.9))
+    ax.text(121, 28.65, "無預算多花 +50~133% 成本", ha="center", fontsize=8, color=INK2)
     ax.set_xlabel("整趟累積渲染成本（十億，區間平均 Load × 150 步）"); ax.set_ylabel("PSNR（dB）")
-    ax.set_xlim(50, 175)
-    ax.set_title("相對預算三種排程（目標總成本相同）", fontsize=10)
+    ax.set_xlim(50, 185)
+    ax.set_title("相對預算三種排程（目標總成本相同）：前鬆後緊成本最低；無預算較高分是因為成本多一半以上", fontsize=9)
     ax = axs[2]
     frac = [10, 25, 50, 75]
     for nm, ys, c in [("b12@15k", [57.30, 26.61, 8.89, 2.26], C1), ("b13@15k", [57.36, 22.34, 6.12, 1.12], C2),
                       ("b6@60k", [48.70, 21.50, 5.42, 0.78], C3)]:
         ax.plot(frac, ys, "-o", color=c, lw=2, label=nm)
     ax.set_xlabel("預算佔總成本（%）"); ax.set_ylabel("按 v/c 選比按 v 選多拿的總價值（%）")
-    ax.legend(fontsize=8); ax.set_title("背包的空間：預算越緊越大（離線上界）", fontsize=10)
+    ax.legend(fontsize=8); ax.set_title("背包的空間：預算越緊越大\n（離線上界：在訓練好的模型上用貪婪背包算，不是訓練結果）", fontsize=9.5)
     save(fig, d, "n07_sampling.png")
 
 
@@ -168,33 +168,34 @@ def n08_init60k(d):
 
 
 def n09_official_blocks(d):
-    lines = ["官方原版\n（trim 從未執行）", "＋一行修正\n（trim 執行）", "論文設定\n（＋ω0.9、prune 0.025）"]
-    n3 = [5.23, 0.91, 3.05]; v3 = [31.69, 30.86, 31.78]
-    n6 = [7.11, np.nan, 5.31]; v6 = [30.14, np.nan, 30.35]
-    fig, axs = plt.subplots(1, 2, figsize=(13, 4.2))
-    x = np.arange(3); wd = 0.38
-    ax = axs[0]
-    barlabels(ax, ax.bar(x - wd / 2, n3, wd, color=C1, label="官方 block 3"), fmt="{:.2f}M")
-    b = ax.bar(x + wd / 2, [0 if v != v else v for v in n6], wd, color=C2, label="官方 block 6")
-    for bb, v in zip(b, n6):
-        if v == v:
-            ax.annotate(f"{v:.2f}M", (bb.get_x() + bb.get_width() / 2, v), xytext=(0, 2), textcoords="offset points",
-                        ha="center", fontsize=7.5, color=INK2)
-        else:
-            ax.annotate("未跑", (bb.get_x() + bb.get_width() / 2, 0.2), ha="center", fontsize=7.5, color=MUTED)
-    ax.set_xticks(x); ax.set_xticklabels(lines, fontsize=8.5); ax.set_ylabel("終點顆數 N（百萬）"); ax.legend(fontsize=8)
-    ax.set_title("官方程式碼、官方 4x4 分區：終點顆數", fontsize=10)
-    ax = axs[1]
-    barlabels(ax, ax.bar(x - wd / 2, v3, wd, color=C1, label="官方 block 3"))
-    b = ax.bar(x + wd / 2, [0 if v != v else v for v in v6], wd, color=C2, label="官方 block 6")
-    for bb, v in zip(b, v6):
-        if v == v:
-            ax.annotate(f"{v:.2f}", (bb.get_x() + bb.get_width() / 2, v), xytext=(0, 2), textcoords="offset points",
-                        ha="center", fontsize=7.5, color=INK2)
-    ax.set_ylim(28, 32.5); ax.set_xticks(x); ax.set_xticklabels(lines, fontsize=8.5)
-    ax.set_ylabel("val PSNR（dB，val⊂train）"); ax.legend(fontsize=8)
-    ax.set_title("同上：val PSNR（論文設定：顆數少 25~42%、val 反而高）", fontsize=10)
+    """官方 block 3／6：release（trim 從未執行）vs 論文設定（trim 執行＋ω0.9、prune 0.025）。10-10：拿掉「一行修正」那欄（使用者）。"""
+    lines = ["官方 release\n（trim 從未執行）", "官方論文設定\n（trim 執行＋ω0.9、prune 0.025）"]
+    n3 = [5.23, 3.05]; v3 = [31.69, 31.78]; n6 = [7.11, 5.31]; v6 = [30.14, 30.35]
+    fig, axs = plt.subplots(1, 2, figsize=(13, 3.4))
+    x = np.arange(2); wd = 0.36
+    for ax, (a3, a6, fmt, yl, tt) in zip(axs, [(n3, n6, "{:.2f}M", "終點顆數 N（百萬）", "終點顆數：論文設定少 25~42%"),
+                                                (v3, v6, "{:.2f}", "val PSNR（dB，val⊂train）", "val：論文設定反而略高")]):
+        barlabels(ax, ax.bar(x - wd / 2, a3, wd, color=C1, label="官方 block 3"), fmt=fmt)
+        barlabels(ax, ax.bar(x + wd / 2, a6, wd, color=C2, label="官方 block 6"), fmt=fmt)
+        ax.set_xticks(x); ax.set_xticklabels(lines, fontsize=8.5); ax.set_ylabel(yl); ax.legend(fontsize=8); ax.set_title(tt, fontsize=10)
+    axs[1].set_ylim(29.5, 32.2)
     save(fig, d, "n09_official_blocks.png")
+
+
+def n09_trim(d):
+    """官方 block 3：trim 有沒有執行（同官方程式碼與 config，只差 trim 是否真的跑）。"""
+    met = [("終點顆數（百萬）", 5.23, 0.91, "{:.2f}"), ("val PSNR（dB）", 31.69, 30.87, "{:.2f}"),
+           ("訓練峰值實佔（GB）", 7.30, 2.75, "{:.2f}"), ("訓練時間（h）", 3.31, 2.29, "{:.2f}")]
+    fig, axs = plt.subplots(1, 4, figsize=(15, 3.4))
+    for ax, (nm, a, b, fmt) in zip(axs, met):
+        barlabels(ax, ax.bar([0, 1], [a, b], color=[MUTED, C1], width=0.6), fmt=fmt, size=8.5)
+        ax.set_xticks([0, 1]); ax.set_xticklabels(["trim 未執行\n（release 的實際行為）", "trim 執行"], fontsize=8)
+        ax.set_title(nm, fontsize=10)
+        if "PSNR" in nm:
+            ax.set_ylim(29.5, 32.2)
+    axs[3].text(1, 2.29 * 0.5, "⚠ 期間外部\n佔卡約 2 GB", ha="center", fontsize=7.5, color="white")
+    fig.suptitle("官方 block 3：trim 真的執行時顆數 -83%、峰值 -62%、val -0.8 dB —— release 的 aerial trim 階段其實從沒剪過", fontsize=10.5)
+    save(fig, d, "n09_trim.png")
 
 
 # 10-09：我方最佳解 4x4（16 塊 [solo]、lean＋record_reduce、dup4、cap 2.6M）vs 官方 release vs 官方論文設定
@@ -252,7 +253,7 @@ def n09_full44_blocks(d):
                  "⚠ 偏向官方：官方單塊從全場景 coarse 起步、看得到塊外", fontsize=9.5)
     ax = axs[1]
     for k, c, mk, lb in [("opk", C1, "o", LBL3[0]), ("rpk", MUTED, "s", LBL3[1]), ("ppk", C2, "^", LBL3[2])]:
-        ax.plot(x, F44[k], marker=mk, color=c, lw=1.2, ms=5, label=lb)
+        ax.plot(x, F44[k], marker=mk, color=c, lw=0, ms=6, label=lb)
     ax.axhline(6.44, color="#c0392b", lw=1, ls="--"); ax.text(15.4, 6.6, "6 GiB 卡", color="#c0392b", fontsize=8, ha="right")
     ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7.5)
     ax.set_title("峰值實佔：我方 4.05~4.17；release 7.65~14.56；論文設定 5.24~11.23（只有 b3、b7 低於 6 GiB）", fontsize=9.5)
@@ -402,7 +403,7 @@ def n10_kernels(d):
     barlabels(ax, ax.bar(x + wd / 2, on, wd, color=C3, label="開 lean（未含 record_reduce）"), fmt="{:.1f}")
     ax.set_xticks(x); ax.set_xticklabels(cats, fontsize=8.5); ax.set_ylabel("kernel 時間（ms/步，含 1 台相機的 record）")
     ax.legend(fontsize=8)
-    ax.set_title("kernel 拆解（profiler，b6 @14,999，N 2.6M；已扣掉 autograd 包裝列的重複計時）", fontsize=10)
+    ax.set_title("kernel 拆解（10-02 資料：profiler，b6 @14,999，N 2.6M；之後的 record_reduce／飽和跳過＋先加總見 01(a)）", fontsize=10)
     ax = axs[1]
     lab_ = ["1 步", "50 步"]
     fe = [20.90, 13.50]; fu = [48.69, 43.32]
@@ -442,104 +443,308 @@ def n11_tiles(d):
     save(fig, d, "n11_tiles.png")
 
 
+REP12 = ["預設 conic", "★ dup4（現行）", "oreg0", "vpctilek", "oent", "v/c trim"]
+
+
 def n12_recheck(d):
-    runs = ["speed3", "speed3_trimvpc", "speed3_trimvpc_elong", "elong_prune", "elong_relocate",
-            "cs60_base", "cs60_conic", "cs60_fastgrow", "cs60_sfmdup4", "cs60_sfmfill"]
-    g = {6: {"early": [(2.673, -0.403), (1.798, -0.266), (1.721, -0.247), (2.437, -0.316), (2.485, -0.361),
-                       (2.292, -0.152), (2.174, -0.121), (1.429, 0.150), (1.203, 0.380), (2.262, -0.184)],
-             "late": [(1.059, 0.798), (1.050, 0.861), (1.017, 0.959), (1.041, 0.830), (1.066, 0.784),
-                      (1.037, 0.887), (1.054, 0.769), (1.048, 0.814), (1.035, 0.910), (1.055, 0.820)],
-             "off": (1.003, 0.993)},
-         13: {"early": [(2.350, 0.066), (1.879, 0.158), (1.937, 0.098), (2.423, 0.113), (2.274, 0.101),
-                        (2.242, 0.087), (2.180, 0.123), (1.749, 0.258), (1.322, 0.237), (1.885, 0.156)],
-              "late": [(1.076, 0.690), (1.068, 0.765), (1.023, 0.875), (1.015, 0.901), (1.075, 0.683),
-                       (1.119, 0.668), (1.075, 0.743), (1.056, 0.840), (1.074, 0.725), (1.075, 0.843)],
-              "off": (1.006, 0.948)}}
-    fig, axs = plt.subplots(1, 3, figsize=(16, 4.4))
+    """10-10 改版：只留代表性跑次（使用者）；幾何改成 60k 的 corr 長條＋官方合併模型參考線。"""
+    corr = {6: [0.769, 0.910, 0.876, 0.893, 0.877, 0.939], 13: [0.743, 0.725, 0.916, 0.742, 0.849, 0.718]}
+    fail = {6: [1.49, 1.28, 0.02, 1.42, 0.75, 1.49], 13: [2.30, 1.60, 0.12, 1.92, 1.01, 2.10]}
+    fig, axs = plt.subplots(1, 3, figsize=(17, 4.4))
+    x = np.arange(len(REP12)); wd = 0.38
     ax = axs[0]
-    for blk, c in [(6, C1), (13, C2)]:
-        e = np.array(g[blk]["early"]); l = np.array(g[blk]["late"])
-        ax.scatter(e[:, 0], e[:, 1], color=c, alpha=0.45, s=22, label=f"b{blk} @1,499")
-        ax.scatter(l[:, 0], l[:, 1], color=c, s=28, marker="D", label=f"b{blk} @60k")
-        for a, b in zip(e, l):
-            ax.annotate("", b, a, arrowprops=dict(arrowstyle="->", color=c, alpha=0.25, lw=0.8))
-        ax.plot(*g[blk]["off"], "*", color=c, ms=15, mec="k", mew=0.6, label=f"官方合併 b{blk} 視角")
-    ax.axvline(1.0, color=MUTED, lw=1, ls="--")
-    ax.set_xlabel("slope（渲染深度 / SfM 深度；1 = 正確）"); ax.set_ylabel("corr"); ax.legend(fontsize=7, ncol=2)
-    ax.set_title("幾何隨訓練變好（10 個跑次，箭頭 1,499 -> 60k）", fontsize=10)
+    barlabels(ax, ax.bar(x - wd / 2, corr[6], wd, color=C1, label="b6"), fmt="{:.2f}", size=7)
+    barlabels(ax, ax.bar(x + wd / 2, corr[13], wd, color=C2, label="b13"), fmt="{:.2f}", size=7)
+    ax.axhline(0.993, color=C1, ls="--", lw=1); ax.axhline(0.948, color=C2, ls="--", lw=1)
+    ax.text(5.6, 0.996, "官方合併模型（b6 視角）0.99", ha="right", fontsize=7.5, color=C1)
+    ax.text(5.6, 0.951, "官方合併（b13）0.95", ha="right", fontsize=7.5, color=C2)
+    ax.set_ylim(0.6, 1.05); ax.set_xticks(x); ax.set_xticklabels(REP12, rotation=15, fontsize=8)
+    ax.set_ylabel("渲染深度 vs SfM 可見點深度的 corr（60k）"); ax.legend(fontsize=8, loc="lower left")
+    ax.set_title("幾何：越接近 1 越準；oreg0 兩塊都明顯較好\n（官方是合併模型、塊外有鄰塊，單塊模型天生吃虧）", fontsize=9.5)
     ax = axs[1]
-    k = ["k≥1", "k≥3", "k≥10"]; x = np.arange(3); wd = 0.2
+    k = ["k≥1", "k≥3", "k≥10"]; xk = np.arange(3); w4 = 0.2
     for i, (nm, v, c) in enumerate([("b6 顆數%", [0.49, 0.29, 0.12], C1), ("b6 不透明度質量%", [0.12, 0.03, 0.00], "#86b6ee"),
                                     ("b13 顆數%", [0.93, 0.44, 0.22], C2), ("b13 不透明度質量%", [0.57, 0.09, 0.01], "#f4a77f")]):
-        barlabels(ax, ax.bar(x + (i - 1.5) * wd, v, wd, color=c, label=nm), size=6.5)
-    ax.set_xticks(x); ax.set_xticklabels([f"空區票數 {s}" for s in k]); ax.set_ylabel("落在 SfM 光線空區的比例（%）")
-    ax.legend(fontsize=7)
-    ax.set_title("空區雕刻：空區裡幾乎沒有顆粒；拿掉 ≈ 隨機拿掉", fontsize=10)
+        barlabels(ax, ax.bar(xk + (i - 1.5) * w4, v, w4, color=c, label=nm), size=6.5)
+    ax.set_xticks(xk); ax.set_xticklabels([f"空區票數 {s}" for s in k]); ax.set_ylabel("落在 SfM 光線空區的比例（%）")
+    ax.legend(fontsize=7); ax.set_title("空區雕刻（dup4）：空區裡幾乎沒有顆粒 => floater 很少", fontsize=9.5)
     ax = axs[2]
-    arms = ["cs60_sfmdup4", "cs60_conic", "speed3"]
-    b6 = [1.28, 1.49, 1.79]; b13 = [1.60, 2.30, 2.27]
-    xx = np.arange(3); wd2 = 0.38
-    barlabels(ax, ax.bar(xx - wd2 / 2, b6, wd2, color=C1, label="b6（11,952 tile）"), fmt="{:.2f}%")
-    barlabels(ax, ax.bar(xx + wd2 / 2, b13, wd2, color=C2, label="b13（16,853 tile）"), fmt="{:.2f}%")
-    ax.set_xticks(xx); ax.set_xticklabels(arms, fontsize=8.5); ax.set_ylabel("失敗 tile（%）"); ax.legend(fontsize=8)
-    ax.set_title("失敗區（GT std≥0.1、corr<0.6）：1.3~2.3%，現行最佳 dup4 最少", fontsize=10)
+    barlabels(ax, ax.bar(x - wd / 2, fail[6], wd, color=C1, label="b6（11,952 tile）"), fmt="{:.2f}%", size=7)
+    barlabels(ax, ax.bar(x + wd / 2, fail[13], wd, color=C2, label="b13（16,853 tile）"), fmt="{:.2f}%", size=7)
+    ax.set_xticks(x); ax.set_xticklabels(REP12, rotation=15, fontsize=8); ax.set_ylabel("失敗 tile（%）"); ax.legend(fontsize=8)
+    ax.set_title("失敗區（GT std≥0.1、corr<0.6）：oreg0 幾乎消失（0.02／0.12%）\n（官方逐塊模型的同一統計：待量）", fontsize=9.5)
+    fig.suptitle("60k 代表性跑次（5x5 b6／b13）", fontsize=10.5)
     save(fig, d, "n12_recheck.png")
 
 
 def n12_heldout(d):
-    """塊內 held-out（官方 test 中相機落在本塊 AABB 內的幀：b6 210、b13 276）。單塊模型 => 絕對值是下界。"""
-    runs = ["speed3", "+v/c", "+v/c+elong", "elong 硬剪", "elong 搬移", "cs60_base", "conic", "fastgrow", "★ dup4", "sfmfill"]
-    h = {6: {"e": [16.912, 16.863, 16.480, 16.940, 16.957, 16.999, 17.002, 17.251, 15.294, 16.904],
-             "l": [18.211, 17.193, 16.304, 17.506, 18.368, 17.871, 18.210, 17.990, 18.186, 18.012],
-             "lp": [.6505, .6642, .6905, .6640, .6488, .6557, .6507, .6549, .6370, .6509],
-             "v": [30.45, 30.19, 29.77, 30.30, 30.43, 30.42, 30.48, 30.59, 30.75, 30.52]},
-         13: {"e": [17.942, 17.456, 17.436, 17.549, 17.946, 17.879, 18.022, 18.110, 15.644, 17.865],
-              "l": [20.173, 19.175, 18.935, 20.046, 20.022, 19.841, 19.924, 19.892, 20.170, 20.116],
-              "lp": [.4542, .4633, .4805, .4623, .4639, .4610, .4555, .4553, .4325, .4552],
-              "v": [29.86, 29.32, 28.92, 29.64, 29.78, 29.84, 30.00, 30.10, 30.32, 30.01]}}
-    fig, axs = plt.subplots(1, 3, figsize=(17, 4.9), gridspec_kw={"width_ratios": [1.4, 1, 1.4]})
-    x = np.arange(len(runs))
+    """塊內 held-out（代表性跑次；10-10 拿掉 @1,499 對照與舊跑次）。"""
+    val = {6: [30.48, 30.75, 31.38, 30.45, 29.86, 30.31], 13: [30.00, 30.32, 31.32, 29.99, 29.87, 29.80]}
+    ho = {6: [18.21, 18.19, 18.18, 17.87, 18.43, 17.19], 13: [19.92, 20.17, 20.96, 19.80, 20.35, 19.30]}
+    lp = {6: [.6507, .6370, .5674, .6475, .6264, .6596], 13: [.4555, .4325, .3639, .4467, .4239, .4570]}
+    fig, axs = plt.subplots(1, 2, figsize=(15, 4.6), gridspec_kw={"width_ratios": [1, 1.3]})
     ax = axs[0]
-    for blk, c, dx in [(6, C1, -0.12), (13, C2, 0.12)]:
-        ax.scatter(x + dx, h[blk]["e"], color=c, alpha=0.45, s=22, label=f"b{blk} @1,499")
-        ax.scatter(x + dx, h[blk]["l"], color=c, s=30, marker="D", label=f"b{blk} @60k")
-        for xi, a, b in zip(x + dx, h[blk]["e"], h[blk]["l"]):
-            ax.annotate("", (xi, b), (xi, a), arrowprops=dict(arrowstyle="->", color=c, alpha=0.5, lw=0.9))
-    ax.set_xticks(x); ax.set_xticklabels(runs, rotation=30, ha="right", fontsize=8)
-    ax.set_ylabel("塊內 held-out PSNR（dB，下界）"); ax.legend(fontsize=7.5, ncol=2, loc="lower left")
-    ax.set_title("@1,499 → @60k：每個跑次都進步（唯一例外 +v/c+elong b6）", fontsize=10)
-    ax = axs[1]
     for blk, c in [(6, C1), (13, C2)]:
-        ax.scatter(h[blk]["v"], h[blk]["l"], color=c, s=30, label=f"b{blk}")
-        for nm, a, b in zip(runs, h[blk]["v"], h[blk]["l"]):
-            if nm in ("+v/c", "+v/c+elong", "★ dup4", "speed3"):
-                ax.annotate(nm, (a, b), xytext=(4, -10 if nm == "speed3" else 3), textcoords="offset points", fontsize=7.5, color=INK2)
-    ax.set_xlabel("val⊂train PSNR（dB，60k）"); ax.set_ylabel("塊內 held-out PSNR（dB，60k）"); ax.legend(fontsize=8)
-    ax.set_title("v/c trim 在 held-out 掉約 1 dB（val 只 -0.27／-0.54）", fontsize=10)
-    ax = axs[2]
-    wd = 0.38
-    barlabels(ax, ax.bar(x - wd / 2, h[6]["lp"], wd, color=C1, label="b6"), fmt="{:.3f}", size=6)
-    barlabels(ax, ax.bar(x + wd / 2, h[13]["lp"], wd, color=C2, label="b13"), fmt="{:.3f}", size=6)
-    ax.set_xticks(x); ax.set_xticklabels(runs, rotation=30, ha="right", fontsize=8)
-    ax.set_ylim(0.35, 0.72); ax.set_ylabel("塊內 held-out LPIPS（60k，越低越好）"); ax.legend(fontsize=8)
-    ax.set_title("LPIPS：現行最佳 dup4 兩塊都最好", fontsize=10)
-    fig.suptitle("塊內官方 held-out（b6 210 幀／b13 276 幀）——絕對值是下界：單塊模型看不到鄰塊內容；"
-                 "我方 vs 官方的全場景比較見 `09`（合併模型 741 幀）", fontsize=10.5)
+        ax.scatter(val[blk], ho[blk], color=c, s=34, label=f"b{blk}")
+        for nm, a, b in zip(REP12, val[blk], ho[blk]):
+            ax.annotate(nm, (a, b), xytext=(4, 3), textcoords="offset points", fontsize=7, color=INK2)
+    ax.set_xlabel("val⊂train PSNR（dB，60k）"); ax.set_ylabel("塊內 held-out PSNR（dB，60k，下界）"); ax.legend(fontsize=8)
+    ax.set_title("val vs 塊內 held-out：v/c 類 val 小輸、held-out 大輸\n（`09`／mergeview：損失大半在塊外，合併會丟掉）", fontsize=9.5)
+    ax = axs[1]
+    x = np.arange(len(REP12)); wd = 0.38
+    barlabels(ax, ax.bar(x - wd / 2, lp[6], wd, color=C1, label="b6"), fmt="{:.3f}", size=7)
+    barlabels(ax, ax.bar(x + wd / 2, lp[13], wd, color=C2, label="b13"), fmt="{:.3f}", size=7)
+    ax.set_xticks(x); ax.set_xticklabels(REP12, rotation=15, fontsize=8.5)
+    ax.set_ylim(0.3, 0.72); ax.set_ylabel("塊內 held-out LPIPS（越低越好）"); ax.legend(fontsize=8)
+    ax.set_title("held-out LPIPS：oreg0 兩塊都最好", fontsize=10)
+    fig.suptitle("塊內官方 held-out（b6 210 幀／b13 276 幀）—— 單塊模型看不到鄰塊內容，絕對值是下界；全場景對官方見 `09`", fontsize=10.5)
     save(fig, d, "n12_heldout.png")
+
+
+# ══════════════ 10-10 圖表改版（使用者逐張意見）══════════════
+SEGC = {"backward": "#4C72B0", "forward": "#55A868", "trim": "#C44E52", "optimizer": "#8172B3", "loss": "#CCB974",
+        "loop": "#64B5CD", "other": "#AAAAAA"}
+SEGN = {"backward": "backward", "forward": "forward（光柵化）", "trim": "週期 trim", "optimizer": "optimizer.step",
+        "loss": "loss（L1+SSIM）", "loop": "迴圈外（dataloader／Lightning）", "other": "其他"}
+
+
+def n01_steps(d):
+    """每步逐段時間（增生期；lab 3090 [solo]；每標記點同步）：官方兩條線＋我方近期改動。"""
+    rows = [
+        ("官方 release b6\nN 2.50M（trim 不跑）｜10-06", dict(forward=47.45, backward=137.96, optimizer=15.66, loss=6.11, trim=0, loop=6.55, other=0), "＝真實步（無 trim）"),
+        ("官方論文設定 b6\nN 1.75M（trim 執行）｜10-06", dict(forward=41.61, backward=127.95, optimizer=10.74, loss=6.13, trim=58.20, loop=0, other=0), "trim 為取樣窗攤平"),
+        ("我方 lean 關\nb6 N 2.29M｜10-02", dict(forward=36.69, backward=84.85, optimizer=15.15, loss=5.02, trim=27875 / 500, loop=8.00, other=3.33), ""),
+        ("＋lean_render\n（-20.9%／步）｜10-02", dict(forward=21.13, backward=68.64, optimizer=15.15, loss=5.05, trim=27589 / 500, loop=8.03, other=3.32), ""),
+        ("＋record_reduce（現行）\ntrim 每次 -35%｜10-03", dict(forward=21.15, backward=68.75, optimizer=15.14, loss=5.06, trim=17975 / 500, loop=8.02, other=2.79), ""),
+        ("＋飽和跳過＋block 內先加總\nN 2.58M｜10-10（60k 判定中）", dict(forward=19.07, backward=40.86, optimizer=14.79, loss=5.05, trim=17104 / 500, loop=7.36, other=4.60), "（60k 分數判定已排）"),
+    ]
+    fig, ax = plt.subplots(figsize=(14, 5.4))
+    order = ["backward", "forward", "trim", "optimizer", "loss", "loop", "other"]
+    for i, (lb, seg, note) in enumerate(rows):
+        left = 0
+        for k in order:
+            v = seg[k]
+            if v <= 0:
+                continue
+            ax.barh(i, v, left=left, color=SEGC[k], label=SEGN[k] if i == 2 else None)
+            if v >= 12:
+                ax.text(left + v / 2, i, f"{v:.0f}", ha="center", va="center", fontsize=8, color="white")
+            left += v
+        ax.text(left + 3, i, f"{left:.0f} ms" + (f"　{note}" if note else ""), va="center", fontsize=8.5, color=INK2)
+    ax.set_yticks(range(len(rows))); ax.set_yticklabels([r[0] for r in rows], fontsize=8.5); ax.invert_yaxis()
+    ax.set_xlim(0, 330); ax.set_xlabel("每步 ms（增生期；我方 trim 按真實週期 500 步攤平；全部 lab 3090 獨佔）")
+    ax.legend(fontsize=8, ncol=7, loc="upper center", bbox_to_anchor=(0.5, -0.13))
+    ax.set_title("同 N 附近的每步時間：官方每步 2 次 backward（深度 extra_loss）；我方 lean／record_reduce／飽和跳過＋先加總逐步降下來", fontsize=10.5)
+    save(fig, d, "n01_steps.png")
+
+
+def n01_scaling(d):
+    """每步時間隨顆數：lab [solo] step_breakdown（單台相機、同 ckpt），60k 只調 cap 的跑次＋預設（conic、lean 關）。"""
+    N = np.array([0.63, 1.08, 1.53, 2.34])
+    data = {6: ([12.49, 14.30, 16.00, 20.56], [39.98, 46.56, 48.88, 55.99]),
+            13: ([15.86, 20.09, 23.10, 28.13], [47.31, 57.49, 64.13, 76.55])}
+    fig, axs = plt.subplots(1, 2, figsize=(14, 4.4))
+    for ax, (blk, (fw, fb)) in zip(axs, data.items()):
+        for ys, c, lb in [(fw, C3, "光柵化 forward"), (fb, C1, "forward＋backward")]:
+            ys = np.array(ys); k, b0 = np.polyfit(N, ys, 1)
+            ax.plot(N, ys, "o", color=c, ms=7, label=f"{lb}（{k:.1f} ms／百萬顆，截距 {b0:.1f}）")
+            xx = np.linspace(0, 2.6, 20); ax.plot(xx, k * xx + b0, "--", color=c, lw=1)
+        ax.set_xlim(0, 2.6); ax.set_ylim(0, None)
+        ax.set_xlabel("終點顆數 N（百萬；60k、只調 cap）"); ax.set_ylabel("ms（單台相機，中位）")
+        ax.legend(fontsize=8, loc="upper left"); ax.set_title(f"b{blk}：每步時間 ≈ 固定 + 斜率 × N（截距＝逐像素與與顆數無關的部分）", fontsize=9.5)
+    fig.suptitle("時間隨顆數線性成長（lab 3090 [solo]、5x5 b6／b13、lean 關；N 加倍 forward+backward 約 +20~30%，不是 +100%）", fontsize=10.5)
+    save(fig, d, "n01_scaling.png")
+
+
+def n01_maxsplit(d):
+    rows = [("本機 4050 b6 N 1.54M\n不開 max_split（09-11）", 340.8, MUTED), ("本機 4050 b6 N 1.54M\n開 max_split_size_mb:128（09-11）", 367.9, C2),
+            ("★ 現行：lab 3090 b6 N 2.29M\n不鎖 VRAM、不開 max_split（lean＋rr，10-03）", 120.7, C1)]
+    fig, ax = plt.subplots(figsize=(11, 3.2))
+    for i, (lb, v, c) in enumerate(rows):
+        ax.barh(i, v, color=c, height=0.6); ax.text(v + 4, i, f"{v:.1f} ms", va="center", fontsize=9)
+    ax.set_yticks(range(3)); ax.set_yticklabels([r[0] for r in rows], fontsize=8.5); ax.invert_yaxis()
+    ax.set_xlabel("真實每步 ms（不含週期 trim）")
+    ax.set_title("max_split_size_mb:128：同一台、同 N 下慢 8.0%、實際配置不變（只在鎖 VRAM 上限時防碎片 OOM 才開）；\n"
+                 "10-04 起 lab 不鎖、不開 —— ⚠ 本機兩列與現行列機器與 N 都不同，只看 max_split 的相對差", fontsize=9.5)
+    save(fig, d, "n01_maxsplit.png")
+
+
+def n02_segments(d):
+    """現行（lab、b6 @14,999 起、N 2.58M、lean＋rr＋飽和跳過＋先加總）每段峰值配置＋常駐／渲染分項。"""
+    seg = [("迴圈外（常駐）", 2506, "#64B5CD"), ("forward", 3091, "#55A868"), ("loss", 3387, "#CCB974"),
+           ("optimizer", 3468, "#8172B3"), ("trim", 3562, "#C44E52"), ("backward", 3868, "#4C72B0")]
+    fig, axs = plt.subplots(1, 2, figsize=(14, 4.2), gridspec_kw={"width_ratios": [1.4, 1]})
+    ax = axs[0]
+    b = ax.bar(range(len(seg)), [s[1] for s in seg], color=[s[2] for s in seg])
+    barlabels(ax, b, fmt="{:,.0f}", size=8)
+    ax.axhline(6706, color=C2, ls=":", lw=1); ax.text(5.4, 6750, "段末保留 6,706 MiB（配置器快取，不鎖時會長）", ha="right", fontsize=8, color=C2)
+    ax.axhline(6144, color="k", ls="--", lw=1); ax.text(5.4, 6190, "6 GiB", ha="right", fontsize=8)
+    ax.set_xticks(range(len(seg))); ax.set_xticklabels([s[0] for s in seg], fontsize=8.5); ax.set_ylabel("段內峰值配置（MiB）")
+    ax.set_ylim(0, 7300); ax.set_title("現行逐段 VRAM（lab b6 @14,999、N 2.58M；10-10）：峰值在 backward 3.87 GiB", fontsize=9.5)
+    ax = axs[1]
+    lbl = ["預設 conic\nb6 N 2.34M", "dup4（現行）\nb6", "預設 conic\nb13", "dup4（現行）\nb13"]
+    res = [2.022, 2.022, 2.022, 2.022]; ren = [1.820, 1.824, 1.893, 1.877]
+    ax.bar(range(4), res, color="#64B5CD", label="常駐：參數＋梯度＋Adam（只看 N：864 B／顆）")
+    ax.bar(range(4), ren, bottom=res, color="#4C72B0", label="forward＋backward 峰值增量（渲染暫存）")
+    for i in range(4):
+        ax.text(i, res[i] + ren[i] + 0.05, f"{res[i] + ren[i]:.2f}", ha="center", fontsize=8)
+    ax.set_xticks(range(4)); ax.set_xticklabels(lbl, fontsize=8); ax.set_ylabel("GB（step_breakdown，60k 終點）"); ax.set_ylim(0, 5.0); ax.legend(fontsize=7.5, loc="upper center")
+    ax.set_title("分項：常駐約 53%、渲染暫存約 47%", fontsize=9.5)
+    save(fig, d, "n02_segments.png")
+
+
+def n02_value(d):
+    """性價比：品質 vs 訓練峰值 VRAM（60k、只調 cap、b6／b13 平均），擬合 PSNR = a + b·ln N、VRAM = c + d·cap，邊際 dB／GB 與膝點。"""
+    cap = np.array([0.7, 1.2, 1.7, 2.6])
+    psnr = np.array([(28.61 + 28.37) / 2, (29.39 + 29.06) / 2, (29.90 + 29.46) / 2, (30.48 + 30.00) / 2])
+    ho = np.array([(17.93 + 19.75) / 2, (17.81 + 19.86) / 2, (17.82 + 19.97) / 2, (18.21 + 19.92) / 2])
+    vram = np.array([(1.50 + 1.53) / 2, (2.25 + 2.24) / 2, (3.01 + 3.04) / 2, (4.35 + 4.37) / 2])
+    b, a = np.polyfit(np.log(cap), psnr, 1)
+    dv, cv = np.polyfit(cap, vram, 1)
+    nmax = (6.44 - cv) / dv
+    nn = np.linspace(0.3, nmax, 200); pp = a + b * np.log(nn); vv = cv + dv * nn
+    xn = (vv - vv[0]) / (vv[-1] - vv[0]); yn = (pp - pp[0]) / (pp[-1] - pp[0])
+    kn = int(np.argmax(yn - xn))
+    fig, axs = plt.subplots(1, 2, figsize=(14, 4.5))
+    ax = axs[0]
+    ax.plot(vv, pp, "-", color=C1, lw=1.5, label=f"擬合 val PSNR = {a:.2f} + {b:.2f}·ln N（N 加倍 +{b * np.log(2):.2f} dB）")
+    ax.plot(vram, psnr, "o", color=C1, ms=7, label="實測 val（b6／b13 平均）")
+    ax2 = ax.twinx(); ax2.plot(vram, ho, "s--", color=C2, ms=6, lw=1, label="實測塊內 held-out（右軸；幾乎不隨 N 變）")
+    ax2.set_ylim(ho.mean() - 1.5, ho.mean() + 1.5); ax2.set_ylabel("塊內 held-out PSNR（dB）", color=C2); ax2.legend(fontsize=7.5, loc="upper left")
+    for x, y, c in zip(vram, psnr, cap):
+        ax.annotate(f"cap {c}M", (x, y), xytext=(4, -12), textcoords="offset points", fontsize=7.5, color=INK2)
+    ax.axvline(6.44, color="k", ls="--", lw=1); ax.text(6.4, 28.0, f"6 GiB\nN≈{nmax:.1f}M", ha="right", fontsize=8)
+    ax.plot(vv[kn], pp[kn], "*", color="#c0392b", ms=15); ax.annotate(f"膝點 N≈{nn[kn]:.2f}M\n（{vv[kn]:.2f} GB）", (vv[kn], pp[kn]), xytext=(-95, 8), textcoords="offset points", fontsize=8.5, color="#c0392b")
+    ax.set_xlabel("訓練峰值實佔 VRAM（GB；在 cap 時）"); ax.set_ylabel("PSNR（dB）"); ax.legend(fontsize=7.5, loc="lower right")
+    ax.set_title(f"VRAM ≈ {cv:.2f} + {dv:.2f}·cap（GB）；品質對數成長", fontsize=9.5)
+    ax = axs[1]
+    marg = b / (nn * dv)
+    ax.plot(nn, marg, "-", color=C1, lw=2)
+    for n0 in (1.2, 2.6):
+        ax.plot(n0, b / (n0 * dv), "o", color=C2); ax.annotate(f"N {n0}M：{b / (n0 * dv):.2f} dB／GB", (n0, b / (n0 * dv)), xytext=(6, 4), textcoords="offset points", fontsize=8)
+    ax.axvline(nn[kn], color="#c0392b", ls=":", lw=1); ax.axvline(nmax, color="k", ls="--", lw=1)
+    ax.set_xlabel("cap N（百萬）"); ax.set_ylabel("邊際收益：多 1 GB VRAM 換到的 dB")
+    ax.set_title("性價比函數（邊際 dB／GB = b／(N·d)）隨 N 衰減：膝點之後每 GB 換到的品質不到一半", fontsize=9.5)
+    fig.suptitle("顆數的性價比（60k、預設 conic、opacity_reg 0.002、lean 關；⚠ 現行 lean 峰值約 -0.3 GB、oreg0 約 -0.4 GB，曲線會左移）", fontsize=10.5)
+    save(fig, d, "n02_value.png")
+
+
+def n05_main(d):
+    """主要跑次 vs 預設基準 cs60_conic，b6／b13 平均（60k、同 N 2.34M）。"""
+    arms = ["★ dup4（現行配方）", "oreg0（opacity_reg 0）", "vpctilek", "oent", "v/c trim"]
+    dval = [0.295, 1.11, -0.02, -0.375, -0.185]
+    dho = [0.111, 0.505, -0.23, 0.32, -0.82]
+    dho_m = [np.nan, np.nan, -0.16, -0.163, np.nan]
+    dload = [-6.95, -36.1, -37.5, -49.95, -45.4]
+    fig, axs = plt.subplots(1, 2, figsize=(15, 4.4), gridspec_kw={"width_ratios": [1.5, 1]})
+    ax = axs[0]; y = np.arange(len(arms)); h = 0.27
+    ax.barh(y - h, dval, h, color=C1, label="val PSNR")
+    ax.barh(y, dho, h, color=C2, label="塊內 held-out（單塊模型）")
+    ax.barh(y + h, [0 if v != v else v for v in dho_m], h, color=C3, label="只算合併後會留下的部分（mergeview）")
+    for i in range(len(arms)):
+        for off, v in ((-h, dval[i]), (0, dho[i]), (h, dho_m[i])):
+            if v == v:
+                ax.text(v + (0.02 if v >= 0 else -0.02), i + off, f"{v:+.2f}", va="center", ha="left" if v >= 0 else "right", fontsize=7.5)
+    ax.axvline(0, color=MUTED, lw=1); ax.set_yticks(y); ax.set_yticklabels(arms); ax.invert_yaxis()
+    ax.set_xlabel("Δ dB vs 預設 cs60_conic（b6／b13 平均）"); ax.legend(fontsize=7.5, loc="lower right")
+    ax.set_title("品質：oreg0 最大；v/c 類在單塊 held-out 的損失大半在塊外（合併會丟掉）", fontsize=9.5)
+    ax = axs[1]
+    b_ = ax.barh(y, dload, color=MUTED)
+    for i, v in enumerate(dload):
+        ax.text(v - 1, i, f"{v:.0f}%", va="center", ha="right", fontsize=8)
+    ax.axvline(0, color=MUTED, lw=1); ax.set_yticks(y); ax.set_yticklabels([]); ax.invert_yaxis(); ax.set_xlim(-60, 5)
+    ax.set_xlabel("Δ 精確 Load 中位（%，越左越便宜）"); ax.set_title("渲染成本", fontsize=9.5)
+    fig.suptitle("60k 主要跑次（5x5 b6／b13 平均、同 N 2.34M、單次）；10-10 起改在 4x4 上以 oreg0 為基底續測", fontsize=10.5)
+    save(fig, d, "n05_main.png")
+
+
+def n05_official(d):
+    """全場景（合併模型）對官方：渲染成本 vs 官方 741 幀 held-out（同一支評分工具、同 600 台相機量 Load）。"""
+    pts = [("★ 我方 4x4", 2.52, 27.739, 0.129, 17.63, C1), ("官方 release", 5.92, 27.261, 0.154, 24.48, MUTED),
+           ("官方論文設定", 5.92, 27.280, 0.147, 24.72, C2)]
+    fig, ax = plt.subplots(figsize=(10, 4.3))
+    for nm, x, y, lp, n, c in pts:
+        ax.plot(x, y, "o", color=c, ms=12)
+        ax.annotate(f"{nm}\nPSNR {y:.2f}／LPIPS {lp:.3f}\nN {n:.1f}M", (x, y), xytext=(14, -42) if "release" in nm else ((14, 4) if "論文" in nm else (14, -10)), textcoords="offset points", fontsize=8.5)
+    ax.errorbar(5.92, 27.4, yerr=0.2, fmt="none", ecolor=MUTED, capsize=6, lw=1)
+    ax.text(5.98, 27.62, "release 合理區間 27.2~27.6\n（光柵器偏差，09 §0.1）", fontsize=7.5, color=INK2)
+    ax.set_xlim(1.5, 7.5); ax.set_ylim(27.0, 27.95)
+    ax.set_xlabel("合併模型渲染成本：精確 Σtiles 中位（百萬／視角）"); ax.set_ylabel("官方 741 幀 held-out PSNR")
+    ax.set_title("全場景對官方 CityGSV2：我方渲染成本 -57%、品質同級或略好", fontsize=10)
+    save(fig, d, "n05_official.png")
+
+
+def n05_frontier60k(d):
+    """60k 實測成本－品質前緣：只調 cap 的曲線（實測，取代推估）＋各臂；同 Load 下比只調 cap 高多少。"""
+    cap = {6: ([1.419, 1.883, 2.195, 2.773], [28.61, 29.39, 29.90, 30.48]), 13: ([1.637, 2.151, 2.601, 3.337], [28.37, 29.06, 29.46, 30.00])}
+    arms = {6: [("★ dup4", 2.616, 30.75), ("oreg0", 1.773, 31.38), ("vpctilek", 1.739, 30.45), ("oent", 1.444, 29.86),
+                ("v/c trim", 1.536, 30.31), ("conic 關", 4.666, 30.42)],
+            13: [("★ dup4", 3.059, 30.32), ("oreg0", 2.131, 31.32), ("vpctilek", 2.078, 29.99), ("oent", 1.603, 29.87),
+                 ("v/c trim", 1.795, 29.80), ("conic 關", 6.180, 29.84)]}
+    mk = {"★ dup4": ("*", C1), "oreg0": ("D", "#c0392b"), "vpctilek": ("s", C3), "oent": ("^", C4), "v/c trim": ("v", C2), "conic 關": ("x", MUTED)}
+    fig, axs = plt.subplots(1, 2, figsize=(13, 4.8))
+    for ax, blk in zip(axs, (6, 13)):
+        lx, ly = cap[blk]
+        ax.plot(lx, ly, "-o", color=INK2, lw=1.6, label="只調 cap（0.7／1.2／1.7／2.6M，實測）")
+        for x, y, c_ in zip(lx, ly, ("0.7M", "1.2M", "1.7M", "2.6M")):
+            ax.annotate(c_, (x, y), xytext=(4, -11), textcoords="offset points", fontsize=7, color=MUTED)
+        for nm, x, y in arms[blk]:
+            m, c = mk[nm]
+            ax.plot(x, y, m, color=c, ms=10 if m == "*" else 7, label=nm)
+            ref = np.interp(np.log(x), np.log(lx), ly) if lx[0] <= x <= lx[-1] else np.nan
+            if ref == ref:
+                ax.annotate(f"{y - ref:+.2f}", (x, y), xytext=(6, 4), textcoords="offset points", fontsize=8, color=c)
+        ax.set_xscale("log"); ax.set_xlabel("渲染成本：精確 Load 中位（百萬／視角，對數）"); ax.set_ylabel("val PSNR（60k）")
+        ax.legend(fontsize=7.5, loc="lower right"); ax.set_title(f"b{blk}：數字＝同 Load 下比只調 cap 高多少（dB）", fontsize=9.5)
+    fig.suptitle("60k 成本－品質前緣（實測；取代舊版用 22k 斜率推估的灰色欄）：oreg0 同成本高 +2 dB 以上、v/c +1.2~1.5", fontsize=10.5)
+    save(fig, d, "n05_frontier60k.png")
+
+
+def n04_time(d):
+    """conic 開關的時間（60k 終點模型、同 N 2.34M、lab [solo] step_breakdown 單台相機）—— 取代 22k 三槽平行版。"""
+    v = {6: ([24.49, 64.90], [20.56, 55.99]), 13: ([37.59, 92.21], [28.13, 76.55])}
+    fig, axs = plt.subplots(1, 2, figsize=(13, 3.8))
+    for ax, blk in zip(axs, (6, 13)):
+        off, on = v[blk]; x = np.arange(2); wd = 0.38
+        barlabels(ax, ax.bar(x - wd / 2, off, wd, color=MUTED, label="conic 關"), fmt="{:.1f}")
+        b = ax.bar(x + wd / 2, on, wd, color=C3, label="conic 開（現行預設）")
+        for bb, a_, o_ in zip(b, off, on):
+            ax.annotate(f"{o_:.1f}\n{100 * (o_ / a_ - 1):+.1f}%", (bb.get_x() + bb.get_width() / 2, o_), xytext=(0, 2), textcoords="offset points", ha="center", fontsize=8)
+        ax.set_xticks(x); ax.set_xticklabels(["光柵化 forward", "forward＋backward"]); ax.set_ylabel("ms（單台相機中位）"); ax.legend(fontsize=8)
+        ax.set_title(f"b{blk}（60k、N 2.34M、[solo]）", fontsize=10)
+    fig.suptitle("conic 精確外接盒的時間：forward -16~-25%、forward＋backward -14~-17%（lab [solo] 實測，取代舊版 22k 數字）", fontsize=10.5)
+    save(fig, d, "n04_time.png")
+
+
+def n04_load(d):
+    """conic 開關的渲染成本與 VRAM（60k 終點、同 N 2.34M）。"""
+    L = {"b6 中位": (4.666, 2.773), "b6 max": (7.586, 5.190), "b13 中位": (6.180, 3.337), "b13 max": (9.821, 5.712)}
+    V = {"b6": (4.58, 4.35), "b13": (4.68, 4.37)}
+    fig, axs = plt.subplots(1, 2, figsize=(13, 3.8), gridspec_kw={"width_ratios": [1.5, 1]})
+    for ax, D_, yl, tt in [(axs[0], L, "精確 Σtiles（百萬／視角）", "渲染成本：-32~-46%"), (axs[1], V, "訓練峰值實佔（GB）", "VRAM：只 -5~-7%（VRAM 由 N 主導）")]:
+        x = np.arange(len(D_)); wd = 0.38
+        a_ = [v[0] for v in D_.values()]; o_ = [v[1] for v in D_.values()]
+        barlabels(ax, ax.bar(x - wd / 2, a_, wd, color=MUTED, label="conic 關"), fmt="{:.2f}")
+        b = ax.bar(x + wd / 2, o_, wd, color=C3, label="conic 開（現行）")
+        for bb, aa, oo in zip(b, a_, o_):
+            ax.annotate(f"{oo:.2f}\n{100 * (oo / aa - 1):+.0f}%", (bb.get_x() + bb.get_width() / 2, oo), xytext=(0, 2), textcoords="offset points", ha="center", fontsize=8)
+        ax.set_xticks(x); ax.set_xticklabels(list(D_.keys())); ax.set_ylabel(yl); ax.legend(fontsize=8); ax.set_title(tt, fontsize=10)
+    fig.suptitle("conic 精確外接盒（60k、同 N 2.34M）：省的是渲染成本與時間，不是 VRAM", fontsize=10.5)
+    save(fig, d, "n04_load.png")
 
 
 # ══════════════ 組合 ══════════════
 DOCS = {
-    "01_訓練時間組成": ["fig1_time_breakdown", "fig9_scaling_phase", "fig7_wall_time"],
-    "02_VRAM與配置器": ["fig2_maxsplit_ab", "fig3_vram_segments", "n02_current"],
+    "01_訓練時間組成": ["n01_steps", "n01_scaling", "n01_maxsplit"],
+    "02_VRAM與配置器": ["n02_segments", "n02_value"],
     "03_儲存與RAM": ["fig4_ckpt_storage", "fig6_run_dir", "fig5_ram_cache"],
-    "04_外接盒與binning成本": ["cc1_quality_delta", "cc2_time", "cc3_load_vram", "cc4_proxy_decoupled"],
-    "05_成本品質前緣與vc_trim": ["n05_arms60k", "f1_frontier_22k", "f2_60k_vpc_init", "n05_cap60k", "fig8_trimvpc_time"],
+    "04_外接盒與binning成本": ["cc1_quality_delta", "n04_time", "n04_load", "cc4_proxy_decoupled"],
+    "05_成本品質前緣與vc_trim": ["n05_main", "n05_official", "n05_frontier60k", "n05_cap60k", "fig8_trimvpc_time"],
     "06_事後剪枝與fine-tune": ["f3_tile_topk_posthoc", "f6_prune_finetune"],
     "07_成本感知取樣與預算": ["n07_sampling"],
     "08_初始化": ["n08_init20k", "f4_init60k", "n08_init60k"],
-    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "f7_official_trim", "f5_official_prune"],
-    "10_速度優化_lean與kernel拆解": ["n10_lean_loop", "n10_kernels"],
+    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "f5_official_prune"],
+    "10_速度優化_lean與kernel拆解": ["n10_kernels"],
     "11_逐配對工作量上限": ["n11_tiles"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout"],
 }
@@ -577,7 +782,8 @@ def main():
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stdout[-2000:], r.stderr[-2000:]); raise SystemExit(f"⛔ {sc} 失敗")
-    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_stepprof, n09_evalgap, n05_arms60k,
+    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
+              n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout):
         f(tmp)
     for doc, panels in DOCS.items():

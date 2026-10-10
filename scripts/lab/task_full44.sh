@@ -31,10 +31,12 @@
 #   [solo] bash scripts/lab/task_full44.sh offheldout [塊...]  官方逐塊模型在**我方同一批塊視角**上的 held-out（同塊對照；預設 0~3）
 #          CITYGS_OFF_LINE=paper 改評照論文設定那條線（trim 執行＋ω 0.9、prune 0.025）=> official_heldout_paper.txt
 #   [solo] bash scripts/lab/task_full44.sh stepprof [塊...]   每塊兩段真實迴圈逐段計時 => 推算獨佔下整趟 60k 要多久（見該模式註解）
+#   [solo] bash scripts/lab/task_full44.sh failheld [塊...]   同一批塊內 held-out 視角上，我方 4x4／官方 release／論文設定逐塊模型的失敗 tile（12；預設 6 12）
+#   [solo] bash scripts/lab/task_full44.sh prunecurve [ours|release|paper ...]  合併模型依 opacity 只留 100/90/75/50/25%，官方 741 幀 held-out（同一支工具；09g）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
-MODE=${1:?用法: task_full44.sh prep | block <id> | merge | test | res}
+MODE=${1:?用法: task_full44.sh prep | block <id> | merge | test | res | offheldout | stepprof | prunecurve}
 GATE=logs/speed2_gate.json
 D=data/matrix_city/aerial/train/block_all
 PART=$D/partition/partitions-dim_4_4_visibility_0.08
@@ -201,6 +203,55 @@ case "$MODE" in
       done
       exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$L"
     exit "${PIPESTATUS[0]}" ;;
+  failheld)
+    # ★ 2026-10-10 使用者（圖 12）：官方逐塊模型的同一失敗區統計。val 兩邊不是同一批影像 => 改在**同一批塊內官方 held-out 視角**上比
+    #   （eval_official_test --block B --block_dim 4 4，我方 4x4 分區選視角；判準同 failure_map：48px、GT std>=0.10、corr<0.6）。
+    #   ⚠ 分母是全部 tile（held-out 影像不在 SfM 裡，不能像 failure_map 只算有觀測點的 tile）=> 數字只在本表內互比，不和 `12` 的 val 失敗率比。
+    shift; BL=("$@"); [ ${#BL[@]} -gt 0 ] || BL=(6 12)
+    T=logs/full44_failheld.tsv
+    [ -f "$T" ] || printf 'block\tline\tN\tpsnr\tlpips\tfail_all_pct\tfail_contrast_pct\n' > "$T"
+    bad=0
+    for B in "${BL[@]}"; do
+      for w in ours release paper; do
+        case "$w" in
+          ours)    ck=$(ls "$OUT/blocks/block_$B/checkpoints/"*step=60000.ckpt 2>/dev/null | head -1) ;;
+          release) ck=$(ls ../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1) ;;
+          paper)   ck=$(ls ../cityGS_origin_trimfix/outputs/citygsv2_mc_aerial_sh2_paper/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1) ;;
+        esac
+        [ -n "$ck" ] || { echo "⛔ $w block $B 沒有 60k ckpt"; bad=1; continue; }
+        L=logs/full44_failheld_b${B}_${w}.log
+        conda run -n gspl --no-capture-output python tools/eval_official_test.py --ckpt "$ck" --block "$B" --block_dim 4 4 2>&1 \
+          | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR|pkg_resources|declare_namespace" > "$L"
+        n=$(grep -m1 "^\[模型\]" "$L" | tr -dc 0-9); p=$(awk '/^PSNR/{print $2; exit}' "$L"); l=$(awk '/^LPIPS/{print $2; exit}' "$L")
+        f1=$(grep -m1 "^失敗 tile" "$L" | sed -E 's/^失敗 tile ([0-9.]+)%.*（([0-9.]+)%.*/\1/'); f2=$(grep -m1 "^失敗 tile" "$L" | sed -E 's/^失敗 tile ([0-9.]+)%[^（]*（([0-9.]+)%.*/\2/')
+        [ -n "$p" ] && [ -n "$f1" ] || { echo "⛔ $w block $B 評分失敗（見 $L）"; bad=1; continue; }
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$B" "$w" "$n" "$p" "$l" "$f1" "$f2" | tee -a "$T"
+      done
+    done
+    exit "$bad" ;;
+  prunecurve)
+    # ★ 2026-10-10 使用者（圖 09g）：官方剪枝曲線旁邊加我方的同類統計。舊的官方曲線用官方 main.py test（含暗幀偏差、絕對值低約 1.5 dB），
+    #   這裡三個合併模型都改用**我方評分工具**（eval_official_test.py --opacity_keep，載入一次、逐比例剪完評分；與 official_prune_ckpt.py 同規則：
+    #   依 sigmoid 後 opacity 由高到低保留、並列依索引）=> 同一把尺。結果：logs/full44_prunecurve_<線>.tsv（keep N psnr ssim lpips）。
+    shift; WL=("$@"); [ ${#WL[@]} -gt 0 ] || WL=(ours release paper)
+    bad=0
+    for w in "${WL[@]}"; do
+      case "$w" in
+        ours)    ck=$(ls "$OUT/checkpoints/"*.ckpt 2>/dev/null | tail -1) ;;
+        release) ck=$OFF_CK ;;
+        paper)   ck=$(ls ../cityGS_origin_trimfix/outputs/citygsv2_mc_aerial_sh2_paper/checkpoints/*.ckpt 2>/dev/null | tail -1) ;;
+        *) echo "⛔ 不認得 $w（ours|release|paper）"; bad=1; continue ;;
+      esac
+      [ -n "$ck" ] || { echo "⛔ $w 沒有合併 ckpt"; bad=1; continue; }
+      L=logs/full44_prunecurve_${w}_$(date +%m%d_%H%M).log
+      echo "════ $w：$ck"
+      conda run -n gspl --no-capture-output python tools/eval_official_test.py --ckpt "$ck" --opacity_keep 1.0 0.9 0.75 0.5 0.25 2>&1 \
+        | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR|pkg_resources|declare_namespace" > "$L"
+      grep "^\[剪枝曲線\]" "$L" | sed 's/^\[剪枝曲線\] //' > "logs/full44_prunecurve_${w}.tsv"
+      cat "logs/full44_prunecurve_${w}.tsv"
+      [ "$(wc -l < "logs/full44_prunecurve_${w}.tsv")" -ge 6 ] || { echo "⛔ $w 曲線不完整（見 $L）"; bad=1; }
+    done
+    exit "$bad" ;;
   offheldout)
     # ★ 2026-10-04 使用者：同樣的塊在原版的 val／塊內 held-out／峰值／獨佔時間，作個對照。
     #   兩邊同格位的訓練相機只重疊 52~70%（我方 visibility 0.08、官方 0.05，定界方式也不同）=> val 的評分影像不同、只能參考；
