@@ -217,6 +217,11 @@ F44 = {
     'rext': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5302, 16251, 6174, 7128, 8914, 18161],
     'pext': [8290, 5722, 3674, 4610, 7358, 5108, 7712, 6448, 7698, 8278, 14854, 11654, 14704, 8696, 12228, 17351],
 }
+# 10-10：合併模型在各 4x4 塊 held-out 視角上的逐塊平均（tools/merged_heldout_by_block.py；我方 PNG 量化版、官方 release 用我方評分工具的逐幀 CSV）
+M44 = {"n": [172, 213, 228, 193, 240, 306, 324, 271, 237, 359, 382, 271, 116, 181, 219, 171],
+       "o": [28.101, 27.454, 26.762, 26.711, 28.033, 27.617, 27.212, 27.054, 28.039, 27.572, 27.458, 27.344, 27.823, 27.314, 27.977, 28.396],
+       "r": [27.340, 27.180, 26.707, 26.687, 27.385, 27.312, 27.067, 26.976, 27.321, 27.190, 27.201, 27.209, 27.098, 26.905, 27.493, 27.901]}
+
 LBL3 = ["★ 我方 4x4", "官方 release", "官方論文設定"]
 
 
@@ -268,6 +273,31 @@ def n09_full44_blocks(d):
     ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練時間（h）"); ax.legend(fontsize=7.5, loc="upper left")
     ax.set_title("訓練時間（斜線＝期間外部佔卡 > 2 GB，不可引用）\nblock 0~9 乾淨：我方 19.3 h vs release 40.3 h（0.48 倍）", fontsize=9.5)
     save(fig, d, "n09_full44_blocks.png")
+
+
+def n09_merged_blocks(d):
+    """同一批塊視角：單塊模型 vs 合併模型（我方 vs 官方 release）。b12 單塊輸 3.8 dB，合併後贏 0.73。"""
+    x = np.arange(16); wd = 0.38
+    fig, axs = plt.subplots(1, 2, figsize=(16, 3.9), gridspec_kw={"width_ratios": [1.3, 1]})
+    ax = axs[0]
+    ds = np.array(F44["oh"]) - np.array(F44["rh"]); dm = np.array(M44["o"]) - np.array(M44["r"])
+    ax.bar(x - wd / 2, ds, wd, color=MUTED, label="單塊模型（圖 b 左）")
+    ax.bar(x + wd / 2, dm, wd, color=C1, label="合併模型（同一批視角）")
+    ax.axhline(0, color="k", lw=0.8)
+    for i in (12,):
+        ax.annotate(f"b12 單塊 {ds[i]:+.2f}\n合併 {dm[i]:+.2f}", (i, ds[i]), xytext=(-70, -6), textcoords="offset points", fontsize=8.5, color="#c0392b",
+                    arrowprops=dict(arrowstyle="->", color="#c0392b", lw=0.8))
+    ax.set_xticks(x); ax.set_xlabel("4x4 block（held-out 視角 = 相機落在該塊訓練相機 AABB 內）"); ax.set_ylabel("我方 − 官方 release（dB）")
+    ax.legend(fontsize=8, loc="lower right")
+    ax.set_title("同一批視角：單塊模型 我方 9/16 塊贏；合併模型 我方 16/16 塊贏（+0.02~+0.76）", fontsize=9.5)
+    ax = axs[1]
+    ax.bar([0, 1], [F44["oh"][12], F44["rh"][12]], 0.35, color=[MUTED, MUTED], alpha=0.6)
+    ax.bar([0.4, 1.4], [M44["o"][12], M44["r"][12]], 0.35, color=[C1, C1])
+    for xx, v in zip([0, 1, 0.4, 1.4], [F44["oh"][12], F44["rh"][12], M44["o"][12], M44["r"][12]]):
+        ax.text(xx, v + 0.2, f"{v:.2f}", ha="center", fontsize=8.5)
+    ax.set_xticks([0.2, 1.2]); ax.set_xticklabels(["我方", "官方 release"]); ax.set_ylim(15, 30); ax.set_ylabel("held-out PSNR（b12 的 116 幀）")
+    ax.set_title("b12（角落塊 000_003）：灰＝單塊、藍＝合併\n我方單塊缺 5.3 dB 的塊外內容；官方單塊（9.71M，從全場景 coarse 微調）只缺 0.7", fontsize=9.5)
+    save(fig, d, "n09_merged_blocks.png")
 
 
 def n09_stepprof(d):
@@ -743,7 +773,7 @@ DOCS = {
     "06_事後剪枝與fine-tune": ["f3_tile_topk_posthoc", "f6_prune_finetune"],
     "07_成本感知取樣與預算": ["n07_sampling"],
     "08_初始化": ["n08_init20k", "f4_init60k", "n08_init60k"],
-    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "f5_official_prune"],
+    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_merged_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "f5_official_prune"],
     "10_速度優化_lean與kernel拆解": ["n10_kernels"],
     "11_逐配對工作量上限": ["n11_tiles"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout"],
@@ -782,7 +812,7 @@ def main():
                            capture_output=True, text=True)
         if r.returncode != 0:
             print(r.stdout[-2000:], r.stderr[-2000:]); raise SystemExit(f"⛔ {sc} 失敗")
-    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
+    for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout):
         f(tmp)

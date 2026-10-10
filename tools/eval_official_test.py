@@ -237,6 +237,7 @@ def main():
             print(f"\n════ opacity 保留 {100 * keep:.0f}%：N={model.get_xyz.shape[0]:,} ════")
         ps, ss, ls, tr, tg, ms, br = [], [], [], [], [], [], []
         fs = [0, 0, 0]   # 全部 tile／過對比門檻／失敗
+        fpi = []         # 逐幀 (全部, 過門檻, 失敗)
         import time
         torch.cuda.reset_peak_memory_stats()
         with torch.no_grad():
@@ -251,7 +252,7 @@ def main():
                 ss.append(float(ssim_fn(out, gt)))
                 ls.append(float(lpips_fn(out.unsqueeze(0), gt.unsqueeze(0))))
                 br.append(float(out.mean() / gt.mean().clamp_min(1e-6)))
-                ft = fail_tiles(gt, out, a.fail_tile, a.fail_min_std, a.fail_r_min); fs[0] += ft[0]; fs[1] += ft[1]; fs[2] += ft[2]
+                ft = fail_tiles(gt, out, a.fail_tile, a.fail_min_std, a.fail_r_min); fs[0] += ft[0]; fs[1] += ft[1]; fs[2] += ft[2]; fpi.append(ft)
                 if a.save_dir:
                     both = torch.cat([gt, out], dim=2).permute(1, 2, 0).cpu().numpy()
                     Image.fromarray((both * 255).astype(np.uint8)).save(
@@ -285,9 +286,9 @@ def main():
                       f"{np.mean([ss[j] for j in ix]):>7.4f} {np.mean([ls[j] for j in ix]):>7.4f}")
         if a.per_image_csv:
             with open(a.per_image_csv, "w") as f:
-                f.write("name,psnr,ssim,lpips,bright_ratio\n")
+                f.write("name,psnr,ssim,lpips,bright_ratio,n_tiles,n_contrast,n_fail\n")
                 for j, i in enumerate(sel):
-                    f.write(f"{names[i]},{ps[j]:.5f},{ss[j]:.5f},{ls[j]:.5f},{br[j]:.4f}\n")
+                    f.write(f"{names[i]},{ps[j]:.5f},{ss[j]:.5f},{ls[j]:.5f},{br[j]:.4f},{fpi[j][0]},{fpi[j][1]},{fpi[j][2]}\n")
             print(f"[逐張] {a.per_image_csv}")
         if a.save_dir:
             print(f"[圖] {a.save_dir}（左=GT 右=渲染）")

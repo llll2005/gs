@@ -31,7 +31,7 @@
 #   [solo] bash scripts/lab/task_full44.sh offheldout [塊...]  官方逐塊模型在**我方同一批塊視角**上的 held-out（同塊對照；預設 0~3）
 #          CITYGS_OFF_LINE=paper 改評照論文設定那條線（trim 執行＋ω 0.9、prune 0.025）=> official_heldout_paper.txt
 #   [solo] bash scripts/lab/task_full44.sh stepprof [塊...]   每塊兩段真實迴圈逐段計時 => 推算獨佔下整趟 60k 要多久（見該模式註解）
-#   [solo] bash scripts/lab/task_full44.sh failheld [塊...]   同一批塊內 held-out 視角上，我方 4x4／官方 release／論文設定逐塊模型的失敗 tile（12；預設 6 12）
+#   [solo] bash scripts/lab/task_full44.sh failheld [ours|release|paper ...]  三個合併模型的 741 幀 held-out＋失敗 tile，按 4x4 塊拆開（12）
 #   [solo] bash scripts/lab/task_full44.sh prunecurve [ours|release|paper ...]  合併模型依 opacity 只留 100/90/75/50/25%，官方 741 幀 held-out（同一支工具；09g）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
@@ -204,30 +204,29 @@ case "$MODE" in
       exit "$bad"; } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$L"
     exit "${PIPESTATUS[0]}" ;;
   failheld)
-    # ★ 2026-10-10 使用者（圖 12）：官方逐塊模型的同一失敗區統計。val 兩邊不是同一批影像 => 改在**同一批塊內官方 held-out 視角**上比
-    #   （eval_official_test --block B --block_dim 4 4，我方 4x4 分區選視角；判準同 failure_map：48px、GT std>=0.10、corr<0.6）。
-    #   ⚠ 分母是全部 tile（held-out 影像不在 SfM 裡，不能像 failure_map 只算有觀測點的 tile）=> 數字只在本表內互比，不和 `12` 的 val 失敗率比。
-    shift; BL=("$@"); [ ${#BL[@]} -gt 0 ] || BL=(6 12)
-    T=logs/full44_failheld.tsv
-    [ -f "$T" ] || printf 'block\tline\tN\tpsnr\tlpips\tfail_all_pct\tfail_contrast_pct\n' > "$T"
-    bad=0
-    for B in "${BL[@]}"; do
-      for w in ours release paper; do
-        case "$w" in
-          ours)    ck=$(ls "$OUT/blocks/block_$B/checkpoints/"*step=60000.ckpt 2>/dev/null | head -1) ;;
-          release) ck=$(ls ../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1) ;;
-          paper)   ck=$(ls ../cityGS_origin_trimfix/outputs/citygsv2_mc_aerial_sh2_paper/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1) ;;
-        esac
-        [ -n "$ck" ] || { echo "⛔ $w block $B 沒有 60k ckpt"; bad=1; continue; }
-        L=logs/full44_failheld_b${B}_${w}.log
-        conda run -n gspl --no-capture-output python tools/eval_official_test.py --ckpt "$ck" --block "$B" --block_dim 4 4 2>&1 \
-          | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR|pkg_resources|declare_namespace" > "$L"
-        n=$(grep -m1 "^\[模型\]" "$L" | tr -dc 0-9); p=$(awk '/^PSNR/{print $2; exit}' "$L"); l=$(awk '/^LPIPS/{print $2; exit}' "$L")
-        f1=$(grep -m1 "^失敗 tile" "$L" | sed -E 's/^失敗 tile ([0-9.]+)%.*（([0-9.]+)%.*/\1/'); f2=$(grep -m1 "^失敗 tile" "$L" | sed -E 's/^失敗 tile ([0-9.]+)%[^（]*（([0-9.]+)%.*/\2/')
-        [ -n "$p" ] && [ -n "$f1" ] || { echo "⛔ $w block $B 評分失敗（見 $L）"; bad=1; continue; }
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$B" "$w" "$n" "$p" "$l" "$f1" "$f2" | tee -a "$T"
-      done
+    # ★ 2026-10-10 使用者（圖 12）：官方的同一失敗區統計。val 兩邊不是同一批影像 => 改用官方 741 幀 held-out。
+    #   ⚠ 改版（同日）：原本評**單塊**模型，但單塊 held-out 主要量到「帶了多少塊外內容」（b12：我方單塊 22.55／合併 27.82，
+    #     官方單塊 26.39／合併 27.10；`紀錄/實驗分析/09` §0.2b）=> 改評三個**合併**模型的全部 741 幀（逐幀 CSV 含失敗 tile 計數），
+    #     再用 tools/merged_heldout_by_block.py 按 4x4 塊拆開。判準同 failure_map：48px、GT std>=0.10、corr<0.6。
+    #   ⚠ 分母是全部 tile（held-out 影像不在 SfM 裡）=> 只在本表內互比，不和 `12` 的 val 失敗率比。
+    shift; WL=("$@"); [ ${#WL[@]} -gt 0 ] || WL=(ours release paper)
+    bad=0; CS=()
+    for w in "${WL[@]}"; do
+      case "$w" in
+        ours)    ck=$(ls "$OUT/checkpoints/"*.ckpt 2>/dev/null | tail -1) ;;
+        release) ck=$OFF_CK ;;
+        paper)   ck=$(ls ../cityGS_origin_trimfix/outputs/citygsv2_mc_aerial_sh2_paper/checkpoints/*.ckpt 2>/dev/null | tail -1) ;;
+        *) echo "⛔ 不認得 $w（ours|release|paper）"; bad=1; continue ;;
+      esac
+      [ -n "$ck" ] || { echo "⛔ $w 沒有合併 ckpt"; bad=1; continue; }
+      C=logs/full44_fail_${w}.csv
+      echo "════ $w：$ck"
+      conda run -n gspl --no-capture-output python tools/eval_official_test.py --ckpt "$ck" --per_image_csv "$C" 2>&1 \
+        | grep -vE "\.\.\.[0-9]+/[0-9]+ +PSNR|pkg_resources|declare_namespace" | grep -E "^PSNR|^SSIM|^LPIPS|^失敗 tile|⛔|Error"
+      [ "$(wc -l < "$C" 2>/dev/null)" -ge 742 ] && CS+=("$w=$C") || { echo "⛔ $w 逐幀 CSV 不完整"; bad=1; }
     done
+    echo "════ 按 4x4 塊拆開"
+    conda run -n gspl --no-capture-output python tools/merged_heldout_by_block.py --csv "${CS[@]}" 2>&1 | grep -v pkg_resources | tee logs/full44_failheld.txt
     exit "$bad" ;;
   prunecurve)
     # ★ 2026-10-10 使用者（圖 09g）：官方剪枝曲線旁邊加我方的同類統計。舊的官方曲線用官方 main.py test（含暗幀偏差、絕對值低約 1.5 dB），
