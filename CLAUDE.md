@@ -34,6 +34,10 @@ invalid; see `紀錄/研究總覽.md` §10 (item list: `紀錄/new_archived/倖�
 by the recorded peak; training runs default to `[solo]` (exceptions: several recipes compared purely on scores, and short functional
 tests), so every run's time and VRAM numbers are directly usable. Lab runs before 10-04 had cap 5.66 + max_split and mostly ran in
 parallel => their wall-time / reserved-VRAM columns are not comparable across that boundary (quality and peak allocated are).**
+**Grid protocol (user, 2026-10-10): all new runs use the 4x4 grid (`CITYGS_GRID=44 ... CITYGS_FAMILY=g44_ bash scripts/lab/task_cmp.sh <blk> <arm>`),
+same grid cells as the official CityGSV2 4x4, so every block compares against the official per-block models. Single-variable arms run on
+4x4 blocks 6 and 12; the 4x4 per-block reference without oreg0 is `outputs/lab/full44_best/blocks/block_<B>`. Base recipe since 10-10 =
+`best0` (dup init + opacity_reg 0; coreg0 beat opacity_reg 0.002 by +0.90/+1.32 dB val on 5x5 b6/b13).**
 **Two-machine protocol (user, 2026-09-18): lab = relative comparison (which recipe is better, lab vs lab), kept at
 3 parallel slots because throughput is ~2x and parallelism does NOT affect results — quality, offline Load and peak
 VRAM are all neighbour-independent (only wall time and it/s are, and those have dedicated `[solo]` tools).
