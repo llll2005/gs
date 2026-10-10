@@ -61,8 +61,9 @@ def main():
     mck = sorted(glob.glob(os.path.join(a.merged_run, "checkpoints", "*.ckpt")))
     mck = [c for c in mck if os.path.basename(c) == "merged.ckpt"] or mck
     model, renderer, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(mck[-1], device=dev, eval_mode=True)
-    base = {k: v for k, v in model.properties.items()}
-    print(f"[基準] {mck[-1]}  N={model.n_gaussians:,}")
+    base = {k: v.detach().cpu() for k, v in model.properties.items()}   # 17.6M 顆約 4 GB：放 CPU，每個變體組好才搬上 GPU（10-10 三個任務同卡時 OOM）
+    model.properties = {k: v[:1].to(dev) for k, v in base.items()}; torch.cuda.empty_cache()
+    print(f"[基準] {mck[-1]}  N={base['means'].shape[0]:,}")
 
     cands = list(a.cand)
     names = list(a.names or [os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(c)))) for c in cands])
@@ -79,13 +80,13 @@ def main():
         bd = list(pc.block_dim or [])
         assert bd == [4, 4] and pc.block_id == B, f"{c}：block_dim {bd}／block_id {pc.block_id}，要 [4,4]／{B}"
         if mmask is None:
-            mmask = block_mask(base["means"], pc)[B].to(dev)
+            mmask = block_mask(base["means"], pc)[B]
             print(f"[基準] 第 {B} 塊盒內 {int(mmask.sum()):,} 顆（換掉這批）")
         cm, _, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(c, device=dev, eval_mode=True)
         cp = {k: v for k, v in cm.properties.items()}
         assert set(cp) == set(base) and all(cp[k].shape[1:] == base[k].shape[1:] for k in base), f"{nm}：屬性與基準不同（SH 階數？）"
-        cmask = block_mask(cp["means"], pc)[B].to(dev)
-        variants.append((nm, {k: cp[k][cmask].clone() for k in base}))
+        cmask = block_mask(cp["means"], pc)[B].to(cp["means"].device)
+        variants.append((nm, {k: cp[k][cmask].detach().cpu().clone() for k in base}))
         print(f"[{nm}] 塊內 {int(cmask.sum()):,}／{cm.n_gaussians:,} 顆 => 換塊後 N={int((~mmask).sum()) + int(cmask.sum()):,}")
         del cm, cp
 
@@ -100,11 +101,20 @@ def main():
     bg = torch.zeros(3, device=dev)
     img_dir = os.path.join(a.test_dir, "images_1.2")
     res = {}
+    need = sorted(set(i for _, s in sets for i in s))
+    # 「本塊負責區域」：基準第 B 塊的顆粒單獨渲染時 alpha > 0.5 的像素（合併後這些像素主要由第 B 塊決定）；
+    #   整張畫面的 PSNR 會被其他 15 塊稀釋（塊視角上第 B 塊只佔畫面一部分），這個區域的 PSNR 才是第 B 塊換配方的直接效果。
+    region = {}
     with torch.no_grad():
+        model.properties = {k: v[mmask].to(dev) for k, v in base.items()}
+        for i in need:
+            o = renderer(cams[i].to_device(dev), model, bg_color=bg)
+            region[i] = (o["rend_alpha"].reshape(o["render"].shape[1:]) > 0.5).cpu()
+        frac = np.mean([float(region[i].float().mean()) for i in need])
+        print(f"[區域] 第 {B} 塊負責的像素佔畫面平均 {100 * frac:.1f}%", flush=True)
         for vn, cin in variants:
-            props = base if cin is None else {k: torch.cat([base[k][~mmask], cin[k]], 0) for k in base}
+            props = {k: (base[k] if cin is None else torch.cat([base[k][~mmask], cin[k]], 0)).to(dev) for k in base}
             model.properties = props
-            need = sorted(set(i for _, s in sets for i in s))
             per = {}
             for i in need:
                 out = renderer(cams[i].to_device(dev), model, bg_color=bg)["render"].clamp(0, 1)
@@ -113,21 +123,23 @@ def main():
                     pil = pil.resize((out.shape[2], out.shape[1]), Image.LANCZOS)
                 gt = torch.from_numpy(np.array(pil, np.uint8)).float().permute(2, 0, 1).to(dev) / 255.
                 ft = eot.fail_tiles(gt, out, 48, 0.10, 0.60)
-                per[i] = (float(-10 * torch.log10(((out - gt) ** 2).mean().clamp_min(1e-12))), float(ssim_fn(out, gt)),
-                          float(lp(out.unsqueeze(0), gt.unsqueeze(0))), ft)
+                se = ((out - gt) ** 2).mean(0); m = region[i].to(dev)
+                per[i] = (float(-10 * torch.log10(se.mean().clamp_min(1e-12))), float(ssim_fn(out, gt)),
+                          float(lp(out.unsqueeze(0), gt.unsqueeze(0))), ft, float(se[m].sum()), int(m.sum()))
             res[vn] = per
-            model.properties = base; del props; torch.cuda.empty_cache()
+            model.properties = {k: v[:1] for k, v in props.items()}; del props; torch.cuda.empty_cache()
             print(f"  渲染完 {vn}（{len(need)} 幀）", flush=True)
-    model.properties = base
+    rps = lambda r, s: -10 * np.log10(max(sum(r[i][4] for i in s) / max(sum(r[i][5] for i in s), 1), 1e-12))
     for sn, s in sets:
         print(f"\n=== {sn} ===")
-        print(f"{'':<26} {'PSNR':>8} {'SSIM':>7} {'LPIPS':>7} {'失敗tile%':>9} {'ΔPSNR':>7} {'贏的幀':>8}")
-        b0 = np.array([res["基準（原樣）"][i][0] for i in s])
+        print(f"{'':<26} {'PSNR':>8} {'SSIM':>7} {'LPIPS':>7} {'失敗tile%':>9} {'ΔPSNR':>7} {'贏的幀':>8} {'本塊區域PSNR':>12} {'Δ區域':>7}")
+        b0 = np.array([res["基準（原樣）"][i][0] for i in s]); rb = rps(res["基準（原樣）"], s)
         for vn, _ in variants:
             r = res[vn]
-            p = np.array([r[i][0] for i in s]); t = np.array([r[i][3] for i in s]).sum(0)
+            p = np.array([r[i][0] for i in s]); t = np.array([list(r[i][3]) for i in s]).sum(0)
             print(f"{vn:<26} {p.mean():>8.3f} {np.mean([r[i][1] for i in s]):>7.4f} {np.mean([r[i][2] for i in s]):>7.4f} "
-                  f"{100 * t[2] / max(t[0], 1):>9.2f} {p.mean() - b0.mean():>+7.3f} {int((p > b0 + 1e-6).sum()):>4}/{len(s)}")
+                  f"{100 * t[2] / max(t[0], 1):>9.2f} {p.mean() - b0.mean():>+7.3f} {int((p > b0 + 1e-6).sum()):>4}/{len(s)} "
+                  f"{rps(r, s):>12.3f} {rps(r, s) - rb:>+7.3f}")
 
 
 if __name__ == "__main__":
