@@ -236,7 +236,7 @@ case "$MODE" in
     cks=(); ns=()
     for r in "$@"; do
       c=$(ls outputs/${PFX}$r/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1)
-      [ -n "$c" ] || { echo "⛔ $r block $B 沒有 60k ckpt"; exit 2; }
+      [ -n "$c" ] || { echo "⚠ $r block $B 沒有 60k ckpt => 跳過（其他照評）"; continue; }
       cks+=("$c"); ns+=("$r")
     done
     L=logs/swap_b${B}_$(date +%m%d_%H%M).log
