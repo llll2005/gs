@@ -32,6 +32,7 @@
 #          CITYGS_OFF_LINE=paper 改評照論文設定那條線（trim 執行＋ω 0.9、prune 0.025）=> official_heldout_paper.txt
 #   [solo] bash scripts/lab/task_full44.sh stepprof [塊...]   每塊兩段真實迴圈逐段計時 => 推算獨佔下整趟 60k 要多久（見該模式註解）
 #   [solo] bash scripts/lab/task_full44.sh failheld [ours|release|paper ...]  三個合併模型的 741 幀 held-out＋失敗 tile，按 4x4 塊拆開（12）
+#   bash scripts/lab/task_full44.sh swap <塊> [4x4 跑次...]   換塊評測：合併模型只換第 B 塊（＋自我檢查），741 幀中該塊視角（定案用；tools/swap_block_eval.py）
 #   [solo] bash scripts/lab/task_full44.sh prunecurve [ours|release|paper ...]  合併模型依 opacity 只留 100/90/75/50/25%，官方 741 幀 held-out（同一支工具；09g）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
@@ -228,6 +229,20 @@ case "$MODE" in
     echo "════ 按 4x4 塊拆開"
     conda run -n gspl --no-capture-output python tools/merged_heldout_by_block.py --csv "${CS[@]}" 2>&1 | grep -v pkg_resources | tee logs/full44_failheld.txt
     exit "$bad" ;;
+  swap)
+    # ★ 2026-10-10 使用者（「被淘汰的方案會不會只是塊外表現差」）：單塊 val／held-out 都混了塊外內容，合併會丟掉 =>
+    #   定案用換塊評測：本合併模型（full44_best）只把第 B 塊換成候選（4x4 訓練）的塊內顆粒，其他 15 塊不變。--sanity 把自己的塊換回去當檢查。
+    shift; B=${1:?缺塊}; shift
+    cks=(); ns=()
+    for r in "$@"; do
+      c=$(ls outputs/${PFX}$r/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1)
+      [ -n "$c" ] || { echo "⛔ $r block $B 沒有 60k ckpt"; exit 2; }
+      cks+=("$c"); ns+=("$r")
+    done
+    L=logs/swap_b${B}_$(date +%m%d_%H%M).log
+    XA=(); [ ${#cks[@]} -gt 0 ] && XA=(--cand "${cks[@]}" --names "${ns[@]}")
+    conda run -n gspl --no-capture-output python tools/swap_block_eval.py --merged_run "$OUT" --block "$B" --sanity "${XA[@]}" 2>&1 | grep -vE "pkg_resources|declare_namespace" | tee "$L"
+    exit "${PIPESTATUS[0]}" ;;
   prunecurve)
     # ★ 2026-10-10 使用者（圖 09g）：官方剪枝曲線旁邊加我方的同類統計。舊的官方曲線用官方 main.py test（含暗幀偏差、絕對值低約 1.5 dB），
     #   這裡三個合併模型都改用**我方評分工具**（eval_official_test.py --opacity_keep，載入一次、逐比例剪完評分；與 official_prune_ckpt.py 同規則：

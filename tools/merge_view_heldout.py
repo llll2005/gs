@@ -8,7 +8,11 @@
   塊外區域像素    其餘像素 —— 合併後由鄰塊負責，本塊在這裡的好壞會被換掉
 判讀：兩個 ckpt 的落差若集中在「塊外區域」，合併後大致會消失；若在「塊內區域」，就是真的。
 
-用法：python tools/merge_view_heldout.py --ckpt <A.ckpt> <B.ckpt> [--names 基準 bestvt]
+2026-10-10（使用者：被淘汰的方案會不會只是塊外表現差）：加 --views val => 在該塊的 val 視角（val⊂train，同一個 parser）上做同樣的拆解；
+  val 也是整張畫面、塊外內容可以被「背」下來 => 剪掉塊外顆粒的方案 val 會掉，但合併時那些顆粒本來就會丟。
+⚠ 這是近似：合併後鄰塊顆粒可能擋在本塊前面（這裡看不到）；塊內像素只佔畫面一小部分，噪音較大。定案用 tools/swap_block_eval.py（4x4）。
+
+用法：python tools/merge_view_heldout.py --ckpt <A.ckpt> <B.ckpt> [--names 基準 bestvt] [--views heldout|val]
 """
 import argparse
 import os
@@ -28,6 +32,7 @@ def main():
     ap.add_argument("--ckpt", nargs="+", required=True)
     ap.add_argument("--names", nargs="+", default=None)
     ap.add_argument("--test_dir", default="data/matrix_city/aerial/test/block_all_test_official2")
+    ap.add_argument("--views", choices=["heldout", "val"], default="heldout")
     a = ap.parse_args()
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     from internal.utils.citygs_partitioning_utils import CityGSPartitioning, PartitionCoordinates
@@ -55,11 +60,20 @@ def main():
         print(f"[{names[len(models) - 1]}] N={model.n_gaussians:,}  合併後保留（塊內）{int(m.sum()):,}（{100 * float(m.float().mean()):.1f}%）")
     blk, bdim = pc.block_id, list(pc.block_dim or [5, 5])
     ck = torch.load(a.ckpt[0], map_location="cpu"); train_dir = ck["datamodule_hyper_parameters"]["path"]; del ck
-    tn, tc = eot.load_test_cameras(a.test_dir, 1.2)
-    centres = np.array([(-tc.R[i].numpy().T @ tc.T[i].numpy()) for i in range(len(tn))])
-    lo, hi, _ = eot.block_bounds(train_dir, blk, bdim, getattr(pc, "content_threshold", 0.08))
-    sel = [i for i in range(len(tn)) if np.all(centres[i] >= lo) and np.all(centres[i] <= hi)]
-    print(f"block {blk}：塊內官方 held-out 視角 {len(sel)}")
+    if a.views == "heldout":
+        tn, tc = eot.load_test_cameras(a.test_dir, 1.2)
+        centres = np.array([(-tc.R[i].numpy().T @ tc.T[i].numpy()) for i in range(len(tn))])
+        lo, hi, _ = eot.block_bounds(train_dir, blk, bdim, getattr(pc, "content_threshold", 0.08))
+        sel = [i for i in range(len(tn)) if np.all(centres[i] >= lo) and np.all(centres[i] <= hi)]
+        gt_path = lambda i: os.path.join(a.test_dir, "images_1.2", tn[i])
+        print(f"block {blk}：塊內官方 held-out 視角 {len(sel)}")
+    else:
+        ck = torch.load(a.ckpt[0], map_location="cpu"); dmh = ck["datamodule_hyper_parameters"]; del ck
+        vs = dmh["parser"].instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt[0])), global_rank=0).get_outputs().val_set
+        tc, tn = vs.cameras, list(vs.image_names)
+        sel = list(range(len(tn)))
+        gt_path = lambda i: vs.image_paths[i]
+        print(f"block {blk}：val 視角 {len(sel)}（val⊂train）")
 
     bg = torch.zeros(3, device=dev)
     acc = {n: {"full": [0.0, 0], "in": [0.0, 0], "out": [0.0, 0], "inonly": [0.0, 0], "psnr_full": []} for n in names}
@@ -78,7 +92,10 @@ def main():
                 renders.append((full, oi["render"].clamp(0, 1)))
                 masks.append(oi["rend_alpha"].reshape(oi["render"].shape[1:]) > 0.5)
                 if gt is None:
-                    pil = Image.open(os.path.join(a.test_dir, "images_1.2", tn[i])).convert("RGB")
+                    pil = Image.open(gt_path(i)).convert("RGB")
+                    cw, ch = int(full.shape[2]), int(full.shape[1])
+                    if pil.size != (cw, ch):
+                        pil = pil.resize((cw, ch), Image.LANCZOS)
                     gt = torch.from_numpy(np.array(pil, np.uint8)).float().permute(2, 0, 1).to(dev) / 255.
             mk = torch.stack(masks).all(0)
             frac_in.append(float(mk.float().mean()))
