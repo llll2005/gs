@@ -318,6 +318,15 @@ def cmd_compare(a):
     for k in A["grads"]:
         m, rel, n, tot = _cmp(A["grads"][k], B["grads"][k])
         print(f"    {k:<14} 最大絕對差 {m:.3e}  相對（÷最大幅度）{rel:.2e}  不同 {n:,}/{tot:,}")
+    # ★ 2026-10-09：只看「量級夠大」的元素（|A| > 1% 最大值）各自的相對誤差。漏加／重複加貢獻的 bug 會出現在大元素上；
+    #   加總順序造成的捨入差集中在互相抵消、接近 0 的小元素。印 max 與 99.9 分位，供判定用（行首 "SIG"）。
+    for k in A["grads"]:
+        a_, b_ = A["grads"][k].double().flatten(), B["grads"][k].double().flatten()
+        mk = a_.abs() > 0.01 * a_.abs().max()
+        if int(mk.sum()) > 0:
+            r = ((a_[mk] - b_[mk]).abs() / a_[mk].abs())
+            q = float(torch.quantile(r[torch.randperm(r.numel())[:2_000_000]], 0.999))
+            print(f"    SIG {k:<14} 大元素 {int(mk.sum()):,} 個：逐元素相對誤差 max {float(r.max()):.2e}  p99.9 {q:.2e}")
     m, rel, n, tot = _cmp(A["vgrad"], B["vgrad"])
     print(f"    {'viewspace(+absgrad)':<14} 最大絕對差 {m:.3e}  相對 {rel:.2e}  不同 {n:,}/{tot:,}")
     if A["vgrad"].shape[-1] >= 3:   # ★ 2026-10-09：xy（真的梯度）與 z（absgrad 累加器）分開報
