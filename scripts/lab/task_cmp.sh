@@ -102,7 +102,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; esac
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -116,6 +116,8 @@ case "$CASEARM" in
                 bestdist100) EXTRA+=(--model.metric.init_args.lambda_dist 100) ;;
                 bestdist1000) EXTRA+=(--model.metric.init_args.lambda_dist 1000) ;;
                 bestnotrim)  EXTRA+=(--model.renderer.init_args.diable_trimming true) ;;
+                # ★ 2026-10-10 使用者：backward 飽和跳過＋block 內先加總的 60k 分數判定（verify2：梯度大元素 p99.9 差 1.8e-4、2,000 步 held-out 在噪音內、乾淨計時 backward 約 -40%）
+                bestfast)    EXTRA+=(--model.renderer.init_args.bwd_sat_skip true --model.renderer.init_args.bwd_reduce true) ;;
               esac ;;
   base)       EXTRA=();                                                        EXP=0 ;;
   # ★ 參考軌跡（2026-09-14）：行為與 base 完全相同，只多兩個純打印旗標 ——
