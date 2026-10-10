@@ -265,6 +265,27 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
         shs, colors_precomp = self._get_color_inputs(pc, viewpoint_camera, record_transmittance)
 
+        # ★ 2026-10-10 塊外池（internal/utils/outside_pool.py）：可訓練集合之後串接池內顆粒（SH0、不受 MCMC 管）。
+        #   means2D 的池那段是不帶梯度的 0 => screenspace_points 只收到可訓練那 N_in 列的梯度；逐顆輸出下面切回前 N_in 筆。
+        _pool = getattr(pc, "_outside_pool", None)
+        n_in = None
+        if _pool is not None and _pool.n > 0:
+            if shs is None:
+                raise NotImplementedError("塊外池只支援 SH 顏色路徑（colors_precomp 的 renderer 未實作）")
+            _pool.to(means3D.device)
+            n_in = means3D.shape[0]
+            pxyz, pop, psc, prot, pfeat = _pool.render_tensors(shs.shape[1])
+            means3D = torch.cat([means3D, pxyz], 0)
+            means2D = torch.cat([means2D, torch.zeros_like(pxyz)], 0)
+            opacity = torch.cat([opacity, pop], 0)
+            scales = torch.cat([scales, psc[..., :scales.shape[-1]]], 0)
+            rotations = torch.cat([rotations, prot], 0)
+            shs = torch.cat([shs, pfeat.to(shs.dtype)], 0)
+            if not getattr(self, "_pool_announced", False):
+                self._pool_announced = True
+                print(f"[outside-pool] ✅ 首次串接：可訓練 {n_in:,} 顆＋塊外池 {_pool.n:,} 顆"
+                      f"（{'可訓練 SH0' if _pool.trainable else '凍結 SH0'}，{_pool.bytes_per_point()} B／顆）", flush=True)
+
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
         output = rasterizer(
             means3D=means3D,
@@ -279,6 +300,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
 
         if kwargs.get("_audit", False):
             return output          # (reached_tiles, useful_tiles, radii, 逐像素 [迴圈次數, tile 配對數, 混合次數], tiles)
+        _tiles_out = None
+        if n_in is not None and not kwargs.get("_audit", False):
+            # 逐顆輸出切回可訓練集合（trim／density controller 只認得它）；影像類輸出（render、allmap）不動
+            if not record_transmittance and len(output) == 4:
+                _tiles_out = output[3][n_in:]          # 池的 binning 成本另外交出去（離線 Load 要加上，否則低估）
+            if record_transmittance:
+                output = tuple(o[:n_in] for o in output)
+            else:
+                output = (output[0], output[1][:n_in], output[2]) + tuple(o[:n_in] for o in output[3:])
         if record_transmittance:
             transmittance_sum, num_covered_pixels, radii = output
             # Per-COVERED-PIXEL mean, not the sum: size-normalised, so a large primitive and a
@@ -321,6 +351,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             #   而且在 EXACT_CONIC_AABB 開啟後 radii 已與真實盒子脫鉤（刻意凍結）。
             #   ⚠ 它是**逐視角**的量；要當逐顆成本用必須自己決定窗口（max / mean / 單視角）。
             **({"tiles": tiles} if tiles is not None else {}),
+            **({"tiles_outside": _tiles_out} if _tiles_out is not None else {}),
         }
 
         # additional regularizations

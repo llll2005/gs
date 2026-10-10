@@ -148,6 +148,12 @@ class GaussianModelLoader:
         if pre_activate is True:
             model.pre_activate_all_properties()
 
+        if "outside_pool" in checkpoint:      # 2026-10-10 塊外池：工具渲染單塊時也要有背景（池自帶激活，不受 pre_activate 影響）
+            from internal.utils.outside_pool import OutsidePool
+            model._outside_pool = OutsidePool.from_state(checkpoint["outside_pool"], device=device)
+            if getattr(model._outside_pool, "trainable", False):
+                model._outside_pool.freeze()
+
         return model, renderer, checkpoint
 
     @staticmethod

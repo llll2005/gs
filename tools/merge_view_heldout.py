@@ -87,8 +87,9 @@ def main():
                 o = renderer(cam, model, bg_color=bg)
                 full = o["render"].clamp(0, 1)
                 model.properties = {k: v[m] for k, v in orig.items()}
+                _pool = getattr(model, "_outside_pool", None); model._outside_pool = None   # 塊外池（10-10）不屬於「塊內顆粒」
                 oi = renderer(cam, model, bg_color=bg)
-                model.properties = orig
+                model.properties = orig; model._outside_pool = _pool
                 renders.append((full, oi["render"].clamp(0, 1)))
                 masks.append(oi["rend_alpha"].reshape(oi["render"].shape[1:]) > 0.5)
                 if gt is None:

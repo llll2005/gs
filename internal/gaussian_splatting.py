@@ -233,6 +233,12 @@ class GaussianSplatting(LightningModule):
             strip_max: int = 8,
             grad_checkpoint: bool = False,
             train_res_schedule: str = "",
+            outside_pool_start: int = 0,
+            outside_pool_trainable: bool = True,
+            outside_pool_freeze_step: int = 0,
+            outside_pool_margin: float = 0.1,
+            outside_pool_min_scale_q: float = 0.0,
+            outside_pool_sweep_interval: int = 0,
     ) -> None:
         super().__init__()
         self.automatic_optimization = False
@@ -465,6 +471,10 @@ class GaussianSplatting(LightningModule):
         self.restored_epoch = checkpoint["epoch"]
         self.restored_global_step = checkpoint["global_step"]
 
+        if "outside_pool" in checkpoint:
+            from internal.utils.outside_pool import OutsidePool
+            self.gaussian_model._outside_pool = OutsidePool.from_state(checkpoint["outside_pool"])
+
         # call for renderer
         self.renderer.on_load_checkpoint(self, checkpoint)
         # call density controller's hook
@@ -481,6 +491,9 @@ class GaussianSplatting(LightningModule):
         #     "spatial_lr_scale": self.gaussian_model.spatial_lr_scale,
         #     "active_sh_degree": self.gaussian_model.active_sh_degree,
         # }
+        _pool = getattr(self.gaussian_model, "_outside_pool", None)
+        if _pool is not None:
+            checkpoint["outside_pool"] = _pool.state()      # 不進 state_dict：merge／舊工具照舊只讀可訓練集合
         super().on_save_checkpoint(checkpoint)
 
     def tensorboard_log_image(self, tag: str, image_tensor):
@@ -648,6 +661,49 @@ class GaussianSplatting(LightningModule):
                 return sc
         return 1.0
 
+    def _outside_pool_step(self, step: int):
+        """塊外池（internal/utils/outside_pool.py）：
+        step == outside_pool_start         把盒＋margin 之外的可訓練顆粒搬進池（trainable=A；否則立刻凍結＝B）
+        每 outside_pool_sweep_interval 步   之後跑到盒外的可訓練顆粒也搬進去（MCMC 搬移／加點可能把顆粒放到外面）
+        step == outside_pool_freeze_step    池凍結（A+B：低解析度期可訓練、解析度提高後凍結）"""
+        from internal.utils.outside_pool import OutsidePool, block_outside_mask
+        hp = self.hparams
+        start, freeze = int(hp["outside_pool_start"]), int(hp.get("outside_pool_freeze_step", 0) or 0)
+        iv = int(hp.get("outside_pool_sweep_interval", 0) or 0)
+        pool = getattr(self.gaussian_model, "_outside_pool", None)
+        sweep = pool is not None and iv > 0 and step > start and (step - start) % iv == 0
+        if step == start or sweep:
+            pc = self.trainer.datamodule.hparams["parser"]
+            if getattr(pc, "block_id", None) is None:
+                raise RuntimeError("outside_pool 需要分塊訓練（parser.block_id）")
+            out = block_outside_mask(self.gaussian_model.get_xyz, pc, float(hp.get("outside_pool_margin", 0.1)))
+            n_mv = int(out.sum())
+            if n_mv > 0:
+                props = self.gaussian_model.properties
+                raw = {k: props[k][out].detach() for k in ("means", "opacities", "scales", "rotations", "shs_dc")}
+                self.density_controller._prune_points(out, self.gaussian_model, self.gaussian_optimizers)
+                if pool is None:
+                    q = float(hp.get("outside_pool_min_scale_q", 0.0) or 0.0)
+                    ms = float(torch.quantile(torch.exp(raw["scales"]).max(-1).values.float()[:1_000_000], q)) if q > 0 else None
+                    pool = OutsidePool(raw, trainable=bool(hp.get("outside_pool_trainable", True)) and not (freeze and step >= freeze),
+                                       min_scale=ms)
+                    if not pool.trainable:
+                        pool.freeze()
+                    self.gaussian_model._outside_pool = pool
+                    print(f"[outside-pool] ✅ step {step}: 盒＋{hp.get('outside_pool_margin', 0.1)} 之外 {n_mv:,} 顆搬進塊外池"
+                          f"（{'可訓練 SH0' if pool.trainable else '凍結 SH0'}、{pool.bytes_per_point()} B／顆、尺寸下限 {ms}），"
+                          f"可訓練集合剩 {self.gaussian_model.n_gaussians:,}（MCMC cap 只算這批）", flush=True)
+                else:
+                    pool.add(raw)
+                    if not getattr(self, "_pool_sweep_announced", False):
+                        self._pool_sweep_announced = True
+                        print(f"[outside-pool] ✅ 首次清掃 step {step}：再搬 {n_mv:,} 顆，池 {pool.n:,}", flush=True)
+            elif step == start:
+                print(f"⚠⚠ [outside-pool] step {step}：盒外沒有任何顆粒 => 池沒建立（margin 太大？）", flush=True)
+        if pool is not None and freeze > 0 and step == freeze and pool.act is None:
+            pool.freeze()
+            print(f"[outside-pool] ✅ step {step}: 池凍結（{pool.n:,} 顆、{pool.bytes_per_point()} B／顆）", flush=True)
+
     def _downscale_batch(self, camera, batch, s: float, step: int):
         """訓練相機與 GT 同比例縮小：內參（fx、fy、cx、cy、寬高）按實際取整後的比例縮放；fov 與投影矩陣不變。
         GT 用 area 內插（等於平均池化，不混疊）。驗證／測試與 trim 的 record 不經過這裡 => 一律全解析度。"""
@@ -695,6 +751,8 @@ class GaussianSplatting(LightningModule):
         _rs = self._train_res_scale(global_step)
         if _rs < 1.0:
             camera, batch = self._downscale_batch(camera, batch, _rs, global_step)
+        if int(self.hparams.get("outside_pool_start", 0) or 0) > 0:
+            self._outside_pool_step(global_step)
 
         # get optimizers and schedulers
         optimizers = self.optimizers()
@@ -981,6 +1039,9 @@ class GaussianSplatting(LightningModule):
         # optimize
         for optimizer in optimizers:
             optimizer.step()
+        _pool = getattr(self.gaussian_model, "_outside_pool", None)
+        if _pool is not None and _pool.trainable:
+            _pool.step(self.gaussian_optimizers)          # A：池自己的 Adam（學習率跟主模型同名參數群）
         if _prof is not None:
             _prof.mark("9 optimizer.step")
 

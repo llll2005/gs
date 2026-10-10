@@ -84,7 +84,8 @@ def main():
             vis = r > 0
             loads_floor.append(float(torch.clamp(q[vis], min=1.0).sum()))
             t = out.get("tiles")
-            loads_exact.append(float(t.double().sum()) if t is not None else float("nan"))
+            _to = out.get("tiles_outside")          # 2026-10-10 塊外池的 binning 成本（renderer 另外交出）
+            loads_exact.append((float(t.double().sum()) + (float(_to.double().sum()) if _to is not None else 0.0)) if t is not None else float("nan"))
             cam = cams[i].to_device(dev)
             W_, H_ = int(cam.width), int(cam.height)
             fx_ = W_ / (2.0 * math.tan(float(cam.fov_x) * 0.5))

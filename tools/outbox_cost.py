@@ -55,6 +55,9 @@ def main():
         parts = torch.load(os.path.join(os.path.dirname(pc.image_list), "partitions.pt"))
         coords = PartitionCoordinates(id=parts["partition_coordinates"]["id"], xy=parts["partition_coordinates"]["xy"])
         orig = {k: v.detach() for k, v in model.properties.items()}
+        if getattr(model, "_outside_pool", None) is not None:      # 塊外池跑次：本工具量的是「可訓練集合裡的塊外顆粒」，池先卸下並另報
+            print(f"（此 ckpt 有塊外池 {model._outside_pool.n:,} 顆，{model._outside_pool.bytes_per_point()} B／顆；以下只量可訓練集合）")
+            model._outside_pool = None
         N0 = orig["means"].shape[0]
         x = orig["means"].cpu() @ parts["extra_data"]["rotation_transform"][:3, :3].T
         if parts["scene_config"]["contract"]:

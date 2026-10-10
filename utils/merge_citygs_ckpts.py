@@ -195,5 +195,8 @@ initialize_from = ckpt["hyper_parameters"].get("initialize_from")
 merged_name = initialize_from.split('/')[-1] if (initialize_from is not None and str(initialize_from).endswith('.ckpt')) else "merged.ckpt"
 output_path = os.path.join(os.path.dirname(checkpoint_dir), "checkpoints", merged_name)
 logger.info("Saving...")
+# 2026-10-10 塊外池（internal/utils/outside_pool.py）：ckpt 沿用最後一塊的字典 => 它的塊外池會被帶進合併模型、載入時混進全場景 => 一律拿掉
+if ckpt.pop("outside_pool", None) is not None:
+    logger.info("  拿掉最後一塊 ckpt 帶的 outside_pool（塊外池不屬於合併模型）")
 torch.save(ckpt, output_path)
 logger.info(f"Saved to '{output_path}'")

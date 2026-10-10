@@ -208,7 +208,7 @@ case "$CASEARM" in
                      --model.density.init_args.add_ratio 1.0
                      --model.density.init_args.relocate_absgrad 2.0
                      --model.renderer.init_args.trim_schedule "15000:3e-4,30000:1e-3,45000:3e-3"); EXP=5 ;;
-  best|bestvt|bestoe|bestvo|bestres)
+  best|bestvt|bestoe|bestvo|bestres|bestpoolA|bestpoolB|bestpoolAB)
               P=$(_bestply)
               [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=2
@@ -218,7 +218,21 @@ case "$CASEARM" in
               [ "$CASEARM" = bestres ] && { EXTRA+=(--model.train_res_schedule "15000:0.5,30000:0.75"); EXP=$((EXP + 1)); }
               case "$CASEARM" in bestoe|bestvo)
                 EXTRA+=(--model.metric.init_args.opacity_entropy_reg 0.002 --model.metric.init_args.opacity_entropy_from_iter 1000)
-                EXP=$((EXP + 2)) ;; esac ;;
+                EXP=$((EXP + 2)) ;; esac
+              # ★ 2026-10-10 塊外池（使用者 A／B 提案；internal/utils/outside_pool.py）：盒＋10% 之外的顆粒搬出 MCMC 集合，只留 SH0
+              #   A  ＝step 2 起池可訓練（自己的 Adam、不佔 cap）＋尺寸下限（池內最大軸 25 分位）
+              #   B  ＝低解析度起步（同 bestres）；解析度提高（15k）時才搬出並凍結 => 對照組是 best0res
+              #   AB ＝step 2 起池可訓練，15k 凍結（同 bestres 的低解析度排程）
+              #   三者都每 500 步清掃一次（MCMC 搬移／加點可能把顆粒放到盒外）；cap 2.6M 只算可訓練集合
+              case "$CASEARM" in
+                bestpoolA)  EXTRA+=(--model.outside_pool_start 2 --model.outside_pool_trainable true
+                                    --model.outside_pool_sweep_interval 500 --model.outside_pool_min_scale_q 0.25); EXP=$((EXP + 3)) ;;
+                bestpoolB)  EXTRA+=(--model.train_res_schedule "15000:0.5,30000:0.75" --model.outside_pool_start 15000
+                                    --model.outside_pool_trainable false --model.outside_pool_sweep_interval 500); EXP=$((EXP + 4)) ;;
+                bestpoolAB) EXTRA+=(--model.train_res_schedule "15000:0.5,30000:0.75" --model.outside_pool_start 2
+                                    --model.outside_pool_freeze_step 15000 --model.outside_pool_sweep_interval 500
+                                    --model.outside_pool_min_scale_q 0.25); EXP=$((EXP + 5)) ;;
+              esac ;;
   # ★ 2026-10-01：dup 系列更激進（scripts/lab/gen_dup_variants.sh 產的 PLY）——
   #   sfmdup5＝複製 5 份（起始 > cap）、sfmdup4j10／sfmdup4j025＝dup4 但抖動 1.0／0.25（jitter 從沒測過）
   sfmdup5|sfmdup4j10|sfmdup4j025)
@@ -365,7 +379,7 @@ case "$CASEARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|best0*（＝best* 加 oreg0；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|best0*（＝best* 加 oreg0；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 [ "$OREG0" = 1 ] && { EXTRA+=(--model.metric.init_args.opacity_reg 0.0); EXP=$((EXP + 1)); echo "opacity_reg=0（best0 系列）"; }
 [ "$GRID" = 44 ] && { EXTRA+=("${G44[@]}"); EXP=$((EXP + 1)); }
