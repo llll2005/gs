@@ -29,9 +29,13 @@ def main():
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     dev = torch.device("cuda")
     model, renderer, ck = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(a.ckpt, device=dev, eval_mode=True)
+    for f in ("absgrad_gate", "bwd_sat_skip", "bwd_reduce", "record_reduce", "tile_cull", "lean_train"):
+        setattr(renderer, f, False)       # 只影響訓練（backward／lean／record）的開關，評估渲染不變；本機舊光柵器不認得這些欄位
     pool = getattr(model, "_outside_pool", None)
     assert pool is not None and pool.act is not None, "ckpt 沒有塊外池"
     dmh = ck["datamodule_hyper_parameters"]; del ck
+    if getattr(dmh["parser"], "points_from", None) == "ply":
+        dmh["parser"].points_from = "random"      # 只需要相機；init PLY 在別台機器上不一定有（隨機點只是佔位，不影響相機）
     train = dmh["parser"].instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)), global_rank=0).get_outputs().train_set
     idx = np.linspace(0, len(train) - 1, min(a.ncam, len(train))).round().astype(int)
     bg = torch.zeros(3, device=dev)

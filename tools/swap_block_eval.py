@@ -50,6 +50,9 @@ def main():
     ap.add_argument("--all", action="store_true", help="另外評全部 741 幀（較慢）")
     ap.add_argument("--train_dir", default="data/matrix_city/aerial/train/block_all")
     ap.add_argument("--test_dir", default="data/matrix_city/aerial/test/block_all_test_official2")
+    ap.add_argument("--grid", type=int, nargs=2, default=[4, 4], help="候選的分區格子（本機測試可用 5 5）")
+    ap.add_argument("--views", choices=["heldout", "train"], default="heldout", help="train＝第一個候選自己的訓練相機（本機功能測試用）")
+    ap.add_argument("--max_views", type=int, default=100000)
     a = ap.parse_args()
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     from internal.utils.ssim import ssim as ssim_fn
@@ -78,7 +81,8 @@ def main():
     for c, nm in zip(cands, names):
         ck = torch.load(c, map_location="cpu"); pc = ck["datamodule_hyper_parameters"]["parser"]; del ck
         bd = list(pc.block_dim or [])
-        assert bd == [4, 4] and pc.block_id == B, f"{c}：block_dim {bd}／block_id {pc.block_id}，要 [4,4]／{B}"
+        assert bd == list(a.grid) and pc.block_id == B, f"{c}：block_dim {bd}／block_id {pc.block_id}，要 {list(a.grid)}／{B}"
+        pc0 = pc
         if mmask is None:
             mmask = block_mask(base["means"], pc)[B]
             print(f"[基準] 第 {B} 塊盒內 {int(mmask.sum()):,} 顆（換掉這批）")
@@ -95,17 +99,36 @@ def main():
         print(f"[{nm}] 塊內 {int(cmask.sum()):,}／{cm.n_gaussians:,} 顆 => 換塊後 N={int((~mmask).sum()) + int(cmask.sum()):,}")
         del cm, cp
 
-    names_t, cams = eot.load_test_cameras(a.test_dir, 1.2)
-    centres = np.array([(-cams.R[i].numpy().T @ cams.T[i].numpy()) for i in range(len(names_t))])
-    lo, hi, _ = eot.block_bounds(a.train_dir, B, [4, 4])
-    selB = [i for i in range(len(names_t)) if np.all(centres[i] >= lo) and np.all(centres[i] <= hi)]
+    if a.views == "heldout":
+        names_t, cams = eot.load_test_cameras(a.test_dir, 1.2)
+        gt_path = lambda i: os.path.join(a.test_dir, "images_1.2", names_t[i])
+        centres = np.array([(-cams.R[i].numpy().T @ cams.T[i].numpy()) for i in range(len(names_t))])
+        lo, hi, _ = eot.block_bounds(a.train_dir, B, list(a.grid))
+        selB = [i for i in range(len(names_t)) if np.all(centres[i] >= lo) and np.all(centres[i] <= hi)][:a.max_views]
+    else:
+        ck = torch.load(cands[0], map_location="cpu"); dmh = ck["datamodule_hyper_parameters"]; del ck
+        if getattr(dmh["parser"], "points_from", None) == "ply":
+            dmh["parser"].points_from = "random"
+        ts = dmh["parser"].instantiate(path=dmh["path"], output_path="/tmp", global_rank=0).get_outputs().train_set
+        names_t, cams = list(ts.image_names), ts.cameras
+        gt_path = lambda i: ts.image_paths[i]
+        selB = np.linspace(0, len(names_t) - 1, min(a.max_views, len(names_t))).round().astype(int).tolist()
     sets = [(f"第 {B} 塊視角（{len(selB)} 幀）", selB)]
     if a.all:
         sets.append((f"全部 {len(names_t)} 幀", list(range(len(names_t)))))
     lp = LearnedPerceptualImagePatchSimilarity(normalize=True, net_type="alex").to(dev)
     bg = torch.zeros(3, device=dev)
-    img_dir = os.path.join(a.test_dir, "images_1.2")
     res = {}
+    # 10-11 使用者：本塊區域再依「離分區接縫的距離」分組（tile 中心用基準合併模型的深度反推世界座標；函式沿用 tools/seam_failure.py，已自檢 z 深度）
+    #   => 換配方（例如塊外池去重）若只在接縫附近傷害、離接縫遠的地方不變，可以直接看出來
+    import seam_failure as sf
+    _parts = torch.load(os.path.join(os.path.dirname(pc0.image_list), "partitions.pt"))
+    _Rp = _parts["extra_data"]["rotation_transform"][:3, :3].float().to(dev)
+    _mn, _mx, _int, _unit = (x.to(dev) for x in sf.seam_frame(_parts))
+    SB = [0.0, 0.05, 0.1, 0.2, 0.3, 10.0]
+    T = 48
+    tdist = {}
+    rbin = {}
     need = sorted(set(i for _, s in sets for i in s))
     # 「本塊負責區域」：基準第 B 塊的顆粒單獨渲染時 alpha > 0.5 的像素（合併後這些像素主要由第 B 塊決定）；
     #   整張畫面的 PSNR 會被其他 15 塊稀釋（塊視角上第 B 塊只佔畫面一部分），這個區域的 PSNR 才是第 B 塊換配方的直接效果。
@@ -122,8 +145,20 @@ def main():
             model.properties = props
             per = {}
             for i in need:
-                out = renderer(cams[i].to_device(dev), model, bg_color=bg)["render"].clamp(0, 1)
-                pil = Image.open(os.path.join(img_dir, names_t[i])).convert("RGB")
+                cam = cams[i].to_device(dev)
+                oo = renderer(cam, model, bg_color=bg)
+                out = oo["render"].clamp(0, 1)
+                ny, nx = out.shape[1] // T, out.shape[2] // T
+                if cin is None:          # 基準：算每個 tile 離接縫的距離（之後各變體共用）
+                    z = oo["surf_depth"][0][:ny * T, :nx * T].reshape(ny, T, nx, T).permute(0, 2, 1, 3).reshape(ny, nx, -1).median(-1).values
+                    vv, uu = torch.meshgrid(torch.arange(ny, device=dev), torch.arange(nx, device=dev), indexing="ij")
+                    u = (uu.float() + 0.5) * T; v = (vv.float() + 0.5) * T
+                    pcm = torch.stack([(u - cam.cx) / cam.fx * z, (v - cam.cy) / cam.fy * z, z], -1).reshape(-1, 3)
+                    xw = (pcm - cams.T[i].to(dev).float()) @ cams.R[i].to(dev).float()
+                    dd = sf.seam_distance((xw @ _Rp.T)[:, :2], _mn, _mx, _int, _unit)
+                    dd[z.reshape(-1) <= 0] = float("nan")
+                    tdist[i] = torch.bucketize(torch.nan_to_num(dd, nan=-1.0), torch.tensor(SB[1:-1], device=dev)).masked_fill(torch.isnan(dd), -1).cpu()
+                pil = Image.open(gt_path(i)).convert("RGB")
                 if pil.size != (out.shape[2], out.shape[1]):
                     pil = pil.resize((out.shape[2], out.shape[1]), Image.LANCZOS)
                 gt = torch.from_numpy(np.array(pil, np.uint8)).float().permute(2, 0, 1).to(dev) / 255.
@@ -131,6 +166,14 @@ def main():
                 se = ((out - gt) ** 2).mean(0); m = region[i].to(dev)
                 per[i] = (float(-10 * torch.log10(se.mean().clamp_min(1e-12))), float(ssim_fn(out, gt)),
                           float(lp(out.unsqueeze(0), gt.unsqueeze(0))), ft, float(se[m].sum()), int(m.sum()))
+                if i in selB:
+                    tse = (se * m)[:ny * T, :nx * T].reshape(ny, T, nx, T).sum((1, 3)).reshape(-1)
+                    tcn = m[:ny * T, :nx * T].reshape(ny, T, nx, T).sum((1, 3)).reshape(-1).float()
+                    bi = tdist[i].to(dev)
+                    acc = rbin.setdefault(vn, np.zeros((len(SB) - 1, 2)))
+                    for b in range(len(SB) - 1):
+                        mb = bi == b
+                        acc[b] += [float(tse[mb].sum()), float(tcn[mb].sum())]
             res[vn] = per
             model.properties = {k: v[:1] for k, v in props.items()}; del props; torch.cuda.empty_cache()
             print(f"  渲染完 {vn}（{len(need)} 幀）", flush=True)
@@ -145,6 +188,19 @@ def main():
             print(f"{vn:<26} {p.mean():>8.3f} {np.mean([r[i][1] for i in s]):>7.4f} {np.mean([r[i][2] for i in s]):>7.4f} "
                   f"{100 * t[2] / max(t[0], 1):>9.2f} {p.mean() - b0.mean():>+7.3f} {int((p > b0 + 1e-6).sum()):>4}/{len(s)} "
                   f"{rps(r, s):>12.3f} {rps(r, s) - rb:>+7.3f}")
+    # 本塊區域依離接縫距離分組（第 B 塊視角）
+    labs = [f"{SB[b]:.2f}~{SB[b + 1]:.2f}" if SB[b + 1] < 5 else f">{SB[b]:.2f}" for b in range(len(SB) - 1)]
+    b0 = rbin["基準（原樣）"]
+    print(f"\n=== 本塊區域 PSNR 依離接縫距離（內部格距；0＝接縫上）===")
+    print(f"{'':<26} " + " ".join(f"{l:>11}" for l in labs))
+    print(f"{'（像素佔比）':<26} " + " ".join(f"{100 * b0[b, 1] / max(b0[:, 1].sum(), 1):>10.1f}%" for b in range(len(SB) - 1)))
+    for vn, _ in variants:
+        r = rbin[vn]
+        cells = []
+        for b in range(len(SB) - 1):
+            ps = -10 * np.log10(max(r[b, 0] / max(r[b, 1], 1), 1e-12)); p0 = -10 * np.log10(max(b0[b, 0] / max(b0[b, 1], 1), 1e-12))
+            cells.append(f"{ps:>6.2f}({ps - p0:+.2f})" if r[b, 1] > 0 else f"{'—':>11}")
+        print(f"{vn:<26} " + " ".join(cells))
 
 
 if __name__ == "__main__":

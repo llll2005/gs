@@ -208,7 +208,7 @@ case "$CASEARM" in
                      --model.density.init_args.add_ratio 1.0
                      --model.density.init_args.relocate_absgrad 2.0
                      --model.renderer.init_args.trim_schedule "15000:3e-4,30000:1e-3,45000:3e-3"); EXP=5 ;;
-  best|bestvt|bestoe|bestvo|bestres|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestvpc|bestelong)
+  best|bestvt|bestoe|bestvo|bestres|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong)
               P=$(_bestply)
               [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=2
@@ -230,6 +230,10 @@ case "$CASEARM" in
                 # ★ 2026-10-11 使用者：A 的峰值 5.22 vs best0 3.95 GB => 同 VRAM 的 A：池按成本計價佔 cap（cap − 0.6 x 池顆數）
                 #   0.6 ＝（池常駐 208 B＋渲染暫存約 780 B）/（塊內常駐 864 B＋約 780 B）
                 #   10-11 改成去重版（使用者）：池幾乎全是 dup init 的 K 份副本 => 建池時只留 1/K（4x4 的 K 讀 full44_init.tsv；5x5 用 dup4）
+                # ApF＝同 VRAM 但池不去重（10-11 使用者：與去重版並排，分開「計價」與「去重」的影響）
+                bestpoolApF) EXTRA+=(--model.outside_pool_start 2 --model.outside_pool_trainable true
+                                    --model.outside_pool_sweep_interval 500 --model.outside_pool_min_scale_q 0.25
+                                    --model.outside_pool_price 0.6); EXP=$((EXP + 4)) ;;
                 bestpoolAp) _KD=4; [ "$GRID" = 44 ] && _KD=$K44
                             EXTRA+=(--model.outside_pool_start 2 --model.outside_pool_trainable true
                                     --model.outside_pool_sweep_interval 500 --model.outside_pool_min_scale_q 0.25
@@ -391,7 +395,7 @@ case "$CASEARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestvpc|bestelong|best0*（＝best* 加 oreg0；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|best0*（＝best* 加 oreg0；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 [ "$OREG0" = 1 ] && { EXTRA+=(--model.metric.init_args.opacity_reg 0.0); EXP=$((EXP + 1)); echo "opacity_reg=0（best0 系列）"; }
 [ "$GRID" = 44 ] && { EXTRA+=("${G44[@]}"); EXP=$((EXP + 1)); }
