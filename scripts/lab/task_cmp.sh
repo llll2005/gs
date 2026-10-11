@@ -229,9 +229,12 @@ case "$CASEARM" in
                                     --model.outside_pool_sweep_interval 500 --model.outside_pool_min_scale_q 0.25); EXP=$((EXP + 3)) ;;
                 # ★ 2026-10-11 使用者：A 的峰值 5.22 vs best0 3.95 GB => 同 VRAM 的 A：池按成本計價佔 cap（cap − 0.6 x 池顆數）
                 #   0.6 ＝（池常駐 208 B＋渲染暫存約 780 B）/（塊內常駐 864 B＋約 780 B）
-                bestpoolAp) EXTRA+=(--model.outside_pool_start 2 --model.outside_pool_trainable true
+                #   10-11 改成去重版（使用者）：池幾乎全是 dup init 的 K 份副本 => 建池時只留 1/K（4x4 的 K 讀 full44_init.tsv；5x5 用 dup4）
+                bestpoolAp) _KD=4; [ "$GRID" = 44 ] && _KD=$K44
+                            EXTRA+=(--model.outside_pool_start 2 --model.outside_pool_trainable true
                                     --model.outside_pool_sweep_interval 500 --model.outside_pool_min_scale_q 0.25
-                                    --model.outside_pool_price 0.6); EXP=$((EXP + 4)) ;;
+                                    --model.outside_pool_price 0.6
+                                    --model.outside_pool_keep "$(python3 -c "print(round(1/$_KD, 4))")"); EXP=$((EXP + 5)) ;;
                 bestpoolB)  EXTRA+=(--model.train_res_schedule "15000:0.5,30000:0.75" --model.outside_pool_start 15000
                                     --model.outside_pool_trainable false --model.outside_pool_sweep_interval 500); EXP=$((EXP + 4)) ;;
                 # ★ 2026-10-11 使用者：篩選顯示可能被塊外評分錯殺的兩個舊方案，疊在 best0 上用換塊評測定案

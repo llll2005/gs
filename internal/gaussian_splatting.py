@@ -240,6 +240,7 @@ class GaussianSplatting(LightningModule):
             outside_pool_min_scale_q: float = 0.0,
             outside_pool_sweep_interval: int = 0,
             outside_pool_price: float = 0.0,
+            outside_pool_keep: float = 1.0,
     ) -> None:
         super().__init__()
         self.automatic_optimization = False
@@ -683,6 +684,13 @@ class GaussianSplatting(LightningModule):
                 props = self.gaussian_model.properties
                 raw = {k: props[k][out].detach() for k in ("means", "opacities", "scales", "rotations", "shs_dc")}
                 self.density_controller._prune_points(out, self.gaussian_model, self.gaussian_optimizers)
+                # 去重（10-11 使用者）：池在第 2 步建立，成員幾乎全是 dup init 的 K 份副本 => 建池時只留 1/K（固定種子隨機），其餘刪掉
+                keep = float(hp.get("outside_pool_keep", 1.0) or 1.0)
+                if pool is None and keep < 1.0:
+                    g = torch.Generator(device="cpu").manual_seed(0)
+                    sel = torch.randperm(n_mv, generator=g)[:max(1, int(round(n_mv * keep)))].to(raw["means"].device)
+                    raw = {k: v[sel] for k, v in raw.items()}
+                    print(f"[outside-pool] ✅ 去重：搬出 {n_mv:,} 顆只留 {raw['means'].shape[0]:,}（keep {keep:.3f}），其餘刪除", flush=True)
                 if pool is None:
                     q = float(hp.get("outside_pool_min_scale_q", 0.0) or 0.0)
                     ms = float(torch.quantile(torch.exp(raw["scales"]).max(-1).values.float()[:1_000_000], q)) if q > 0 else None
