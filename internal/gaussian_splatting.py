@@ -239,6 +239,7 @@ class GaussianSplatting(LightningModule):
             outside_pool_margin: float = 0.1,
             outside_pool_min_scale_q: float = 0.0,
             outside_pool_sweep_interval: int = 0,
+            outside_pool_price: float = 0.0,
     ) -> None:
         super().__init__()
         self.automatic_optimization = False
@@ -700,6 +701,21 @@ class GaussianSplatting(LightningModule):
                         print(f"[outside-pool] ✅ 首次清掃 step {step}：再搬 {n_mv:,} 顆，池 {pool.n:,}", flush=True)
             elif step == start:
                 print(f"⚠⚠ [outside-pool] step {step}：盒外沒有任何顆粒 => 池沒建立（margin 太大？）", flush=True)
+        # 池按成本計價（10-11 使用者：A 的峰值 5.22 vs best0 3.95 GB => 要同 VRAM 的版本）：MCMC cap ＝ 原 cap − price × 池顆數。
+        #   price＝池內一顆對塊內一顆的 VRAM 比：常駐（A 208／B 52 vs 864 B）＋渲染暫存（約 780 B，只要被渲染都要付）=> A ≈ 0.60、B ≈ 0.51。
+        #   0＝池免費（原本的 A／B／AB）。超過新 cap 時 MCMC 只是不再加點（add_new_gs 取 max(0, …)），不會強制刪除。
+        price = float(hp.get("outside_pool_price", 0.0) or 0.0)
+        if price > 0 and pool is not None:
+            cfg = self.density_controller.config
+            if getattr(self, "_pool_base_cap", None) is None:
+                self._pool_base_cap = int(cfg.cap_max)
+            new_cap = max(1, int(self._pool_base_cap - price * pool.n))
+            if new_cap != cfg.cap_max:
+                if not getattr(self, "_pool_price_announced", False):
+                    self._pool_price_announced = True
+                    print(f"[outside-pool] ✅ 池計價 {price}：cap {self._pool_base_cap:,} -> {new_cap:,}（池 {pool.n:,} 顆 x {price}）"
+                          f"，可訓練集合現在 {self.gaussian_model.n_gaussians:,}", flush=True)
+                cfg.cap_max = new_cap
         if pool is not None and freeze > 0 and step == freeze and pool.act is None:
             pool.freeze()
             print(f"[outside-pool] ✅ step {step}: 池凍結（{pool.n:,} 顆、{pool.bytes_per_point()} B／顆）", flush=True)
