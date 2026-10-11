@@ -4,7 +4,7 @@
       塊外顆粒不是純浪費：它們解釋訓練視角裡的塊外像素（相機分配規則：SfM 觀測點有 > content_threshold 在塊內就收，
       所以很多訓練視角大半畫面在塊外）；但它們和塊內內容用同一個價格（同 SH3、同佔 cap）。
 本工具回答「如果塊外變便宜，最多能省多少」—— 只量成本，不量品質：
-  變體   全部顆粒 ／ 只留分區盒內（與 merge 同規則）／ 盒內＋margin（get_bounding_boxes(enlarge=m)，m＝盒邊長的比例）
+  變體   全部顆粒 ／ 只留分區盒內（與 merge 同規則）／ 盒內＋margin（m＝內部格距的比例；2026-10-11 前誤用 get_bounding_boxes 的 enlarge＝該格邊長的比例，角落塊因此包住全部）
   量     N；常駐 VRAM 估計（參數＋梯度＋Adam = 16 B/float）；
          訓練視角（均勻抽 --ncam 台）上的 forward／forward＋backward 時間（CUDA event，每台取中位、再平均）；
          精確 Σtiles（光柵器回傳的 tiles，＝每步 binning 工作量）；forward＋backward 的峰值配置增量；
@@ -63,10 +63,9 @@ def main():
         if parts["scene_config"]["contract"]:
             x = CityGSPartitioning.contract_to_unisphere(x[:, :2], parts["scene_config"]["aabb"], ord=torch.inf)
         masks = {"全部": torch.ones(N0, dtype=torch.bool)}
-        for m in a.margins:
-            boxes = coords.get_bounding_boxes(parts["scene_config"]["partition_size"], enlarge=m)
-            masks[f"盒內＋{m:.2f}" if m > 0 else "盒內（merge 規則）"] = CityGSPartitioning.is_in_bounding_boxes(
-                bounding_boxes=boxes, coordinates=x[:, :2])[pc.block_id]
+        from internal.utils.outside_pool import block_inside_mask
+        for m in a.margins:      # margin＝內部格距的比例（不是該格自己的邊長：外圈格子延伸到場景外，見 block_inside_mask）
+            masks[f"盒內＋{m:.2f}" if m > 0 else "盒內（merge 規則）"] = block_inside_mask(orig["means"], pc, m).cpu()
         C = len(train)
         idx = np.linspace(0, C - 1, min(a.ncam, C)).round().astype(int)
         cams = [train.cameras[int(i)].to_device(dev) for i in idx]

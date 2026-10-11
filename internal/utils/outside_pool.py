@@ -154,15 +154,28 @@ class OutsidePool:
         return cls(raw, trainable=s.get("trainable", False), min_scale=s.get("min_scale"))
 
 
-def block_outside_mask(means: torch.Tensor, parser_cfg, margin: float) -> torch.Tensor:
-    """True = 在本塊分區盒放大 margin（盒邊長的比例）之外。規則與 utils/merge_citygs_ckpts.py 相同（旋轉 -> 收縮 -> xy 盒）。"""
+def block_inside_mask(means: torch.Tensor, parser_cfg, margin: float) -> torch.Tensor:
+    """True = 在本塊分區盒外擴 margin 之內。盒規則與 utils/merge_citygs_ckpts.py 相同（旋轉 -> [收縮] -> xy 盒）。
+    ⚠ margin 的單位是「內部格距」（每軸取所有分區中最小的邊長），**不是**該格自己的邊長（get_bounding_boxes 的 enlarge）：
+      我方分區最外圈的格子一路延伸到場景外（5x5 的 x 邊長 239.9／2.5／2.8／3.0／362.6），enlarge 0.1 在角落塊等於外擴 24~36，
+      4x4 角落塊 b12 的「盒＋10%」因此包住全部顆粒（2026-10-11 塊外成本量測抓到）。"""
     import os
     from internal.utils.citygs_partitioning_utils import CityGSPartitioning, PartitionCoordinates
     parts = torch.load(os.path.join(os.path.dirname(parser_cfg.image_list), "partitions.pt"))
     coords = PartitionCoordinates(id=parts["partition_coordinates"]["id"], xy=parts["partition_coordinates"]["xy"])
-    boxes = coords.get_bounding_boxes(parts["scene_config"]["partition_size"], enlarge=margin)
+    size = parts["scene_config"]["partition_size"]
+    boxes = coords.get_bounding_boxes(size, enlarge=0.)
+    if margin > 0:
+        sz = torch.as_tensor(size).float()
+        unit = sz.min(0).values if sz.dim() == 2 else sz
+        boxes.min = boxes.min - margin * unit
+        boxes.max = boxes.max + margin * unit
     x = means.detach().float().cpu() @ parts["extra_data"]["rotation_transform"][:3, :3].T.float()
     if parts["scene_config"]["contract"]:
         x = CityGSPartitioning.contract_to_unisphere(x[:, :2], parts["scene_config"]["aabb"], ord=torch.inf)
-    inside = CityGSPartitioning.is_in_bounding_boxes(bounding_boxes=boxes, coordinates=x[:, :2])[parser_cfg.block_id]
-    return (~inside).to(means.device)
+    return CityGSPartitioning.is_in_bounding_boxes(bounding_boxes=boxes, coordinates=x[:, :2])[parser_cfg.block_id].to(means.device)
+
+
+def block_outside_mask(means: torch.Tensor, parser_cfg, margin: float) -> torch.Tensor:
+    """True = 在本塊分區盒外擴 margin（內部格距的比例）之外。"""
+    return ~block_inside_mask(means, parser_cfg, margin)
