@@ -33,6 +33,7 @@
 #   [solo] bash scripts/lab/task_full44.sh stepprof [塊...]   每塊兩段真實迴圈逐段計時 => 推算獨佔下整趟 60k 要多久（見該模式註解）
 #   [solo] bash scripts/lab/task_full44.sh failheld [ours|release|paper ...]  三個合併模型的 741 幀 held-out＋失敗 tile，按 4x4 塊拆開（12）
 #   bash scripts/lab/task_full44.sh swap <塊> [4x4 跑次...]   換塊評測：合併模型只換第 B 塊（＋自我檢查），741 幀中該塊視角（定案用；tools/swap_block_eval.py）
+#   [solo] bash scripts/lab/task_full44.sh seam [ours|release|paper ...]  合併模型的失敗 tile 依離分區接縫的距離分組（tools/seam_failure.py）
 #   [solo] bash scripts/lab/task_full44.sh prunecurve [ours|release|paper ...]  合併模型依 opacity 只留 100/90/75/50/25%，官方 741 幀 held-out（同一支工具；09g）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
@@ -242,6 +243,24 @@ case "$MODE" in
     L=logs/swap_b${B}_$(date +%m%d_%H%M).log
     XA=(); [ ${#cks[@]} -gt 0 ] && XA=(--cand "${cks[@]}" --names "${ns[@]}")
     conda run -n gspl --no-capture-output python tools/swap_block_eval.py --merged_run "$OUT" --block "$B" --sanity "${XA[@]}" 2>&1 | grep -vE "pkg_resources|declare_namespace" | tee "$L"
+    exit "${PIPESTATUS[0]}" ;;
+  seam)
+    # ★ 2026-10-11 使用者：「我怕接口在合併後有重建問題」—— 合併模型失敗 tile 我方 0.25% vs 官方 0.17%，單塊失敗集中在靠鄰塊的邊緣
+    #   => 官方 741 幀，失敗 tile 用渲染深度反推世界座標，依離我方 4x4 分區內部邊界的距離分組（兩個模型都用我方的接縫）
+    shift; WL=("$@"); [ ${#WL[@]} -gt 0 ] || WL=(ours release)
+    CS=()
+    for w in "${WL[@]}"; do
+      case "$w" in
+        ours)    ck=$(ls "$OUT/checkpoints/"*.ckpt 2>/dev/null | tail -1) ;;
+        release) ck=$OFF_CK ;;
+        paper)   ck=$(ls ../cityGS_origin_trimfix/outputs/citygsv2_mc_aerial_sh2_paper/checkpoints/*.ckpt 2>/dev/null | tail -1) ;;
+        *) echo "⛔ 不認得 $w"; exit 2 ;;
+      esac
+      [ -n "$ck" ] && CS+=("$w=$ck") || { echo "⛔ $w 沒有合併 ckpt"; exit 2; }
+    done
+    L=logs/full44_seam_$(date +%m%d_%H%M).log
+    conda run -n gspl --no-capture-output python tools/seam_failure.py --ckpt "${CS[@]}" 2>&1 \
+      | grep -vE "pkg_resources|declare_namespace" | tee "$L"
     exit "${PIPESTATUS[0]}" ;;
   prunecurve)
     # ★ 2026-10-10 使用者（圖 09g）：官方剪枝曲線旁邊加我方的同類統計。舊的官方曲線用官方 main.py test（含暗幀偏差、絕對值低約 1.5 dB），
