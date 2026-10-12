@@ -43,6 +43,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             bwd_sat_skip: bool = False,
             bwd_reduce: bool = False,
             trim_schedule: str = "",
+            trim_by_mean_contribution: bool = False,
+            trim_cost_beta_px: float = 0.0,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -143,6 +145,17 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   tile 名次＝每個 tile 的容量上限）：score = (v / c^α) / (1 + 最好名次 / K_soft)
         self.trim_tile_k_soft = trim_tile_k_soft
         self._tk_announced = False
+        # ★ 2026-10-12：trim 判準改成「總貢獻 ÷ (β·視角數 + 覆蓋像素)」（`紀錄/實驗分析/13` §4 提案 A＋B）。
+        #   V_i = Σ_視角 Σ_像素 T·α（迴圈裡的 `blur`，本來就在算）；C_i = Σ_視角 覆蓋像素（`cost_acc`）。
+        #   β=0 時 V/C ＝「各視角每像素貢獻、以覆蓋像素加權的平均」；現行 v 是「最好那個視角」的同一個量。
+        #   ⇒ 與 v/c 不同，它**沒有**對大小懲罰兩次（v/c ∝ 1/大小，讓微小顆粒永遠不被剪，`13` §3）。
+        #   β（像素單位，每顆每視角的固定成本）讓「幾乎不畫東西的顆粒」不再免費。
+        #   離線比賽（tools/discriminant_race.py，b12 單次剪枝、held-out 本塊區域、同成本預算）：
+        #   V/C 在保留 90/70/50% 成本時都第一，較現行 v +0.07/+0.24/+0.10 dB，v/c −0.26/−1.83/−5.98（2026-10-12）。
+        #   與 trim_by_value_per_cost／trim_by_tile_topk 同時開時以本旗標為準。
+        self.trim_by_mean_contribution = trim_by_mean_contribution
+        self.trim_cost_beta_px = trim_cost_beta_px
+        self._mc_announced = False
         # >0 時，每次 trim 事件**額外**用「每 N 台取一台」再算一次 contribution，
         # 報告與全視角版的 Spearman 與底部 10% 遮罩重疊。只讀，不改變剪枝結果。
         # 目的（§11.48）：trim pass 佔 profile 視窗 80%、約 9 小時跑次的 10%，
@@ -642,6 +655,25 @@ class SepDepthTrim2DGSRenderer(Renderer):
                     score = _comb
                 else:
                     score = _tk_score
+            if bool(getattr(self, "trim_by_mean_contribution", False)):
+                if blur is None or cost_acc is None:
+                    print("⚠⚠ [trim-V/C] **設了 trim_by_mean_contribution 但拿不到 V 或 C，本機制不會生效**", flush=True)
+                else:
+                    _beta = float(getattr(self, "trim_cost_beta_px", 0.0)) * float(n_used)
+                    _mc = blur / torch.clamp_min(cost_acc + _beta, 1.0)
+                    if not getattr(self, "_mc_announced", False):
+                        self._mc_announced = True
+                        _r = self.prune_ratio
+                        _mv = contribution <= torch.quantile(contribution, _r)
+                        _mm = _mc <= torch.quantile(_mc, _r)
+                        _ov = float((_mv & _mm).sum()) / max(float(_mv.sum()), 1.0)
+                        _sm = module.gaussian_model.get_scales().max(dim=-1).values
+                        _tiny = _sm < 1e-4
+                        _fr = lambda m: 100.0 * float((m & _tiny).sum()) / max(float(m.sum()), 1.0)
+                        print(f"[trim-V/C] ✅ 首次觸發 step {step}：判準 v -> V/(β·{n_used} 視角 + C)，β={float(getattr(self, 'trim_cost_beta_px', 0.0)):g} px"
+                              f"｜底部 {100*_r:.0f}% 與現行 v 重疊 **{100*_ov:.2f}%**（~100% = no-op）"
+                              f"｜被剪的微小顆粒（最大軸<1e-4）佔 {_fr(_mm):.1f}%（v 判準 {_fr(_mv):.1f}%、全體 {100*float(_tiny.float().mean()):.1f}%）", flush=True)
+                    score = _mc
             if _tau is not None:
                 # 門檻剪：判準固定用 v（contribution），不用 v/c —— 剪了不補時 v/c 最差（實驗分析/06）
                 tile = torch.tensor(_tau, device=contribution.device)

@@ -764,6 +764,71 @@ def n04_load(d):
 
 
 # ══════════════ 組合 ══════════════
+def n13_struct(d):
+    """13 §2.2：60k 4x4 結構（數字＝labrun/struct_cmp.py、speck.py 2026-10-12）。"""
+    arms = ["基底 best0", "v/c × tile 名次 trim", "opacity 二元熵正則", "兩者合開"]
+    tiny = {"b6": [10.5, 40.0, 12.9, 64.1], "b12": [9.8, 31.9, 22.8, 59.7]}
+    eff = {"b6": [61.2, 27.4, 61.8, 11.3], "b12": [77.5, 47.0, 72.3, 26.6]}
+    fig, axs = plt.subplots(1, 2, figsize=(12, 3.8))
+    x = np.arange(len(arms)); w = 0.38
+    for ax, dat, yl, tt in ((axs[0], tiny, "%", "微小顆粒（最大軸 < 1e-4）佔全部顆粒"), (axs[1], eff, "萬顆", "盒內「有效」顆粒（非微小）")):
+        for k, (b, c) in enumerate((("b6", C1), ("b12", C2))):
+            barlabels(ax, ax.bar(x + (k - 0.5) * w, dat[b], w, color=c, label=f"block {b[1:]}"), "{:.1f}")
+        ax.set_xticks(x); ax.set_xticklabels(arms, fontsize=9); ax.set_ylabel(yl); ax.set_title(tt, fontsize=10); ax.legend(fontsize=8)
+    save(fig, d, "n13_struct.png")
+
+
+_RACE_SHOW = [("現行 trim：v（每像素平均貢獻，最好視角）", "現行 trim v（最好視角）", C1, "o"),
+              ("v/c（訓練期判準）", "v/c（訓練期判準）", C2, "v"),
+              ("A：V / 覆蓋像素", "V/C（總貢獻÷覆蓋像素）", C3, "s"),
+              ("便宜成本：V / (β像素 + 覆蓋像素)", "V/(β+C)，β 像素單位", C4, "D"),
+              ("A：總貢獻 V", "總貢獻 V", "#b8860b", "^"),
+              ("隨機（下界）", "隨機（下界）", MUTED, "x")]
+
+
+def _race(name):
+    import pandas as pd
+    R = os.path.join(DST, "data", "discriminant_race")
+    df = pd.read_csv(os.path.join(R, name + ".csv"))
+    ch = os.path.join(R, name + "_cheap.csv")
+    if os.path.exists(ch):
+        c = pd.read_csv(ch); df = pd.concat([df, c[c["判別式"] != "不剪"]])
+    return df
+
+
+def n13_race(d):
+    """13 §6：離線判別式比賽（tools/discriminant_race.py），同顆數預算，held-out 本塊區域 PSNR 對 Load。"""
+    fig, axs = plt.subplots(1, 3, figsize=(16, 4.6))
+    for ax, (nm, tt) in zip(axs, (("g44_best0_b12", "b12 基底 best0（微小顆粒 4.5%）"), ("full44_b10", "b10 大樓塊（full44）"),
+                                   ("g44_best0vo_b12", "壓力測試：v/c×名次＋二元熵合開 b12（微小 26%）"))):
+        df = _race(nm); b = df[df["判別式"] == "不剪"].iloc[0]
+        for key, lab, c, m in _RACE_SHOW:
+            x = df[(df["判別式"] == key) & (df["預算"] == "顆數")].sort_values("p")
+            if len(x) == 0:
+                continue
+            ax.plot(100 * (x["Load中位M"] / b["Load中位M"] - 1), x["區域PSNR"] - b["區域PSNR"], marker=m, color=c, label=lab, lw=1.4, ms=5)
+        ax.axhline(0, color=MUTED, lw=0.8); ax.set_title(tt, fontsize=10)
+        ax.set_xlabel("精確 Load 中位變化 %（三點＝保留 90/70/50% 顆數）"); ax.set_ylabel("Δ 本塊區域 PSNR（dB）")
+        lo = min(-4.0, ax.get_ylim()[0]); ax.set_ylim(max(lo, -4.0), 0.3)
+    axs[0].legend(fontsize=7.5, loc="lower right")
+    fig.suptitle("單次剪枝不重訓、官方 test held-out、只剪本塊盒內顆粒（v/c 掉到 −10 dB，超出畫面）", fontsize=10)
+    save(fig, d, "n13_race.png")
+
+
+def n13_tiny(d):
+    """13 §6：壓力測試模型上，同顆數保留 90% 時，被剪掉的顆粒中有多少是微小顆粒（盒內微小佔 26%）。"""
+    df = _race("g44_best0vo_b12")
+    x = df[(df["預算"] == "顆數") & (df["p"] == 0.9)]
+    rows = [(lab, float(x[x["判別式"] == key]["剪掉中微小顆粒pct"].iloc[0]), c) for key, lab, c, _ in _RACE_SHOW if (x["判別式"] == key).any()]
+    fig, ax = plt.subplots(figsize=(10, 3.4))
+    bars = ax.barh([r[0] for r in rows], [r[1] for r in rows], color=[r[2] for r in rows])
+    for bb, r in zip(bars, rows):
+        ax.annotate(f"{r[1]:.1f}%", (bb.get_width(), bb.get_y() + bb.get_height() / 2), xytext=(3, 0), textcoords="offset points", va="center", fontsize=8, color=INK2)
+    ax.axvline(26.2, color=MUTED, ls="--", lw=1); ax.annotate("盒內微小佔比 26.2%（隨機剪的期望）", (26.2, len(rows) - 0.6), xytext=(4, 0), textcoords="offset points", fontsize=8, color=MUTED)
+    ax.invert_yaxis(); ax.set_xlabel("被剪掉的顆粒中，微小顆粒的比例 %（保留 90% 顆數）"); ax.set_xlim(0, 105)
+    save(fig, d, "n13_tiny.png")
+
+
 DOCS = {
     "01_訓練時間組成": ["n01_steps", "n01_scaling", "n01_maxsplit"],
     "02_VRAM與配置器": ["n02_segments", "n02_value"],
@@ -777,6 +842,7 @@ DOCS = {
     "10_速度優化_lean與kernel拆解": ["n10_kernels"],
     "11_逐配對工作量上限": ["n11_tiles"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout"],
+    "13_trim判準與opacity熵的負交互": ["n13_struct", "n13_race", "n13_tiny"],
 }
 
 
@@ -814,7 +880,7 @@ def main():
             print(r.stdout[-2000:], r.stderr[-2000:]); raise SystemExit(f"⛔ {sc} 失敗")
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
-              n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout):
+              n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
