@@ -64,6 +64,8 @@ def main():
     mck = sorted(glob.glob(os.path.join(a.merged_run, "checkpoints", "*.ckpt")))
     mck = [c for c in mck if os.path.basename(c) == "merged.ckpt"] or mck
     model, renderer, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(mck[-1], device=dev, eval_mode=True)
+    for f in ("absgrad_gate", "bwd_sat_skip", "bwd_reduce", "record_reduce", "tile_cull", "lean_train"):
+        setattr(renderer, f, False)      # 訓練期加速旗標（渲染逐位元相同）；本機光柵器可能沒重編這些欄位（同 tower_probe／discriminant_race）
     base = {k: v.detach().cpu() for k, v in model.properties.items()}   # 17.6M 顆約 4 GB：放 CPU，每個變體組好才搬上 GPU（10-10 三個任務同卡時 OOM）
     model.properties = {k: v[:1].to(dev) for k, v in base.items()}; torch.cuda.empty_cache()
     print(f"[基準] {mck[-1]}  N={base['means'].shape[0]:,}")
@@ -128,6 +130,7 @@ def main():
     SB = [0.0, 0.05, 0.1, 0.2, 0.3, 10.0]
     T = 48
     tdist = {}
+    regeo = {}
     rbin = {}
     need = sorted(set(i for _, s in sets for i in s))
     # 「本塊負責區域」：基準第 B 塊的顆粒單獨渲染時 alpha > 0.5 的像素（合併後這些像素主要由第 B 塊決定）；
@@ -158,14 +161,26 @@ def main():
                     dd = sf.seam_distance((xw @ _Rp.T)[:, :2], _mn, _mx, _int, _unit)
                     dd[z.reshape(-1) <= 0] = float("nan")
                     tdist[i] = torch.bucketize(torch.nan_to_num(dd, nan=-1.0), torch.tensor(SB[1:-1], device=dev)).masked_fill(torch.isnan(dd), -1).cpu()
+                    # ★ 2026-10-12 幾何區域：基準合併模型的表面深度把**每個像素**反推回世界座標，落在第 B 塊分區盒內且 alpha>0.5。
+                    #   上面的 alpha 區域（第 B 塊顆粒單獨渲染 alpha>0.5）會被靠近相機的大顆粒撐出假區域
+                    #   （tools/discriminant_race.py 實測：單塊模型上隨機剪 30% 分數一位不差）=> 兩者並列，定案以幾何區域為準。
+                    H_, W_ = out.shape[1:]
+                    zz = oo["surf_depth"][0].reshape(H_, W_)
+                    v2, u2 = torch.meshgrid(torch.arange(H_, device=dev), torch.arange(W_, device=dev), indexing="ij")
+                    pc2 = torch.stack([(u2 + 0.5 - cam.cx) / cam.fx * zz, (v2 + 0.5 - cam.cy) / cam.fy * zz, zz], -1).reshape(-1, 3)
+                    xw2 = (pc2 - cams.T[i].to(dev).float()) @ cams.R[i].to(dev).float()
+                    regeo[i] = (block_mask(xw2, pc0)[B].reshape(H_, W_).to(dev) & (zz > 0)
+                                & (oo["rend_alpha"].reshape(H_, W_) > 0.5)).cpu()
                 pil = Image.open(gt_path(i)).convert("RGB")
                 if pil.size != (out.shape[2], out.shape[1]):
                     pil = pil.resize((out.shape[2], out.shape[1]), Image.LANCZOS)
                 gt = torch.from_numpy(np.array(pil, np.uint8)).float().permute(2, 0, 1).to(dev) / 255.
                 ft = eot.fail_tiles(gt, out, 48, 0.10, 0.60)
                 se = ((out - gt) ** 2).mean(0); m = region[i].to(dev)
+                mg = regeo[i].to(dev)
                 per[i] = (float(-10 * torch.log10(se.mean().clamp_min(1e-12))), float(ssim_fn(out, gt)),
-                          float(lp(out.unsqueeze(0), gt.unsqueeze(0))), ft, float(se[m].sum()), int(m.sum()))
+                          float(lp(out.unsqueeze(0), gt.unsqueeze(0))), ft, float(se[m].sum()), int(m.sum()),
+                          float(se[mg].sum()), int(mg.sum()))
                 if i in selB:
                     tse = (se * m)[:ny * T, :nx * T].reshape(ny, T, nx, T).sum((1, 3)).reshape(-1)
                     tcn = m[:ny * T, :nx * T].reshape(ny, T, nx, T).sum((1, 3)).reshape(-1).float()
@@ -178,16 +193,18 @@ def main():
             model.properties = {k: v[:1] for k, v in props.items()}; del props; torch.cuda.empty_cache()
             print(f"  渲染完 {vn}（{len(need)} 幀）", flush=True)
     rps = lambda r, s: -10 * np.log10(max(sum(r[i][4] for i in s) / max(sum(r[i][5] for i in s), 1), 1e-12))
+    rpg = lambda r, s: -10 * np.log10(max(sum(r[i][6] for i in s) / max(sum(r[i][7] for i in s), 1), 1e-12))
     for sn, s in sets:
-        print(f"\n=== {sn} ===")
-        print(f"{'':<26} {'PSNR':>8} {'SSIM':>7} {'LPIPS':>7} {'失敗tile%':>9} {'ΔPSNR':>7} {'贏的幀':>8} {'本塊區域PSNR':>12} {'Δ區域':>7}")
-        b0 = np.array([res["基準（原樣）"][i][0] for i in s]); rb = rps(res["基準（原樣）"], s)
+        fa = np.mean([float(region[i].float().mean()) for i in s]); fg = np.mean([float(regeo[i].float().mean()) for i in s])
+        print(f"\n=== {sn} ===（本塊區域佔畫面：alpha 定義 {100 * fa:.1f}%、幾何定義 {100 * fg:.1f}%）")
+        print(f"{'':<26} {'PSNR':>8} {'SSIM':>7} {'LPIPS':>7} {'失敗tile%':>9} {'ΔPSNR':>7} {'贏的幀':>8} {'本塊區域PSNR':>12} {'Δ區域':>7} {'幾何區域PSNR':>12} {'Δ幾何':>7}")
+        b0 = np.array([res["基準（原樣）"][i][0] for i in s]); rb = rps(res["基準（原樣）"], s); gb = rpg(res["基準（原樣）"], s)
         for vn, _ in variants:
             r = res[vn]
             p = np.array([r[i][0] for i in s]); t = np.array([list(r[i][3]) for i in s]).sum(0)
             print(f"{vn:<26} {p.mean():>8.3f} {np.mean([r[i][1] for i in s]):>7.4f} {np.mean([r[i][2] for i in s]):>7.4f} "
                   f"{100 * t[2] / max(t[0], 1):>9.2f} {p.mean() - b0.mean():>+7.3f} {int((p > b0 + 1e-6).sum()):>4}/{len(s)} "
-                  f"{rps(r, s):>12.3f} {rps(r, s) - rb:>+7.3f}")
+                  f"{rps(r, s):>12.3f} {rps(r, s) - rb:>+7.3f} {rpg(r, s):>12.3f} {rpg(r, s) - gb:>+7.3f}")
     # 本塊區域依離接縫距離分組（第 B 塊視角）
     labs = [f"{SB[b]:.2f}~{SB[b + 1]:.2f}" if SB[b + 1] < 5 else f">{SB[b]:.2f}" for b in range(len(SB) - 1)]
     b0 = rbin["基準（原樣）"]
