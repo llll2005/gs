@@ -60,6 +60,30 @@ with open(sys.argv[1], "rb") as f:
 EOF
 }
 
+# ★ 2026-10-12 載入合併模型（17.6M／24.5M 顆）的量測需要大塊 VRAM；lab 卡上常有容器外的行程（看不到 PID）
+#   => 10-11 接縫檢查 CUBLAS_STATUS_ALLOC_FAILED。開跑前等空閒 >= $1 MiB（最多 $2 秒），失敗且是記憶體類錯誤就重試（最多 3 次）。
+wait_free() {   # wait_free <MiB> <最多秒數>
+  local need=$1 lim=$2 t=0 free
+  while :; do
+    free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -dc 0-9)
+    [ -n "$free" ] && [ "$free" -ge "$need" ] && { echo "[gpu] 空閒 ${free} MiB >= ${need}，開始"; return 0; }
+    [ "$t" -ge "$lim" ] && { echo "⚠ [gpu] 等了 ${t}s 仍只有 ${free:-?} MiB 空閒，照樣試"; return 1; }
+    [ $((t % 600)) = 0 ] && echo "[gpu] 空閒 ${free:-?} MiB < ${need}，等待（外部佔卡？）"
+    sleep 60; t=$((t + 60))
+  done
+}
+run_mem_retry() {   # run_mem_retry <log> <指令...>：記憶體不足類的失敗重試 3 次
+  local log=$1; shift; local k rc
+  for k in 1 2 3; do
+    wait_free 14000 21600
+    "$@" 2>&1 | grep -vE "pkg_resources|declare_namespace" | tee "$log"; rc=${PIPESTATUS[0]}
+    [ "$rc" = 0 ] && return 0
+    grep -qE "CUBLAS_STATUS_ALLOC_FAILED|out of memory|OutOfMemoryError" "$log" || return "$rc"
+    echo "⚠ 第 $k 次記憶體不足（外部佔卡？）=> 等待後重試"
+  done
+  return "$rc"
+}
+
 case "$MODE" in
   prep)
     FL=
@@ -242,8 +266,8 @@ case "$MODE" in
     done
     L=logs/swap_b${B}_$(date +%m%d_%H%M).log
     XA=(); [ ${#cks[@]} -gt 0 ] && XA=(--cand "${cks[@]}" --names "${ns[@]}")
-    conda run -n gspl --no-capture-output python tools/swap_block_eval.py --merged_run "$OUT" --block "$B" --sanity "${XA[@]}" 2>&1 | grep -vE "pkg_resources|declare_namespace" | tee "$L"
-    exit "${PIPESTATUS[0]}" ;;
+    run_mem_retry "$L" conda run -n gspl --no-capture-output python tools/swap_block_eval.py --merged_run "$OUT" --block "$B" --sanity "${XA[@]}"
+    exit $? ;;
   seam)
     # ★ 2026-10-11 使用者：「我怕接口在合併後有重建問題」—— 合併模型失敗 tile 我方 0.25% vs 官方 0.17%，單塊失敗集中在靠鄰塊的邊緣
     #   => 官方 741 幀，失敗 tile 用渲染深度反推世界座標，依離我方 4x4 分區內部邊界的距離分組（兩個模型都用我方的接縫）
@@ -259,9 +283,8 @@ case "$MODE" in
       [ -n "$ck" ] && CS+=("$w=$ck") || { echo "⛔ $w 沒有合併 ckpt"; exit 2; }
     done
     L=logs/full44_seam_$(date +%m%d_%H%M).log
-    conda run -n gspl --no-capture-output python tools/seam_failure.py --ckpt "${CS[@]}" 2>&1 \
-      | grep -vE "pkg_resources|declare_namespace" | tee "$L"
-    exit "${PIPESTATUS[0]}" ;;
+    run_mem_retry "$L" conda run -n gspl --no-capture-output python tools/seam_failure.py --ckpt "${CS[@]}"
+    exit $? ;;
   prunecurve)
     # ★ 2026-10-10 使用者（圖 09g）：官方剪枝曲線旁邊加我方的同類統計。舊的官方曲線用官方 main.py test（含暗幀偏差、絕對值低約 1.5 dB），
     #   這裡三個合併模型都改用**我方評分工具**（eval_official_test.py --opacity_keep，載入一次、逐比例剪完評分；與 official_prune_ckpt.py 同規則：
