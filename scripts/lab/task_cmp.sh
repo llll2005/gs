@@ -412,6 +412,38 @@ if [ "${CITYGS_LEAN:-0}" = 1 ]; then
   EXTRA+=(--model.renderer.init_args.lean_train true); EXP=$((EXP + 1))
   echo "lean_train=true（CITYGS_LEAN=1）"
 fi
+# ★ 2026-10-12 使用者：「從名稱實在看不出是哪個變因」=> 每個臂一行「變因｜假設」，開跑時印出並追加到 logs/arm_registry.tsv
+arm_desc() {
+  case "$CASEARM" in
+    best)       echo "基底｜dup init（SfM 點複製 K 份）＋共同旗標" ;;
+    bestfast)   echo "backward 飽和跳過＋warp 內先加總｜只加速、分數應不變" ;;
+    bestnotrim) echo "週期 trim 全關｜trim 剪掉的低貢獻顆粒是不是在幫忙" ;;
+    besttrim3)  echo "定額 MCMC（init 就滿 2.6M、不增生）＋只在 15k/30k/45k 三次門檻剪（v<=3e-4／1e-3／3e-3 永久刪）｜少剪幾次、改用門檻能否取代週期 trim" ;;
+    bestvt)     echo "trim 判準 v -> v/c × 逐 tile 名次（vpctilek）｜按價值／成本剪，同時保住每個 tile 的前幾名" ;;
+    bestoe)     echo "opacity 二元熵正則 0.002（oent）｜把 opacity 推向 0 或 1，讓半透明顆粒消失、省疊加" ;;
+    bestvo)     echo "vpctilek＋oent 合開｜兩個降成本機制能否疊加" ;;
+    bestres)    echo "低解析度起步（<15k 0.5 倍、<30k 0.75 倍）｜前期顆粒多時降低逐像素負載" ;;
+    bestpoolA)  echo "塊外池 A：step 2 起盒＋10% 外的顆粒移出 MCMC，只留 SH0、可訓練、不佔 cap、有尺寸下限｜塊外便宜化，預算全給塊內" ;;
+    bestpoolB)  echo "塊外池 B：低解析度起步，15k 時塊外移出並凍結（丟高階 SH）｜後期不再訓練塊外" ;;
+    bestpoolAB) echo "塊外池 A+B：A 的池在 15k 凍結（同低解析度排程）｜A 的便宜化＋後期凍結" ;;
+    bestpoolAp) echo "塊外池 A 同 VRAM 版＋去重：池按 0.6 佔 cap、建池只留 1/K｜同 VRAM 下塊外便宜化是否仍有效、池能否減到 1/K" ;;
+    bestpoolApF) echo "塊外池 A 同 VRAM 版（池不去重）：池按 0.6 佔 cap｜同 VRAM 下塊外便宜化是否仍有效" ;;
+    bestvpc)    echo "trim 判準 v -> v/c｜按價值／成本剪（舊年代被單塊尺淘汰，重驗）" ;;
+    bestelong)  echo "Elongation 硬剪（長寬比 > 20 直接刪）｜CityGSV2 的做法，省 binning（舊年代被單塊尺淘汰，重驗）" ;;
+    bestsh2|bestsh1|bestsh0) echo "SH 階數 ${CASEARM#bestsh}｜高階 SH（佔參數 78%）值不值它的 VRAM" ;;
+    bestdist100|bestdist1000) echo "深度失真正則 lambda_dist ${CASEARM#bestdist}｜幾何正則對品質的影響" ;;
+    bestcdu100|bestcdu75|bestcdu25) echo "增生期長度（densify_until）= 總步數的 ${CASEARM#bestcdu}%｜增生期多長最划算" ;;
+    bestnogate) echo "MCMC 噪音閘門關（noise_gate_eps 0）｜噪音閘門是否有害" ;;
+    *)          echo "（未登記；看 EXTRA 旗標）" ;;
+  esac
+}
+_DESC="$(arm_desc)"; [ "$OREG0" = 1 ] && _DESC="$_DESC｜基底含 opacity_reg 0（best0）"
+_RN="${CITYGS_RUN_NAME:-${RUN_PREFIX}${CITYGS_FAMILY:-cs_}${ARM}}"
+echo "[變因] $_RN／block $BLK：$_DESC"
+if [ "${CITYGS_DRY:-0}" != 1 ]; then
+  [ -f logs/arm_registry.tsv ] || printf 'date\trun\tblock\tarm\t變因｜假設\t旗標\n' > logs/arm_registry.tsv
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%F_%H:%M)" "$_RN" "$BLK" "$ARM" "$_DESC" "${EXTRA[*]}" >> logs/arm_registry.tsv
+fi
 export CITYGS_DIFF_VS="${RUN_PREFIX}${CITYGS_FAMILY:-cs_}base"
 export CITYGS_DIFF_EXPECT=$EXP
 # ★ 2026-09-18：`CITYGS_RUN_NAME` 可覆蓋跑次名。用途＝**同一份配方、換個名字再跑一次**
