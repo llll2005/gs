@@ -105,7 +105,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -121,6 +121,14 @@ case "$CASEARM" in
                 bestnotrim)  EXTRA+=(--model.renderer.init_args.diable_trimming true) ;;
                 # ★ 2026-10-10 使用者：backward 飽和跳過＋block 內先加總的 60k 分數判定（verify2：梯度大元素 p99.9 差 1.8e-4、2,000 步 held-out 在噪音內、乾淨計時 backward 約 -40%）
                 bestfast)    EXTRA+=(--model.renderer.init_args.bwd_sat_skip true --model.renderer.init_args.bwd_reduce true) ;;
+                # ★ 2026-10-14 使用者：幾何 F1 我方 0.356 vs 官方 0.597（實驗分析/09 §6）=> 幾何監督的單變數臂，全用官方 aerial 的值
+                #   （configs/citygsv2_mc_aerial_sh2_trim.yaml：normal 0.0125 從第 0 步；深度 l1+ssim、0.5 x 0.05^(step/24000)）。需要幾何通道 => 不能開 lean。
+                bestnormal)  EXTRA+=(--model.metric.init_args.lambda_normal 0.0125) ;;
+                bestdepth)   EXTRA+=(--model.metric.init_args.depth_loss_weight.init 0.5 --model.metric.init_args.depth_loss_weight.final_factor 0.05
+                                     --model.metric.init_args.depth_loss_weight.max_steps 24000) ;;
+                bestgeo)     EXTRA+=(--model.metric.init_args.lambda_normal 0.0125
+                                     --model.metric.init_args.depth_loss_weight.init 0.5 --model.metric.init_args.depth_loss_weight.final_factor 0.05
+                                     --model.metric.init_args.depth_loss_weight.max_steps 24000) ;;
               esac ;;
   base)       EXTRA=();                                                        EXP=0 ;;
   # ★ 參考軌跡（2026-09-14）：行為與 base 完全相同，只多兩個純打印旗標 ——
@@ -406,7 +414,7 @@ case "$CASEARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb|bestoeVC|best0*（＝best* 加 oreg0）|best1*（＝best* 加 oreg0＋二元熵＋V/C；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb|bestoeVC|best0*（＝best* 加 oreg0）|best1*（＝best* 加 oreg0＋二元熵＋V/C；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim、best1normal／best1depth／best1geo）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 [ "$OREG0" = 1 ] && { EXTRA+=(--model.metric.init_args.opacity_reg 0.0); EXP=$((EXP + 1)); echo "opacity_reg=0（best0 系列）"; }
 if [ "$B1" = 1 ]; then
@@ -428,7 +436,7 @@ fi
 #   使用者規則：同家族已有舊跑次且**要比時間**的臂不開（牆鐘／it/s 會不可比）；需要幾何通道的臂（cdist*）不可開。
 #   resolved config 會多一項 lean_train => diff 的預期變數數 +1。
 if [ "${CITYGS_LEAN:-0}" = 1 ]; then
-  case "$ARM" in cdist*|best0dist*|best1dist*|bestdist*) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
+  case "$ARM" in cdist*|best0dist*|best1dist*|bestdist*|best*normal|best*depth|best*geo) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
   EXTRA+=(--model.renderer.init_args.lean_train true); EXP=$((EXP + 1))
   echo "lean_train=true（CITYGS_LEAN=1）"
 fi
@@ -453,6 +461,9 @@ arm_desc() {
     bestoeVC)   echo "opacity 二元熵正則 0.002＋trim 判準 V/C｜兩個省 Load 的機制（換塊：二元熵平手 −12~23%、V/C −17~10%）能否相加；V/C 不保護微小顆粒 => 預期不重現 v/c＋二元熵的崩潰" ;;
     besttrimVCb) echo "trim 判準 v -> 總貢獻÷(β·視角數+覆蓋像素)，β=55 px｜V/C 再加每顆固定成本：幾乎不畫東西的微小顆粒不再免費" ;;
     besttrimVC) echo "trim 判準 v -> 總貢獻÷覆蓋像素（V/C：各視角每像素貢獻的覆蓋加權平均，不再只看最好視角）｜離線比賽同成本下最佳，且不像 v/c 偏好微小顆粒" ;;
+    bestnormal) echo "normal 一致性 loss 0.0125（官方值）｜我方配方為 0；幾何 F1 我方 0.356 vs 官方 0.597，看 normal 監督補回多少、付多少 PSNR" ;;
+    bestdepth)  echo "單目深度 loss（官方：0.5 x 0.05^(step/24000)、l1+ssim）｜我方為 0；看單目深度對 F1（尤其 recall）的影響" ;;
+    bestgeo)    echo "normal＋單目深度 loss 合開（＝官方的幾何監督設定）｜幾何落差有多少來自幾何監督全關" ;;
     bestsh2|bestsh1|bestsh0) echo "SH 階數 ${CASEARM#bestsh}｜高階 SH（佔參數 78%）值不值它的 VRAM" ;;
     bestdist100|bestdist1000) echo "深度失真正則 lambda_dist ${CASEARM#bestdist}｜幾何正則對品質的影響" ;;
     bestcdu100|bestcdu75|bestcdu25) echo "增生期長度（densify_until）= 總步數的 ${CASEARM#bestcdu}%｜增生期多長最划算" ;;
