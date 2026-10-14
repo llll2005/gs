@@ -63,22 +63,33 @@ def main():
     print(f"[相機] {path}：train {len(cams)} 台，用 {len(idx)} 台（stride {a.stride}）")
     print(f"[TSDF] voxel {a.voxel_size}  sdf_trunc {a.sdf_trunc}  depth_trunc {a.depth_trunc}")
 
+    import resource, time
+    t_start = time.perf_counter(); t_render = t_fuse = 0.0
     model.active_sh_degree = 0
     bg = torch.zeros(3, device=dev)
     volume = o3d.pipelines.integration.ScalableTSDFVolume(
         voxel_length=a.voxel_size, sdf_trunc=a.sdf_trunc, color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
     with torch.no_grad():
         for i in tqdm(idx, desc="渲染＋融合", mininterval=30):
+            t0 = time.perf_counter()
             cam = cams[i].to_device(dev)
             pkg = renderer(cam, model, bg)
             rgb, depth = pkg["render"], pkg["surf_depth"]
+            torch.cuda.synchronize(); t1 = time.perf_counter(); t_render += t1 - t0
             co = GS2DMeshUtils.to_cam_open3d([cam])[0]
             rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
                 o3d.geometry.Image(np.asarray(np.clip(rgb.permute(1, 2, 0).cpu().numpy(), 0.0, 1.0) * 255, order="C", dtype=np.uint8)),
                 o3d.geometry.Image(np.asarray(depth.permute(1, 2, 0).cpu().numpy(), order="C")),
                 depth_trunc=a.depth_trunc, convert_rgb_to_intensity=False, depth_scale=1.0)
             volume.integrate(rgbd, intrinsic=co.intrinsic, extrinsic=co.extrinsic)
+            t_fuse += time.perf_counter() - t1
+    t0 = time.perf_counter()
     mesh = volume.extract_triangle_mesh()
+    t_ext = time.perf_counter() - t0
+    # ★ 成本紀錄（ADMM 框架 14 §3.2：z＝全場景 TSDF 時，每輪 z-更新＝這裡的融合）
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
+    print(f"[成本] {len(idx)} 視角：渲染 {t_render:.0f} s、TSDF 融合 {t_fuse:.0f} s（每視角 {1000 * t_fuse / max(len(idx), 1):.0f} ms）、"
+          f"抽網格 {t_ext:.0f} s、總計 {time.perf_counter() - t_start:.0f} s；行程 RAM 峰值 {rss:.1f} GiB（含 ckpt 載入）", flush=True)
     o3d.io.write_triangle_mesh(os.path.join(a.out, "fuse.ply"), mesh)
     print(f"網格：{len(mesh.vertices):,} 頂點、{len(mesh.triangles):,} 三角形 -> {a.out}/fuse.ply")
     post = post_process_mesh(mesh, cluster_to_keep=a.num_cluster)

@@ -14,6 +14,7 @@ C 成本（ADMM 會多出來的部分）
   ② 每輪 A_v：渲染一個區塊全部訓練視角一次（深度）的時間
   ③ 每輪切換區塊：ckpt 讀與寫的時間
   ④ z／對偶變數的記憶體（地面網格 0.05、0.02 單位；每視角 2 個數）
+D 2.5D 高度場適用度：SfM 點在地面網格每格的垂直分布（p90-p10）；分布寬的格子（樹、牆、懸空）不適合單一高度 h_j => 那些格子要降 rho_j
   ⚠ lab 同卡有容器外的佔用時有時無 => 開頭記錄整卡已用量；時間數字要對照它看。
 用法：python tools/admm_probe.py --run outputs/lab/full44_best --out outputs/lab/admm_probe
 """
@@ -62,7 +63,7 @@ def main():
     ap.add_argument("--time_views", type=int, default=30)
     ap.add_argument("--time_block", type=int, default=6)
     ap.add_argument("--blocks", type=int, nargs="*", default=None, help="只用這些區塊（本機功能測試）")
-    ap.add_argument("--skip", nargs="*", default=[], help="略過 A／B／C")
+    ap.add_argument("--skip", nargs="*", default=[], help="略過 A／B／C／D")
     a = ap.parse_args()
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     from internal.utils.outside_pool import block_inside_mask
@@ -211,13 +212,20 @@ def main():
                 y = 1.0 / d[ok]; x = m[ok]
                 aa, bb_ = robust_affine(x, y)
                 fit_res = float(((aa * x + bb_ - y).abs() / y.abs().clamp_min(1e-9)).median())
-                per.append((b, aa, bb_, fit_res, x, y))
+                per.append((b, aa, bb_, fit_res, x, y, int(ok.sum())))
             if len(per) < 2:
                 continue
             A_ = np.array([p[1] for p in per]); ref = per[0][4]
             tg = torch.stack([p[1] * ref + p[2] for p in per])           # 各塊的監督目標（同一組 mono 像素）
             spread = float(((tg.max(0).values - tg.min(0).values) / tg.median(0).values.abs().clamp_min(1e-9)).median())
+            npx = np.array([p[6] for p in per], float)
+            amed = float(np.median(A_))
+            # Gemini 10-14 隱患 B：某塊只看到該視角邊緣少量像素時，它的 (a, b) 可能離群、污染線性平均的共識
+            #   => 報：最小像素數、最大相對偏離、不加權 vs 以像素數加權的共識差（加權仍有閉式解）
+            a_unw = float(A_.mean()); a_w = float((A_ * npx).sum() / npx.sum())
             rowsB.append(dict(view=names[i], n_blocks=len(per), a_cv=float(A_.std() / max(abs(A_.mean()), 1e-12)),
+                              min_pix=int(npx.min()), a_maxdev=float(np.abs(A_ / max(abs(amed), 1e-12) - 1).max()),
+                              w_vs_unw=float(abs(a_unw - a_w) / max(abs(a_w), 1e-12)),
                               a_vs_sfm=float(np.median(np.abs(A_ / dsc["scale"] - 1))) if dsc["scale"] else float("nan"),
                               target_spread=spread, fit_res_med=float(np.median([p[3] for p in per]))))
         import pandas as pd
@@ -228,8 +236,33 @@ def main():
                   f"  各塊擬合的 a 變異係數          {q('a_cv')}\n"
                   f"  各塊的 a 相對現行 SfM 擬合的偏差 {q('a_vs_sfm')}\n"
                   f"  各塊監督目標之間的相對差        {q('target_spread')}\n"
-                  f"  仿射擬合殘差（單目換不過來的部分）{q('fit_res_med')}", flush=True)
-            res["B"] = {c: [float(dfB[c].median()), float(dfB[c].quantile(0.9))] for c in ("a_cv", "a_vs_sfm", "target_spread", "fit_res_med")}
+                  f"  仿射擬合殘差（單目換不過來的部分）{q('fit_res_med')}\n"
+                  f"  離群：各塊 a 對中位的最大相對偏離 {q('a_maxdev')}；> 50% 的影像 {100 * float((dfB.a_maxdev > 0.5).mean()):.1f}%；"
+                  f"最少像素那塊的像素數 中位 {dfB.min_pix.median():.0f}\n"
+                  f"  不加權 vs 以像素數加權的共識 a 相差 {q('w_vs_unw')}", flush=True)
+            res["B"] = {c: [float(dfB[c].median()), float(dfB[c].quantile(0.9))] for c in ("a_cv", "a_vs_sfm", "target_spread", "fit_res_med", "a_maxdev", "w_vs_unw")}
+
+    # ── D 2.5D 高度場適用度（Gemini 10-14 隱患 C）：SfM 點在地面網格上每格的垂直分布；分布寬的格子不是單層表面 ──
+    if "D" not in a.skip:
+        from internal.utils.colmap import read_points3D_binary
+        P3 = np.array([q.xyz for q in read_points3D_binary(os.path.join(dmh["path"], "sparse", "0", "points3D.bin")).values()], np.float32)
+        P3 = P3 @ Rp.cpu().numpy().T
+        D = {}
+        for r_ in (0.05, 0.02):
+            ij = np.floor(P3[:, :2] / r_).astype(np.int64)
+            key = (ij[:, 0] - ij[:, 0].min()) * (ij[:, 1].max() - ij[:, 1].min() + 1) + (ij[:, 1] - ij[:, 1].min())
+            order = np.argsort(key, kind="stable"); ks = key[order]; zs = P3[order, 2]
+            cut = np.flatnonzero(np.diff(ks)) + 1
+            groups = [g for g in np.split(zs, cut) if g.size >= 5]
+            spread = np.array([np.percentile(g, 90) - np.percentile(g, 10) for g in groups])
+            npts = np.array([g.size for g in groups])
+            for th in (0.02, 0.05, 0.1):
+                D[f"grid{r_}_spread>{th}_cells"] = float((spread > th).mean())
+                D[f"grid{r_}_spread>{th}_points"] = float(npts[spread > th].sum() / npts.sum())
+            print(f"\n═══ D 高度場適用度（地面網格 {r_}，>= 5 個 SfM 點的格子 {len(groups):,} 個）═══\n"
+                  + "  ".join(f"垂直分布 p90-p10 > {th}：格子 {100 * D[f'grid{r_}_spread>{th}_cells']:.1f}%／點 {100 * D[f'grid{r_}_spread>{th}_points']:.1f}%"
+                              for th in (0.02, 0.05, 0.1)), flush=True)
+        res["D"] = D
 
     # ── C 成本 ──
     if "C" not in a.skip:
