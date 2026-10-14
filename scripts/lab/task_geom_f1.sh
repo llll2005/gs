@@ -9,6 +9,7 @@
 #   [solo] bash scripts/lab/task_geom_f1.sh prep
 #   [solo] bash scripts/lab/task_geom_f1.sh mesh ours|official
 #   [solo] bash scripts/lab/task_geom_f1.sh f1 ours|official
+#   STRIDE=400 ... mesh／f1 ours  => 功能測試（每 400 台取一台，輸出到 ours_s400，不覆蓋正式結果）
 #   ⚠ official 的合併 ckpt 有 41.5 GB（含優化器狀態），torch.load 要整個讀進 RAM => 一定要 [solo]（不與訓練同時跑）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac
 set -u
@@ -21,7 +22,7 @@ OUT=outputs/lab/geom_f1
 OURS=outputs/lab/full44_best/checkpoints/merged.ckpt
 OFF=../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/checkpoints/epoch=6-step=30000.ckpt
 ck_of () { case "$1" in ours) echo "$OURS" ;; official) echo "$OFF" ;; *) echo "" ;; esac; }
-MODE=$1; NAME=${2:-}
+MODE=$1; NAME=${2:-}; DIRN="$NAME${STRIDE:+_s$STRIDE}"
 case "$MODE" in
   prep)
     [ -f "$GT/Block_all_ds.ply" ] && { echo "✅ GT 已在 $GT"; exit 0; }
@@ -31,15 +32,15 @@ case "$MODE" in
     ls -la "$GT" ;;
   mesh)
     C=$(ck_of "$NAME"); [ -n "$C" ] && [ -f "$C" ] || { echo "⛔ 未知或缺 ckpt：$NAME（$C）"; exit 2; }
-    mkdir -p "$OUT/$NAME"
-    $PY tools/mesh_tsdf_stream.py --ckpt "$C" --cameras_ckpt "$OURS" --out "$OUT/$NAME" \
-      --voxel_size 0.01 --sdf_trunc 0.04 --depth_trunc 5.0 --num_cluster 50 2>&1 | grep -v -i warn | tee "$OUT/$NAME/mesh.log"
+    mkdir -p "$OUT/$DIRN"
+    $PY tools/mesh_tsdf_stream.py --ckpt "$C" --cameras_ckpt "$OURS" --out "$OUT/$DIRN" --stride "${STRIDE:-1}" \
+      --voxel_size 0.01 --sdf_trunc 0.04 --depth_trunc 5.0 --num_cluster 50 2>&1 | grep -v -i warn | tee "$OUT/$DIRN/mesh.log"
     exit "${PIPESTATUS[0]}" ;;
   f1)
-    [ -f "$OUT/$NAME/fuse_post.ply" ] || { echo "⛔ 先跑 mesh $NAME"; exit 2; }
+    [ -f "$OUT/$DIRN/fuse_post.ply" ] || { echo "⛔ 先跑 mesh $DIRN"; exit 2; }
     [ -f "$GT/Block_all_ds.ply" ] || { echo "⛔ 先跑 prep"; exit 2; }
-    $PY tools/eval_tnt/run.py --scene Block_all_ds --dataset-dir "$GT" --ply-path "$OUT/$NAME/fuse_post.ply" 2>&1 \
-      | grep -v -i warn | tee "$OUT/$NAME/f1.log"
-    grep -E 'precision|recall|f-score' "$OUT/$NAME/f1.log" ;;
+    $PY tools/eval_tnt/run.py --scene Block_all_ds --dataset-dir "$GT" --ply-path "$OUT/$DIRN/fuse_post.ply" 2>&1 \
+      | grep -v -i warn | tee "$OUT/$DIRN/f1.log"
+    grep -E 'precision|recall|f-score' "$OUT/$DIRN/f1.log" ;;
   *) echo "⛔ 模式只能是 prep／mesh／f1"; exit 2 ;;
 esac
