@@ -64,6 +64,9 @@ config 只是被對齊過去，讓新腳本與 `main.py fit --config` 不會吃�
 | (b) | forward / forward+backward（`step_breakdown`，`[solo]`，同 N） | forward **−26%**、fwd+bwd **−16~17%** |
 | (c) | 離線精確 Σtiles（全部相機）＋ 峰值 VRAM | Load 中位 **−40.1% / −45.8%**；VRAM **−3.9~−6.6%** |
 | (d) | 代理 ÷ 精確 成本比 | ⚠ **副作用**：conic 開讓代理指標脫鉤（1.07~1.28 → 2.23~2.27） |
+| (e) | 逐塊精確 Load 中位（60k、各模型自己那塊的全部訓練相機、同一支工具）：我方 full44 vs release vs 論文設定，＋現行 best0（b6／b12） | `09` |
+
+**10-14 對照官方（使用者要求：官方跑次的數據放進對應的我方圖表；現行最佳 best0）**：我方 full44 平均是 release 的 38%（2.2~3.0M vs 5.3~8.8M）；現行 best0 再低約 1/3（b6 1.89M、b12 1.86M）。官方 lab `citygs_official_blockload*.log`。
 
 ### 引用時必須一起講的三件事
 
