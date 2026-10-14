@@ -829,6 +829,38 @@ def n13_tiny(d):
     save(fig, d, "n13_tiny.png")
 
 
+def n13_swap(d):
+    """13 §7：4x4 b6／b12 訓練＋換塊評測（full44 合併模型只換一塊，本塊幾何區域 PSNR），相對 best0；Load＝單塊精確 Σtiles 中位（訓練相機）。
+    數字：lab logs/swap_b6_1014_0110.log、swap_b12_1014_0129.log、各跑次 chart_data/load.txt（2026-10-14）。"""
+    R = {  # 臂: (Δ幾何 b6, b12, ΔLoad% b6, b12)
+        "best0 重複（fast，渲染逐位元同）": (0.005, 0.025, -2.5, 1.3),
+        "週期 trim 全關": (-0.395, -0.353, 7.7, 6.2),
+        "三次門檻剪（trim3）": (-0.291, -0.176, -6.1, -11.8),
+        "v/c × tile 名次": (-1.124, -0.192, -53.5, -46.4),
+        "opacity 二元熵正則": (-0.031, 0.026, -12.3, -22.9),
+        "低解析度起步": (-0.037, -0.086, -2.9, -5.0),
+        "拉長顆粒硬剪": (-0.180, 0.028, 0.6, 2.0),
+        "V/C（總貢獻÷覆蓋像素）": (-0.062, -0.244, -17.2, -9.7),
+        "V/(β+C)，β=55": (-0.042, -0.038, 18.5, 14.9),
+    }
+    off = {"v/c（訓練期判準）": (-3.817, -0.895, -63.4, -54.4), "v/c×名次＋二元熵": (-3.350, -0.927, -65.1, -61.1)}
+    fig, ax = plt.subplots(figsize=(11, 4.6))
+    cols = {"V/C（總貢獻÷覆蓋像素）": C3, "V/(β+C)，β=55": C4, "opacity 二元熵正則": C2, "best0 重複（fast，渲染逐位元同）": MUTED}
+    for k, (a6, a12, l6, l12) in R.items():
+        x, y = (l6 + l12) / 2, (a6 + a12) / 2
+        c = cols.get(k, C1)
+        ax.errorbar(x, y, xerr=abs(l6 - l12) / 2, yerr=abs(a6 - a12) / 2, fmt="o", color=c, ms=6, lw=0.8, capsize=2)
+        ax.annotate(k, (x, y), xytext=(5, 4), textcoords="offset points", fontsize=8, color=INK2)
+    ax.axhline(0, color=MUTED, lw=0.8); ax.axvline(0, color=MUTED, lw=0.8)
+    ax.axhspan(-0.03, 0.03, color="#e1e0d9", alpha=0.6, lw=0)
+    ax.annotate("±0.03：兩次 best0 重複的差", (-58, 0.035), fontsize=8, color=MUTED)
+    ax.set_xlim(-60, 25); ax.set_ylim(-0.8, 0.12)
+    ax.set_xlabel("精確 Load 中位變化 %（相對 best0；b6／b12 平均，橫線＝兩塊範圍）")
+    ax.set_ylabel("Δ 本塊幾何區域 PSNR（dB，換塊評測）")
+    ax.set_title("4x4 b6／b12 訓練 60k 後換進合併模型（相對 best0）；超出畫面：" + "、".join(f"{k} {(v[0]+v[1])/2:+.2f} dB @ {(v[2]+v[3])/2:+.0f}%" for k, v in off.items()), fontsize=9)
+    save(fig, d, "n13_swap.png")
+
+
 DOCS = {
     "01_訓練時間組成": ["n01_steps", "n01_scaling", "n01_maxsplit"],
     "02_VRAM與配置器": ["n02_segments", "n02_value"],
@@ -842,7 +874,7 @@ DOCS = {
     "10_速度優化_lean與kernel拆解": ["n10_kernels"],
     "11_逐配對工作量上限": ["n11_tiles"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout"],
-    "13_trim判準與opacity熵的負交互": ["n13_struct", "n13_race", "n13_tiny"],
+    "13_trim判準與opacity熵的負交互": ["n13_struct", "n13_race", "n13_tiny", "n13_swap"],
 }
 
 
@@ -880,7 +912,7 @@ def main():
             print(r.stdout[-2000:], r.stderr[-2000:]); raise SystemExit(f"⛔ {sc} 失敗")
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
-              n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny):
+              n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
