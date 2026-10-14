@@ -842,10 +842,12 @@ def n13_swap(d):
         "拉長顆粒硬剪": (-0.180, 0.028, 0.6, 2.0),
         "V/C（總貢獻÷覆蓋像素）": (-0.062, -0.244, -17.2, -9.7),
         "V/(β+C)，β=55": (-0.042, -0.038, 18.5, 14.9),
+        "★ 二元熵＋V/C（10-14 採用＝best1）": (-0.089, 0.005, -34.2, -34.9),
     }
     off = {"v/c（訓練期判準）": (-3.817, -0.895, -63.4, -54.4), "v/c×名次＋二元熵": (-3.350, -0.927, -65.1, -61.1)}
     fig, ax = plt.subplots(figsize=(11, 4.6))
-    cols = {"V/C（總貢獻÷覆蓋像素）": C3, "V/(β+C)，β=55": C4, "opacity 二元熵正則": C2, "best0 重複（fast，渲染逐位元同）": MUTED}
+    cols = {"V/C（總貢獻÷覆蓋像素）": C3, "V/(β+C)，β=55": C4, "opacity 二元熵正則": C2, "best0 重複（fast，渲染逐位元同）": MUTED,
+            "★ 二元熵＋V/C（10-14 採用＝best1）": "#123f7a"}
     for k, (a6, a12, l6, l12) in R.items():
         x, y = (l6 + l12) / 2, (a6 + a12) / 2
         c = cols.get(k, C1)
@@ -956,6 +958,7 @@ def n05_main4x4(d):
     """4x4 主要跑次（相對現行 best0）：換塊評測的本塊幾何區域 PSNR、精確 Load（取代 5x5 舊版 05(a)）。"""
     R = [("full44 舊配方（opacity_reg 0.002）", -0.054, 0.093, 49.7, 54.4),
          ("best0 重複（只差訓練隨機性）", 0.005, 0.025, -2.5, 1.3),
+         ("★ 二元熵＋V/C（10-14 採用＝best1）", -0.089, 0.005, -34.2, -34.9),
          ("opacity 二元熵正則", -0.031, 0.026, -12.3, -22.9),
          ("trim 判準 V/C", -0.062, -0.244, -17.2, -9.7),
          ("trim 判準 V/(β+C)", -0.042, -0.038, 18.5, 14.9),
@@ -980,7 +983,7 @@ def n05_main4x4(d):
     ax.axvline(0, color=MUTED, lw=1); ax.set_yticks(y); ax.set_yticklabels([r[0] for r in R], fontsize=8.5); ax.invert_yaxis()
     ax.set_xlim(-1.0, 0.2); ax.legend(fontsize=8, loc="upper left")
     ax.set_xlabel("Δ 本塊幾何區域 PSNR（dB，換塊評測，相對 best0；灰帶 ±0.03＝重複的差；< −1 截斷）")
-    ax.set_title("品質：只有二元熵正則落在雜訊內；舊配方 b6 略好、b12 略差", fontsize=9.5)
+    ax.set_title("品質：二元熵單開落在雜訊內；與 V/C 合開 b6 −0.09／b12 +0.01（採用，換 Load −1/3）", fontsize=9.5)
     ax = axs[1]
     ax.barh(y - h / 2, [r[3] for r in R], h, color=C1); ax.barh(y + h / 2, [r[4] for r in R], h, color=C2)
     for i, r in enumerate(R):
@@ -988,7 +991,7 @@ def n05_main4x4(d):
             ax.text(v + (1 if v >= 0 else -1), i + off, f"{v:+.0f}%", va="center", ha="left" if v >= 0 else "right", fontsize=7)
     ax.axvline(0, color=MUTED, lw=1); ax.set_yticks(y); ax.set_yticklabels([]); ax.invert_yaxis(); ax.set_xlim(-75, 65)
     ax.set_xlabel("Δ 精確 Load 中位（%，相對 best0；越左越便宜）"); ax.set_title("渲染成本：舊配方比 best0 貴約 50%", fontsize=9.5)
-    fig.suptitle("60k 主要跑次（4x4 b6／b12，現行基底 best0＝dup init＋opacity_reg 0）：換塊評測（full44 合併模型只換一塊）；"
+    fig.suptitle("60k 主要跑次（4x4 b6／b12，相對 best0＝dup init＋opacity_reg 0；10-14 起基底改 best1＝best0＋二元熵＋V/C）：換塊評測；"
                  "全場景對官方見 (b)、細節見 `13` §7", fontsize=10)
     save(fig, d, "n05_main4x4.png")
 
