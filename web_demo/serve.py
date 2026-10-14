@@ -110,10 +110,13 @@ class Handler(SimpleHTTPRequestHandler):
             # 命名帶上跑次與 block，否則每個跑次的 epoch=212-step=60000.ckpt 會互相蓋掉
             parts = os.path.relpath(full, os.path.join(PROJECT_ROOT, "outputs")).split(os.sep)
             run   = parts[0] if parts else "run"
+            if run == "lab" and len(parts) > 1:      # 10-14：outputs/lab/<跑次>/… 只取 "lab" 會讓不同跑次的同一塊撞名、讀到別人的快取
+                run = f"lab_{parts[1]}"
             blk   = next((x for x in parts if x.startswith("block_")), "")
             stem  = os.path.splitext(os.path.basename(full))[0]
             step  = stem.split("step=")[-1] if "step=" in stem else stem
-            ply_name = f"{run}{('_' + blk) if blk else ''}_step{step}.ply"
+            from utils.export_splat_ply import FORMAT_TAG      # 10-14：格式修正後換檔名，不讀舊的錯誤快取
+            ply_name = f"{run}{('_' + blk) if blk else ''}_step{step}_{FORMAT_TAG}.ply"
             ply_path = os.path.join(SERVE_DIR, ply_name)
 
             if os.path.exists(ply_path):
@@ -141,7 +144,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         elif self.path == "/convert":
             filename = self.headers.get("X-Filename", "upload.ckpt")
-            ply_name = os.path.splitext(filename)[0] + ".ply"
+            from utils.export_splat_ply import FORMAT_TAG
+            ply_name = os.path.splitext(filename)[0] + f"_{FORMAT_TAG}.ply"
             ply_path = os.path.join(SERVE_DIR, ply_name)
 
             # cache hit — already converted
