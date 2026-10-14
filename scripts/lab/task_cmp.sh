@@ -208,7 +208,7 @@ case "$CASEARM" in
                      --model.density.init_args.add_ratio 1.0
                      --model.density.init_args.relocate_absgrad 2.0
                      --model.renderer.init_args.trim_schedule "15000:3e-4,30000:1e-3,45000:3e-3"); EXP=5 ;;
-  best|bestvt|bestoe|bestvo|bestres|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb)
+  best|bestvt|bestoe|bestvo|bestres|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb|bestoeVC)
               P=$(_bestply)
               [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=2
@@ -216,7 +216,7 @@ case "$CASEARM" in
                 EXTRA+=(--model.renderer.init_args.trim_by_value_per_cost true --model.renderer.init_args.trim_by_tile_topk true)
                 EXP=$((EXP + 2)) ;; esac
               [ "$CASEARM" = bestres ] && { EXTRA+=(--model.train_res_schedule "15000:0.5,30000:0.75"); EXP=$((EXP + 1)); }
-              case "$CASEARM" in bestoe|bestvo)
+              case "$CASEARM" in bestoe|bestvo|bestoeVC)
                 EXTRA+=(--model.metric.init_args.opacity_entropy_reg 0.002 --model.metric.init_args.opacity_entropy_from_iter 1000)
                 EXP=$((EXP + 2)) ;; esac
               # ★ 2026-10-10 塊外池（使用者 A／B 提案；internal/utils/outside_pool.py）：盒＋10% 之外的顆粒搬出 MCMC 集合，只留 SH0
@@ -248,7 +248,7 @@ case "$CASEARM" in
                 # ★ 2026-10-12：trim 判準 v -> 總貢獻 ÷ 覆蓋像素（V/C；實驗分析/13 §4 提案 A）。
                 #   離線比賽（tools/discriminant_race.py，b12、held-out 本塊區域、同成本預算）V/C 三個保留比例都第一；
                 #   v/c 對大小懲罰兩次、讓微小顆粒免剪，V/C 沒有這個偏差。
-                besttrimVC) EXTRA+=(--model.renderer.init_args.trim_by_mean_contribution true); EXP=$((EXP + 1)) ;;
+                besttrimVC|bestoeVC) EXTRA+=(--model.renderer.init_args.trim_by_mean_contribution true); EXP=$((EXP + 1)) ;;
                 #   β 版：V / (β·視角數 + C)，β = 55 px（每顆每視角固定成本，由時間模型 ms=11.7+4.94N+14.23Σtiles 換成像素單位；
                 #   三個模型量到 51.8／55.6／72.5）。同顆數預算下三個模型都第一（剪掉的顆粒中微小顆粒 94%，壓力測試）。
                 besttrimVCb) EXTRA+=(--model.renderer.init_args.trim_by_mean_contribution true
@@ -403,7 +403,7 @@ case "$CASEARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb|best0*（＝best* 加 oreg0；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb|bestoeVC|best0*（＝best* 加 oreg0；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 [ "$OREG0" = 1 ] && { EXTRA+=(--model.metric.init_args.opacity_reg 0.0); EXP=$((EXP + 1)); echo "opacity_reg=0（best0 系列）"; }
 [ "$GRID" = 44 ] && { EXTRA+=("${G44[@]}"); EXP=$((EXP + 1)); }
@@ -438,6 +438,7 @@ arm_desc() {
     bestpoolApF) echo "塊外池 A 同 VRAM 版（池不去重）：池按 0.6 佔 cap｜同 VRAM 下塊外便宜化是否仍有效" ;;
     bestvpc)    echo "trim 判準 v -> v/c｜按價值／成本剪（舊年代被單塊尺淘汰，重驗）" ;;
     bestelong)  echo "Elongation 硬剪（長寬比 > 20 直接刪）｜CityGSV2 的做法，省 binning（舊年代被單塊尺淘汰，重驗）" ;;
+    bestoeVC)   echo "opacity 二元熵正則 0.002＋trim 判準 V/C｜兩個省 Load 的機制（換塊：二元熵平手 −12~23%、V/C −17~10%）能否相加；V/C 不保護微小顆粒 => 預期不重現 v/c＋二元熵的崩潰" ;;
     besttrimVCb) echo "trim 判準 v -> 總貢獻÷(β·視角數+覆蓋像素)，β=55 px｜V/C 再加每顆固定成本：幾乎不畫東西的微小顆粒不再免費" ;;
     besttrimVC) echo "trim 判準 v -> 總貢獻÷覆蓋像素（V/C：各視角每像素貢獻的覆蓋加權平均，不再只看最好視角）｜離線比賽同成本下最佳，且不像 v/c 偏好微小顆粒" ;;
     bestsh2|bestsh1|bestsh0) echo "SH 階數 ${CASEARM#bestsh}｜高階 SH（佔參數 78%）值不值它的 VRAM" ;;
