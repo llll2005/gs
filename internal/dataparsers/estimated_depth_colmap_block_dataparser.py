@@ -92,4 +92,10 @@ class EstimatedDepthBlockColmapDataParser(ColmapBlockDataParser):
         depth_file_path, depth_scale = depth_info
         depth = np.load(depth_file_path) * depth_scale["scale"] + depth_scale["offset"]
 
+        # ★ 2026-10-14 ADMM P2（tools/admm_consensus.py）：共識深度圖在沒打到表面的像素存 NaN
+        #   => 回傳 (depth, mask)，metric 端（citygsv2_metrics.get_inverse_depth_metric）本來就支援遮罩。
+        #   單目深度檔沒有 NaN => 走原本那一行，行為逐位元不變。
+        nan = np.isnan(depth)
+        if nan.any():
+            return (torch.tensor(np.nan_to_num(depth, nan=0.0), dtype=torch.float), torch.tensor(~nan, dtype=torch.float))
         return torch.tensor(depth, dtype=torch.float)

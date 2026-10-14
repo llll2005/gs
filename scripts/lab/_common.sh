@@ -120,7 +120,14 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
     echo "   要查是誰：fuser -v $lk"
     return 9
   fi
-  if [ -d "$out" ]; then
+  # ★ 2026-10-14 ADMM P2：CITYGS_RESUME=1 => 從輸出目錄的最後一個 ckpt 接續（Lightning --ckpt_path，還原步數／優化器／LR 排程），
+  #   不搬走舊輸出；呼叫端用 --trainer.max_steps 指定這一輪的終點。
+  local resume=()
+  if [ "${CITYGS_RESUME:-0}" = 1 ]; then
+    local last; last=$(ls -t "$out"/checkpoints/*.ckpt 2>/dev/null | grep -v -E '_inbox|xyz_rgb' | head -1)
+    [ -n "$last" ] || { echo "⛔ CITYGS_RESUME=1 但 $out 沒有 ckpt"; return 5; }
+    resume=(--ckpt_path "$last"); echo "  接續：$last"
+  elif [ -d "$out" ]; then
     local moved="${out}.aborted_$(date +%m%d_%H%M%S)"
     mv "$out" "$moved" || { echo "⛔ 搬不動 $out"; return 4; }
     echo "  舊輸出搬到 $moved（$(du -sh "$moved" 2>/dev/null | cut -f1)）"
@@ -129,7 +136,7 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config "$CFG" \
     --data.parser.block_id "$blk" \
-    -n "$name" "$@"
+    -n "$name" "${resume[@]}" "$@"
   local rc=$?
   [ "$rc" -ne 0 ] && { echo "❌ $name block $blk 失敗 rc=$rc"; return "$rc"; }
   echo "=== $name / block $blk 完成 $(date) ==="
