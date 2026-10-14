@@ -97,8 +97,11 @@ echo "block $BLK：$NCAM 台相機 / val 每 $PERIOD 步 => 全長 $STEPS 步、
 # ★★ 2026-10-10 使用者：coreg0（opacity_reg 0）val +0.90／+1.32、LPIPS 大幅變好、Load -36% => 當前最佳系列改疊在 oreg0 上。
 #   best0*＝對應的 best* 配方再加 opacity_reg 0；best0notrim＝dup init＋oreg0＋trim 全關（besttrim3 的對照）。
 #   best0 加單變數：best0cdu100／75／25（densify 長度）、best0nogate、best0sh2／sh1／sh0、best0dist100／1000
-CASEARM=$ARM; OREG0=0
-case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; esac
+# ★★ 2026-10-14 使用者採用：best1＝best0＋opacity 二元熵正則 0.002＋trim 判準 V/C（換塊評測：相對 best0 −0.09／+0.01 dB、
+#   精確 Load −34%／−35%；兩個省 Load 機制可相加、不重現 v/c＋二元熵的崩潰；實驗分析/13 §7）。
+#   best1*＝對應的 best* 配方再加 oreg0＋二元熵＋V/C；best1 本身與 best0oeVC 同配方（參考跑次 g44_best0oeVC）。
+CASEARM=$ARM; OREG0=0; B1=0
+case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B1=1; CASEARM="best${ARM#best1}" ;; esac
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
@@ -403,9 +406,14 @@ case "$CASEARM" in
               EXTRA=(--model.density.init_args.cost_budget $((B0 / 4))
                      --model.density.init_args.cost_add_densify 4.0
                      --model.density.init_args.cost_budget_report 500);          EXP=2 ;;
-  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb|bestoeVC|best0*（＝best* 加 oreg0；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
+  *) echo "⛔ 未知的 arm：$ARM（base|refrep|refc|refh1|refh2|sfmfill|sfmdup4|sfmdup2|fastgrow|tilek|vpctilek|oent|best|bestvt|bestoe|bestvo|bestres|besttrim3|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb|bestoeVC|best0*（＝best* 加 oreg0）|best1*（＝best* 加 oreg0＋二元熵＋V/C；另有 best0cdu100/75/25、best0nogate、best0sh2/1/0、best0dist100/1000、best0notrim）|sfmdup5|sfmdup4j10|sfmdup4j025|cdu100|cdu75|cdu25|cag4|cag0|coreg0|cnotrim|cnogate|csh2|csh1|csh0|cdist100|cdist1000|costdir|costdir_cal|costtaming|dssim05|depth05|both|cb50|cb25|cb50cost|cb25cost|cb50x|cb25x|cb50xcost|cb25xcost|trimvpc|trimvpc05|conic|conicvpc|tilecal）"; exit 2 ;;
 esac
 [ "$OREG0" = 1 ] && { EXTRA+=(--model.metric.init_args.opacity_reg 0.0); EXP=$((EXP + 1)); echo "opacity_reg=0（best0 系列）"; }
+if [ "$B1" = 1 ]; then
+  case "$CASEARM" in bestoe|bestvo|bestoeVC|besttrimVC|besttrimVCb|bestvt|bestvpc) echo "⛔ $ARM：best1 已含二元熵＋V/C，不能再疊 ${CASEARM#best}"; exit 2 ;; esac
+  EXTRA+=(--model.metric.init_args.opacity_entropy_reg 0.002 --model.metric.init_args.opacity_entropy_from_iter 1000
+          --model.renderer.init_args.trim_by_mean_contribution true); EXP=$((EXP + 3)); echo "best1 系列：opacity_reg 0＋二元熵 0.002＋trim V/C"
+fi
 [ "$GRID" = 44 ] && { EXTRA+=("${G44[@]}"); EXP=$((EXP + 1)); }
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
 # ★ 2026-09-21 `CITYGS_FAMILY` 換家族名（預設 `cs_`）。用途＝同一批臂換一個排程再跑一次
@@ -416,7 +424,7 @@ esac
 #   使用者規則：同家族已有舊跑次且**要比時間**的臂不開（牆鐘／it/s 會不可比）；需要幾何通道的臂（cdist*）不可開。
 #   resolved config 會多一項 lean_train => diff 的預期變數數 +1。
 if [ "${CITYGS_LEAN:-0}" = 1 ]; then
-  case "$ARM" in cdist*|best0dist*|bestdist*) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
+  case "$ARM" in cdist*|best0dist*|best1dist*|bestdist*) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
   EXTRA+=(--model.renderer.init_args.lean_train true); EXP=$((EXP + 1))
   echo "lean_train=true（CITYGS_LEAN=1）"
 fi
@@ -448,7 +456,7 @@ arm_desc() {
     *)          echo "（未登記；看 EXTRA 旗標）" ;;
   esac
 }
-_DESC="$(arm_desc)"; [ "$OREG0" = 1 ] && _DESC="$_DESC｜基底含 opacity_reg 0（best0）"
+_DESC="$(arm_desc)"; if [ "$B1" = 1 ]; then _DESC="$_DESC｜基底 best1（opacity_reg 0＋二元熵＋V/C）"; elif [ "$OREG0" = 1 ]; then _DESC="$_DESC｜基底含 opacity_reg 0（best0）"; fi
 _RN="${CITYGS_RUN_NAME:-${RUN_PREFIX}${CITYGS_FAMILY:-cs_}${ARM}}"
 echo "[變因] $_RN／block $BLK：$_DESC"
 if [ "${CITYGS_DRY:-0}" != 1 ]; then
