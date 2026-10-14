@@ -97,9 +97,9 @@ echo "block $BLK：$NCAM 台相機 / val 每 $PERIOD 步 => 全長 $STEPS 步、
 # ★★ 2026-10-10 使用者：coreg0（opacity_reg 0）val +0.90／+1.32、LPIPS 大幅變好、Load -36% => 當前最佳系列改疊在 oreg0 上。
 #   best0*＝對應的 best* 配方再加 opacity_reg 0；best0notrim＝dup init＋oreg0＋trim 全關（besttrim3 的對照）。
 #   best0 加單變數：best0cdu100／75／25（densify 長度）、best0nogate、best0sh2／sh1／sh0、best0dist100／1000
-# ★★ 2026-10-14 使用者採用：best1＝best0＋opacity 二元熵正則 0.002＋trim 判準 V/C（換塊評測：相對 best0 −0.09／+0.01 dB、
+# ★★ 2026-10-14 使用者採用：best1＝best0＋opacity 二元熵正則 0.002＋trim 判準 V/C＋飽和跳過＋先加總（換塊評測（不含後兩者）：相對 best0 −0.09／+0.01 dB、
 #   精確 Load −34%／−35%；兩個省 Load 機制可相加、不重現 v/c＋二元熵的崩潰；實驗分析/13 §7）。
-#   best1*＝對應的 best* 配方再加 oreg0＋二元熵＋V/C；best1 本身與 best0oeVC 同配方（參考跑次 g44_best0oeVC）。
+#   best1*＝對應的 best* 配方再加 oreg0＋二元熵＋V/C＋飽和跳過＋先加總；參考跑次 g44_best1（完整版；g44_best0oeVC 是不含加速的同配方）。
 CASEARM=$ARM; OREG0=0; B1=0
 case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B1=1; CASEARM="best${ARM#best1}" ;; esac
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
@@ -410,9 +410,13 @@ case "$CASEARM" in
 esac
 [ "$OREG0" = 1 ] && { EXTRA+=(--model.metric.init_args.opacity_reg 0.0); EXP=$((EXP + 1)); echo "opacity_reg=0（best0 系列）"; }
 if [ "$B1" = 1 ]; then
-  case "$CASEARM" in bestoe|bestvo|bestoeVC|besttrimVC|besttrimVCb|bestvt|bestvpc) echo "⛔ $ARM：best1 已含二元熵＋V/C，不能再疊 ${CASEARM#best}"; exit 2 ;; esac
+  case "$CASEARM" in bestoe|bestvo|bestoeVC|besttrimVC|besttrimVCb|bestvt|bestvpc|bestfast) echo "⛔ $ARM：best1 已含二元熵＋V/C＋飽和跳過，不能再疊 ${CASEARM#best}"; exit 2 ;; esac
+  # 10-14 使用者：best1 一併帶上 backward 飽和跳過＋block 內先加總（bestfast；best0 上換塊評測 +0.01／+0.03 平手、每步 157 -> 126 ms）
+  #   => 「所有已採用的加速＋現行最佳配方」的完整版；⚠ 這兩個旗標只在 lean 路徑生效（dist 臂不能開 lean => 對它們無作用）
   EXTRA+=(--model.metric.init_args.opacity_entropy_reg 0.002 --model.metric.init_args.opacity_entropy_from_iter 1000
-          --model.renderer.init_args.trim_by_mean_contribution true); EXP=$((EXP + 3)); echo "best1 系列：opacity_reg 0＋二元熵 0.002＋trim V/C"
+          --model.renderer.init_args.trim_by_mean_contribution true
+          --model.renderer.init_args.bwd_sat_skip true --model.renderer.init_args.bwd_reduce true); EXP=$((EXP + 5))
+  echo "best1 系列：opacity_reg 0＋二元熵 0.002＋trim V/C＋飽和跳過＋先加總"
 fi
 [ "$GRID" = 44 ] && { EXTRA+=("${G44[@]}"); EXP=$((EXP + 1)); }
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
