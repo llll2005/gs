@@ -37,7 +37,7 @@ if [ "$MODE" = full ]; then
   CITYGS_POSTDATA=0 CITYGS_RUN_NAME="$NAME" CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=60000 CITYGS_FAMILY=g44_ \
     bash scripts/lab/task_cmp.sh "$B" best1 "${F[@]}"; rc=$?
   watch_off; gpu
-  echo "外部佔用（> 1500 MiB 以外的行程）取樣：$(awk '{n++} $2+0>6000{h++} END{printf "%d/%d 次整卡 > 6000 MiB", h, n}' "$W")（我方訓練本身約 4~5 GB）"
+  echo "外部佔用取樣：$(awk '{n++; k=gsub(/;/,";"); if(k>1)h++} END{printf "%d/%d 次卡上有 >1 個計算行程", h, n}' "$W")（不鎖 VRAM 時我方自己的保留量就會 > 6 GB，所以看行程數）"
   grep -E "g44_best1time/blocks/block_$B\$" logs/quad_progress.log | tail -2
   exit $rc
 fi
@@ -63,7 +63,7 @@ L=logs/best1_time_b${B}_$(date +%m%d_%H%M).log
         STEPS=60000 CITYGS_FAMILY=g44_ bash scripts/lab/task_cmp.sh "$B" "$A" "${F[@]}" "${XA[@]}" "${XP[@]}" \
         --model.initialize_from "$CK" --trainer.max_steps 1200 2>&1 | grep -E "\[lean\]|Trimming done|Error|error|⛔|❌" | head -8
       watch_off; gpu
-      echo "外部佔用取樣：$(awk '{n++} $2+0>6000{h++} END{printf "%d/%d 次整卡 > 6000 MiB", h, n}' "$W")"
+      echo "外部佔用取樣：$(awk '{n++; k=gsub(/;/,";"); if(k>1)h++} END{printf "%d/%d 次卡上有 >1 個計算行程", h, n}' "$W")"
       echo "── step_cost（$arm／$ph）"; sed -n 1,24p "$OUTD/step_cost.txt" 2>/dev/null || echo "⛔ 沒有 step_cost.txt"
     done
   done
