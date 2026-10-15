@@ -797,7 +797,7 @@ def _race(name):
 
 
 def n13_race(d):
-    """13 §6：離線判別式比賽（tools/discriminant_race.py），同顆數預算，held-out 本塊區域 PSNR 對 Load。"""
+    """13 §1：離線判別式比賽（tools/discriminant_race.py），同顆數預算，held-out 本塊區域 PSNR 對 Load。"""
     fig, axs = plt.subplots(1, 3, figsize=(16, 4.6))
     for ax, (nm, tt) in zip(axs, (("g44_best0_b12", "b12 基底 best0（微小顆粒 4.5%）"), ("full44_b10", "b10 大樓塊（full44）"),
                                    ("g44_best0vo_b12", "壓力測試：v/c×名次＋二元熵合開 b12（微小 26%）"))):
@@ -816,7 +816,7 @@ def n13_race(d):
 
 
 def n13_tiny(d):
-    """13 §6：壓力測試模型上，同顆數保留 90% 時，被剪掉的顆粒中有多少是微小顆粒（盒內微小佔 26%）。"""
+    """13 §1：壓力測試模型上，同顆數保留 90% 時，被剪掉的顆粒中有多少是微小顆粒（盒內微小佔 26%）。"""
     df = _race("g44_best0vo_b12")
     x = df[(df["預算"] == "顆數") & (df["p"] == 0.9)]
     rows = [(lab, float(x[x["判別式"] == key]["剪掉中微小顆粒pct"].iloc[0]), c) for key, lab, c, _ in _RACE_SHOW if (x["判別式"] == key).any()]
@@ -830,7 +830,7 @@ def n13_tiny(d):
 
 
 def n13_swap(d):
-    """13 §7：4x4 b6／b12 訓練＋換塊評測（full44 合併模型只換一塊，本塊幾何區域 PSNR），相對 best0；Load＝單塊精確 Σtiles 中位（訓練相機）。
+    """13 §2：4x4 b6／b12 訓練＋換塊評測（full44 合併模型只換一塊，本塊幾何區域 PSNR），相對 best0；Load＝單塊精確 Σtiles 中位（訓練相機）。
     數字：lab logs/swap_b6_1014_0110.log、swap_b12_1014_0129.log、各跑次 chart_data/load.txt（2026-10-14）。"""
     R = {  # 臂: (Δ幾何 b6, b12, ΔLoad% b6, b12)
         "best0 重複（fast，渲染逐位元同）": (0.005, 0.025, -2.5, 1.3),
@@ -872,6 +872,7 @@ LOAD44 = {
     "pap": [6.167, 5.117, 6.596, 5.273, 5.741, 6.653, 7.938, 6.273, 6.481, 7.697, 8.131, 6.909, 7.450, 8.776, 8.479, 6.643],
 }
 BEST0 = {"peak": {6: 3.95, 12: 3.92}, "load": {6: 1.893, 12: 1.859}}   # g44_best0 60k（台帳峰值實佔 GB；chart_data/load.txt ③ 中位，百萬）
+BEST1 = {"peak": {6: 3.92, 12: 3.92}, "load": {6: 1.259, 12: 1.212}}   # ★ 現行 g44_best1 60k（10-14 台帳峰值實佔；chart_data/load.txt 精確中位）
 
 
 def n01_blocktime(d):
@@ -891,10 +892,10 @@ def n01_blocktime(d):
 
 
 def n02_peak3(d):
-    """訓練峰值（GB）：現行 best0（b6／b12）、full44 舊配方、官方 release／論文設定（同塊）；16 塊全貌。"""
+    """訓練峰值（GB）：現行 best1（b6／b12）、full44 舊配方、官方 release／論文設定（同塊）；16 塊全貌。"""
     fig, axs = plt.subplots(1, 2, figsize=(16, 4.3), gridspec_kw={"width_ratios": [1, 1.8]})
     ax = axs[0]
-    grp = [("★ 我方 best0（現行）", [BEST0["peak"][6], BEST0["peak"][12]], C1),
+    grp = [("★ 我方 best1（現行）", [BEST1["peak"][6], BEST1["peak"][12]], C1),
            ("我方 full44（opacity_reg 0.002）", [F44["opk"][6], F44["opk"][12]], "#7fa9e0"),
            ("官方 release", [F44["rpk"][6], F44["rpk"][12]], MUTED), ("官方論文設定", [F44["ppk"][6], F44["ppk"][12]], C2)]
     x = np.arange(2); wd = 0.2
@@ -907,7 +908,7 @@ def n02_peak3(d):
     xx = np.arange(16)
     for k, c, mk, lb in [("opk", C1, "o", "我方 full44"), ("rpk", MUTED, "s", LBL3[1]), ("ppk", C2, "^", LBL3[2])]:
         ax.plot(xx, F44[k], marker=mk, color=c, lw=0, ms=6, label=lb)
-    ax.plot([6, 12], [BEST0["peak"][6], BEST0["peak"][12]], marker="*", color="#123f7a", lw=0, ms=11, label="★ 我方 best0（現行，b6／b12）")
+    ax.plot([6, 12], [BEST1["peak"][6], BEST1["peak"][12]], marker="*", color="#123f7a", lw=0, ms=11, label="★ 我方 best1（現行，b6／b12）")
     ax.axhline(6.44, color="#c0392b", lw=1, ls="--")
     ax.set_xticks(xx); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7.5, ncol=2)
     ax.set_title("16 塊：我方 4.05~4.17；release 7.65~14.56；論文設定 5.24~11.23（只有 b3、b7 低於 6 GiB）", fontsize=9.5)
@@ -945,11 +946,12 @@ def n04_load3(d):
     fig, ax = plt.subplots(figsize=(14, 3.9))
     for k, c, dx, lb in [("ours", C1, -wd, "我方 full44（opacity_reg 0.002）"), ("rel", MUTED, 0, LBL3[1]), ("pap", C2, wd, LBL3[2])]:
         ax.bar(x + dx, LOAD44[k], wd, color=c, label=lb)
-    ax.plot([6 - wd, 12 - wd], [BEST0["load"][6], BEST0["load"][12]], marker="*", color="#123f7a", lw=0, ms=12, label="★ 我方 best0（現行，b6／b12）")
+    ax.plot([6 - wd, 12 - wd], [BEST0["load"][6], BEST0["load"][12]], marker="o", mfc="none", color="#123f7a", lw=0, ms=8, label="我方 best0（b6／b12）")
+    ax.plot([6 - wd, 12 - wd], [BEST1["load"][6], BEST1["load"][12]], marker="*", color="#123f7a", lw=0, ms=12, label="★ 我方 best1（現行，b6／b12）")
     r = np.mean(np.array(LOAD44["ours"]) / np.array(LOAD44["rel"]))
     ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("精確 Load 中位（百萬 tile／視角）"); ax.legend(fontsize=7.5, ncol=2, loc="upper left")
     ax.set_ylim(0, 10.5)
-    ax.set_title(f"逐塊渲染成本：我方 full44 平均是 release 的 {100 * r:.0f}%；現行 best0 再低約 1/3（b6 −33%／b12 −35%）\n"
+    ax.set_title(f"逐塊渲染成本：我方 full44 平均是 release 的 {100 * r:.0f}%；best0 再低約 1/3、現行 best1 又再低約 1/3（b6 1.26M／b12 1.21M）\n"
                  "（60k 終點、各模型自己那塊的全部訓練相機；官方 lab `citygs_official_blockload*.log`、我方 `chart_data/load.txt`）", fontsize=9.5)
     save(fig, d, "n04_load3.png")
 
@@ -959,16 +961,9 @@ def n05_main4x4(d):
     R = [("full44 舊配方（opacity_reg 0.002）", -0.054, 0.093, 49.7, 54.4),
          ("best0 重複（只差訓練隨機性）", 0.005, 0.025, -2.5, 1.3),
          ("★ 二元熵＋V/C（10-14 採用＝best1）", -0.089, 0.005, -34.2, -34.9),
-         ("opacity 二元熵正則", -0.031, 0.026, -12.3, -22.9),
-         ("trim 判準 V/C", -0.062, -0.244, -17.2, -9.7),
-         ("trim 判準 V/(β+C)", -0.042, -0.038, 18.5, 14.9),
-         ("拉長顆粒硬剪", -0.180, 0.028, 0.6, 2.0),
-         ("低解析度起步", -0.037, -0.086, -2.9, -5.0),
-         ("三次門檻剪", -0.291, -0.176, -6.1, -11.8),
-         ("週期 trim 全關", -0.395, -0.353, 7.7, 6.2),
-         ("v/c × tile 名次", -1.124, -0.192, -53.5, -46.4),
-         ("v/c", -3.817, -0.895, -63.4, -54.4)]
-    fig, axs = plt.subplots(1, 2, figsize=(16, 5.0), gridspec_kw={"width_ratios": [1.5, 1]})
+         ("opacity 二元熵正則（best1 的組成）", -0.031, 0.026, -12.3, -22.9),
+         ("trim 判準 V/C（best1 的組成）", -0.062, -0.244, -17.2, -9.7)]
+    fig, axs = plt.subplots(1, 2, figsize=(16, 3.6), gridspec_kw={"width_ratios": [1.5, 1]})
     y = np.arange(len(R)); h = 0.38
     ax = axs[0]
     ax.barh(y - h / 2, [r[1] for r in R], h, color=C1, label="block 6", zorder=2)
@@ -981,8 +976,8 @@ def n05_main4x4(d):
                 ax.text(v + (0.01 if v >= 0 else -0.01), i + off, f"{v:+.2f}", va="center", ha="left" if v >= 0 else "right", fontsize=7)
     ax.axvspan(-0.03, 0.03, color="#e1e0d9", alpha=0.7, lw=0, zorder=0)
     ax.axvline(0, color=MUTED, lw=1); ax.set_yticks(y); ax.set_yticklabels([r[0] for r in R], fontsize=8.5); ax.invert_yaxis()
-    ax.set_xlim(-1.0, 0.2); ax.legend(fontsize=8, loc="upper left")
-    ax.set_xlabel("Δ 本塊幾何區域 PSNR（dB，換塊評測，相對 best0；灰帶 ±0.03＝重複的差；< −1 截斷）")
+    ax.set_xlim(-0.4, 0.2); ax.legend(fontsize=8, loc="lower left")
+    ax.set_xlabel("Δ 本塊幾何區域 PSNR（dB，換塊評測，相對 best0；灰帶 ±0.03＝重複的差）")
     ax.set_title("品質：二元熵單開落在雜訊內；與 V/C 合開 b6 −0.09／b12 +0.01（採用，換 Load −1/3）", fontsize=9.5)
     ax = axs[1]
     ax.barh(y - h / 2, [r[3] for r in R], h, color=C1); ax.barh(y + h / 2, [r[4] for r in R], h, color=C2)
@@ -991,8 +986,8 @@ def n05_main4x4(d):
             ax.text(v + (1 if v >= 0 else -1), i + off, f"{v:+.0f}%", va="center", ha="left" if v >= 0 else "right", fontsize=7)
     ax.axvline(0, color=MUTED, lw=1); ax.set_yticks(y); ax.set_yticklabels([]); ax.invert_yaxis(); ax.set_xlim(-75, 65)
     ax.set_xlabel("Δ 精確 Load 中位（%，相對 best0；越左越便宜）"); ax.set_title("渲染成本：舊配方比 best0 貴約 50%", fontsize=9.5)
-    fig.suptitle("60k 主要跑次（4x4 b6／b12，相對 best0＝dup init＋opacity_reg 0；10-14 起基底改 best1＝best0＋二元熵＋V/C）：換塊評測；"
-                 "全場景對官方見 (b)、細節見 `13` §7", fontsize=10)
+    fig.suptitle("★ 現行 best1 與它的組成（4x4 b6／b12 60k，換進合併模型；相對 best0＝dup init＋opacity_reg 0）；"
+                 "其他被關掉的臂見 new_archived／已關閉的線", fontsize=10)
     save(fig, d, "n05_main4x4.png")
 
 
@@ -1048,20 +1043,114 @@ def n12_fail3(d):
     save(fig, d, "n12_fail3.png")
 
 
+# ══════════════ 10-15 使用者：圖表更新到現行最佳 best1（最快）＋報告用的組成與取捨（`實驗分析/15`）══════════════
+F1B = {   # 區塊幾何 F1（tools/block_f1.py，不配準；官方＝全場景網格裁到本塊、全部相機；我方＝換塊、本塊相機；`09` §6.1）
+    "官方 release": {6: (.423, .803, .554), 12: (.566, .847, .678)},
+    "我方 full44（舊配方）": {6: (.272, .667, .386), 12: (.423, .680, .521)},
+    "我方 best0": {6: (.372, .750, .498), 12: (.588, .766, .665)},
+    "★ 我方 best1（現行）": {6: (.430, .801, .559), 12: (.654, .819, .727)},
+}
+
+
+def n09_blockf1(d):
+    """區塊級幾何 F1（10-15）：官方 release vs 我方三代配方，b6／b12；長條＝F1，標 P／R。"""
+    fig, ax = plt.subplots(figsize=(13, 3.9))
+    keys = list(F1B); cols = [MUTED, "#7fa9e0", C3, C1]; wd = 0.2; x = np.arange(2)
+    for k, (nm, c) in enumerate(zip(keys, cols)):
+        v = [F1B[nm][b][2] for b in (6, 12)]
+        bars = ax.bar(x + (k - 1.5) * wd, v, wd, color=c, label=nm)
+        for b_, b in zip(bars, (6, 12)):
+            P, R, F = F1B[nm][b]
+            ax.text(b_.get_x() + b_.get_width() / 2, F + 0.01, f"{F:.3f}\nP {P:.2f}／R {R:.2f}", ha="center", fontsize=7.5)
+    ax.set_xticks(x); ax.set_xticklabels(["block 6", "block 12"]); ax.set_ylim(0, 0.9); ax.set_ylabel("F1（dTau 0.0065）")
+    ax.legend(fontsize=8, ncol=4, loc="upper left")
+    ax.set_title("區塊幾何 F1（MatrixCity 空拍 GT、官方抽網格參數、不配準）：舊配方落後官方 0.17；opacity_reg 0 補回大半，best1 追平（b6）／超過（b12）官方\n"
+                 "（全場景不配準：我方 full44 0.425 vs 官方 0.590；best1 全場景未訓練）", fontsize=9.5)
+    save(fig, d, "n09_blockf1.png")
+
+
+def _time_logs():
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    from parse_best1_time import parse
+    base = os.path.join(DST, "data", "best1_time")
+    return {6: parse(os.path.join(base, "best1_time_b6_1015_0655.log")), 12: parse(os.path.join(base, "best1_time_b12_1015_0602.log"))}
+
+
+def n15_time(d):
+    """best1 的時間（lab 3090 [solo]、真實訓練迴圈，`task_best1_time.sh loop`）：best0 → ＋加速旗標 → best1，增生期逐段＋收割期，60k 估計。"""
+    T = _time_logs()
+    arms = [("best0", "best0"), ("best0fast", "＋加速"), ("best1", "★best1")]
+    segs = [("backward", C1), ("forward", C3), ("trim_per_step", C2), ("optimizer", C4), ("loss", "#c9b458")]
+    fig, axs = plt.subplots(1, 3, figsize=(17, 4.4), gridspec_kw={"width_ratios": [1.5, 1, 1]})
+    ax = axs[0]; xs, lbl = [], []
+    for bi, b in enumerate((6, 12)):
+        for ai, (a, nm) in enumerate(arms):
+            g = T[b][(a, "grow")]; x = bi * 4 + ai; xs.append(x); lbl.append(f"b{b}\n{nm}")
+            bot = 0
+            for k, c in segs:
+                v = g.get(k, 0.0); ax.bar(x, v, 0.7, bottom=bot, color=c, label=k if (bi == 0 and ai == 0) else None); bot += v
+            ax.plot([x - 0.4, x + 0.4], [g["step"]] * 2, color="k", lw=2, label="真實每步（不同步）" if (bi == 0 and ai == 0) else None)
+            ax.text(x, bot + 1.5, f"{g['step']:.0f}", ha="center", fontsize=8.5, fontweight="bold")
+    ax.set_xticks(xs); ax.set_xticklabels(lbl, fontsize=8); ax.set_ylabel("ms／步（增生期；trim 按真實週期 500 步攤平）")
+    ax.legend(fontsize=7.5, ncol=3, loc="upper right"); ax.set_ylim(0, 125)
+    ax.set_title("增生期每步（@14,999 起 1,200 步；堆疊＝逐段同步量、黑線與數字＝真實每步）：backward −35~−44%，trim 不變", fontsize=9)
+    ax = axs[1]
+    for bi, b in enumerate((6, 12)):
+        for ai, (a, nm) in enumerate(arms):
+            h = T[b][(a, "harvest")]; x = bi * 4 + ai
+            ax.bar(x, h["backward"], 0.7, color=C1); ax.bar(x, h["step"] - h["backward"], 0.7, bottom=h["backward"], color="#d8d6cf")
+            ax.text(x, h["step"] + 1, f"{h['step']:.0f}", ha="center", fontsize=8)
+    ax.set_xticks(xs); ax.set_xticklabels(lbl, fontsize=8); ax.set_ylim(0, 80); ax.set_ylabel("ms／步（收割期，不增生）")
+    ax.set_title("收割期每步（@41,999 起）：藍＝backward", fontsize=9.5)
+    ax = axs[2]
+    for bi, b in enumerate((6, 12)):
+        for ai, (a, nm) in enumerate(arms):
+            g, h = T[b][(a, "grow")], T[b][(a, "harvest")]; m = 30000 * (g["step"] + h["step"]) / 1000 / 60; x = bi * 4 + ai
+            ax.bar(x, m, 0.7, color=[MUTED, "#7fa9e0", C1][ai]); ax.text(x, m + 1, f"{m:.0f}", ha="center", fontsize=8.5)
+    ax.set_xticks(xs); ax.set_xticklabels(lbl, fontsize=8); ax.set_ylabel("分鐘／60k（估計）"); ax.set_ylim(0, 95)
+    b6 = [30000 * (T[6][(a, 'grow')]['step'] + T[6][(a, 'harvest')]['step']) / 6e4 for a, _ in arms]
+    b12 = [30000 * (T[12][(a, 'grow')]['step'] + T[12][(a, 'harvest')]['step']) / 6e4 for a, _ in arms]
+    ax.set_title(f"一塊 60k ≈ 30k×增生＋30k×收割（不含驗證／存檔）：best1 比 best0 b6 {100*(b6[2]/b6[0]-1):+.0f}%、b12 {100*(b12[2]/b12[0]-1):+.0f}%", fontsize=9)
+    fig.suptitle("現行 best1 的訓練時間（4x4、lab RTX 3090 [solo]、量測期間卡上無其他行程；官方 release 同 N 約 214 ms／步，每步 2 次 backward，`09` §0.3）", fontsize=10)
+    save(fig, d, "n15_time.png")
+
+
+def n15_tradeoff(d):
+    """採用中的機制：品質變化 vs 成本變化（品質＝換塊評測本塊幾何區域 PSNR 兩塊平均，或逐位元相同＝0）。"""
+    T = _time_logs()
+    tm = lambda a, b: np.mean([30000 * (T[k][(b, 'grow')]['step'] + T[k][(b, 'harvest')]['step']) / (30000 * (T[k][(a, 'grow')]['step'] + T[k][(a, 'harvest')]['step'])) - 1 for k in (6, 12)]) * 100
+    P = [("conic 精確外接盒（09-21）", 0.00, -40.1, "Load", "22k b6 29.05 vs 29.05；forward −26%", (6, 8)),
+         ("lean_render（10-02）", 0.00, -20.9, "每步", "渲染逐位元相同", (6, 8)),
+         ("record_reduce（10-03）", 0.00, -10.9, "每步（增生期）", "每次 trim −35%；逐位元相同", (-150, -34)),
+         ("飽和跳過＋先加總（10-10）", 0.02, tm("best0", "best0fast"), "60k 時間", "增生期 backward −26~−29%（4x4）", (8, 10)),
+         ("opacity_reg 0（best0，10-10）", -0.02, -33.0, "Load", "F1 +0.11／+0.14；高樓塊 b10 +0.96 dB", (6, -26)),
+         ("★ 二元熵＋V/C（best1，10-14）", -0.04, tm("best0fast", "best1"), "60k 時間", "Load −34／−35%；F1 再 +0.06～0.07", (8, -26))]
+    fig, ax = plt.subplots(figsize=(13, 4.6))
+    ax.axhspan(-0.03, 0.03, color="#e1e0d9", alpha=0.7, lw=0)
+    for nm, dq, dc, unit, note, off in P:
+        mk = "^" if unit == "Load" else "o"; c = C1 if nm.startswith("★") else (C2 if unit == "Load" else C3)
+        ax.plot(dc, dq, marker=mk, color=c, ms=11 if nm.startswith("★") else 9, lw=0)
+        ax.annotate(f"{nm}\n{unit} {dc:+.0f}%｜{note}", (dc, dq), xytext=off, textcoords="offset points", fontsize=7.5)
+    ax.axvline(0, color=MUTED, lw=1); ax.axhline(0, color=MUTED, lw=1)
+    ax.set_xlim(-45, 5); ax.set_ylim(-0.15, 0.1)
+    ax.set_xlabel("成本變化 %（▲＝精確 Load、●＝每步／60k 訓練時間；越左越便宜）")
+    ax.set_ylabel("Δ 品質（dB；換塊評測兩塊平均，灰帶 ±0.03＝雜訊）")
+    ax.set_title("best1 的每個組成：品質都在雜訊附近，成本一路往左（逐項相對上一個基底；best0 → best1 合計 60k 時間 −16%／−23%、Load −34%／−35%）", fontsize=9.5)
+    save(fig, d, "n15_tradeoff.png")
+
+
 DOCS = {
     "01_訓練時間組成": ["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
     "03_儲存與RAM": ["fig4_ckpt_storage", "fig6_run_dir", "fig5_ram_cache", "n03_official"],
     "04_外接盒與binning成本": ["cc1_quality_delta", "n04_time", "n04_load", "cc4_proxy_decoupled", "n04_load3"],
-    "05_成本品質前緣與vc_trim": ["n05_main4x4", "n05_official", "n05_frontier60k", "n05_cap60k", "fig8_trimvpc_time"],
-    "06_事後剪枝與fine-tune": ["f3_tile_topk_posthoc", "f6_prune_finetune", "n06_prune3"],
-    "07_成本感知取樣與預算": ["n07_sampling"],
+    "05_成本品質前緣": ["n05_main4x4", "n05_official"],
     "08_初始化": ["n08_init20k", "f4_init60k", "n08_init60k"],
-    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_merged_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "n06_prune3"],
+    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_merged_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "n06_prune3", "n09_blockf1"],
     "10_速度優化_lean與kernel拆解": ["n10_kernels"],
-    "11_逐配對工作量上限": ["n11_tiles"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout", "n12_fail3"],
-    "13_trim判準與opacity熵的負交互": ["n13_struct", "n13_race", "n13_tiny", "n13_swap"],
+    "13_trim判準VC與opacity二元熵": ["n13_race", "n13_swap"],
+    "15_現行最佳best1_組成與取捨": ["n15_time", "n15_tradeoff", "n09_blockf1"],
 }
 
 
@@ -1100,7 +1189,7 @@ def main():
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
-              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3):
+              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]

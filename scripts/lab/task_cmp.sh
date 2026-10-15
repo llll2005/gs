@@ -98,7 +98,7 @@ echo "block $BLK：$NCAM 台相機 / val 每 $PERIOD 步 => 全長 $STEPS 步、
 #   best0*＝對應的 best* 配方再加 opacity_reg 0；best0notrim＝dup init＋oreg0＋trim 全關（besttrim3 的對照）。
 #   best0 加單變數：best0cdu100／75／25（densify 長度）、best0nogate、best0sh2／sh1／sh0、best0dist100／1000
 # ★★ 2026-10-14 使用者採用：best1＝best0＋opacity 二元熵正則 0.002＋trim 判準 V/C＋飽和跳過＋先加總（換塊評測（不含後兩者）：相對 best0 −0.09／+0.01 dB、
-#   精確 Load −34%／−35%；兩個省 Load 機制可相加、不重現 v/c＋二元熵的崩潰；實驗分析/13 §7）。
+#   精確 Load −34%／−35%；兩個省 Load 機制可相加、不重現 v/c＋二元熵的崩潰；實驗分析/13 §2）。
 #   best1*＝對應的 best* 配方再加 oreg0＋二元熵＋V/C＋飽和跳過＋先加總；參考跑次 g44_best1（完整版；g44_best0oeVC 是不含加速的同配方）。
 CASEARM=$ARM; OREG0=0; B1=0
 case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B1=1; CASEARM="best${ARM#best1}" ;; esac

@@ -38,7 +38,7 @@ parallel => their wall-time / reserved-VRAM columns are not comparable across th
 same grid cells as the official CityGSV2 4x4, so every block compares against the official per-block models. Single-variable arms run on
 4x4 blocks 6 and 12; the 4x4 per-block reference without oreg0 is `outputs/lab/full44_best/blocks/block_<B>`. Base recipe since 10-14 =
 `best1` = best0 (dup init + opacity_reg 0) + opacity binary-entropy reg 0.002 + trim criterion V/C + backward saturation-skip & in-block
-pre-reduction (= every adopted speed-up; `task_cmp.sh` prefix `best1*`; reference run `g44_best1`, same recipe without the two speed flags = `g44_best0oeVC`): swap eval vs best0 -0.09/+0.01 dB, exact Load -34%/-35% (`紀錄/實驗分析/13` §7). Before 10-14 the base was `best0`.**
+pre-reduction (= every adopted speed-up; `task_cmp.sh` prefix `best1*`; reference run `g44_best1`, same recipe without the two speed flags = `g44_best0oeVC`): swap eval vs best0 -0.09/+0.01 dB, exact Load -34%/-35% (`紀錄/實驗分析/13` §2). Before 10-14 the base was `best0`.**
 **Two-machine protocol (user, 2026-09-18): lab = relative comparison (which recipe is better, lab vs lab), kept at
 3 parallel slots because throughput is ~2x and parallelism does NOT affect results — quality, offline Load and peak
 VRAM are all neighbour-independent (only wall time and it/s are, and those have dedicated `[solo]` tools).
