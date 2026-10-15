@@ -17,7 +17,10 @@ B=$1; VAR=${2:-self}; RHO=${3:-0.2}
 R=${CITYGS_ADMM_ROUNDS:-4}; STEPS=${STEPS:-60000}; T=$((STEPS / R))
 NAME="${RUN_PREFIX}g44_best1admm${VAR}"
 OUT="outputs/$NAME/blocks/block_$B"
-F=(${CITYGS_ADMM_FLAGS-"--model.renderer.init_args.record_reduce true --model.renderer.init_args.absgrad_gate true"})   # 本機光柵器沒有這兩個欄位 => 功能測試設 CITYGS_ADMM_FLAGS=""
+# ⚠ 10-15 修：原本 F=(${CITYGS_ADMM_FLAGS-"..."})，未設環境變數時雙引號裡的預設值**不會被拆字**，整串變成一個參數 => main.py 報
+#   「argument --model.renderer: expected one argument」、10 秒 rc=2（本機測試有設環境變數所以沒踩到；log 印出的指令用空白接起來看不出來）
+if [ -n "${CITYGS_ADMM_FLAGS+x}" ]; then read -r -a F <<< "$CITYGS_ADMM_FLAGS"   # 本機光柵器沒有那兩個欄位 => 功能測試設 CITYGS_ADMM_FLAGS=""
+else F=(--model.renderer.init_args.record_reduce true --model.renderer.init_args.absgrad_gate true); fi
 NB=()
 if [ "$VAR" = nb ]; then
   for nb in $(python3 -c "b=$B; x,y=b%4,b//4; print(' '.join(str(yy*4+xx) for xx,yy in ((x-1,y),(x+1,y),(x,y-1),(x,y+1)) if 0<=xx<4 and 0<=yy<4))"); do
