@@ -16,6 +16,14 @@ set -u
 cd "$(dirname "$0")/../.." || exit 1
 source scripts/lab/_common.sh >/dev/null
 MODE=$1; B=${2:?塊}
+# runner 的 [solo] 只等自己佇列裡的任務，不看卡上的其他行程（10-14 的 best1 就是被外部行程污染）
+#   => 量之前等到卡上沒有任何計算行程（最多 2 h；逾時照量，log 標 ⚠）
+for i in $(seq 1 240); do
+  n=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l); [ "$n" -eq 0 ] && break
+  [ "$i" = 1 ] && echo "⏳ 卡上還有 $n 個計算行程 => 等它們結束再量（每 30 s 查一次，最多 2 h）$(date)"
+  sleep 30
+done
+[ "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l)" -eq 0 ] && echo "✅ 卡上無其他行程，開始量 $(date)" || echo "⚠⚠ 等滿 2 h 仍有其他行程 => 這次時間可能被污染"
 F=(--model.renderer.init_args.record_reduce true --model.renderer.init_args.absgrad_gate true)
 gpu () { echo "（整卡已用 $(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1) MiB、計算行程 $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l) 個）"; }
 watch_on () { ( while true; do echo "$(date +%H:%M:%S) $(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1) MiB $(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | tr '\n' ';')"; sleep 30; done ) >> "$1" 2>&1 & WPID=$!; }
