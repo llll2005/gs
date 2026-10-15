@@ -28,6 +28,7 @@ ckpts <run>                某個跑次有哪些 block / step / 大小（run 要
 get  <run> <block> <step> [本機目錄]   抓特定 ckpt（含同名 PLY）
 pull [run|*]               把 lab 上的 ckpt 抓回 outputs/lab/（跳過 aborted 與已存在的；run 不帶 lab/）
 getfile <repo相對路徑> [本機路徑]       抓任意單一檔案（相對 ROOT/gs）
+renders <塊> <跑次...> [--val]        抓該塊存好的 test（或 val）渲染圖到 outputs/lab/，給 tools/compare_server.py --root outputs/lab
 ```
 ⚠ 路徑基準：`run`／`bg`／`ls`／`put` 相對 ROOT（hdd/11213）；`get`／`getfile`／`ckpts` 相對 ROOT/gs。
   少加 `gs/` 拿到的是 **HTTP 500**（父目錄不存在），不是「找不到檔案」。
@@ -233,7 +234,7 @@ def main():
                         key=lambda y: (y["type"], y["name"])):
             print(f"  {x['type']:>9}  {x.get('size') or '':>12}  {x['name']}")
         return 0
-    if c in ("ckpts", "get", "getfile", "pull"):
+    if c in ("ckpts", "get", "getfile", "pull", "renders"):
         import re as _re
         s_ = sess()
 
@@ -288,6 +289,50 @@ def main():
             rel = sys.argv[2]
             dest = sys.argv[3] if len(sys.argv) > 3 else os.path.basename(rel)
             return 0 if _fetch(rel, dest) else 1
+
+        if c == "renders":
+            # 2026-10-15 使用者：把 lab 存好的 test／val 渲染圖抓回本機給 tools/compare_server.py（免得本機重跑 test）。
+            #   renders <塊> <跑次...> [--val]：lab 上把該塊「最後一個 epoch=*」目錄打成 tar（不壓縮，PNG 本來就壓過）
+            #   -> /files/ 下載（.part＋比對大小）-> 本機解到 outputs/lab/<跑次>/blocks/block_<塊>/<test|val>/epoch=*/ -> 兩邊刪 tar。
+            #   本機已有同名目錄且張數相同就跳過。看圖：python tools/compare_server.py --root outputs/lab
+            import tarfile
+            args = [a for a in sys.argv[2:] if a != "--val"]
+            kind = "val" if "--val" in sys.argv else "test"
+            if len(args) < 2:
+                print("用法：lab.py renders <塊> <跑次...> [--val]"); return 2
+            blk, runs = args[0], args[1:]
+            ok = 0
+            for run in runs:
+                rd = f"outputs/lab/{run}/blocks/block_{blk}/{kind}"
+                rc, out = sh(f"cd {REPO} && d=$(ls -d {rd}/epoch=* 2>/dev/null | sort -t= -k3 -n | tail -1); "
+                             f"[ -n \"$d\" ] || {{ echo '@NONE'; exit 0; }}; "
+                             f"echo \"@DIR $d $(ls \"$d\" | grep -c png)\"", timeout=120, stream=False)
+                m = _re.search(r"@DIR (\S+) (\d+)", out)
+                if not m:
+                    print(f"⛔ {run} block {blk} 沒有 {kind} 渲染圖"); continue
+                d, n = m.group(1), int(m.group(2))
+                if os.path.isdir(d) and len([x for x in os.listdir(d) if x.endswith(".png")]) == n:
+                    print(f"✔ 已有 {d}（{n} 張）=> 跳過"); ok += 1; continue
+                tname = f"outputs/lab/_xfer/{run}_b{blk}_{kind}.tar"
+                print(f"[{run} block {blk}] {d}：{n} 張 => lab 上打包")
+                rc, out = sh(f"cd {REPO} && mkdir -p outputs/lab/_xfer && tar cf {tname} {d} && stat -c '@SZ %s' {tname}",
+                             timeout=900, stream=False)
+                m2 = _re.search(r"@SZ (\d+)", out)
+                if not m2:
+                    print(f"⛔ 打包失敗：{out[-300:]}"); continue
+                local_tar = tname
+                good = _fetch(tname, local_tar, expect=int(m2.group(1)))
+                sh(f"cd {REPO} && rm -f {tname}", timeout=120, stream=False)
+                if not good:
+                    continue
+                with tarfile.open(local_tar) as tf:
+                    tf.extractall(".")
+                os.remove(local_tar)
+                got = len([x for x in os.listdir(d) if x.endswith(".png")]) if os.path.isdir(d) else 0
+                print(f"  {'✔' if got == n else '⛔'} 解到 {d}：{got}/{n} 張")
+                ok += got == n
+            print(f"\n完成 {ok}/{len(runs)}；看圖：python tools/compare_server.py --root outputs/lab")
+            return 0 if ok == len(runs) else 1
 
         if c == "pull":
             # 把 lab 上**所有**（或指定 run 的）ckpt 抓回 outputs/lab/ 供本機分析。
