@@ -65,7 +65,7 @@
 | MCMC 密度控制（relocate、加噪、cap） | ⬜ | 3DGS-MCMC | 📄 `3dgs-mcmc.pdf` |
 | absgrad 取樣權重 | 🟨 | AbsGS 的絕對梯度 \|g\|；我方接到 MCMC 的母點取樣機率 `o·(1+w·ĝ)`（AbsGS 原本用在 ADC 分裂判準） | 📄 `AbsGS_2404.10484.pdf` |
 | fast_noise／noise_gate | 🟨 | 3DGS-MCMC 的加噪；我方代數改寫（逐位元等價到浮點捨入）與跳過門檻 | 📄 |
-| **conic 精確外接盒**（09-21） | 🟨 | **前人**：① 2DGS 原生 `computeAABB` 已用對偶圓錐封閉解，但只在 r=1 求，再乘 `truncated_R` 線性外推、取以投影中心為準的正方形；② Speedy-Splat（CVPR 2025）SnugBox＝3DGS 投影橢圓在 opacity 截斷 `2 ln(255σ)` 下的緊外接盒（對稱於投影中心）＋AccuTile 逐 tile 精確列舉；③ FastGS Compact Box 在 Speedy-Splat 上再以 β 縮小支撐（有損）；④ Fast-SegSim（arXiv 2604.10951，2026-04）把 SnugBox／AccuTile 搬到 2DGS，面元投影用**局部線性化近似成橢圓**。**我方補**：在實際截斷半徑上的**精確透視圓錐**（對偶簽名 `(R², R², −1)`，不線性化、不做橢圓近似；正交極限退化回上游）＋**與投影中心解耦的不對稱盒**（透視下圓錐中心偏離投影中心）。⚠ 不可宣稱「第一個在 2DGS 上做緊外接盒」（Fast-SegSim 在前）；AccuTile 式逐 tile 列舉我方沒做，可疊加 | FastGS 📄；Speedy-Splat、Fast-SegSim 🔍 2026-10-15 線上讀原文（不在 `參考論文/`） |
+| **conic 精確外接盒**（09-21） | 🟨 | **前人**：① 2DGS 原生 `computeAABB` 已用對偶圓錐封閉解，但只在 r=1 求，再乘 `truncated_R` 線性外推、取以投影中心為準的正方形；② Speedy-Splat（CVPR 2025）SnugBox＝3DGS 投影橢圓在 opacity 截斷 `2 ln(255σ)` 下的緊外接盒（對稱於投影中心）＋AccuTile 逐 tile 精確列舉；③ FastGS Compact Box 在 Speedy-Splat 上再以 β 縮小支撐（有損）；④ Fast-SegSim（arXiv 2604.10951，2026-04）把 SnugBox／AccuTile 搬到 2DGS，面元投影用**局部線性化近似成橢圓**。**我方補**：在實際截斷半徑上的**精確透視圓錐**（對偶簽名 `(R², R², −1)`，不線性化、不做橢圓近似；正交極限退化回上游）＋**與投影中心解耦的不對稱盒**（透視下圓錐中心偏離投影中心）。⚠ 不可宣稱「第一個在 2DGS 上做緊外接盒」（Fast-SegSim 在前）；AccuTile 式逐 tile 列舉我方沒做，可疊加 | FastGS 📄；Speedy-Splat 📄 `Speedy-Splat_2412.00578.pdf` §4.1；Fast-SegSim 📄 `Fast-SegSim_2604.10951.pdf` §3.2（2026-10-15 讀） |
 | 精確 binning 成本 `tiles_touched` 當成本 c_i | 🟩 | 成本計價命題的量測端（與 Taming 3DGS 的差別：它把覆蓋像素當 densify 的偵測訊號，符號為正） | Taming 📄 |
 | **dup init**（SfM 點複製 K 份＋抖動，10-02） | 🟩 | **使用者的假設**（多一倍起始顆數＝提早長滿）；SfM 初始化本身是 3DGS 標準做法（⬜）；份數依 cap 定＝我方 | ⚠ 未做系統文獻搜尋 |
 | **lean_render**（10-02） | 🟩 | 工程：權重為 0 時剃除沒有消費者的幾何通道（模板參數，舊 kernel 一字不動） | — |
@@ -74,7 +74,7 @@
 | **warp 內先加總**（10-10） | —（實作細節） | 只改梯度加總的計算方式（warp 內 `cg::reduce` 再一次全域 atomic），數值只差浮點加總順序；屬實作，不宣稱貢獻 | — |
 | **opacity_reg 0**（best0，10-10） | ⬜＋🟩 | opacity L1 正則來自 3DGS-MCMC（⬜，只是把權重設 0）；**「屋頂初始小顆粒被它壓死」的診斷與量測＝我方** | 📄 |
 | **trim 判準 V/C**（10-12／10-14） | 🟨 | 貢獻值 V（Σ T·α 跨視角）＝Trim2DGS／CityGSV2 的 trim 與 LightGaussian 的全域重要度；**除以覆蓋像素 C（按渲染成本計價）＝我方命題**；離線判別式比賽＝我方 | CityGSV2 📄、LightGaussian 📄 `lightGS.pdf` |
-| **opacity 二元熵正則**（10-14） | 🟨 | **前人**：SuGaR（CVPR 2024）§5.1「在 Gaussian 的 opacity α_g 上加 entropy loss，讓它們變成二元」（7k 後 2,000 步、再剪 o<0.5）；之後 GSurf、Horizon-GS 等也用。**使用者 2026-10-01 獨立想到同一形式**，但不是首創。**我方補**：用途是成本（讓 MCMC 更早回收低價值顆粒、與 V/C trim 搭配），全程加（1k 起、權重 0.002）而不是短暫二值化；與 v/c 判準合開會崩潰的負交互（封存的舊版 13）| SuGaR 🔍 2026-10-15 線上讀原文 §5.1；GSurf／Horizon-GS 只看到搜尋摘要 ⚠ |
+| **opacity 二元熵正則**（10-14） | 🟨 | **前人**：SuGaR（CVPR 2024）§5.1「在 Gaussian 的 opacity α_g 上加 entropy loss，讓它們變成二元」（7k 後 2,000 步、再剪 o<0.5）；之後 GSurf、Horizon-GS 等也用。**使用者 2026-10-01 獨立想到同一形式**，但不是首創。**我方補**：用途是成本（讓 MCMC 更早回收低價值顆粒、與 V/C trim 搭配），全程加（1k 起、權重 0.002）而不是短暫二值化；與 v/c 判準合開會崩潰的負交互（封存的舊版 13）| SuGaR 📄 `SuGaR_2311.12775.pdf` §5.1（2026-10-15 讀）；GSurf／Horizon-GS 只看到搜尋摘要 ⚠ |
 | **換塊評測**（10-10） | 🟩 | 評測方法：合併模型只換一塊、量本塊幾何區域 | — |
 | **區塊幾何 F1**（10-15） | 🟨 | F1／precision／recall 定義與 dTau 公式沿用 Tanks&Temples 評測（官方 `eval_tnt`，⬜）；換塊＋只用本塊相機＋裁到分區盒＋不配準＝我方 | 📄 官方程式 |
 | 官方評分工具落差（光柵器暗幀）、官方 trim 從未執行 | 🟩 | 對官方程式碼的查明（發現，不是方法） | — |
