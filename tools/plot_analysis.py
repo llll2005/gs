@@ -879,15 +879,18 @@ def n01_blocktime(d):
     """逐塊訓練時間（4x4、60k、lab 3090）：我方 full44 vs 官方 release vs 論文設定（原 09(b) 右）。"""
     x = np.arange(16); wd = 0.27
     fig, ax = plt.subplots(figsize=(14, 3.8))
-    for k, c, dx, lb in [("omin", C1, -wd, LBL3[0]), ("rmin", MUTED, 0, LBL3[1]), ("pmin", C2, wd, LBL3[2])]:
+    for k, c, dx, lb in [("omin", C1, -wd, "我方 full44（舊配方）"), ("rmin", MUTED, 0, LBL3[1]), ("pmin", C2, wd, LBL3[2])]:
         bars = ax.bar(x + dx, [m / 60 for m in F44[k]], wd, color=c, label=lb)
         if k != "omin":
             for b_, e in zip(bars, F44["rext" if k == "rmin" else "pext"]):
                 if e > 2000:
                     b_.set_hatch("///"); b_.set_alpha(0.45)
+    # ★ 10-15 現行 best1 b6 完整 60k 獨佔實測 68.0 分（`task_best1_time.sh full 6`，量測期間卡上無其他行程；`15` §2）
+    ax.plot([6 - wd], [68.0 / 60], marker="*", color="#123f7a", ms=16, lw=0, label="★ 我方 best1（現行，b6 實測 68 分）", zorder=5)
+    ax.annotate("68 分", (6 - wd, 68.0 / 60), xytext=(-6, -16), textcoords="offset points", fontsize=8, color="#123f7a", ha="center")
     ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練時間（h）"); ax.legend(fontsize=8, loc="upper left")
-    ax.set_title("逐塊訓練時間（斜線＝期間同卡外部佔用 > 2 GB，不可引用）：block 0~9 乾淨的合計 我方 19.3 h vs release 40.3 h（0.48 倍）\n"
-                 "我方＝full44（opacity_reg 0.002 舊配方）；現行 best0 只有 b6／b12，且 10-12~14 同卡外部佔用時有時無 => 時間不列", fontsize=9.5)
+    ax.set_title("逐塊訓練時間（斜線＝期間同卡外部佔用 > 2 GB，不可引用）：block 0~9 乾淨的合計 我方 full44 19.3 h vs release 40.3 h（0.48 倍）\n"
+                 "★ 現行 best1 b6 實測 68 分 vs 同塊 release 240 分（0.28 倍）；長條的我方＝full44（opacity_reg 0.002 舊配方）", fontsize=9.5)
     save(fig, d, "n01_blocktime.png")
 
 
