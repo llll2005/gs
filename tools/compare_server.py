@@ -160,6 +160,11 @@ function render(){
     const img=new Image();
     img.src=`/img?run=${encodeURIComponent(c.querySelector('.run').value)}&ckpt=${encodeURIComponent(c.querySelector('.ckpt').value)}&name=${encodeURIComponent(name)}&half=${c.querySelector('.half').value}`;
     if(i===0) img.className='base';
+    // 2026-10-15：該跑次沒有這張圖時，原本 <img> 載入失敗＝透明 => 看到的是底下那層（使用者把 GT 誤認成 speed3）
+    //   => 換成灰底＋說明，並在標籤上標「沒有這張」
+    img.onerror=()=>{ img.onerror=null;
+      img.src='data:image/svg+xml;utf8,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900"><rect width="100%" height="100%" fill="#777"/><text x="50%" y="50%" font-size="48" fill="#fff" text-anchor="middle">${c.querySelector('.run').value}：沒有 ${name}</text></svg>`);
+      const lb=divs[i]; if(lb) lb.textContent+='（沒有這張）'; };
     stage.appendChild(img); layers.push(img);
     const lab=document.createElement('div'); lab.className='lab';
     lab.textContent=`${c.querySelector('.run').value.split('/')[0]} · ${c.querySelector('.half').value==='left'?'GT':'render'}`;
