@@ -52,6 +52,21 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     opacity_entropy_from_iter: int = 0
     """從這一步開始加熵正則（要在 densify_until 之前才會被回收機制吃到）。"""
 
+    exposure_comp: bool = False
+    """★ 2026-10-15 使用者同意（研究總覽 §3.4、§11）：逐影像曝光補償。MatrixCity GT 有逐幀曝光不一致（場景越暗越被提亮，
+    log-log 斜率約 −0.5），靜態 3D 模型表達不了 => 每張訓練影像學一個 log 增益 la_k 與偏移 b_k，**只在算訓練光度 loss 時**
+    把渲染換成 `exp(la_k − mean(la))·render + (b_k − mean(b))`（減平均＝固定尺度：每塊 log 增益平均 0、偏移平均 0，
+    否則增益與模型整體亮度可以互相抵換）。渲染本身、trim、absgrad、驗證的原始 psnr 都不受影響。
+    出處：🟨 逐影像外觀／曝光補償是已知做法（NeRF-W 類 appearance embedding、各種 exposure compensation）；這裡只用 2 個純量。
+    評測：新視角不知道曝光 => 驗證時另記 `psnr_ex`＝用全域曲線 `la ≈ a·log(渲染亮度) + c`（從訓練影像學到的 la 與其渲染亮度擬合）
+    預測增益後的 PSNR；原始 `psnr` 不變。"""
+    exposure_lr: float = 1e-3
+    exposure_from_iter: int = 1000
+    """從這一步開始補償（先讓幾何與顏色大致定下來，避免增益吃掉早期的整體亮度誤差）。"""
+    exposure_bias: bool = False
+    """另學逐影像偏移 b_k（加法）。預設關：量到的現象是乘法性的（三通道同倍增益），偏移是多餘自由度，
+    本機功能測試 300 步就長到 std 0.076（顏色單位），有吸收模型本身顏色誤差的風險。"""
+
     def instantiate(self, *args, **kwargs) -> "MCMCCityGSV2MetricsModule":
         return MCMCCityGSV2MetricsModule(self)
 
@@ -59,8 +74,77 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
 class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
     config: MCMCCityGSV2Metrics
 
+    # ── 逐影像曝光補償（config.exposure_comp） ──
+    def setup(self, stage: str, pl_module):
+        super().setup(stage, pl_module)
+        if not getattr(self.config, "exposure_comp", False):
+            return
+        n = len(pl_module.trainer.datamodule.dataparser_outputs.train_set)
+        # 參數在 setup 依訓練集大小建立（fit／test 都建 => 從 ckpt 載入時 state_dict 對得上）
+        self.ex_logit = torch.nn.Parameter(torch.zeros(n))
+        self.ex_bias = torch.nn.Parameter(torch.zeros(n))
+        self.register_buffer("ex_lum", torch.full((n,), float("nan")))     # 各訓練影像渲染亮度的 EMA（擬合全域曲線用）
+        self.register_buffer("ex_curve", torch.zeros(2))                   # (a, c)：la ≈ a·log L + c
+        print(f"[exposure] 逐影像曝光補償：{n} 張訓練影像 x（log 增益" + ("＋偏移" if self.config.exposure_bias else "") +
+              f"），lr {self.config.exposure_lr:g}，從 step {self.config.exposure_from_iter} 起", flush=True)
+
+    def training_setup(self, pl_module):
+        opt, sch = super().training_setup(pl_module)
+        if getattr(self.config, "exposure_comp", False):
+            params = [self.ex_logit] + ([self.ex_bias] if self.config.exposure_bias else [])
+            opt = list(opt) + [torch.optim.Adam(params, lr=self.config.exposure_lr, eps=1e-15)]
+        return opt, sch
+
+    def _exposure_apply(self, step, batch, outputs):
+        camera = batch[0]
+        k = int(camera.idx)
+        r = outputs["render"]
+        with torch.no_grad():
+            lum = r.detach().mean()
+            old = self.ex_lum[k]
+            self.ex_lum[k] = lum if torch.isnan(old) else 0.9 * old + 0.1 * lum
+        if step < self.config.exposure_from_iter:
+            return outputs
+        g = torch.exp(self.ex_logit[k] - self.ex_logit.mean())
+        out = dict(outputs)
+        out["render"] = g * r + ((self.ex_bias[k] - self.ex_bias.mean()) if self.config.exposure_bias else 0.0)
+        if not getattr(self, "_ex_announced", False):
+            self._ex_announced = True
+            print(f"[exposure] ✅ 首次觸發 step={step}：影像 {k} 增益 {float(g):.4f}", flush=True)
+        return out
+
+    def _exposure_curve(self):
+        """從訓練影像學到的 la（置中）與渲染亮度擬合 la ≈ a·log L + c（新視角用它預測增益）。"""
+        with torch.no_grad():
+            m = torch.isfinite(self.ex_lum) & (self.ex_lum > 1e-4)
+            if int(m.sum()) < 10:
+                return
+            x = torch.log(self.ex_lum[m]); y = (self.ex_logit - self.ex_logit.mean())[m]
+            xm, ym = x.mean(), y.mean()
+            a = ((x - xm) * (y - ym)).sum() / ((x - xm) ** 2).sum().clamp_min(1e-12)
+            self.ex_curve[0] = a; self.ex_curve[1] = ym - a * xm
+
+    def get_validate_metrics(self, pl_module, gaussian_model, batch, outputs):
+        metrics, pbar = super().get_validate_metrics(pl_module, gaussian_model, batch, outputs)
+        if getattr(self.config, "exposure_comp", False):
+            self._exposure_curve()
+            gt = batch[1][1]
+            r = outputs["render"]
+            g = torch.exp(self.ex_curve[0] * torch.log(r.detach().mean().clamp_min(1e-4)) + self.ex_curve[1])
+            mse = ((g * r).clamp(0, 1) - gt).pow(2).mean()
+            metrics["psnr_ex"] = -10 * torch.log10(mse.clamp_min(1e-12))
+            pbar["psnr_ex"] = True
+        return metrics, pbar
+
     def get_train_metrics(self, pl_module, gaussian_model, step: int, batch, outputs) -> Tuple[Dict[str, Any], Dict[str, bool]]:
+        if getattr(self.config, "exposure_comp", False):
+            outputs = self._exposure_apply(step, batch, outputs)
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
+        if getattr(self.config, "exposure_comp", False) and step >= self.config.exposure_from_iter:
+            with torch.no_grad():
+                la = self.ex_logit - self.ex_logit.mean()
+                metrics["ex_std"] = la.std()
+                pbar["ex_std"] = False
 
         opacities = gaussian_model.get_opacities().squeeze(-1)  # [N], activated in (0, 1)
         non_immune = opacities.detach() <= self.config.immune_opacity_threshold

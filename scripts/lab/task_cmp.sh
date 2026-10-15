@@ -105,7 +105,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -123,6 +123,9 @@ case "$CASEARM" in
                 bestfast)    EXTRA+=(--model.renderer.init_args.bwd_sat_skip true --model.renderer.init_args.bwd_reduce true) ;;
                 # ★ 2026-10-14 使用者：幾何 F1 我方 0.356 vs 官方 0.597（實驗分析/09 §6）=> 幾何監督的單變數臂，全用官方 aerial 的值
                 #   （configs/citygsv2_mc_aerial_sh2_trim.yaml：normal 0.0125 從第 0 步；深度 l1+ssim、0.5 x 0.05^(step/24000)）。需要幾何通道 => 不能開 lean。
+                # ★ 2026-10-15 使用者同意：逐影像曝光補償（研究總覽 §3.4；GT 逐幀曝光不一致）。log 增益＋偏移、每塊平均固定 0、1k 步起；
+                #   只學增益（偏移預設關）；驗證另記 psnr_ex（全域曲線預測新視角曝光）。不需要幾何通道 => 可開 lean。
+                bestexpo)    EXTRA+=(--model.metric.init_args.exposure_comp true) ;;
                 bestnormal)  EXTRA+=(--model.metric.init_args.lambda_normal 0.0125) ;;
                 bestdepth)   EXTRA+=(--model.metric.init_args.depth_loss_weight.init 0.5 --model.metric.init_args.depth_loss_weight.final_factor 0.05
                                      --model.metric.init_args.depth_loss_weight.max_steps 24000) ;;
@@ -464,6 +467,7 @@ arm_desc() {
     bestnormal) echo "normal 一致性 loss 0.0125（官方值）｜我方配方為 0；幾何 F1 我方 0.356 vs 官方 0.597，看 normal 監督補回多少、付多少 PSNR" ;;
     bestdepth)  echo "單目深度 loss（官方：0.5 x 0.05^(step/24000)、l1+ssim）｜我方為 0；看單目深度對 F1（尤其 recall）的影響" ;;
     bestgeo)    echo "normal＋單目深度 loss 合開（＝官方的幾何監督設定）｜幾何落差有多少來自幾何監督全關" ;;
+    bestexpo)   echo "逐影像曝光補償（log 增益，訓練 loss 用）｜GT 逐幀曝光不一致是否拖累模型；評測加 psnr_ex（全域曲線）" ;;
     bestsh2|bestsh1|bestsh0) echo "SH 階數 ${CASEARM#bestsh}｜高階 SH（佔參數 78%）值不值它的 VRAM" ;;
     bestdist100|bestdist1000) echo "深度失真正則 lambda_dist ${CASEARM#bestdist}｜幾何正則對品質的影響" ;;
     bestcdu100|bestcdu75|bestcdu25) echo "增生期長度（densify_until）= 總步數的 ${CASEARM#bestcdu}%｜增生期多長最划算" ;;
