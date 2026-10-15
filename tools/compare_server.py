@@ -7,8 +7,12 @@ layers are stacked with draggable dividers (juxtapose style). Each pane selects
 its source run / checkpoint / GT-or-render independently; the image id is
 shared. Stdlib + PIL only.
 
-用法:  python tools/compare_server.py [--port 8090] [--root outputs]
+用法:  python tools/compare_server.py [--port 8090] [--root outputs/lab] [--defaults run[:left|right] ...]
 Then open http://localhost:8090
+
+2026-10-15（使用者）：預設 root 改 outputs/lab（lab 跑次用 `lab.py renders <塊> <跑次...>` 抓回來）；
+打開時預設 P1＝官方 release 的 GT、P2＝官方 release 渲染、P3＝我方 best1 渲染（官方圖由 scripts/lab/task_official_renders.sh 產生），
+三格都可以再改；`--defaults` 可自訂（每項 `跑次/block_N[:left|right]`，left＝GT）。
 """
 import argparse
 import glob
@@ -23,6 +27,7 @@ from urllib.parse import urlparse, parse_qs
 from PIL import Image
 
 ROOT = "outputs"
+DEFAULTS = None
 
 
 def scan_catalog():
@@ -49,6 +54,28 @@ def scan_catalog():
                 ckpt = parts[1] + "/" + parts[2]
             cat.setdefault(run, {})[ckpt] = imgs
     return cat
+
+
+def default_panes(cat):
+    """[[run, half], ...]：--defaults 優先；否則挑第一個有官方 release 圖的塊（6、12、10、其他）：官方 GT／官方渲染／我方 best1（沒有就 full44）渲染。"""
+    if DEFAULTS:
+        out = []
+        for d in DEFAULTS:
+            run, _, half = d.partition(":")
+            if run in cat:
+                out.append([run, half or "right"])
+        return out
+    offs = [r for r in cat if r.startswith("official_release/")]
+    if not offs:
+        return []
+    pref = {"block_6": 0, "block_12": 1, "block_10": 2}
+    off = sorted(offs, key=lambda r: (pref.get(r.split("/", 1)[1], 9), r))[0]
+    blk = off.split("/", 1)[1]
+    out = [[off, "left"], [off, "right"]]
+    for ours in ("g44_best1", "full44_best"):
+        if f"{ours}/{blk}" in cat:
+            out.append([f"{ours}/{blk}", "right"]); break
+    return out
 
 
 def img_path(run, ckpt, name):
@@ -85,10 +112,12 @@ select,button{background:#2a2a2a;color:#ddd;border:1px solid #444;border-radius:
 </div>
 <div id="stage"></div>
 <script>
-let CAT={}, layers=[], divs=[];
+let CAT={}, DEF=[], layers=[], divs=[];
 const q=s=>document.querySelector(s);
 async function boot(){
   CAT=await (await fetch('/api/catalog')).json();
+  DEF=await (await fetch('/api/defaults')).json();
+  if(DEF.length>=2) q('#np').value=String(Math.min(3,DEF.length));
   q('#np').onchange=buildPanes; buildPanes();
 }
 function paneCtl(i){
@@ -100,11 +129,13 @@ function paneCtl(i){
   const rs=d.querySelector('.run'), cs=d.querySelector('.ckpt'), hs=d.querySelector('.half');
   runs.forEach(r=>rs.add(new Option(r,r)));
   rs.selectedIndex=Math.min(i,runs.length-1);
+  const df=DEF[i]; if(df && CAT[df[0]]) rs.value=df[0];      // 預設（可改）
   function fillCk(){ cs.innerHTML='';
     Object.keys(CAT[rs.value]).sort().forEach(c=>cs.add(new Option(c,c)));
     cs.selectedIndex=cs.length-1; fillImgs(); }
   rs.onchange=fillCk; cs.onchange=()=>{fillImgs()}; hs.onchange=render;
   if(i===0) hs.value='left';           // 最左預設 GT
+  if(df && CAT[df[0]]) hs.value=df[1];
   fillCk();
   return d;
 }
@@ -186,6 +217,8 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, "text/html; charset=utf-8", PAGE.encode())
             elif u.path == "/api/catalog":
                 self._send(200, "application/json", json.dumps(scan_catalog()).encode())
+            elif u.path == "/api/defaults":
+                self._send(200, "application/json", json.dumps(default_panes(scan_catalog())).encode())
             elif u.path == "/img":
                 qs = parse_qs(u.query)
                 p = img_path(qs["run"][0], qs["ckpt"][0], qs["name"][0])
@@ -206,15 +239,17 @@ class H(BaseHTTPRequestHandler):
 
 
 def main():
-    global ROOT
+    global ROOT, DEFAULTS
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8090)
-    ap.add_argument("--root", default="outputs")
+    ap.add_argument("--root", default="outputs/lab" if os.path.isdir("outputs/lab") else "outputs")
+    ap.add_argument("--defaults", nargs="*", default=None, help="打開時各層的預設：跑次/block_N[:left|right]（left＝GT）")
     args = ap.parse_args()
-    ROOT = args.root
+    ROOT = args.root; DEFAULTS = args.defaults
     cat = scan_catalog()
     n_imgs = sum(len(v) for r in cat.values() for v in r.values())
     print("catalog: %d runs, %d image files" % (len(cat), n_imgs))
+    print("root %s；預設層：%s" % (ROOT, default_panes(cat) or "（沒有官方圖 => 依名稱排序）"))
     print("open  http://localhost:%d" % args.port)
     HTTPServer(("127.0.0.1", args.port), H).serve_forever()
 
