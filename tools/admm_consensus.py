@@ -42,6 +42,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--prev", default=None, help="上一輪的目錄（讀 u 與 z_prev）；第一次不給 => u=0")
     ap.add_argument("--neighbors", nargs="*", default=[], help="P2-b：鄰塊模型也在本塊視角渲染並融合進 z")
+    ap.add_argument("--neighbors_all", action="store_true",
+                    help="鄰塊用全部顆粒（預設只用鄰塊自己分區盒內的顆粒＝合併時的歸屬規則：鄰塊只對自己負責的區域發言，"
+                         "它在本塊區域的塊外顆粒品質差，不該混進共識）")
     ap.add_argument("--stride", type=int, default=1, help="只用每 n 台相機（功能測試用；正式＝1）")
     ap.add_argument("--voxel", type=float, default=0.01)
     ap.add_argument("--sdf_trunc", type=float, default=0.04)
@@ -67,7 +70,17 @@ def main():
     Ax = {}
     models = [(model, renderer)]
     for nb in a.neighbors:
-        m2, r2, _ = load(nb, dev); models.append((m2, r2))
+        m2, r2, ck2 = load(nb, dev)
+        if not a.neighbors_all:
+            sys.path.insert(0, os.path.join(ROOT, "tools"))
+            from swap_block_eval import block_mask
+            pc2 = ck2["datamodule_hyper_parameters"]["parser"]
+            msk = block_mask(m2.get_xyz, pc2)[pc2.block_id].to(dev)
+            n0 = int(msk.numel())
+            m2.properties = {k: v[msk] for k, v in m2.properties.items()}
+            print(f"[鄰塊] block {pc2.block_id}：只用盒內 {int(msk.sum()):,}／{n0:,} 顆（{os.path.basename(nb)}）", flush=True)
+        del ck2
+        models.append((m2, r2))
     with torch.no_grad():
         for k, i in enumerate(idx):
             cam = ts.cameras[i].to_device(dev)

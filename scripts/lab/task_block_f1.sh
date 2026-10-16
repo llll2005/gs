@@ -25,8 +25,11 @@ case "$MODE" in
     B=${1:?塊}; shift
     C=(); N=()
     for r in "$@"; do
+      # 10-16：短步數臂（20k／30k）沒有 60k ckpt => 取步數最大的那個（＝該跑次的終點），並印出來
       c=$(ls outputs/lab/$r/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | grep -v _inbox | head -1)
-      [ -n "$c" ] || { echo "⚠ 略過 $r：沒有 block $B 的 60k ckpt"; continue; }
+      [ -n "$c" ] || c=$(ls outputs/lab/$r/blocks/block_$B/checkpoints/*step=*.ckpt 2>/dev/null | grep -v _inbox | sed 's/.*step=\([0-9]*\)\.ckpt/\1 &/' | sort -n | tail -1 | cut -d' ' -f2-)
+      [ -n "$c" ] || { echo "⚠ 略過 $r：沒有 block $B 的 ckpt"; continue; }
+      echo "  $r：$(basename "$c")"
       C+=("$c"); N+=("$r")
     done
     [ ${#C[@]} -gt 0 ] || { echo "⛔ 沒有候選"; exit 2; }

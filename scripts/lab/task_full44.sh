@@ -260,8 +260,11 @@ case "$MODE" in
     shift; B=${1:?缺塊}; shift
     cks=(); ns=()
     for r in "$@"; do
+      # 10-16：短步數臂（20k／30k）沒有 60k ckpt => 取步數最大的那個（＝該跑次的終點），並印出來
       c=$(ls outputs/${PFX}$r/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1)
-      [ -n "$c" ] || { echo "⚠ $r block $B 沒有 60k ckpt => 跳過（其他照評）"; continue; }
+      [ -n "$c" ] || c=$(ls outputs/${PFX}$r/blocks/block_$B/checkpoints/*step=*.ckpt 2>/dev/null | grep -v _inbox | sed 's/.*step=\([0-9]*\)\.ckpt/\1 &/' | sort -n | tail -1 | cut -d' ' -f2-)
+      [ -n "$c" ] || { echo "⚠ $r block $B 沒有 ckpt => 跳過（其他照評）"; continue; }
+      echo "  $r：$(basename "$c")"
       cks+=("$c"); ns+=("$r")
     done
     L=logs/swap_b${B}_$(date +%m%d_%H%M).log
