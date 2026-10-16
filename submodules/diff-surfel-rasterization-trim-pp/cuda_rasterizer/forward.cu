@@ -434,8 +434,11 @@ renderCUDA(
 	float* __restrict__ out_others,
 	float* __restrict__ transmittance,
 	int* __restrict__ num_covered_pixels,
-	bool record_transmittance)
+	bool record_transmittance,
+	uint8_t* __restrict__ pair_used)
 {
+	// ★ 2026-10-16 pair_used（只在 MODE 1 且非 nullptr 時寫）：本批每個配對是否被本 tile 任一像素「混合」
+	//   （alpha>=1/255、未飽和、未提早結束 => 與 backward 的 valid 條件逐條相同）。沒輪到的配對維持呼叫端 memset 的 0。
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -462,6 +465,8 @@ renderCUDA(
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
+	__shared__ uint8_t s_used[(MODE == 1) ? BLOCK_SIZE : 1];
+	const bool rec_pair = (MODE == 1) && (pair_used != nullptr);
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -503,6 +508,7 @@ renderCUDA(
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
 		}
+		if (rec_pair) s_used[block.thread_rank()] = 0;
 		block.sync();
 
 		// Iterate over current batch
@@ -599,6 +605,12 @@ renderCUDA(
 			// Keep track of last range entry to update this
 			// pixel.
 			last_contributor = contributor;
+			if (rec_pair) s_used[j] = 1;   // 多個像素同時寫 1 => 良性競爭
+		}
+		if (rec_pair) {
+			block.sync();
+			if (range.x + progress < range.y && s_used[block.thread_rank()])
+				pair_used[range.x + progress] = 1;
 		}
 	}
 
@@ -879,10 +891,11 @@ void FORWARD::render(
 	float* transmittance,
 	int* num_covered_pixels,
 	bool record_transmittance,
-	int mode)
+	int mode,
+	uint8_t* pair_used)
 {
 #define _RENDER_ARGS ranges, point_list, W, H, focal_x, focal_y, means2D, colors, transMats, depths, \
-		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance
+		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance, pair_used
 	if (mode == 3) { auditCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
 		out_others, transmittance, num_covered_pixels); return; }
 	if (mode == 4) { recordReduceCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
@@ -907,7 +920,8 @@ void FORWARD::render(
 		out_others,
 		transmittance,
 		num_covered_pixels,
-		record_transmittance);
+		record_transmittance,
+		nullptr);
 }
 
 void FORWARD::preprocess(int P, int D, int M,

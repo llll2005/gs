@@ -71,7 +71,8 @@ namespace FORWARD
 		float* transmittance,
 		int* num_covered_pixels,
 		bool record_transmittance,
-		int mode = 0);
+		int mode = 0,
+		uint8_t* pair_used = nullptr);   // ★ 2026-10-16 配對貢獻 bit（只在 mode 1 寫）
 }
 
 

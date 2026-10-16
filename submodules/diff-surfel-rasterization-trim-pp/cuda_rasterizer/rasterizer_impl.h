@@ -61,6 +61,7 @@ namespace CudaRasterizer
 		uint32_t* point_list_unsorted;
 		uint32_t* point_list;
 		char* list_sorting_space;
+		uint8_t* pair_used;   // ★ 2026-10-16 配對貢獻 bit：forward（lean 訓練）記「這個 (tile,顆粒) 配對有沒有被任何像素混合」，backward 擠掉 0 的
 
 		static BinningState fromChunk(char*& chunk, size_t P);
 	};

@@ -309,6 +309,7 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 		binning.point_list_keys_unsorted, binning.point_list_keys,
 		binning.point_list_unsorted, binning.point_list, P);
 	obtain(chunk, binning.list_sorting_space, binning.sorting_size, 128);
+	obtain(chunk, binning.pair_used, P, 128);
 	return binning;
 }
 
@@ -467,6 +468,13 @@ int CudaRasterizer::Rasterizer::forward(
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	const float* transMat_ptr = transMat_precomp != nullptr ? transMat_precomp : geomState.transMat;
+	// ★ 2026-10-16 bit 16 = 配對貢獻 bit。只有 lean 訓練 forward（mode 1）會記；其他 mode 一律填 1（backward 不擠任何配對 => 等同沒開）
+	const int fmode = flag_audit ? 3 : ((record_transmittance && (lean & 4)) ? 4 : ((lean & 1) ? (record_transmittance ? 2 : 1) : 0));
+	uint8_t* pair_used = nullptr;
+	if ((lean & 16) && num_rendered > 0) {
+		CHECK_CUDA(cudaMemset(binningState.pair_used, fmode == 1 ? 0 : 1, num_rendered), debug)
+		if (fmode == 1) pair_used = binningState.pair_used;
+	}
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
 		imgState.ranges,
@@ -487,7 +495,7 @@ int CudaRasterizer::Rasterizer::forward(
 		num_covered_pixels,
 		record_transmittance,
 		// lean：訓練 => 只算顏色（MODE 1）；record => 只算 T*alpha 與覆蓋數（MODE 2）。見 forward.cu
-		flag_audit ? 3 : ((record_transmittance && (lean & 4)) ? 4 : ((lean & 1) ? (record_transmittance ? 2 : 1) : 0))), debug)
+		fmode, pair_used), debug)
 
 	return num_rendered;
 }
@@ -570,7 +578,9 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dnormal,
 		dL_dopacity,
 		dL_dcolor,
-		geom_grad), debug)
+		geom_grad,
+		// ★ 2026-10-16 bit 16：用 forward 記下的配對貢獻 bit（forward 同一個旗標；非 lean 時 forward 已把它填成全 1）
+		(geom_grad & 16) ? binningState.pair_used : nullptr), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,

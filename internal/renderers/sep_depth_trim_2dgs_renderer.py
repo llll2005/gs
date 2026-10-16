@@ -42,6 +42,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             absgrad_gate: bool = False,
             bwd_sat_skip: bool = False,
             bwd_reduce: bool = False,
+            bwd_pair_bit: bool = False,
             trim_schedule: str = "",
             trim_by_mean_contribution: bool = False,
             trim_cost_beta_px: float = 0.0,
@@ -86,6 +87,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   bwd_reduce    每個 (像素,顆粒) 的梯度先在 warp／block 內加總，每批每顆只做一次全域 atomic（浮點加總順序級）
         self.bwd_sat_skip = bwd_sat_skip
         self.bwd_reduce = bwd_reduce
+        # ★ 2026-10-16 配對貢獻 bit（使用者「試試」）：forward（lean 訓練）記每個 (tile,顆粒) 配對有沒有被任一像素混合，
+        #   backward 只處理被混合過的（其他配對對每個像素都是 valid=false => 梯度不變，只省掉重算交點與指數的工作）
+        self.bwd_pair_bit = bwd_pair_bit
         # ★ 2026-10-09 `trim_schedule`＝"步數:門檻,..."（使用者的三次門檻剪）：只在這幾步 trim，剪掉 v <= 門檻的（v＝現行判準：
         #   最佳視角的每像素平均 T·α），不再固定比例、也不再每 500 步。空字串＝原本的週期 trim。
         self.trim_schedule = trim_schedule
@@ -243,6 +247,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"lean_render": True} if _lean else {}),
             **({"bwd_sat_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_sat_skip", False)) else {}),
             **({"bwd_reduce": True} if (_lean and not record_transmittance and getattr(self, "bwd_reduce", False)) else {}),
+            **({"bwd_pair_bit": True} if (_lean and not record_transmittance and getattr(self, "bwd_pair_bit", False)) else {}),
             **({"absgrad": bool(kwargs.get("_absgrad", True))}
                if (getattr(self, "absgrad_gate", False) and "absgrad" in GaussianRasterizationSettings._fields) else {}),
             # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
@@ -251,7 +256,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"tile_cull": True} if (not record_transmittance and not kwargs.get("_audit", False)
                                        and getattr(self, "tile_cull", False)) else {}),
         )
-        for _f in ("bwd_sat_skip", "bwd_reduce"):
+        for _f in ("bwd_sat_skip", "bwd_reduce", "bwd_pair_bit"):
             if getattr(self, _f, False) and _f not in GaussianRasterizationSettings._fields:
                 raise RuntimeError(f"設了 {_f} 但光柵器不認得這個欄位 —— 沒重編")
         if getattr(self, "absgrad_gate", False) and "absgrad" not in GaussianRasterizationSettings._fields:

@@ -47,11 +47,13 @@ L=logs/best1_time_b${B}_$(date +%m%d_%H%M).log
 {
   for ph in grow harvest; do
     case $ph in grow) S=14999; XP=() ;; harvest) S=41999; XP=(--model.density.init_args.densify_until_iter 0) ;; esac
-    for arm in best0 best0fast best1; do
+    for arm in ${CITYGS_TIME_ARMS:-best0 best0fast best1}; do
       case $arm in
         best0)     SRC=g44_best0; A=best0; XA=() ;;
         best0fast) SRC=g44_best0; A=best0; XA=(--model.renderer.init_args.bwd_sat_skip true --model.renderer.init_args.bwd_reduce true) ;;
         best1)     SRC=g44_best1; A=best1; XA=() ;;
+        best1pb)   SRC=g44_best1; A=best1; XA=(--model.renderer.init_args.bwd_pair_bit true) ;;   # ★ 10-16 配對貢獻 bit
+        *) echo "⛔ 不認得的計時臂 $arm"; continue ;;
       esac
       CK=$(ls outputs/${RUN_PREFIX}$SRC/blocks/block_$B/checkpoints/*step=$S.ckpt 2>/dev/null | head -1)
       [ -n "$CK" ] || { echo "⛔ 沒有 $SRC block $B @$S"; continue; }

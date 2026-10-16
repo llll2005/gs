@@ -498,8 +498,12 @@ renderCUDA_opt(
 	float * __restrict__ dL_dtransMat,
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors)
+	float* __restrict__ dL_dcolors,
+	const uint8_t* __restrict__ pair_used)
 {
+	// ★ 2026-10-16 PB（pair_used != nullptr）：配對貢獻 bit。forward 記下「這個 (tile,顆粒) 配對有沒有被任一像素混合」；
+	//   沒被混合的配對對每個像素都是 valid=false（條件逐條相同：contributor<last、NEAR_PLANE、power、alpha>=1/255）=> 梯度恆 0。
+	//   每批載入時用 warp ballot＋前綴和把 bit=1 的依原順序擠到 shared 前段，只迭代這些 => 處理的有效配對與順序完全相同。
 	auto block = cg::this_thread_block();
 	auto warp = cg::tiled_partition<32>(block);
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -533,6 +537,9 @@ renderCUDA_opt(
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
 	__shared__ float s_g[RED ? OPT_NG : 1][RED ? BLOCK_SIZE : 1];
 	__shared__ int s_cnt[RED ? BLOCK_SIZE : 1];
+	__shared__ int collected_q[BLOCK_SIZE];        // 擠壓後每個槽位的原始序號（＝原本的 contributor）
+	__shared__ int s_wcnt[BLOCK_SIZE / 32];
+	const bool pb = (pair_used != nullptr);
 
 	const float T_final = inside ? final_Ts[pix_id] : 0;
 	float T = T_final;
@@ -552,17 +559,33 @@ renderCUDA_opt(
 	{
 		block.sync();
 		const int progress = i * BLOCK_SIZE + block.thread_rank();
-		if (progress < span)
+		const int q = span - progress - 1;                          // 這個執行緒負責的配對在 tile 清單中的位置
+		bool keep = progress < span;
+		if (pb && keep) keep = pair_used[range.x + q] != 0;
+		int slot = block.thread_rank();
+		int nj = min(BLOCK_SIZE, toDo);
+		if (pb) {
+			// 依 thread_rank 順序（＝原處理順序）做 block 內前綴和
+			const unsigned m = warp.ballot(keep);
+			if (warp.thread_rank() == 0) s_wcnt[warp.meta_group_rank()] = __popc(m);
+			block.sync();
+			int off = 0, tot = 0;
+			for (int w = 0; w < BLOCK_SIZE / 32; w++) { if (w < (int)warp.meta_group_rank()) off += s_wcnt[w]; tot += s_wcnt[w]; }
+			slot = off + __popc(m & ((1u << warp.thread_rank()) - 1u));
+			nj = tot;
+		}
+		if (keep)
 		{
-			const int coll_id = point_list[range.x + span - progress - 1];
-			collected_id[block.thread_rank()] = coll_id;
-			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
-			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
-			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
-			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+			const int coll_id = point_list[range.x + q];
+			collected_id[slot] = coll_id;
+			collected_q[slot] = q;
+			collected_xy[slot] = points_xy_image[coll_id];
+			collected_normal_opacity[slot] = normal_opacity[coll_id];
+			collected_Tu[slot] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
+			collected_Tv[slot] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
+			collected_Tw[slot] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
 			for (int c = 0; c < C; c++)
-				collected_colors[c * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + c];
+				collected_colors[c * BLOCK_SIZE + slot] = colors[coll_id * C + c];
 		}
 		if (RED) {
 			for (int k = 0; k < OPT_NG; k++) s_g[k][block.thread_rank()] = 0.f;
@@ -570,12 +593,13 @@ renderCUDA_opt(
 		}
 		block.sync();
 
-		const int nj = min(BLOCK_SIZE, toDo);
 		for (int j = 0; j < nj; j++)
 		{
 			contributor--;
+			// 擠壓後用原始序號；未擠壓時 collected_q 沒寫 => 沿用遞減的 contributor（舊行為一字不變）
+			const uint32_t cq = pb ? (uint32_t)collected_q[j] : contributor;
 			// 每個 lane 都要走到歸約點（warp 集體操作）=> 用 valid 取代原本的 continue
-			bool valid = inside && (contributor < (uint32_t)last_contributor);
+			bool valid = inside && (cq < (uint32_t)last_contributor);
 			float g[OPT_NG];
 			for (int k = 0; k < OPT_NG; k++) g[k] = 0.f;
 			if (valid) {
@@ -598,7 +622,13 @@ renderCUDA_opt(
 					const float power = -0.5f * rho;
 					const float G = exp(power);
 					const float alpha = min(0.99f, nor_o.w * G);
-					if (c_d < NEAR_PLANE || power > 0.0f || alpha < 1.0f / 255.0f) valid = false;
+#ifndef BWD_NEAR_LIKE_FWD
+#define BWD_NEAR_LIKE_FWD 0
+#endif
+					// ★ 2026-10-16 診斷：forward 一律用交點深度判近平面（forward.cu），backward 歷來用 c_d（濾波分支是 Tw.z）=> 不一致。
+					//   BWD_NEAR_LIKE_FWD=1 改成與 forward 相同（只為驗證配對 bit 的梯度差來源；預設 0＝舊行為）
+					const float near_d = BWD_NEAR_LIKE_FWD ? ((s.x * Tw.x + s.y * Tw.y) + Tw.z) : c_d;
+					if (near_d < NEAR_PLANE || power > 0.0f || alpha < 1.0f / 255.0f) valid = false;
 					if (valid) {
 						T = T / (1.f - alpha);
 						const float dchannel_dcolor = alpha * T;
@@ -668,7 +698,7 @@ renderCUDA_opt(
 		if (RED) {
 			block.sync();
 			const int t = block.thread_rank();
-			if (progress < span && s_cnt[t] > 0) {
+			if ((pb ? (t < nj) : (progress < span)) && s_cnt[t] > 0) {
 				const int gid = collected_id[t];
 				for (int ch = 0; ch < C; ch++) if (s_g[ch][t] != 0.f) atomicAdd(&dL_dcolors[gid * C + ch], s_g[ch][t]);
 				for (int k = 0; k < 9; k++) if (s_g[3 + k][t] != 0.f) atomicAdd(&dL_dtransMat[gid * 9 + k], s_g[3 + k][t]);
@@ -976,18 +1006,20 @@ void BACKWARD::render(
 	float* dL_dnormal3D,
 	float* dL_dopacity,
 	float* dL_dcolors,
-	int flags)
+	int flags,
+	const uint8_t* pair_used)
 {
 	// flags：bit0 = geom（幾何梯度）、bit1 = 關掉 absgrad（舊呼叫端傳 true/false => bit1=0 => absgrad 照舊開）
 	const bool geom = (flags & 1) != 0;
 	const bool absg = (flags & 2) == 0;
 	const bool sat = (flags & 4) != 0;
 	const bool red = (flags & 8) != 0;
-	if (!geom && (sat || red)) {
-#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors
+	const bool pbit = (flags & 16) != 0 && pair_used != nullptr;   // ★ 2026-10-16 配對貢獻 bit
+	if (!geom && (sat || red || pbit)) {
+#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr)
 #define OPT_L(A, S, R) renderCUDA_opt<NUM_CHANNELS, A, S, R> << <grid, block >> >(OPT_ARGS)
-		if (absg) { if (sat && red) OPT_L(true, true, true); else if (sat) OPT_L(true, true, false); else OPT_L(true, false, true); }
-		else      { if (sat && red) OPT_L(false, true, true); else if (sat) OPT_L(false, true, false); else OPT_L(false, false, true); }
+		if (absg) { if (sat && red) OPT_L(true, true, true); else if (sat) OPT_L(true, true, false); else if (red) OPT_L(true, false, true); else OPT_L(true, false, false); }
+		else      { if (sat && red) OPT_L(false, true, true); else if (sat) OPT_L(false, true, false); else if (red) OPT_L(false, false, true); else OPT_L(false, false, false); }
 #undef OPT_L
 #undef OPT_ARGS
 		return;
