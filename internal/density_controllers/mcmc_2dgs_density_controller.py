@@ -1549,6 +1549,12 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # `mask`: True = prune.
         valid = ~mask
         gaussian_model.properties = Utils.prune_properties(valid, gaussian_model, optimizers)
+        # ★ 2026-10-16 逐顆的 trim 替代狀態（訓練中累加的 V／C、軟投影的 λ 與支撐外遮罩；renderer 掛在模型上）跟著剪
+        _st = getattr(gaussian_model, "_trim_state", None)
+        if _st:
+            for _k in list(_st.keys()):
+                if torch.is_tensor(_st[_k]) and _st[_k].shape[0] == valid.shape[0]:
+                    _st[_k] = _st[_k][valid]
 
     def compute_relocation(self, opacity_old, scale_old, N) -> Tuple[torch.Tensor, torch.Tensor]:
         # gsplat compute_relocation requires scales [N, 3]; pad 2D surfel scale with a zero

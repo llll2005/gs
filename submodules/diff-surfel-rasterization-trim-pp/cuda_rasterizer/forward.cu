@@ -467,6 +467,12 @@ renderCUDA(
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
 	__shared__ uint8_t s_used[(MODE == 1) ? BLOCK_SIZE : 1];
 	const bool rec_pair = (MODE == 1) && (pair_used != nullptr);
+	// ★ 2026-10-16 訓練中累加 V/C（取代 trim 的 record pass）：MODE 1 且 record_transmittance=true（rasterizer_impl 在 bit 32 時這樣傳）
+	//   => 在與 record pass 完全相同的位置（近平面／power 檢查之後、alpha<1/255 之前）累加 T*alpha 與覆蓋數；
+	//   每批先在 shared 累加，批末每個配對一次全域 atomic（同 recordReduceCUDA 的模式）。
+	const bool rec_acc = (MODE == 1) && record_transmittance;
+	__shared__ float s_ta1[(MODE == 1) ? BLOCK_SIZE : 1];
+	__shared__ int s_cn1[(MODE == 1) ? BLOCK_SIZE : 1];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -509,6 +515,7 @@ renderCUDA(
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
 		}
 		if (rec_pair) s_used[block.thread_rank()] = 0;
+		if (rec_acc) { s_ta1[block.thread_rank()] = 0.f; s_cn1[block.thread_rank()] = 0; }
 		block.sync();
 
 		// Iterate over current batch
@@ -561,6 +568,7 @@ renderCUDA(
 				atomicAdd(&transmittance[collected_id[j]], T * alpha);
 				atomicAdd(&num_covered_pixels[collected_id[j]], 1);
 			}
+			if (rec_acc) { atomicAdd(&s_ta1[j], T * alpha); atomicAdd(&s_cn1[j], 1); }
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
@@ -607,10 +615,15 @@ renderCUDA(
 			last_contributor = contributor;
 			if (rec_pair) s_used[j] = 1;   // 多個像素同時寫 1 => 良性競爭
 		}
-		if (rec_pair) {
+		if (rec_pair || rec_acc) {
 			block.sync();
-			if (range.x + progress < range.y && s_used[block.thread_rank()])
+			if (rec_pair && range.x + progress < range.y && s_used[block.thread_rank()])
 				pair_used[range.x + progress] = 1;
+			if (rec_acc && range.x + progress < range.y && s_cn1[block.thread_rank()] > 0) {
+				const int gid = collected_id[block.thread_rank()];
+				atomicAdd(&transmittance[gid], s_ta1[block.thread_rank()]);
+				atomicAdd(&num_covered_pixels[gid], s_cn1[block.thread_rank()]);
+			}
 		}
 	}
 

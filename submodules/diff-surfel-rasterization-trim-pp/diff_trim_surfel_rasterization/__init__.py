@@ -85,7 +85,9 @@ class _RasterizeGaussians(torch.autograd.Function):
                 | (4 if getattr(raster_settings, "record_reduce", False) else 0)
                 | (8 if getattr(raster_settings, "tile_cull", False) else 0)
                 # ★ 2026-10-16 bit4 = 配對貢獻 bit（forward 的 lean 訓練記；其他 mode 填全 1 => 等同沒開）
-                | (16 if getattr(raster_settings, "bwd_pair_bit", False) else 0)),
+                | (16 if getattr(raster_settings, "bwd_pair_bit", False) else 0)
+                # ★ 2026-10-16 bit5 = 訓練中累加 V/C（lean 訓練 forward 順便填 transmittance＝Σ T·α、num_covered＝覆蓋數）
+                | (32 if getattr(raster_settings, "train_record", False) else 0)),
         )
 
         # Invoke C++/CUDA rasterizer
@@ -120,10 +122,14 @@ class _RasterizeGaussians(torch.autograd.Function):
         if not getattr(raster_settings, "return_tiles", False):
             return color, radii, depth          # 歷史介面：其他 checkout 靠它
         ctx.mark_non_differentiable(tiles)
+        if getattr(raster_settings, "train_record", False):
+            # ★ 2026-10-16 訓練中累加 V/C：多回傳本步的逐顆 Σ T·α 與覆蓋數（不可微）
+            ctx.mark_non_differentiable(transmittance, num_covered_pixels)
+            return color, radii, depth, tiles, transmittance, num_covered_pixels
         return color, radii, depth, tiles
 
     @staticmethod
-    def backward(ctx, grad_out_color, grad_radii, grad_depth, grad_tiles=None):
+    def backward(ctx, grad_out_color, grad_radii, grad_depth, grad_tiles=None, grad_ta=None, grad_cn=None):
         # grad_tiles 有預設值：`record_transmittance` 分支的 forward 只回傳 3 個值，
         # 兩條路徑的 arity 不同（既有設計；該分支一律在 no_grad 下用）。
 
@@ -232,6 +238,7 @@ class GaussianRasterizationSettings(NamedTuple):
     bwd_sat_skip : bool = False   # ★ 2026-10-09 backward 從 tile 內最大的最後貢獻者開始（結果逐位元相同）
     bwd_reduce : bool = False     # ★ 2026-10-09 backward 梯度 block 內先加總再寫全域（只差浮點加總順序）
     bwd_pair_bit : bool = False   # ★ 2026-10-16 forward 記配對貢獻 bit、backward 只處理被混合過的配對（有效配對與順序相同）
+    train_record : bool = False   # ★ 2026-10-16 lean 訓練 forward 順便累加逐顆 Σ T·α 與覆蓋數（取代 trim 的全相機 record pass）
     absgrad : bool = True   # ★ 2026-10-09：False => backward 不做 absgrad 的 atomicAdd（只有 dL_dmean2D.z 變 0）
     # ★ 2026-10-02：剃除沒人用的計算（見 forward.cu 的 MODE 與 backward.cu 的 GEOM）。
     #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。

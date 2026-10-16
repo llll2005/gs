@@ -493,7 +493,8 @@ int CudaRasterizer::Rasterizer::forward(
 		out_others,
 		transmittance,
 		num_covered_pixels,
-		record_transmittance,
+		// ★ 2026-10-16 bit 32＝訓練中累加 V/C：MODE 1 收到 record_transmittance=true 時在訓練 forward 裡順便累加（見 forward.cu rec_acc）
+		record_transmittance || ((lean & 32) && fmode == 1),
 		// lean：訓練 => 只算顏色（MODE 1）；record => 只算 T*alpha 與覆蓋數（MODE 2）。見 forward.cu
 		fmode, pair_used), debug)
 

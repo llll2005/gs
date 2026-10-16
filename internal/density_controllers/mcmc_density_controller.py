@@ -300,6 +300,14 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         # `dead_indices` = the Gaussians that were moved = paper's "source" -> deliberately
         # left alone. Applying it to dead_indices too would delete the exploration mechanism.
         self.replace_tensors_to_optimizers(gaussian_model, optimizers=optimizers, inds=reinit_idx)
+        # ★ 2026-10-16 trim 替代狀態：被搬家的（dead_indices）與宿主（reinit_idx，opacity／scale 改了）槽位歸零，
+        #   免得累加的 V／C 與 λ 混到前一顆的歷史（renderer 的 trim_running_vc／trim_soft_rho；狀態掛在模型上）
+        _st = getattr(gaussian_model, "_trim_state", None)
+        if _st:
+            for _k, _t in _st.items():
+                if torch.is_tensor(_t) and _t.shape[0] == gaussian_model.n_gaussians:
+                    _t[dead_indices] = 0
+                    _t[reinit_idx] = 0
 
     def _relocate_probs(self, gaussian_model, alive_indices):
         return gaussian_model.get_opacities()[alive_indices, 0]

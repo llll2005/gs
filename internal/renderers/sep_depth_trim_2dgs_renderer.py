@@ -43,6 +43,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             bwd_sat_skip: bool = False,
             bwd_reduce: bool = False,
             bwd_pair_bit: bool = False,
+            trim_running_vc: bool = False,
+            trim_soft_rho: float = 0.0,
             trim_schedule: str = "",
             trim_by_mean_contribution: bool = False,
             trim_cost_beta_px: float = 0.0,
@@ -90,6 +92,16 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ★ 2026-10-16 配對貢獻 bit（使用者「試試」）：forward（lean 訓練）記每個 (tile,顆粒) 配對有沒有被任一像素混合，
         #   backward 只處理被混合過的（其他配對對每個像素都是 valid=false => 梯度不變，只省掉重算交點與指數的工作）
         self.bwd_pair_bit = bwd_pair_bit
+        # ★ 2026-10-16 取代 trim（使用者「直接實作」）：
+        #   trim_running_vc  lean 訓練 forward 順便累加逐顆 Σ T·α（V）與覆蓋數（C），週期 trim 改用這段期間的累積值算 V/C，
+        #                    不再每 500 步掃全部訓練相機（增生期每步約 30% 的時間）。這段期間沒被任何訓練視角看到的（C=0）這輪不剪。
+        #                    需要 lean_train 與 trim_by_mean_contribution（判準 V/C）。
+        #   trim_soft_rho    >0 => GaussianSpa 式軟投影取代硬剪：每次 trim 把 V/C 前 (1-prune_ratio) 的顆粒當支撐集，
+        #                    支撐外的在 loss 加 rho/2·mean((o+λ)²)（λ 每次投影累加 o）把 opacity 拉向 0、由 MCMC 回收；
+        #                    增生期最後一次 trim 把仍在支撐外的硬剪掉。出處：GaussianSpa（ADMM 稀疏化）＋判準換成我方 V/C。
+        self.trim_running_vc = trim_running_vc
+        self.trim_soft_rho = trim_soft_rho
+        self._acc_stop = False
         # ★ 2026-10-09 `trim_schedule`＝"步數:門檻,..."（使用者的三次門檻剪）：只在這幾步 trim，剪掉 v <= 門檻的（v＝現行判準：
         #   最佳視角的每像素平均 T·α），不再固定比例、也不再每 500 步。空字串＝原本的週期 trim。
         self.trim_schedule = trim_schedule
@@ -248,6 +260,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"bwd_sat_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_sat_skip", False)) else {}),
             **({"bwd_reduce": True} if (_lean and not record_transmittance and getattr(self, "bwd_reduce", False)) else {}),
             **({"bwd_pair_bit": True} if (_lean and not record_transmittance and getattr(self, "bwd_pair_bit", False)) else {}),
+            **({"train_record": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
+                                          and not getattr(self, "_acc_stop", False)) else {}),
             **({"absgrad": bool(kwargs.get("_absgrad", True))}
                if (getattr(self, "absgrad_gate", False) and "absgrad" in GaussianRasterizationSettings._fields) else {}),
             # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
@@ -256,6 +270,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"tile_cull": True} if (not record_transmittance and not kwargs.get("_audit", False)
                                        and getattr(self, "tile_cull", False)) else {}),
         )
+        if getattr(self, "trim_running_vc", False) and "train_record" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError("設了 trim_running_vc 但光柵器不認得 train_record 欄位 —— 沒重編")
         for _f in ("bwd_sat_skip", "bwd_reduce", "bwd_pair_bit"):
             if getattr(self, _f, False) and _f not in GaussianRasterizationSettings._fields:
                 raise RuntimeError(f"設了 {_f} 但光柵器不認得這個欄位 —— 沒重編")
@@ -352,7 +368,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
             return transmittance
         else:
             # 光柵器未重編（沒有 return_tiles 欄位）時回傳 3 個 => 相容解包
-            if len(output) == 4:
+            if len(output) == 6:
+                rendered_image, radii, allmap, tiles, _ta, _cn = output
+                self._acc_add(pc, _ta, _cn)
+            elif len(output) == 4:
                 rendered_image, radii, allmap, tiles = output
             else:
                 rendered_image, radii, allmap = output; tiles = None
@@ -507,6 +526,82 @@ class SepDepthTrim2DGSRenderer(Renderer):
             print("Trimming done.")
         torch.cuda.empty_cache()
 
+    # ── 2026-10-16 trim 替代：逐顆狀態掛在模型上（gaussian_model._trim_state），density controller 剪枝／搬家時同步 ──
+    @staticmethod
+    def _trim_state(pc, keys=("V", "C")):
+        n = pc.get_xyz.shape[0]
+        st = getattr(pc, "_trim_state", None)
+        if st is None:
+            st = {}
+            pc._trim_state = st
+        for k in keys:
+            t = st.get(k)
+            dt = torch.bool if k == "off" else torch.float32
+            if t is None:
+                st[k] = torch.zeros(n, dtype=dt, device=pc.get_xyz.device)
+            elif t.shape[0] < n:          # MCMC 新增的顆粒接在尾端 => 補 0
+                st[k] = torch.cat([t, torch.zeros(n - t.shape[0], dtype=dt, device=t.device)])
+            elif t.shape[0] > n:          # 不該發生（剪枝已同步）；保險起見整個重設
+                st[k] = torch.zeros(n, dtype=dt, device=pc.get_xyz.device)
+        return st
+
+    def _acc_add(self, pc, ta, cn):
+        with torch.no_grad():
+            st = self._trim_state(pc)
+            st["V"] += ta.float()
+            st["C"] += cn.float()
+            st["views"] = int(st.get("views", 0)) + 1
+        if not getattr(self, "_acc_announced", False):
+            self._acc_announced = True
+            print(f"[trim-running] ✅ 首次觸發：訓練 forward 累加 V／C（本步有覆蓋的顆粒 {int((cn > 0).sum()):,}／{cn.numel():,}）", flush=True)
+
+    def _running_trim(self, step, module, until):
+        """取代週期 trim：用訓練中累加的 V／C（不掃相機）。回傳 True＝已處理。"""
+        pc = module.gaussian_model
+        st = self._trim_state(pc, ("V", "C"))
+        n_views = int(st.get("views", 0))
+        V, C = st["V"], st["C"]
+        seen = C > 0
+        score = torch.where(seen, V / torch.clamp_min(C, 1.0), torch.full_like(V, float("inf")))   # 沒被看到 => 這輪不剪
+        n_seen = int(seen.sum())
+        k_cut = int(self.prune_ratio * pc.get_xyz.shape[0])
+        thr = torch.kthvalue(score.float().cpu(), max(1, min(k_cut, n_seen))).values.to(score.device) if n_seen > 0 and k_cut > 0 else None
+        low = (score <= thr) & seen if thr is not None else torch.zeros_like(seen)
+        rho = float(getattr(self, "trim_soft_rho", 0.0))
+        tag = "trim-soft" if rho > 0 else "trim-running"
+        if rho > 0 and step < until:
+            # 軟投影（ADMM z／λ 更新）：支撐外＝low；λ ← λ + o（支撐外，z=0）；支撐內 λ=0
+            ss = self._trim_state(pc, ("V", "C", "lam", "off"))
+            o = pc.get_opacities().squeeze(-1).detach()
+            # 上一輪支撐外的去向：被 MCMC 搬家的槽位 off 已被歸零（mcmc_density_controller.relocate_gs）=> 視為已回收
+            prev_n = int(ss.get("off_n", 0)); still = ss["off"]
+            prev_msg = ""
+            if prev_n > 0:
+                n_still = int(still.sum())
+                prev_msg = (f"｜上一輪支撐外 {prev_n:,}：已回收 {max(prev_n - n_still, 0):,}、仍存活 {n_still:,}"
+                            f"（o 中位 {float(o[still].median()) if n_still > 0 else 0:.3f}）")
+            ss["lam"] = torch.where(low, ss["lam"] + o, torch.zeros_like(o))
+            ss["off"] = low.clone()
+            ss["off_n"] = int(low.sum())
+            msg = f"支撐外 {int(low.sum()):,} 顆（λ 中位 {float(ss['lam'][low].median()) if bool(low.any()) else 0:.3f}）" + prev_msg
+        else:
+            if rho > 0:   # 增生期最後一次：把仍在支撐外的硬剪掉
+                ss = self._trim_state(pc, ("V", "C", "lam", "off"))
+                low = low | ss["off"]
+            module.density_controller._prune_points(low, pc, module.gaussian_optimizers)
+            msg = f"剪 {int(low.sum()):,} 顆"
+            if rho > 0:
+                pc._trim_state.pop("lam", None); pc._trim_state.pop("off", None); pc._trim_state.pop("off_n", None)
+        print(f"[{tag}] step {step}：{n_views} 個訓練視角累加、看到 {n_seen:,}／{seen.numel():,} 顆、未觀測 {seen.numel() - n_seen:,} 顆不剪；"
+              f"門檻 V/C {float(thr) if thr is not None else float('nan'):.3e}｜{msg}", flush=True)
+        # 重設累加器（剪枝後 N 變了 => 以新 N 重建）
+        pc._trim_state["V"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
+        pc._trim_state["C"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
+        pc._trim_state["views"] = 0
+        if step >= until:
+            self._acc_stop = True          # 增生期結束 => 不再累加（省 forward 的那點開銷）
+        return True
+
     def after_training_step(
             self,
             step: int,
@@ -528,6 +623,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
            return
         
         device =  module.gaussian_model.get_xyz.device
+
+        # ★ 2026-10-16 取代 trim：用訓練中累加的 V／C（不掃相機）；只支援 V/C 判準、週期 trim（不支援門檻剪／tile 名次）
+        if bool(getattr(self, "trim_running_vc", False)) and _tau is None:
+            if not bool(getattr(self, "trim_by_mean_contribution", False)) or not bool(getattr(self, "lean_train", False)):
+                raise RuntimeError("trim_running_vc 需要 trim_by_mean_contribution=true（判準 V/C）與 lean_train=true")
+            with torch.no_grad():
+                self._running_trim(step, module, until)
+            torch.cuda.empty_cache()
+            return
 
         push, gather = contribution_accumulator(self.K)
         blur = None
