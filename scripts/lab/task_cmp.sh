@@ -105,7 +105,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -130,6 +130,10 @@ case "$CASEARM" in
                 #   soft＝再加 GaussianSpa 式軟投影（支撐外以 rho/2·mean((o+λ)²) 拉向 0、增生期末硬剪）；本機 b10：rho 100 時 500 步內回收 83%
                 bestrun)     EXTRA+=(--model.renderer.init_args.trim_running_vc true) ;;
                 bestsoft)    EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.renderer.init_args.trim_soft_rho 100) ;;
+                # ★ 2026-10-17 使用者「降 rho 重測」：rho 100 每輪 99% 支撐外被拉死、由 MCMC 搬家（＝vpc_prune_frac 的搬家機制），b12 val −4.7 dB、
+                #   增生期後段「看得到的顆粒」2.58M -> 0.46M；降 rho 讓光度梯度能把有用的拉回支撐內（GaussianSpa 的原意）
+                bestsoft10)  EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.renderer.init_args.trim_soft_rho 10) ;;
+                bestsoft1)   EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.renderer.init_args.trim_soft_rho 1) ;;
                 bestnormal)  EXTRA+=(--model.metric.init_args.lambda_normal 0.0125) ;;
                 bestdepth)   EXTRA+=(--model.metric.init_args.depth_loss_weight.init 0.5 --model.metric.init_args.depth_loss_weight.final_factor 0.05
                                      --model.metric.init_args.depth_loss_weight.max_steps 24000) ;;
@@ -473,6 +477,7 @@ arm_desc() {
     bestgeo)    echo "normal＋單目深度 loss 合開（＝官方的幾何監督設定）｜幾何落差有多少來自幾何監督全關" ;;
     bestrun)    echo "訓練中累加 V／C 取代 trim 的全相機 record pass｜判準不變（V/C），增生期每步省 trim 的 ~30%；未觀測的不剪" ;;
     bestsoft)   echo "訓練中累加 V／C＋GaussianSpa 式軟投影（rho 100）取代硬剪｜被淘汰的慢慢拉到 0 由 MCMC 回收，增生期末硬剪" ;;
+    bestsoft10|bestsoft1) echo "同 bestsoft 但軟投影 rho ${CASEARM#bestsoft}（rho 100 時 b12 −4.7 dB）｜較弱的拉力讓有用的顆粒留在支撐內" ;;
     bestexpo)   echo "逐影像曝光補償（log 增益，訓練 loss 用）｜GT 逐幀曝光不一致是否拖累模型；評測加 psnr_ex（全域曲線）" ;;
     bestsh2|bestsh1|bestsh0) echo "SH 階數 ${CASEARM#bestsh}｜高階 SH（佔參數 78%）值不值它的 VRAM" ;;
     bestdist100|bestdist1000) echo "深度失真正則 lambda_dist ${CASEARM#bestdist}｜幾何正則對品質的影響" ;;
