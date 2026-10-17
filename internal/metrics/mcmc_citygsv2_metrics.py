@@ -67,6 +67,14 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     """另學逐影像偏移 b_k（加法）。預設關：量到的現象是乘法性的（三通道同倍增益），偏移是多餘自由度，
     本機功能測試 300 步就長到 std 0.076（顏色單位），有吸收模型本身顏色誤差的風險。"""
 
+    block_mask_dir: str = ""
+    """★ 2026-10-17 使用者「作」：塊外遮罩（`tools/block_mask44.py` 產的三值 PNG，以影像名命名；0=C 不計分、1=A 塊內、2=B 塊外且空）。
+    動機：單塊模型 73~81% 顆粒在分區盒外、合併時全丟（研究總覽 資源表）。深度＝Depth Anything（只當前處理）。
+      A 正常光度 loss
+      B 目標換成**本步的背景色**（需 `--model.random_background true`）=> 模型在 B 必須透明 = 塊外生東西就扣分
+      C 渲染值抄到 GT 並截斷梯度（同上游 `masked_pixels` 慣例：vanilla_metrics／spotless_metrics）=> L1 為 0、SSIM 視窗看到相同值
+    出處：⬜ C 類處理沿用上游慣例；🟨 隨機背景學透明度是 NeRF／3DGS 常見技巧；依分塊三值遮罩（射線幾何判定 C）⚠ 未查證是否已有人做。"""
+
     def instantiate(self, *args, **kwargs) -> "MCMCCityGSV2MetricsModule":
         return MCMCCityGSV2MetricsModule(self)
 
@@ -136,7 +144,47 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             pbar["psnr_ex"] = True
         return metrics, pbar
 
+    def _block_mask_apply(self, pl_module, step, batch, outputs):
+        import os
+        import numpy as np
+        from PIL import Image
+        name, gt = batch[1][0], batch[1][1]
+        cache = self.__dict__.setdefault("_bm_cache", {})
+        m = cache.get(name)
+        if m is None:
+            p = os.path.join(self.config.block_mask_dir, os.path.basename(str(name)))
+            if not os.path.exists(p):
+                miss = self.__dict__.setdefault("_bm_miss", set())
+                if not miss:
+                    print(f"⚠⚠ [block-mask] 找不到遮罩 {p}（該影像照常計分；之後只計數）", flush=True)
+                miss.add(name)
+                return batch, outputs
+            t = torch.from_numpy(np.array(Image.open(p)))[None, None].float()
+            m = torch.nn.functional.interpolate(t, size=tuple(gt.shape[-2:]), mode="nearest")[0, 0].to(torch.uint8)
+            cache[name] = m
+        m = m.to(gt.device, non_blocking=True)
+        bg = getattr(pl_module, "_last_bg", None)
+        if bg is None:
+            raise RuntimeError("block_mask_dir 需要 GaussianSplatting._last_bg（本步背景色）")
+        if not getattr(self, "_bm_announced", False):
+            self._bm_announced = True
+            rb = bool(pl_module.hparams.get("random_background", False))
+            print(f"[block-mask] ✅ 首次觸發 step={step} {name}：A {float((m == 1).float().mean()):.3f}／B {float((m == 2).float().mean()):.3f}／"
+                  f"C {float((m == 0).float().mean()):.3f}；隨機背景 {rb}" + ("" if rb else "  ⚠⚠ 背景固定 => B 只壓到背景色、壓不到透明"), flush=True)
+        r = outputs["render"]
+        Bm = (m == 2)[None]; Cm = (m == 0)[None]
+        gtf = gt if gt.is_floating_point() else gt.float() / 255.0
+        g2 = torch.where(Bm, bg.to(gtf.dtype).view(3, 1, 1).expand_as(gtf), gtf)
+        g2 = torch.where(Cm, r.detach().to(gtf.dtype), g2)
+        c = Cm.to(r.dtype)
+        out = dict(outputs)
+        out["render"] = r * (1 - c) + r.detach() * c
+        batch = (batch[0], (name, g2) + tuple(batch[1][2:])) + tuple(batch[2:])
+        return batch, out
+
     def get_train_metrics(self, pl_module, gaussian_model, step: int, batch, outputs) -> Tuple[Dict[str, Any], Dict[str, bool]]:
+        if getattr(self.config, "block_mask_dir", ""):
+            batch, outputs = self._block_mask_apply(pl_module, step, batch, outputs)
         if getattr(self.config, "exposure_comp", False):
             outputs = self._exposure_apply(step, batch, outputs)
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)

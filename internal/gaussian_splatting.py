@@ -540,19 +540,23 @@ class GaussianSplatting(LightningModule):
                 # params+camera (MCMC noise is added elsewhere) so recompute is exact.
                 import torch.utils.checkpoint as _ckpt
 
+                # ★ 2026-10-17 塊外遮罩（metric.block_mask_dir）要知道本步的背景色 => 記在 self._last_bg（只多存一個 3 維向量）
+                self._last_bg = self.get_background_color().to(camera.R.device)
+
                 def _render():
                     return self.renderer.training_forward(
                         self.trainer.global_step, self, camera, self.gaussian_model,
-                        bg_color=self.get_background_color().to(camera.R.device),
+                        bg_color=self._last_bg,
                         render_types=self.renderer_output_types,
                     )
                 return _ckpt.checkpoint(_render, use_reentrant=False)
+            self._last_bg = self.get_background_color().to(camera.R.device)
             return self.renderer.training_forward(
                 self.trainer.global_step,
                 self,
                 camera,
                 self.gaussian_model,
-                bg_color=self.get_background_color().to(camera.R.device),
+                bg_color=self._last_bg,
                 render_types=self.renderer_output_types,
             )
         return self.renderer(
