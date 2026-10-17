@@ -91,10 +91,12 @@ def main():
         cm, _, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(c, device=dev, eval_mode=True)
         cp = {k: v for k, v in cm.properties.items()}
         # SH 階數較低的候選（best0sh2／1／0）：shs_rest 補 0 到基準的長度 —— 高階係數為 0 與低階渲染完全等價（10-11）
-        if "shs_rest" in cp and cp["shs_rest"].shape[1] < base["shs_rest"].shape[1]:
-            r = cp["shs_rest"]
-            cp["shs_rest"] = torch.cat([r, torch.zeros((r.shape[0], base["shs_rest"].shape[1] - r.shape[1], r.shape[2]), dtype=r.dtype, device=r.device)], 1)
-            print(f"[{nm}] SH 較低：shs_rest {r.shape[1]} -> {cp['shs_rest'].shape[1]} 補 0")
+        # ⚠ 2026-10-17：eval_mode=True 載入時 SH 合併成單一 `shs`（DC 在第 0 個）=> 原本只看 `shs_rest` 的補 0 從沒生效、SH 換塊三次失敗
+        for _k in ("shs_rest", "shs"):
+            if _k in cp and _k in base and cp[_k].shape[1] < base[_k].shape[1]:
+                r = cp[_k]
+                cp[_k] = torch.cat([r, torch.zeros((r.shape[0], base[_k].shape[1] - r.shape[1], r.shape[2]), dtype=r.dtype, device=r.device)], 1)
+                print(f"[{nm}] SH 較低：{_k} {r.shape[1]} -> {cp[_k].shape[1]} 補 0")
         assert set(cp) == set(base) and all(cp[k].shape[1:] == base[k].shape[1:] for k in base), f"{nm}：屬性與基準不同（SH 階數？）"
         cmask = block_mask(cp["means"], pc)[B].to(cp["means"].device)
         variants.append((nm, {k: cp[k][cmask].detach().cpu().clone() for k in base}))
