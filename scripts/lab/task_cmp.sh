@@ -2,7 +2,7 @@
 # ★★★★★★★ 對比實驗的**標準骨架**（使用者 2026-09-13 定調：一律以 2 萬多步為基準長度）
 # 用法：bash scripts/lab/task_cmp.sh <塊> <臂> [額外 CLI 覆寫...]（最後者勝；臂清單見 --help）
 #   環境變數：STEPS（全長）／CITYGS_FAMILY（家族前綴，預設 cs_；60k 用 cs60_ 且 STEPS=60000）／CITYGS_LEAN=1（lean_train）／
-#             CITYGS_CAP（cap_max）／CITYGS_RUN_NAME（覆寫跑次名）／CITYGS_DRY=1（只印指令不執行）
+#             CITYGS_CAP（cap_max）／CITYGS_DUP44（4x4 的 dup 份數，覆寫 logs/full44_init.tsv）／CITYGS_RUN_NAME（覆寫跑次名）／CITYGS_DRY=1（只印指令不執行）
 #
 # ## 為什麼是「2 萬多步」而不是 60k
 # 60k 一趟 7.6h（lab）/ 8.8h（本機）。而判準是**四個指標的正負號模式**
@@ -80,6 +80,8 @@ if [ "$GRID" = 44 ]; then
   NCAM=$(grep -cv '^\s*$' "$_pf"); B0=0
   K44=$(awk -v b="$BLK" '$1==b{print $2}' logs/full44_init.tsv 2>/dev/null)
   [ -n "$K44" ] || { echo "⛔ logs/full44_init.tsv 沒有 block $BLK 的 dup 份數"; exit 2; }
+  # ★ 2026-10-17 自適應 cap（task_fullscene.sh alloc）：cap 降低時起始顆數要跟著 <= 0.9cap => 份數由呼叫端給
+  [ -n "${CITYGS_DUP44:-}" ] && K44=$CITYGS_DUP44
   G44=(--data.parser.block_dim "[4,4]")
   echo "4x4 網格：block $BLK、$NCAM 台相機、best 系列 init＝sfmfill_sweep44/dup$K44"
 fi
