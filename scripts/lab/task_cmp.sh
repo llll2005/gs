@@ -107,7 +107,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -120,6 +120,13 @@ case "$CASEARM" in
                 bestsh0)     EXTRA+=(--model.gaussian.init_args.sh_degree 0) ;;
                 bestdist100) EXTRA+=(--model.metric.init_args.lambda_dist 100) ;;
                 bestdist1000) EXTRA+=(--model.metric.init_args.lambda_dist 1000) ;;
+                # ★ 2026-10-18 使用者「排」：馬路一半靠地底面元（tools/inbox_diag.py [5]）；dist 100 把地底實際貢獻壓到 1.6／1.9%（官方級）
+                #   => SH1＋dist：固定 100（從 3k 起）／漸進 0->300、0->1000（從 0 線性升到最後一步）。dist 需要幾何通道 => 不能開 lean（連帶週期 trim）
+                bestsh1dist100)   EXTRA+=(--model.gaussian.init_args.sh_degree 1 --model.metric.init_args.lambda_dist 100) ;;
+                bestsh1distr300)  EXTRA+=(--model.gaussian.init_args.sh_degree 1 --model.metric.init_args.lambda_dist 300
+                                          --model.metric.init_args.dist_regularization_from_iter 0 --model.metric.init_args.lambda_dist_ramp_until "$STEPS") ;;
+                bestsh1distr1000) EXTRA+=(--model.gaussian.init_args.sh_degree 1 --model.metric.init_args.lambda_dist 1000
+                                          --model.metric.init_args.dist_regularization_from_iter 0 --model.metric.init_args.lambda_dist_ramp_until "$STEPS") ;;
                 bestnotrim)  EXTRA+=(--model.renderer.init_args.diable_trimming true) ;;
                 # ★ 2026-10-10 使用者：backward 飽和跳過＋block 內先加總的 60k 分數判定（verify2：梯度大元素 p99.9 差 1.8e-4、2,000 步 held-out 在噪音內、乾淨計時 backward 約 -40%）
                 bestfast)    EXTRA+=(--model.renderer.init_args.bwd_sat_skip true --model.renderer.init_args.bwd_reduce true) ;;
@@ -460,7 +467,7 @@ fi
 #   使用者規則：同家族已有舊跑次且**要比時間**的臂不開（牆鐘／it/s 會不可比）；需要幾何通道的臂（cdist*）不可開。
 #   resolved config 會多一項 lean_train => diff 的預期變數數 +1。
 if [ "${CITYGS_LEAN:-0}" = 1 ]; then
-  case "$ARM" in cdist*|best0dist*|best1dist*|bestdist*|best*normal|best*depth|best*geo) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
+  case "$ARM" in cdist*|best0dist*|best1dist*|bestdist*|best*dist*|best*normal|best*depth|best*geo) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
   EXTRA+=(--model.renderer.init_args.lean_train true); EXP=$((EXP + 1))
   echo "lean_train=true（CITYGS_LEAN=1）"
 fi
@@ -496,6 +503,7 @@ arm_desc() {
     bestexpo)   echo "逐影像曝光補償（log 增益，訓練 loss 用）｜GT 逐幀曝光不一致是否拖累模型；評測加 psnr_ex（全域曲線）" ;;
     bestsh2|bestsh1|bestsh0) echo "SH 階數 ${CASEARM#bestsh}｜高階 SH（佔參數 78%）值不值它的 VRAM" ;;
     bestdist100|bestdist1000) echo "深度失真正則 lambda_dist ${CASEARM#bestdist}｜幾何正則對品質的影響" ;;
+    bestsh1dist100|bestsh1distr300|bestsh1distr1000) echo "SH1＋深度失真正則（${CASEARM#bestsh1}；r＝從 0 線性升到最後一步）｜把馬路的地底面元逼回表面（堆疊懲罰）" ;;
     bestcdu100|bestcdu75|bestcdu25) echo "增生期長度（densify_until）= 總步數的 ${CASEARM#bestcdu}%｜增生期多長最划算" ;;
     bestnogate) echo "MCMC 噪音閘門關（noise_gate_eps 0）｜噪音閘門是否有害" ;;
     *)          echo "（未登記；看 EXTRA 旗標）" ;;

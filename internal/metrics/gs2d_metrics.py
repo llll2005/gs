@@ -9,6 +9,9 @@ class GS2DMetrics(VanillaMetrics):
     lambda_dist: float = 0.
     normal_regularization_from_iter: int = 7000
     dist_regularization_from_iter: int = 3000
+    lambda_dist_ramp_until: int = 0
+    """★ 2026-10-18 使用者「堆疊懲罰從 0 逐步加強」：>0 時 dist 權重從 dist_regularization_from_iter 線性升到此步才達 lambda_dist
+    （0＝原行為：到 from_iter 一步跳到 lambda_dist）。動機：dist 1000 從頭固定 => −2~3 dB；增生初期幾何未成形時不宜強壓。"""
 
     def instantiate(self, *args, **kwargs) -> MetricImpl:
         return GS2DMetricsImpl(self)
@@ -21,6 +24,13 @@ class GS2DMetricsImpl(VanillaMetricsImpl):
         # regularization
         lambda_normal = self.config.lambda_normal if step > self.config.normal_regularization_from_iter else 0.0
         lambda_dist = self.config.lambda_dist if step > self.config.dist_regularization_from_iter else 0.0
+        _ru = int(getattr(self.config, "lambda_dist_ramp_until", 0) or 0)
+        if _ru > 0 and lambda_dist > 0:
+            _f0 = self.config.dist_regularization_from_iter
+            lambda_dist = lambda_dist * min(1.0, max(0.0, (step - _f0) / max(_ru - _f0, 1)))
+            if not getattr(self, "_dist_ramp_announced", False) and lambda_dist > 0 and step <= _ru:   # sanity check 用假步數，排除
+                self._dist_ramp_announced = True
+                print(f"[dist-ramp] ✅ 首次觸發 step={step}：權重 {lambda_dist:.4g}（線性升到 step {_ru} 達 {self.config.lambda_dist:g}）", flush=True)
 
         # 2026-08-26：權重為 0 時**跳過計算**，不要算完再乘 0。
         # 原本兩項都是無條件全幅逐像素計算、且帶 grad 進 loss ⇒ backward 也走一遍。
@@ -45,6 +55,8 @@ class GS2DMetricsImpl(VanillaMetricsImpl):
         metrics["normal_loss"] = normal_loss
         prog_bar["normal_loss"] = False
         metrics["dist_loss"] = dist_loss
+        metrics["dist_w"] = zero + lambda_dist
+        prog_bar["dist_w"] = False
         prog_bar["dist_loss"] = False
 
         return metrics, prog_bar
