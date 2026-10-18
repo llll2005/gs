@@ -2,7 +2,7 @@
 # ★★★★★★★ 對比實驗的**標準骨架**（使用者 2026-09-13 定調：一律以 2 萬多步為基準長度）
 # 用法：bash scripts/lab/task_cmp.sh <塊> <臂> [額外 CLI 覆寫...]（最後者勝；臂清單見 --help）
 #   環境變數：STEPS（全長）／CITYGS_FAMILY（家族前綴，預設 cs_；60k 用 cs60_ 且 STEPS=60000）／CITYGS_LEAN=1（lean_train）／
-#             CITYGS_CAP（cap_max）／CITYGS_DUP44（4x4 的 dup 份數，覆寫 logs/full44_init.tsv）／CITYGS_RUN_NAME（覆寫跑次名）／CITYGS_DRY=1（只印指令不執行）
+#             CITYGS_CAP（cap_max）／CITYGS_SAVE_ITERS（中間存檔步數，預設 []＝只存最終）／CITYGS_DUP44（4x4 的 dup 份數，覆寫 logs/full44_init.tsv）／CITYGS_RUN_NAME（覆寫跑次名）／CITYGS_DRY=1（只印指令不執行）
 #
 # ## 為什麼是「2 萬多步」而不是 60k
 # 60k 一趟 7.6h（lab）/ 8.8h（本機）。而判準是**四個指標的正負號模式**
@@ -535,4 +535,8 @@ run_fit "${CITYGS_RUN_NAME:-${RUN_PREFIX}${CITYGS_FAMILY:-cs_}${ARM}}" "$BLK" \
   --trainer.max_steps "$STEPS" \
   --model.gaussian.init_args.optimization.means_lr_scheduler.init_args.max_steps "$STEPS" \
   --model.density.init_args.densify_until_iter "$HALF" \
+  `# ★ 2026-10-18 使用者「只存最終 ckpt」：中間存檔（500/1500/15000/30000/42000）讓 lab 1.8 TB 在 10-17 寫滿、` \
+  `#   之後 20 個任務當場失敗；最終步本來就一定存。要中間檔（例：計時工具要 14999／41999 起點）=> CITYGS_SAVE_ITERS='[14999,41999]'。` \
+  `#   ⚠ post_run_data 的 heldout1499／geom1499（早期對照）因此不再產生。` \
+  --save_iterations "${CITYGS_SAVE_ITERS:-[]}" \
   "${EXTRA[@]}" "$@"
