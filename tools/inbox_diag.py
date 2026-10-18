@@ -29,6 +29,7 @@ def main():
     ap.add_argument("--dark_kp", type=float, default=0.10, help="SfM 關鍵點的暗門檻（暗而無紋理處關鍵點少，門檻放寬一點）")
     ap.add_argument("--below", type=float, default=0.01, help="地面以下多少才算地底（場景單位；0.01 ≈ 1 m）")
     ap.add_argument("--no_render", action="store_true", help="只算地底統計（CPU 也行）")
+    ap.add_argument("--hidden_all", action="store_true", help="另用**全部**訓練相機量完全沒貢獻（從未被混合）的顆粒比例（建築內部是否中空）")
     ap.add_argument("--ref_ckpt", default=None, help="相機與分區盒取自這個 ckpt（評官方模型時給我方同塊 ckpt => 同一批視角、同一個盒）")
     a = ap.parse_args()
     dev = torch.device("cuda")
@@ -81,6 +82,17 @@ def main():
 
     if a.no_render:
         return
+    if a.hidden_all:
+        dp0 = pcfg.instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ref_ckpt or a.ckpt)), global_rank=0)
+        ts0 = dp0.get_outputs().train_set
+        bg0 = torch.zeros(3, device=dev); C0 = torch.zeros(means.shape[0], device=dev); V0 = torch.zeros_like(C0)
+        with torch.no_grad():
+            for i in range(len(ts0.cameras)):
+                mean_, cov_ = renderer(ts0.cameras[i].to_device(dev), model, bg_color=bg0, record_transmittance=True, record_coverage=True)
+                C0 += cov_.reshape(-1).float(); V0 += mean_.reshape(-1) * cov_.reshape(-1).float()
+        hid = C0 == 0; tiny = V0 < 1.0          # V < 1 ＝ 全部視角加起來不到一個像素的混合量
+        print(f"[6 中空] 全部 {len(ts0.cameras)} 台訓練相機：從未被混合（C=0）{100 * float(hid.float().mean()):.2f}%（盒內 {100 * float(hid[inb].float().mean()):.2f}%），"
+              f"其中 opacity>0.5 的 {100 * float((hid & (o > 0.5)).float().mean()):.2f}%；總混合量 V<1 像素 {100 * float(tiny.float().mean()):.2f}%（盒內 {100 * float(tiny[inb].float().mean()):.2f}%）", flush=True)
     # ── 1、3 需要渲染
     dp = pcfg.instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ref_ckpt or a.ckpt)), global_rank=0)
     ts = dp.get_outputs().train_set
