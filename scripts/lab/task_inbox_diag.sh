@@ -1,6 +1,6 @@
 #!/bin/bash
 # ★★★★★ 使用者 10-18 目視 g44s15k_best1sh1_inbox：黑色變透明、地底大高斯、邊緣擬合差 => tools/inbox_diag.py 逐一量，
-#   並和 best1 60k、SH1 60k、官方 release 同塊比（相機與分區盒一律取自我方 15k＋SH1 的同塊 ckpt）。
+#   並和 best1 60k、SH1 60k、單目深度／normal＋深度／深度失真 100 三個幾何正則臂、官方 release 同塊比（10-18 加：馬路靠地底面元撐的比例＝[5]）（相機與分區盒一律取自我方 15k＋SH1 的同塊 ckpt）。
 # 用法（佇列）：[solo] bash scripts/lab/task_inbox_diag.sh <塊>
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac
 set -u
@@ -13,6 +13,9 @@ bad=0
 for c in "$REF" \
          "$(ls outputs/lab/g44_best1/blocks/block_$B/checkpoints/*step=60000.ckpt | head -1)" \
          "$(ls outputs/lab/g44_best1sh1/blocks/block_$B/checkpoints/*step=60000.ckpt | head -1)" \
+         "$(ls outputs/lab/g44_best1depth/blocks/block_$B/checkpoints/*step=60000.ckpt | head -1)" \
+         "$(ls outputs/lab/g44_best1geo/blocks/block_$B/checkpoints/*step=60000.ckpt | head -1)" \
+         "$(ls outputs/lab/g44_best1dist100/blocks/block_$B/checkpoints/*step=60000.ckpt | head -1)" \
          "$(ls $O/blocks/block_$B/checkpoints/*step=60000.ckpt | head -1)"; do
   echo "== $c" | tee -a "$L"
   conda run -n gspl --no-capture-output python tools/inbox_diag.py --ckpt "$c" --ref_ckpt "$REF" --views 24 2>&1 \
