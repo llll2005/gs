@@ -107,7 +107,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000|bestsh1softm1)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -122,6 +122,8 @@ case "$CASEARM" in
                 bestdist1000) EXTRA+=(--model.metric.init_args.lambda_dist 1000) ;;
                 # ★ 2026-10-18 使用者「排」：馬路一半靠地底面元（tools/inbox_diag.py [5]）；dist 100 把地底實際貢獻壓到 1.6／1.9%（官方級）
                 #   => SH1＋dist：固定 100（從 3k 起）／漸進 0->300、0->1000（從 0 線性升到最後一步）。dist 需要幾何通道 => 不能開 lean（連帶週期 trim）
+                # ★ 2026-10-18 使用者：負 rho 作用在 15k＋SH1（反向軟投影：支撐外的 opacity 往 1 推）；對照＝g44s15k_best1sh1（rho 0）
+                bestsh1softm1)    EXTRA+=(--model.gaussian.init_args.sh_degree 1 --model.renderer.init_args.trim_running_vc true --model.renderer.init_args.trim_soft_rho=-1) ;;
                 bestsh1dist100)   EXTRA+=(--model.gaussian.init_args.sh_degree 1 --model.metric.init_args.lambda_dist 100) ;;
                 bestsh1distr300)  EXTRA+=(--model.gaussian.init_args.sh_degree 1 --model.metric.init_args.lambda_dist 300
                                           --model.metric.init_args.dist_regularization_from_iter 0 --model.metric.init_args.lambda_dist_ramp_until "$STEPS") ;;
@@ -504,6 +506,7 @@ arm_desc() {
     bestsh2|bestsh1|bestsh0) echo "SH 階數 ${CASEARM#bestsh}｜高階 SH（佔參數 78%）值不值它的 VRAM" ;;
     bestdist100|bestdist1000) echo "深度失真正則 lambda_dist ${CASEARM#bestdist}｜幾何正則對品質的影響" ;;
     bestsh1dist100|bestsh1distr300|bestsh1distr1000) echo "SH1＋深度失真正則（${CASEARM#bestsh1}；r＝從 0 線性升到最後一步）｜把馬路的地底面元逼回表面（堆疊懲罰）" ;;
+    bestsh1softm1) echo "SH1＋累加式 trim＋軟投影 rho −1（反向：把 V/C 最低 10% 的 opacity 往 1 推）｜rho 1/10/100 全輸，看反方向會不會贏" ;;
     bestcdu100|bestcdu75|bestcdu25) echo "增生期長度（densify_until）= 總步數的 ${CASEARM#bestcdu}%｜增生期多長最划算" ;;
     bestnogate) echo "MCMC 噪音閘門關（noise_gate_eps 0）｜噪音閘門是否有害" ;;
     *)          echo "（未登記；看 EXTRA 旗標）" ;;

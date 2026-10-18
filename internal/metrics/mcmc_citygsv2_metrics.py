@@ -226,7 +226,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         # ★ 2026-10-16 GaussianSpa 式軟投影（renderer.trim_soft_rho；狀態掛在模型上）：支撐外的顆粒拉向 opacity 0
         _rho = float(getattr(getattr(pl_module, "renderer", None), "trim_soft_rho", 0.0) or 0.0)
         _st = getattr(gaussian_model, "_trim_state", None)
-        if _rho > 0 and _st and _st.get("off") is not None:
+        if _rho != 0 and _st and _st.get("off") is not None:
             _off = _st["off"]; _lam = _st["lam"]
             if _off.shape[0] == opacities.shape[0] and bool(_off.any()):
                 _spa = 0.5 * _rho * ((opacities[_off] + _lam[_off]) ** 2).sum() / opacities.shape[0]
@@ -235,7 +235,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 pbar["spa"] = False
                 if not getattr(self, "_spa_announced", False):
                     self._spa_announced = True
-                    print(f"[trim-soft] ✅ 首次觸發 step={step}：支撐外 {int(_off.sum()):,} 顆被拉向 opacity 0，rho={_rho:g}，"
+                    print(f"[trim-soft] ✅ 首次觸發 step={step}：支撐外 {int(_off.sum()):,} 顆被拉向 opacity {'0' if _rho > 0 else '1（rho<0 反向）'}，rho={_rho:g}，"
                           f"支撐外 o 中位 {float(opacities[_off].median()):.3f}", flush=True)
 
         metrics["op_reg"] = opacity_reg.detach()

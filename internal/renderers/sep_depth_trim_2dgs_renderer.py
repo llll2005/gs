@@ -568,8 +568,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
         thr = torch.kthvalue(score.float().cpu(), max(1, min(k_cut, n_seen))).values.to(score.device) if n_seen > 0 and k_cut > 0 else None
         low = (score <= thr) & seen if thr is not None else torch.zeros_like(seen)
         rho = float(getattr(self, "trim_soft_rho", 0.0))
-        tag = "trim-soft" if rho > 0 else "trim-running"
-        if rho > 0 and step < until:
+        tag = "trim-soft" if rho != 0 else "trim-running"
+        if rho != 0 and step < until:   # ★ 10-18 rho<0＝反向（把支撐外的 opacity 往 1 推；使用者要的對照）
             # 軟投影（ADMM z／λ 更新）：支撐外＝low；λ ← λ + o（支撐外，z=0）；支撐內 λ=0
             ss = self._trim_state(pc, ("V", "C", "lam", "off"))
             o = pc.get_opacities().squeeze(-1).detach()
@@ -585,12 +585,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
             ss["off_n"] = int(low.sum())
             msg = f"支撐外 {int(low.sum()):,} 顆（λ 中位 {float(ss['lam'][low].median()) if bool(low.any()) else 0:.3f}）" + prev_msg
         else:
-            if rho > 0:   # 增生期最後一次：把仍在支撐外的硬剪掉
+            if rho != 0:   # 增生期最後一次：把仍在支撐外的硬剪掉
                 ss = self._trim_state(pc, ("V", "C", "lam", "off"))
                 low = low | ss["off"]
             module.density_controller._prune_points(low, pc, module.gaussian_optimizers)
             msg = f"剪 {int(low.sum()):,} 顆"
-            if rho > 0:
+            if rho != 0:
                 pc._trim_state.pop("lam", None); pc._trim_state.pop("off", None); pc._trim_state.pop("off_n", None)
         print(f"[{tag}] step {step}：{n_views} 個訓練視角累加、看到 {n_seen:,}／{seen.numel():,} 顆、未觀測 {seen.numel() - n_seen:,} 顆不剪；"
               f"門檻 V/C {float(thr) if thr is not None else float('nan'):.3e}｜{msg}", flush=True)
