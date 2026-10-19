@@ -1,4 +1,5 @@
 from typing import Tuple
+import math
 from dataclasses import dataclass
 from typing import Any
 import torch
@@ -97,6 +98,94 @@ class SparseGaussianAdam(OptimizerConfig):
             *args,
             **kwargs,
         )
+
+@dataclass
+class FusedAdam(OptimizerConfig):
+    """★ 2026-10-19 融合／稀疏 Adam（使用者 10-19「照建議做」；實驗分析 15 §2）。
+
+    為什麼：Adam 佔每步 26%（b6、N 2.34M：增生期 15.3／收割期 13.9 ms；lab 10-19 `logs/best1_time_b6_1019_0823.log`），
+    而 torch 2.0.1 的 foreach Adam 對全部參數掃約 8 遍；內建 `fused=True` 在 2.0.1 反而慢 2.3~3.2 倍（已關閉的線）。
+    => 光柵器 extension 裡的單一 kernel（`rasterize_points.cu` FusedAdamCUDA）：一遍讀 p/g/m/v、寫 p/m/v。
+
+    sparse=False（B）  每顆每步照樣更新；算式與運算順序照 torch 2.0.1 foreach Adam（含 bias correction、逐張量 step 計數）
+                       => 訓練行為不變（驗證：tools/check_lean_render.py adamcheck，與 torch 逐位元比對）。
+    sparse=True（A）   只更新本步可見（radii>0，`visibility_filter`）的列；不可見的列 p／m／v 整列不動
+                       （gsplat SelectiveAdam／Taming 3DGS 同類 🟨；我方保留 bias correction）。
+                       ⚠ 行為改變：opacity 二元熵與 scale 正則只在可見時作用（每步約 1/10 的顆粒）；不可見的顆粒不再靠動量漂移
+                       => 要跑品質臂（換塊評測＋F1）才能採用。
+    ⚠ state 的鍵、形狀、dtype 與 torch.optim.Adam 完全相同（繼承它）=> density controller 的 cat／prune／relocate 與 ckpt 照用。
+    """
+    sparse: bool = False
+    variant: int = -1          # -1＝光柵器預設（FUSED_ADAM_VARIANT）；0／1 只給驗證工具用
+
+    def instantiate(self, params, lr: float, *args, **kwargs) -> Any:
+        return _FusedAdam(params, lr=lr, sparse=self.sparse, variant=self.variant, **kwargs)
+
+
+class _FusedAdam(torch.optim.Adam):
+    def __init__(self, params, lr, sparse=False, variant=-1, **kwargs):
+        super().__init__(params, lr=lr, **kwargs)
+        try:
+            from diff_trim_surfel_rasterization import fused_adam_
+        except ImportError as e:
+            raise RuntimeError("FusedAdam 需要有 fused_adam_ 的光柵器 —— 沒重編（rm -rf build 後重裝；lab 用 lab_pull.sh）") from e
+        self._fused = fused_adam_
+        self.sparse = bool(sparse)
+        self.variant = None if int(variant) < 0 else int(variant)
+        self.visibility = None
+        self._announced = False
+        self._n_mismatch = 0
+
+    def on_after_backward(self, outputs, batch, gaussian_model, global_step, pl_module):
+        # 由 gaussian model 的 _add_optimizer_after_backward_hook_if_available 掛上；在 density controller 的 after_backward 之後
+        if self.sparse:
+            self.visibility = outputs["visibility_filter"]
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        for group in self.param_groups:
+            if group["weight_decay"] != 0 or group["amsgrad"] or group["maximize"]:
+                raise RuntimeError("FusedAdam 只支援 weight_decay=0、amsgrad=False、maximize=False")
+            b1, b2 = group["betas"]
+            lr, eps = group["lr"], group["eps"]
+            for p in group["params"]:
+                if p.grad is None:          # 同 torch：本步沒梯度的參數（例如 densify 後剛換成新張量）整個跳過
+                    continue
+                st = self.state[p]
+                if len(st) == 0:            # 同 torch 2.0.1 _init_group（非 capturable／fused）
+                    st["step"] = torch.tensor(0.)
+                    st["exp_avg"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                    st["exp_avg_sq"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                st["step"] += 1
+                t = float(st["step"])
+                bc1 = 1 - b1 ** t
+                bc2 = 1 - b2 ** t
+                step_size = (lr / bc1) * -1          # 同 torch：double 算好再交給 kernel（轉 float）
+                bc2_sqrt = math.sqrt(bc2)
+                mask = None
+                if self.sparse and self.visibility is not None:
+                    if self.visibility.shape[0] == p.shape[0]:
+                        mask = self.visibility.contiguous()
+                    else:                   # densify 剛改了顆數 => 這步這個參數走稠密（極少發生）
+                        self._n_mismatch += 1
+                        if self._n_mismatch == 1:
+                            print(f"[fused-adam] ⚠ 稀疏遮罩 {self.visibility.shape[0]:,} 列 ≠ 參數 {p.shape[0]:,} 列"
+                                  f"（{group.get('name')}；densify 剛改了顆數）=> 這步走稠密（之後不再印）", flush=True)
+                if p.grad.dtype != torch.float32 or not p.grad.is_contiguous():
+                    raise RuntimeError(f"FusedAdam：{group.get('name')} 的梯度不是 contiguous float32")
+                self._fused(p, p.grad, st["exp_avg"], st["exp_avg_sq"], mask, b1, b2, eps, step_size, bc2_sqrt, self.variant)
+                if not self._announced:
+                    self._announced = True
+                    vis = (f"、本步可見 {int(mask.sum()):,}／{mask.numel():,}（{float(mask.float().mean()):.1%}）" if mask is not None
+                           else ("、⚠ 稀疏模式但這步沒有遮罩（走稠密）" if self.sparse else ""))
+                    print(f"[fused-adam] ✅ 首次觸發：{'稀疏' if self.sparse else '稠密'}融合 Adam（{group.get('name')}，"
+                          f"{p.numel():,} 個元素{vis}）", flush=True)
+        return loss
+
 
 @dataclass
 class LowPrecMomentAdam(OptimizerConfig):

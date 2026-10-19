@@ -21,7 +21,7 @@
   visible python tools/check_lean_render.py visible --ckpt <ckpt> [--ncam 0] [--fast 1]
           每個訓練視角看得到／有梯度的顆粒比例（全部、盒內）=> 稀疏 Adam 能省多少的上限
   adamcheck python tools/check_lean_render.py adamcheck --ckpt <ckpt>
-          fused Adam vs 預設 foreach：同梯度 1 步／50 步的參數差（以更新量為單位）與計時
+          ★ 10-19：我方融合／稀疏 Adam vs torch foreach：逐位元比對（1／50 步）與 optimizer.step 計時
 """
 import argparse
 import os
@@ -270,8 +270,16 @@ def cmd_profile(a):
     for p in params.values():
         p.requires_grad_(True)
     # 與訓練同構：每個參數一個 param group（訓練是 means 一個 optimizer＋其餘一個 optimizer，共 6 組）
-    opt = torch.optim.Adam([{"params": [p], "lr": 1e-6} for p in params.values()], eps=1e-15,
-                           **({"fused": True} if getattr(a, "fused", 0) else {}))
+    _adam = getattr(a, "adam", "torch")
+    if _adam in ("fused", "sparse"):           # ★ 10-19 我方融合／稀疏 Adam（internal/optimizers.py FusedAdam）
+        from internal.optimizers import _FusedAdam
+        opt = _FusedAdam([{"params": [p], "lr": 1e-6, "name": k} for k, p in params.items()], lr=0.0, eps=1e-15,
+                         sparse=(_adam == "sparse"))
+    else:
+        opt = torch.optim.Adam([{"params": [p], "lr": 1e-6} for p in params.values()], eps=1e-15,
+                               **({"fused": True} if getattr(a, "fused", 0) else {}))
+    ST = ["A_forward", "B_loss", "C_backward", "D_adam", "E_trim_record_1cam"]
+    st_ms = {k: 0.0 for k in ST}
     bg = torch.zeros(3, device=dev)
     idx = np.linspace(0, len(cams) - 1, max(a.steps, 1)).round().astype(int).tolist()
     tg = {}
@@ -286,17 +294,30 @@ def cmd_profile(a):
         cam = cams[c].to_device(dev)
         tgt = tgt_for(cam, c)
         opt.zero_grad(set_to_none=True)
+        # ★ 10-19 階段時間改用 CUDA event（每段同步）：backward 跑在 autograd 執行緒，record_function 抓不到它的 kernel（舊版 C_backward 恆為 0）
+        ev = [torch.cuda.Event(enable_timing=True) for _ in range(len(ST) + 1)]
+        torch.cuda.synchronize(); ev[0].record()
         with record_function("A_forward"):
             out = renderer.training_forward(0, None, cam, model, bg, **TF)
+        ev[1].record()
         with record_function("B_loss"):
             img = out["render"]
             loss = 0.8 * (img - tgt).abs().mean() + 0.2 * (1 - ssim(img, tgt))
+        ev[2].record()
         with record_function("C_backward"):
             loss.backward()
+        ev[3].record()
+        if _adam == "sparse":
+            opt.visibility = out["visibility_filter"]
         with record_function("D_adam"):
             opt.step()
+        ev[4].record()
         with record_function("E_trim_record_1cam"), torch.no_grad():
             renderer(cam, model, bg_color=bg, record_transmittance=True, record_coverage=True)
+        ev[5].record(); torch.cuda.synchronize()
+        if prof_ranges:
+            for j, k in enumerate(ST):
+                st_ms[k] += ev[j].elapsed_time(ev[j + 1])
 
     for c in idx[:3]:
         one(c, False)
@@ -307,13 +328,12 @@ def cmd_profile(a):
         torch.cuda.synchronize()
     S = len(idx)
     ka = prof.key_averages()
-    print(f"N={model.n_gaussians:,}  lean={a.lean}  fused_adam={getattr(a, 'fused', 0)}  步數={S}（每步換一台相機）  ckpt={os.path.basename(a.ckpt)}")
+    print(f"N={model.n_gaussians:,}  lean={a.lean}  adam={_adam}  步數={S}（每步換一台相機）  ckpt={os.path.basename(a.ckpt)}")
     print("   生效旗標：" + _flag_str(renderer, TF))
-    print("── 階段（kernel 時間，ms/步；以 record_function 歸屬）")
-    for nm in ["A_forward", "B_loss", "C_backward", "D_adam", "E_trim_record_1cam"]:
-        e = [k for k in ka if k.key == nm]
-        if e:
-            print(f"   {nm:<22} {e[0].cuda_time_total / 1e3 / S:8.2f}")
+    print("── 階段（GPU 時間，ms/步；CUDA event、每段同步）")
+    for nm in ST:
+        print(f"   {nm:<22} {st_ms[nm] / S:8.2f}")
+    print(f"   {'（A~D 合計＝一個訓練步）':<20} {sum(st_ms[k] for k in ST[:4]) / S:8.2f}")
 
     def bucket(n):
         if "renderCUDA" in n:
@@ -329,8 +349,10 @@ def cmd_profile(a):
         if re.search(r"multi_tensor|[Aa]dam", n):
             return "Adam（逐參數）"
         return "其他 PyTorch 小運算（逐顆／逐像素）"
-    ker = [k for k in ka if k.self_cuda_time_total > 0 and k.key not in
-           ("A_forward", "B_loss", "C_backward", "D_adam", "E_trim_record_1cam")]
+    # ★ 10-19 只算 GPU 上的 kernel 事件：CPU 端的 aten 運算子、autograd 函式、cudaLaunchKernel 也帶有 self_cuda_time
+    #   （＝它們發出的 kernel），一起加會把同一個 kernel 算兩三次（舊版「其他 PyTorch 小運算 63%」就是這樣來的）
+    from torch.autograd import DeviceType
+    ker = [k for k in ka if k.device_type == DeviceType.CUDA and k.self_cuda_time_total > 0]
     tot = sum(k.self_cuda_time_total for k in ker)
     b = {}
     for k in ker:
@@ -344,18 +366,27 @@ def cmd_profile(a):
 
 
 def cmd_adamcheck(a):
-    """fused Adam vs 預設（foreach）：同一組梯度、同一起點，走 1 步與 50 步後比參數差，並計時。
-    差異以「該參數這段期間的更新量」為單位（相對差 ~1e-6 = 浮點捨入等級，與 atomic 順序不固定同級）。"""
+    """★ 2026-10-19 改版：我方融合／稀疏 Adam（internal/optimizers.py FusedAdam）vs torch 預設 foreach Adam。
+    同一個 ckpt、同一組真實梯度（1 台相機的光度 loss）、同一起點，走 1 步與 50 步：
+      稠密（B）  參數／m／v 必須與 foreach **逐位元相同**（運算順序照 torch 2.0.1；合成測試 50 步 100%）
+      稀疏（A）  遮罩＝這台相機的 radii>0；可見列必須與稠密逐位元相同、不可見列不動（只驗 1 步）
+    並計時 optimizer.step（CUDA event 中位數）。舊版比的是 torch 內建 fused=True（2.0.1 慢 2.3~3.2 倍，已關閉）。"""
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     from internal.utils.ssim import ssim
+    from internal.optimizers import _FusedAdam
     dev = torch.device("cuda")
     model, renderer, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
         a.ckpt, device=dev, eval_mode=False, pre_activate=False)
+    renderer.lean_train = True
+    renderer._lean_announced = True
     ck = torch.load(a.ckpt, map_location="cpu")
     lrs = {g["name"]: g["lr"] for o in ck.get("optimizer_states", []) for g in o["param_groups"] if "name" in g}
     dmh = ck["datamodule_hyper_parameters"]
-    cam = dmh["parser"].instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)),
-                                    global_rank=0).get_outputs().train_set.cameras[0].to_device(dev)
+    _pp = dmh["parser"]
+    if getattr(_pp, "points_from", None) == "ply" and not os.path.exists(os.path.join(dmh["path"], _pp.ply_file)):
+        _pp.points_from = "random"
+    cam = _pp.instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)),
+                          global_rank=0).get_outputs().train_set.cameras[0].to_device(dev)
     del ck
     params = dict(model.gaussians.items())
     for p in params.values():
@@ -364,16 +395,24 @@ def cmd_adamcheck(a):
     out = renderer.training_forward(0, None, cam, model, bg)
     tgt = torch.rand(out["render"].shape, device=dev, generator=torch.Generator(device=dev).manual_seed(7))
     (0.8 * (out["render"] - tgt).abs().mean() + 0.2 * (1 - ssim(out["render"], tgt))).backward()
+    vis = out["visibility_filter"].detach().clone()
     grads = {k: p.grad.detach().clone() for k, p in params.items() if p.grad is not None}
     p0 = {k: params[k].detach().clone() for k in grads}
-    print(f"N={model.n_gaussians:,}  lr（取自 ckpt）：" + "  ".join(f"{k}={lrs.get(k, 1e-3):.2e}" for k in grads))
+    N = model.n_gaussians
+    print(f"N={N:,}  本台相機可見 {int(vis.sum()):,}（{float(vis.float().mean()):.1%}）  lr（取自 ckpt）：" +
+          "  ".join(f"{k}={lrs.get(k, 1e-3):.2e}" for k in grads))
     del out, model, renderer
     torch.cuda.empty_cache()
 
-    def run(fused, steps):
+    def run(kind, steps):
         ps = {k: torch.nn.Parameter(v.clone()) for k, v in p0.items()}
-        opt = torch.optim.Adam([{"params": [ps[k]], "lr": lrs.get(k, 1e-3)} for k in ps], eps=1e-15,
-                               **({"fused": True} if fused else {}))
+        groups = [{"params": [ps[k]], "lr": lrs.get(k, 1e-3), "name": k} for k in ps]
+        if kind == "torch":
+            opt = torch.optim.Adam(groups, lr=0.0, eps=1e-15)
+        else:
+            opt = _FusedAdam(groups, lr=0.0, eps=1e-15, sparse=(kind == "sparse"))
+            opt._announced = True
+            opt.visibility = vis
         ts = []
         for i in range(steps):
             for k in ps:
@@ -381,20 +420,33 @@ def cmd_adamcheck(a):
             e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
             e0.record(); opt.step(); e1.record(); torch.cuda.synchronize()
             ts.append(e0.elapsed_time(e1))
-        return {k: v.detach() for k, v in ps.items()}, float(np.median(ts[2:] if len(ts) > 4 else ts))
+        st = {k: (opt.state[ps[k]]["exp_avg"], opt.state[ps[k]]["exp_avg_sq"]) for k in ps}
+        return {k: v.detach() for k, v in ps.items()}, st, float(np.median(ts[2:] if len(ts) > 4 else ts))
 
     for steps in (1, 50):
-        A, ta = run(False, steps)
-        A2, _ = run(False, steps)
-        B, tb = run(True, steps)
-        print(f"── {steps} 步（同一組梯度重複套用）：optimizer.step 中位 foreach {ta:.2f} ms -> fused {tb:.2f} ms（{100 * (tb / ta - 1):+.1f}%）")
-        for k in A:
-            upd = (A[k] - p0[k]).abs().max().item()
-            d = (A[k] - B[k]).abs().max().item()
-            d2 = (A[k] - A2[k]).abs().max().item()
-            print(f"   {k:<12} 更新量最大 {upd:.3e}  fused 與 foreach 最大差 {d:.3e}（= 更新量的 {d / max(upd, 1e-30):.1e}）"
-                  f"  foreach 重跑差 {d2:.1e}")
-        del A, A2, B
+        A, sa, ta = run("torch", steps)
+        B, sb, tb = run("fused", steps)
+        tot = sum(A[k].numel() for k in A)
+        eq = sum(int(torch.count_nonzero(A[k] == B[k])) for k in A)       # ⚠ bool 的 .sum() 會先轉 int64（8 倍記憶體）
+        meq = sum(int(torch.count_nonzero(sa[k][0] == sb[k][0])) for k in A)
+        veq = sum(int(torch.count_nonzero(sa[k][1] == sb[k][1])) for k in A)
+        line = f"── {steps} 步：optimizer.step 中位 torch foreach {ta:.2f} ms -> 融合 {tb:.2f} ms（{100 * (tb / ta - 1):+.1f}%）"
+        if steps == 1:
+            C, sc, tc = run("sparse", steps)
+            ok_v = all(bool((C[k][vis] == B[k][vis]).all()) for k in A)
+            ok_i = all(bool((C[k][~vis] == p0[k][~vis]).all()) for k in A)
+            line += f" -> 稀疏 {tc:.2f} ms（{100 * (tc / ta - 1):+.1f}%）"
+            del C, sc
+        else:
+            C, sc, tc = run("sparse", steps)
+            line += f" -> 稀疏 {tc:.2f} ms（{100 * (tc / ta - 1):+.1f}%）"
+            del C, sc
+        print(line)
+        print(f"   稠密 vs torch 逐位元相同：參數 {eq / tot:.6%}  m {meq / tot:.6%}  v {veq / tot:.6%}"
+              + ("  ✅" if eq == tot and meq == tot and veq == tot else "  ⛔ 不完全相同"))
+        if steps == 1:
+            print(f"   稀疏：可見列與稠密逐位元相同 {ok_v}、不可見列不動 {ok_i}" + ("  ✅" if ok_v and ok_i else "  ⛔"))
+        del A, B, sa, sb
 
 
 def _cmp(x, y):
@@ -480,6 +532,7 @@ def main():
         q.add_argument("--fast", type=int, default=-1, help="1＝backward 飽和跳過＋先加總、record 先加總；0＝關；-1＝沿用 ckpt")
         q.add_argument("--absgrad", type=int, default=-1, help="1＝增生期（backward 累加 |g|）；0＝收割期；-1＝沿用")
     pr.add_argument("--running", type=int, default=-1, help="1＝累加式 trim（訓練 forward 累加 V/C）；0＝關；-1＝沿用 ckpt")
+    pr.add_argument("--adam", default="torch", choices=["torch", "fused", "sparse"], help="torch＝預設 foreach；fused／sparse＝我方融合／稀疏 Adam（10-19）")
     ac = sp.add_parser("adamcheck"); ac.add_argument("--ckpt", required=True)
     a = ap.parse_args()
     {"dump": cmd_dump, "compare": cmd_compare, "profile": cmd_profile, "adamcheck": cmd_adamcheck, "visible": cmd_visible}[a.cmd](a)

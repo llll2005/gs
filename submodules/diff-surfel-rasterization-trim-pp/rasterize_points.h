@@ -73,3 +73,10 @@ torch::Tensor markVisible(
 		torch::Tensor& means3D,
 		torch::Tensor& viewmatrix,
 		torch::Tensor& projmatrix);
+
+// ★ 2026-10-19 融合／稀疏 Adam（rasterize_points.cu 末尾）
+void FusedAdamCUDA(
+	torch::Tensor& param, const torch::Tensor& grad, torch::Tensor& exp_avg, torch::Tensor& exp_avg_sq,
+	const torch::Tensor& mask,
+	const float b1, const float omb1, const float b2, const float omb2,
+	const float eps, const float step_size, const float bc2s, const int variant);

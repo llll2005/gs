@@ -6,6 +6,7 @@
 #                 best0fast  同 ckpt，再開 backward 飽和跳過＋先加總（隔離兩個加速旗標）
 #                 best1      g44_best1 的 ckpt，best1 全部旗標（含兩個加速旗標）
 #                 best1run   同 best1，再開累加式 trim（10-19；CITYGS_TIME_ARMS="best1 best1run" 只跑這兩組）
+#                 best1runfa／best1runsa  同 best1run，再換融合／稀疏 Adam（10-19；internal/optimizers.py FusedAdam）
 #               增生期＝@14,999 起（densify 與每 500 步 trim 照常）；收割期＝@41,999 起、densify_until_iter 0（不增生、不 trim）
 #               => 一塊 60k 的時間 ≈ 30k x 增生期每步 ＋ 30k x 收割期每步（另加驗證／存檔）
 #   full <塊>   best1 完整 60k 獨佔重跑（跑次 g44_best1time，不跑圖表資料包 => 台帳 START/DONE 就是純訓練牆鐘）
@@ -55,6 +56,11 @@ L=logs/best1_time_b${B}_$(date +%m%d_%H%M).log
         best1)     SRC=g44_best1; A=best1; XA=() ;;
         best1pb)   SRC=g44_best1; A=best1; XA=(--model.renderer.init_args.bwd_pair_bit true) ;;   # ★ 10-16 配對貢獻 bit
         best1run)  SRC=g44_best1; A=best1; XA=(--model.renderer.init_args.trim_running_vc true) ;;   # ★ 10-19 累加式 trim（現行最快）
+        best1runfa) SRC=g44_best1; A=best1; XA=(--model.renderer.init_args.trim_running_vc true      # ★ 10-19 ＋融合 Adam（與 torch 逐位元相同）
+                      --model.gaussian.init_args.optimization.optimizer.class_path FusedAdam) ;;
+        best1runsa) SRC=g44_best1; A=best1; XA=(--model.renderer.init_args.trim_running_vc true      # ★ 10-19 ＋稀疏 Adam（只更新可見的列）
+                      --model.gaussian.init_args.optimization.optimizer.class_path FusedAdam
+                      --model.gaussian.init_args.optimization.optimizer.init_args.sparse true) ;;
         *) echo "⛔ 不認得的計時臂 $arm"; continue ;;
       esac
       CK=$(ls outputs/${RUN_PREFIX}$SRC/blocks/block_$B/checkpoints/*step=$S.ckpt 2>/dev/null | head -1)
@@ -65,7 +71,7 @@ L=logs/best1_time_b${B}_$(date +%m%d_%H%M).log
       mkdir -p "outputs/$NAME"; W="outputs/$NAME/gpu_watch_b$B.txt"; : > "$W"; watch_on "$W"
       CITYGS_STEP_PROFILE=1 CITYGS_KEEP_CFG_RENDERER=1 CITYGS_POSTDATA=0 CITYGS_RUN_NAME="$NAME" CITYGS_GRID=44 CITYGS_LEAN=1 \
         STEPS=60000 CITYGS_FAMILY=g44_ bash scripts/lab/task_cmp.sh "$B" "$A" "${F[@]}" "${XA[@]}" "${XP[@]}" \
-        --model.initialize_from "$CK" --trainer.max_steps 1200 2>&1 | grep -E "\[lean\]|Trimming done|Error|error|⛔|❌" | head -8
+        --model.initialize_from "$CK" --trainer.max_steps 1200 2>&1 | grep -E "\[lean\]|\[fused-adam\]|\[trim-running\]|Trimming done|Error|error|⛔|❌" | head -10
       watch_off; gpu
       echo "外部佔用取樣：$(awk '{n++; k=gsub(/;/,";"); if(k>1)h++} END{printf "%d/%d 次卡上有 >1 個計算行程", h, n}' "$W")"
       echo "── step_cost（$arm／$ph）"; sed -n 1,24p "$OUTD/step_cost.txt" 2>/dev/null || echo "⛔ 沒有 step_cost.txt"

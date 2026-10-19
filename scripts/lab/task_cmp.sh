@@ -107,7 +107,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000|bestsh1softm1|bestmaskdist100|bestmaskpt)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000|bestsh1softm1|bestmaskdist100|bestmaskpt|bestrunfa|bestrunsa)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -141,6 +141,11 @@ case "$CASEARM" in
                 #   soft＝再加 GaussianSpa 式軟投影（支撐外以 rho/2·mean((o+λ)²) 拉向 0、增生期末硬剪）；本機 b10：rho 100 時 500 步內回收 83%
                 bestrun)     EXTRA+=(--model.renderer.init_args.trim_running_vc true) ;;
                 bestsoft)    EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.renderer.init_args.trim_soft_rho 100) ;;
+                # ★ 2026-10-19 使用者「照建議做」：Adam 佔每步 26%（torch 2.0.1 foreach 掃參數約 8 遍）=> 光柵器 extension 的單一 kernel（internal/optimizers.py FusedAdam）
+                #   runfa＝累加式 trim＋融合 Adam（與 torch 逐位元相同 => 只省時間）；runsa＝再改成稀疏（只更新本步可見的列；行為改變 => 品質臂）
+                bestrunfa)   EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.gaussian.init_args.optimization.optimizer.class_path FusedAdam) ;;
+                bestrunsa)   EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.gaussian.init_args.optimization.optimizer.class_path FusedAdam
+                                     --model.gaussian.init_args.optimization.optimizer.init_args.sparse true) ;;
                 # ★ 2026-10-17 使用者「降 rho 重測」：rho 100 每輪 99% 支撐外被拉死、由 MCMC 搬家（＝vpc_prune_frac 的搬家機制），b12 val −4.7 dB、
                 #   增生期後段「看得到的顆粒」2.58M -> 0.46M；降 rho 讓光度梯度能把有用的拉回支撐內（GaussianSpa 的原意）
                 bestsoft10)  EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.renderer.init_args.trim_soft_rho 10) ;;
@@ -504,6 +509,8 @@ arm_desc() {
     bestdepth)  echo "單目深度 loss（官方：0.5 x 0.05^(step/24000)、l1+ssim）｜我方為 0；看單目深度對 F1（尤其 recall）的影響" ;;
     bestgeo)    echo "normal＋單目深度 loss 合開（＝官方的幾何監督設定）｜幾何落差有多少來自幾何監督全關" ;;
     bestrun)    echo "訓練中累加 V／C 取代 trim 的全相機 record pass｜判準不變（V/C），增生期每步省 trim 的 ~30%；未觀測的不剪" ;;
+    bestrunfa)  echo "累加式 trim＋融合 Adam（一個 kernel 一遍；與 torch foreach 逐位元相同）｜只省 optimizer.step 的時間" ;;
+    bestrunsa)  echo "累加式 trim＋稀疏 Adam（只更新本步可見的顆粒；不可見的 p/m/v 不動）｜行為改變，要看品質" ;;
     bestsoft)   echo "訓練中累加 V／C＋GaussianSpa 式軟投影（rho 100）取代硬剪｜被淘汰的慢慢拉到 0 由 MCMC 回收，增生期末硬剪" ;;
     bestsoft10|bestsoft1) echo "同 bestsoft 但軟投影 rho ${CASEARM#bestsoft}（rho 100 時 b12 −4.7 dB）｜較弱的拉力讓有用的顆粒留在支撐內" ;;
     bestmask)   echo "塊外遮罩訓練（Depth Anything 前處理的三值遮罩：塊內照常、塊外且空＝扣分到透明、其餘不計分）＋隨機背景＋裁盒初始化｜盒外顆粒失去存在理由 => 顆數與時間" ;;

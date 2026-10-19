@@ -631,6 +631,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
             until = module.density_controller.config.densify_until_iter
         _sch = str(getattr(self, "trim_schedule", "") or "").strip()
         _tau = None
+        # ★ 2026-10-19 累加式 trim：超過 until 就停止累加（原本只在「until 那一步剛好觸發 trim」時才停；
+        #   until 不是 interval 的倍數、或計時工具用 densify_until 0 模擬收割期時，會一路白累加，forward 多 ~3.5 ms）。
+        #   真實 60k 訓練的 until（30k）是 500 的倍數，已在最後一次 trim 停 => 訓練行為不變。
+        if (not _sch) and getattr(self, "trim_running_vc", False) and step > until and not getattr(self, "_acc_stop", False):
+            self._acc_stop = True
+            print(f"[trim-running] step {step} > until {until} => 停止累加 V/C", flush=True)
         if _sch:
             _tau = dict((int(a), float(b)) for a, b in (x.split(":") for x in _sch.split(",") if x.strip())).get(int(step))
             if self.diable_trimming or _tau is None:

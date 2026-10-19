@@ -21,6 +21,8 @@
 #       [solo] bash scripts/lab/task_lean_check.sh profile_now <塊> <跑次[@步]...>   ★ 10-19「第 1 步」：現行最快設定
 #              （lean＋backward 飽和跳過／先加總＋累加式 trim；步 < 30000 視為增生期、開 absgrad 累加）的 kernel 拆解
 #              ＋每視角可見／有梯度的顆粒比例（稀疏 Adam 能省多少的上限）。不給 @步＝該跑次最後一個 ckpt
+#       [solo] bash scripts/lab/task_lean_check.sh adam <塊> <跑次[@步]>   ★ 10-19 融合／稀疏 Adam：與 torch 逐位元比對（1／50 步）＋
+#              optimizer.step 計時＋三種 Adam 的 kernel 拆解（tools/check_lean_render.py adamcheck／profile --adam）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
@@ -51,6 +53,26 @@ if [ "${1:-}" = profile_now ]; then      # profile_now <塊> <跑次[@步]...>
     conda run -n gspl --no-capture-output python tools/check_lean_render.py profile --ckpt "$c" --lean 1 --fast 1 --running 1 --absgrad $AB --steps 24
     conda run -n gspl --no-capture-output python tools/check_lean_render.py visible --ckpt "$c" --ncam 0 --fast 1 --absgrad $AB
   done 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images|找不到深度圖|No depth maps|CUPTI|cupti|STAGE:' | tee "$L"
+  echo "log：$L"
+  exit 0
+fi
+if [ "${1:-}" = adam ]; then      # adam <塊> <跑次[@步]>：★ 10-19 融合／稀疏 Adam 在 lab 上的逐位元比對＋計時
+  shift; B=$1; spec=$2
+  if [ -f .lab_machine ]; then PFX=lab/; else case "$(pwd)" in */hdd/11213/*) PFX=lab/ ;; *) PFX= ;; esac; fi
+  r=${spec%@*}; st=; [ "$r" != "$spec" ] && st=${spec#*@}
+  D=outputs/${PFX}$r/blocks/block_$B/checkpoints
+  if [ -n "$st" ]; then c=$(ls $D/*-step=$st.ckpt 2>/dev/null | head -1)
+  else c=$(ls $D/*.ckpt 2>/dev/null | grep -v _inbox | sort -t= -k3 -n | tail -1); fi
+  [ -n "$c" ] || { echo "⛔ $spec 沒有 ckpt"; exit 2; }
+  L=logs/adam_check_b${B}_$(date +%m%d_%H%M).log
+  {
+    echo "════ adamcheck（我方融合／稀疏 vs torch foreach：逐位元比對＋optimizer.step 計時）$c"
+    conda run -n gspl --no-capture-output python tools/check_lean_render.py adamcheck --ckpt "$c"
+    for ad in torch fused sparse; do
+      echo "════ profile adam=$ad（lean＋backward 加速＋累加式 trim，收割期）"
+      conda run -n gspl --no-capture-output python tools/check_lean_render.py profile --ckpt "$c" --lean 1 --fast 1 --running 1 --absgrad 0 --steps 24 --adam $ad
+    done
+  } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images|找不到深度圖|No depth maps|CUPTI|cupti|STAGE:|appearance group|down sample|generate 100000|colmap dataparser' | tee "$L"
   echo "log：$L"
   exit 0
 fi

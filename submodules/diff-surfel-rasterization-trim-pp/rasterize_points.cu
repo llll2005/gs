@@ -23,6 +23,8 @@
 #include <fstream>
 #include <string>
 #include <functional>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAException.h>
 
 #define CHECK_INPUT(x)											\
 	AT_ASSERTM(x.type().is_cuda(), #x " must be a CUDA tensor")
@@ -279,4 +281,80 @@ torch::Tensor markVisible(
   }
 
   return present;
+}
+
+// ★ 2026-10-19 融合／稀疏 Adam（使用者 10-19「照建議做」；實驗分析 15 §2）
+//   為什麼：Adam 佔每步 26%（b6、N 2.34M：增生期 15.3／收割期 13.9 ms），而 torch 2.0.1 的 foreach Adam
+//   對全部參數掃約 8 遍（mul／add／mul／addcmul／sqrt／div／add／addcdiv 各一個 kernel＋暫存張量）。
+//   torch 內建 fused=True 在 2.0.1 反而慢 2.3~3.2 倍（已關閉的線）=> 自己寫：一個 kernel 一遍，讀 p/g/m/v、寫 p/m/v。
+//   算式與運算順序照 torch 2.0.1 _multi_tensor_adam（非 capturable、無 weight decay／amsgrad／maximize）：
+//     m = m*b1;  m = m + (1-b1)*g;  v = v*b2;  v = v + (1-b2)*(g*g)
+//     d = sqrt(v) / sqrt(bc2) + eps;  p = p + step_size*(m/d)        step_size = -lr/bc1（Python 端以 double 算好）
+//   VAR：0＝每個運算各自捨入；1＝a + b*c 收縮成 fma（torch 的 foreach kernel 由 nvcc 預設 --fmad=true 編譯）
+//        => 兩種都留著，用 tools/check_lean_render.py adamcheck 找出與 torch 逐位元一致的那個。
+//   MASK：mask（N 個 bool）非空 => 稀疏：該列（顆粒）不可見就整列不動（p／m／v 都不更新）
+//         ＝ gsplat SelectiveAdam／Taming 3DGS 的做法，但保留 torch 的 bias correction 與逐張量 step 計數。
+template <int VAR, bool MASK>
+__global__ void fusedAdamCUDA(const int64_t n, const int64_t M,
+	float* __restrict__ p, const float* __restrict__ g, float* __restrict__ m, float* __restrict__ v,
+	const bool* __restrict__ mask,
+	const float b1, const float omb1, const float b2, const float omb2,
+	const float eps, const float step_size, const float bc2s)
+{
+	const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	if (i >= n)
+		return;
+	if (MASK && !mask[i / M])
+		return;
+	const float gi = g[i];
+	float mi = __fmul_rn(m[i], b1);
+	float vi = __fmul_rn(v[i], b2);
+	if (VAR == 0) {
+		mi = __fadd_rn(mi, __fmul_rn(omb1, gi));
+		vi = __fadd_rn(vi, __fmul_rn(omb2, __fmul_rn(gi, gi)));
+	} else {
+		mi = __fmaf_rn(omb1, gi, mi);
+		vi = __fmaf_rn(omb2, __fmul_rn(gi, gi), vi);     // torch addcmul＝self + value*(t1*t2)
+	}
+	const float d = __fadd_rn(__fdiv_rn(__fsqrt_rn(vi), bc2s), eps);
+	const float q = __fdiv_rn(mi, d);
+	p[i] = (VAR == 0) ? __fadd_rn(p[i], __fmul_rn(step_size, q)) : __fmaf_rn(step_size, q, p[i]);
+	m[i] = mi;
+	v[i] = vi;
+}
+
+void FusedAdamCUDA(
+	torch::Tensor& param, const torch::Tensor& grad, torch::Tensor& exp_avg, torch::Tensor& exp_avg_sq,
+	const torch::Tensor& mask,
+	const float b1, const float omb1, const float b2, const float omb2,
+	const float eps, const float step_size, const float bc2s, const int variant)
+{
+	for (const torch::Tensor* t : std::initializer_list<const torch::Tensor*>{&param, &grad, &exp_avg, &exp_avg_sq}) {
+		TORCH_CHECK(t->is_cuda() && t->scalar_type() == at::kFloat && t->is_contiguous(),
+		            "fused_adam：p/g/m/v 必須是 contiguous 的 CUDA float32");
+		TORCH_CHECK(t->numel() == param.numel(), "fused_adam：p/g/m/v 元素數不同");
+	}
+	const int64_t n = param.numel();
+	if (n == 0)
+		return;
+	const bool use_mask = mask.numel() > 0;
+	int64_t M = 1;
+	if (use_mask) {
+		TORCH_CHECK(mask.is_cuda() && mask.scalar_type() == at::kBool && mask.is_contiguous(), "fused_adam：mask 必須是 contiguous 的 CUDA bool");
+		TORCH_CHECK(param.dim() >= 1 && param.size(0) == mask.numel(), "fused_adam：mask 長度必須等於參數第 0 維（顆數）");
+		M = n / mask.numel();
+	}
+	const int threads = 256;
+	const int64_t blocks = (n + threads - 1) / threads;
+	cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+	float* p = param.data_ptr<float>();
+	const float* g = grad.data_ptr<float>();
+	float* m = exp_avg.data_ptr<float>();
+	float* v = exp_avg_sq.data_ptr<float>();
+	const bool* k = use_mask ? mask.data_ptr<bool>() : nullptr;
+#define FADAM_L(VV, MM) fusedAdamCUDA<VV, MM><<<blocks, threads, 0, stream>>>(n, M, p, g, m, v, k, b1, omb1, b2, omb2, eps, step_size, bc2s)
+	if (variant == 0) { if (use_mask) FADAM_L(0, true); else FADAM_L(0, false); }
+	else              { if (use_mask) FADAM_L(1, true); else FADAM_L(1, false); }
+#undef FADAM_L
+	C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

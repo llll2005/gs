@@ -319,3 +319,21 @@ class GaussianRasterizer(nn.Module):
             raster_settings,
         )
 
+
+
+# ★ 2026-10-19 融合／稀疏 Adam（rasterize_points.cu FusedAdamCUDA；呼叫端＝internal/optimizers.py FusedAdam）
+#   一個 kernel 一遍（讀 p/g/m/v、寫 p/m/v），算式與運算順序照 torch 2.0.1 foreach Adam；mask 非 None => 不可見的列整列不動。
+#   FUSED_ADAM_VARIANT：0＝每個運算各自捨入、1＝a + b*c 收縮成 fma；預設用與 torch 逐位元一致的那個
+#   （tools/check_lean_render.py adamcheck 量；結果寫在 internal/optimizers.py FusedAdam 的 docstring）。
+FUSED_ADAM_VARIANT = 1
+_EMPTY_MASK = {}
+
+
+def fused_adam_(param, grad, exp_avg, exp_avg_sq, mask, beta1, beta2, eps, step_size, bc2_sqrt, variant=None):
+    """就地更新 param／exp_avg／exp_avg_sq。step_size = -lr/bc1、bc2_sqrt = sqrt(1-beta2^t)（呼叫端以 double 算好，同 torch）。"""
+    if mask is None:
+        mask = _EMPTY_MASK.get(param.device)
+        if mask is None:
+            mask = _EMPTY_MASK[param.device] = torch.empty(0, dtype=torch.bool, device=param.device)
+    _C.fused_adam(param, grad, exp_avg, exp_avg_sq, mask, beta1, 1 - beta1, beta2, 1 - beta2, eps, step_size, bc2_sqrt,
+                  FUSED_ADAM_VARIANT if variant is None else int(variant))
