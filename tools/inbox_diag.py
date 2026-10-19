@@ -181,6 +181,9 @@ def main():
                 bands[bi, 0] += float(ai.reshape(-1)[m].sum()); bands[bi, 1] += float(af.reshape(-1)[m].sum())
     model.properties = props_full
     print(f"[1 黑變透明] alpha<0.5 的比例：GT 暗像素（亮度<{a.dark}）{100 * np.nanmean(dark_a):.1f}%  vs 亮像素（>0.25）{100 * np.nanmean(bright_a):.1f}%（{len(idx)} 個訓練視角）")
+    _o = model.get_opacity.detach().reshape(-1)
+    print(f"[0 塊內外] 盒內 顆數 {100 * float(m_in.float().mean()):.1f}%  opacity 質量 {100 * float(_o[m_in].sum() / _o.sum()):.1f}%  "
+          f"實際混合貢獻 Σ T·α {100 * float(Vacc[m_in].sum() / Vacc.sum().clamp_min(1e-12)):.1f}%（{len(idx)} 個訓練視角；其餘＝花在塊外、合併時丟掉）")
     tot = float(Vacc[m_in].sum())
     for t in (0.01, 0.03, 0.1):
         b2 = m_in & (pr[:, 2] < zg - t)

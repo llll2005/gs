@@ -107,7 +107,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000|bestsh1softm1)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000|bestsh1softm1|bestmaskdist100)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -147,14 +147,16 @@ case "$CASEARM" in
                 bestsoft1)   EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.renderer.init_args.trim_soft_rho 1) ;;
                 # ★ 2026-10-17 使用者「作」：塊外遮罩（tools/block_mask44.py；A 塊內照常、B 塊外且空＝目標背景色、C 不計分）＋隨機背景＋初始化裁到本塊盒
                 #   （sfmfill_sweep44_crop，外擴 m_c）；配方其餘＝累加式 trim。rbg＝只開隨機背景的對照（拆開隨機背景本身的影響）
-                bestmask)    [ "$GRID" = 44 ] || { echo "⛔ bestmask 只支援 4x4"; exit 2; }
+                # ★ 2026-10-18 使用者消融「sh3、dist 100、遮罩、cap={1M,2.5M,5M}」：dist 要幾何通道 => 不開 lean => 週期 trim（不用累加式）
+                bestmask|bestmaskdist100)    [ "$GRID" = 44 ] || { echo "⛔ bestmask 只支援 4x4"; exit 2; }
                              _MD=data/matrix_city/aerial/train/block_all/block_masks44/block_$BLK
                              [ -f "$_MD/stats.json" ] || { echo "⛔ 缺遮罩 $_MD（先跑 tools/block_mask44.py --blocks $BLK）"; exit 2; }
                              P="sfmfill_sweep44_crop/dup$K44/block_${BLK}.ply"
                              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺裁盒初始化 $P（tools/block_mask44.py --crop_ply sfmfill_sweep44）"; exit 2; }
                              EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"
-                                    --model.renderer.init_args.trim_running_vc true --model.random_background true
-                                    --model.metric.init_args.block_mask_dir "$_MD") ;;
+                                    --model.random_background true --model.metric.init_args.block_mask_dir "$_MD")
+                             if [ "$CASEARM" = bestmask ]; then EXTRA+=(--model.renderer.init_args.trim_running_vc true)
+                             else EXTRA+=(--model.metric.init_args.lambda_dist 100); fi ;;
                 bestrbg)     EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.random_background true) ;;
                 bestnormal)  EXTRA+=(--model.metric.init_args.lambda_normal 0.0125) ;;
                 bestdepth)   EXTRA+=(--model.metric.init_args.depth_loss_weight.init 0.5 --model.metric.init_args.depth_loss_weight.final_factor 0.05
@@ -501,6 +503,7 @@ arm_desc() {
     bestsoft)   echo "訓練中累加 V／C＋GaussianSpa 式軟投影（rho 100）取代硬剪｜被淘汰的慢慢拉到 0 由 MCMC 回收，增生期末硬剪" ;;
     bestsoft10|bestsoft1) echo "同 bestsoft 但軟投影 rho ${CASEARM#bestsoft}（rho 100 時 b12 −4.7 dB）｜較弱的拉力讓有用的顆粒留在支撐內" ;;
     bestmask)   echo "塊外遮罩訓練（Depth Anything 前處理的三值遮罩：塊內照常、塊外且空＝扣分到透明、其餘不計分）＋隨機背景＋裁盒初始化｜盒外顆粒失去存在理由 => 顆數與時間" ;;
+    bestmaskdist100) echo "塊外遮罩＋隨機背景＋裁盒初始化＋深度失真正則 100（週期 trim、不開 lean）｜遮罩救幾何、dist 救馬路，看能否疊加；cap 消融看顆數下限" ;;
     bestrbg)    echo "只開隨機背景（＋累加式 trim）｜bestmask 的對照：拆開隨機背景本身的影響" ;;
     bestexpo)   echo "逐影像曝光補償（log 增益，訓練 loss 用）｜GT 逐幀曝光不一致是否拖累模型；評測加 psnr_ex（全域曲線）" ;;
     bestsh2|bestsh1|bestsh0) echo "SH 階數 ${CASEARM#bestsh}｜高階 SH（佔參數 78%）值不值它的 VRAM" ;;
