@@ -1142,6 +1142,124 @@ def n15_tradeoff(d):
     save(fig, d, "n15_tradeoff.png")
 
 
+# ══════════════ 10-16～10-19（實驗分析 16／17／18） ══════════════
+# 數字＝lab logs：swap_b{6,12}_1017_16*／1018_*（換塊評測，本塊幾何區域 PSNR）、geom_f1/blocks/arms_b*.log（區塊 F1）、
+#   inbox_diag_b*_1018_*（tools/inbox_diag.py）、quad_progress.log（START→DONE）。Δ 一律相對 best1（g44_best1：b6 −0.049／b12 −0.108 對 full44 基準）。
+
+def n16_steps(d):
+    """總步數（累加式 trim、SH3）：換塊 Δ、LPIPS、區塊 F1 對每塊訓練時間。"""
+    st = [60, 30, 20, 15, 10]
+    t = {6: [54, 29, 20, 15, 10], 12: [55, 28, 20, 15, 12]}
+    dq = {6: [-0.01, 0.27, 0.14, 0.32, 0.01], 12: [0.05, 0.05, 0.18, 0.35, 0.18]}
+    f1 = {6: [0.561, 0.520, 0.474, 0.443, 0.396], 12: [0.723, 0.715, 0.699, 0.670, 0.613]}
+    lp = {6: [.1173, .1175, .1182, .1191, .1215], 12: [.1168, .1163, .1166, .1165, .1180]}
+    fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
+    for b, c in ((6, C1), (12, C2)):
+        ax[0].plot(t[b], dq[b], "o-", color=c, label=f"b{b}")
+        ax[1].plot(t[b], lp[b], "o-", color=c, label=f"b{b}")
+        ax[2].plot(t[b], f1[b], "o-", color=c, label=f"b{b}")
+        for i, k in enumerate(st):
+            ax[0].annotate(f"{k}k", (t[b][i], dq[b][i]), xytext=(4, 4), textcoords="offset points", fontsize=7.5)
+    ax[0].axhspan(-0.03, 0.03, color="#e1e0d9", lw=0); ax[0].set_ylabel("Δ 本塊新視角 PSNR（dB，相對 best1）")
+    ax[1].set_ylabel("LPIPS（換塊評測，越低越好）"); ax[2].set_ylabel("區塊幾何 F1")
+    for b, c, v in ((6, C1, 0.554), (12, C2, 0.678)):
+        ax[2].axhline(v, color=c, ls="--", lw=1); ax[2].annotate(f"官方 b{b} {v}", (60, v), fontsize=7.5, color=c, ha="right", va="bottom")
+    for a in ax:
+        a.set_xlabel("每塊訓練時間（分；lab 3090 [solo]）"); a.legend()
+    ax[0].set_title("短訓練在 PSNR 上反而贏（15k 最高）", fontsize=9.5)
+    ax[1].set_title("但 LPIPS 隨步數變差（細節少）", fontsize=9.5)
+    ax[2].set_title("幾何 F1 隨步數單調下降（15k 兩塊都低於官方）", fontsize=9.5)
+    save(fig, d, "n16_steps.png")
+
+
+def n16_sh(d):
+    """SH 階數（60k）＋15k＋SH1：換塊 Δ、ckpt、峰值。"""
+    nm = ["SH3\n(best1)", "SH2", "SH1", "SH0", "15k＋SH1"]
+    q6 = [0, 0.30, 0.53, 0.38, 0.52]; q12 = [0, 0.06, 0.23, 0.22, 0.52]
+    ck = [1.60, 0.99, 0.59, 0.35, 0.59]
+    fig, ax = plt.subplots(1, 2, figsize=(13, 4.0))
+    x = np.arange(len(nm)); w = 0.38
+    barlabels(ax[0], ax[0].bar(x - w / 2, q6, w, color=C1, label="b6"), "{:+.2f}")
+    barlabels(ax[0], ax[0].bar(x + w / 2, q12, w, color=C2, label="b12"), "{:+.2f}")
+    ax[0].axhspan(-0.03, 0.03, color="#e1e0d9", lw=0); ax[0].set_xticks(x, nm); ax[0].legend()
+    ax[0].set_ylabel("Δ 本塊新視角 PSNR（dB，相對 best1）")
+    ax[0].set_title("SH1 兩塊都最好（高階 SH 把逐幀曝光背進視角相依的顏色）；LPIPS 都在 .1176~.1198", fontsize=9)
+    barlabels(ax[1], ax[1].bar(x, ck, 0.6, color=C3), "{:.2f}")
+    ax[1].set_xticks(x, nm); ax[1].set_ylabel("單塊 ckpt（GB，含 Adam；2.34M 顆）")
+    ax[1].set_title("模型大小：SH1 是 SH3 的 37%；峰值 VRAM 3.92 -> 2.09 GB", fontsize=9)
+    save(fig, d, "n16_sh.png")
+
+
+def n16_official(d):
+    """同塊對官方：官方 release 合併模型只換第 6／12 塊（同光柵器、同 held-out 視角）＋資源。"""
+    fig, ax = plt.subplots(1, 2, figsize=(13, 4.0))
+    nm = ["15k＋SH1", "SH1 60k"]; x = np.arange(2); w = 0.38
+    barlabels(ax[0], ax[0].bar(x - w / 2, [0.53, 0.61], w, color=C1, label="b6"), "{:+.2f}")
+    barlabels(ax[0], ax[0].bar(x + w / 2, [0.54, 0.24], w, color=C2, label="b12"), "{:+.2f}")
+    ax[0].axhline(0.35, color=MUTED, ls=":", lw=1); ax[0].annotate("我方光柵器讀官方約低 0.35（10-09）", (1.4, 0.36), fontsize=7.5, color=INK2, ha="right")
+    ax[0].set_xticks(x, nm); ax[0].legend(); ax[0].set_ylabel("Δ 本塊新視角 PSNR（dB，相對官方 release）")
+    ax[0].set_title("換進官方模型：兩塊都贏（扣掉光柵器落差後約 +0.2）", fontsize=9.5)
+    lab = ["訓練時間\n(分)", "峰值 VRAM\n(GB)", "盒內顆數\n(萬)"]
+    ours = [12.5, 2.08, 66.0]; off = [315.0, 8.42, 99.5]
+    xx = np.arange(3)
+    b1 = ax[1].bar(xx - w / 2, np.array(ours) / np.array(off), w, color=C1, label="我方 15k＋SH1")
+    ax[1].bar(xx + w / 2, [1, 1, 1], w, color=MUTED, label="官方（=1）")
+    for i, (o, f) in enumerate(zip(ours, off)):
+        ax[1].annotate(f"{o:g} vs {f:g}", (i - w / 2, o / f), xytext=(0, 3), textcoords="offset points", ha="center", fontsize=7.5)
+    ax[1].set_xticks(xx, lab); ax[1].set_ylabel("相對官方（b6／b12 平均）"); ax[1].legend()
+    ax[1].set_title("資源：時間 4%、VRAM 25%、盒內顆數 66%；幾何 F1 輸（0.441／0.653 vs 0.554／0.678）", fontsize=9)
+    save(fig, d, "n16_official.png")
+
+
+def n17_mask(d):
+    """塊外遮罩（20k、累加式 trim），相對對照 g44s20k_best1run。"""
+    nm = ["對照\n20k", "只開\n隨機背景", "遮罩\ncap 2.6M", "遮罩\ncap 1.2M"]
+    f6 = [0.474, 0.504, 0.545, 0.532]; f12 = [0.699, 0.702, 0.753, 0.741]
+    q6 = [0, -0.01, -0.11, -0.15]; q12 = [0, 0.06, 0.02, -0.01]
+    lp6 = [.1182, .1181, .1165, .1176]; lp12 = [.1166, .1168, .1133, .1153]
+    tm = [20, 20, 15, 11.5]; pk = [3.93, 3.93, 3.56, 1.95]
+    fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
+    x = np.arange(4); w = 0.38
+    barlabels(ax[0], ax[0].bar(x - w / 2, f6, w, color=C1, label="b6"), "{:.3f}")
+    barlabels(ax[0], ax[0].bar(x + w / 2, f12, w, color=C2, label="b12"), "{:.3f}")
+    ax[0].axhline(0.554, color=C1, ls="--", lw=1); ax[0].axhline(0.678, color=C2, ls="--", lw=1)
+    ax[0].set_ylim(0.35, 0.8); ax[0].set_xticks(x, nm); ax[0].legend(); ax[0].set_ylabel("區塊幾何 F1（虛線＝官方）")
+    ax[0].set_title("幾何：遮罩 +0.07／+0.05", fontsize=9.5)
+    ax[1].plot(x, q6, "o-", color=C1, label="Δ PSNR b6"); ax[1].plot(x, q12, "o-", color=C2, label="Δ PSNR b12")
+    ax[1].axhspan(-0.03, 0.03, color="#e1e0d9", lw=0); ax[1].set_ylabel("Δ 本塊新視角 PSNR（dB，相對對照）")
+    a2 = ax[1].twinx(); a2.plot(x, lp6, "s--", color=C1, alpha=0.6, label="LPIPS b6"); a2.plot(x, lp12, "s--", color=C2, alpha=0.6, label="LPIPS b12")
+    a2.set_ylabel("LPIPS（虛線）"); ax[1].set_xticks(x, nm); ax[1].legend(loc="lower left", fontsize=7.5); a2.legend(loc="lower right", fontsize=7.5)
+    ax[1].set_title("渲染：PSNR −0.15~+0.06、LPIPS 變好（b12 .1166 -> .1133）", fontsize=9.5)
+    barlabels(ax[2], ax[2].bar(x - w / 2, tm, w, color=C3, label="時間（分）"), "{:.1f}")
+    a3 = ax[2].twinx(); a3.bar(x + w / 2, pk, w, color=C4, label="峰值 VRAM（GB）")
+    for i, v in enumerate(pk):
+        a3.annotate(f"{v:.2f}", (i + w / 2, v), xytext=(0, 2), textcoords="offset points", ha="center", fontsize=7.5, color=INK2)
+    ax[2].set_xticks(x, nm); ax[2].set_ylabel("每塊訓練時間（分）"); a3.set_ylabel("峰值 VRAM（GB）"); a3.grid(False)
+    h1, l1 = ax[2].get_legend_handles_labels(); h2, l2 = a3.get_legend_handles_labels()
+    a3.legend(h1 + h2, l1 + l2, loc="lower left", fontsize=7.5, framealpha=0.9, frameon=True)
+    ax[2].set_title("資源：cap 1.2M 版 N 1.08M、時間 −42%、VRAM 減半", fontsize=9.5)
+    save(fig, d, "n17_mask.png")
+
+
+def n18_road(d):
+    """馬路靠地底面元撐的比例（暗柏油像素中，渲染第一表面在本塊地面下 1 m 以上），與地底顆粒佔實際混合貢獻。"""
+    nm = ["15k＋SH1", "best1\n60k", "SH1\n60k", "單目深度\n60k", "normal＋深度\n60k", "dist100\n60k", "SH1＋dist100\n60k", "SH1＋dist100\n30k", "15k＋SH1\n＋dist100", "官方\nrelease"]
+    r6 = [52.9, 37.7, 44.5, 34.0, 30.5, 26.3, 33.9, 40.3, 50.0, 16.3]
+    r12 = [54.7, 52.4, 67.7, 54.9, 25.8, 40.2, 56.5, 54.4, 53.4, 38.5]
+    v6 = [5.7, 4.6, 4.4, 3.3, 4.5, 1.6, 2.3, 4.1, 5.9, 2.0]; v12 = [12.0, 6.4, 10.3, 5.0, 4.7, 1.9, 2.2, 4.5, 7.1, 1.9]
+    fig, ax = plt.subplots(2, 1, figsize=(15, 7.2))
+    x = np.arange(len(nm)); w = 0.38
+    barlabels(ax[0], ax[0].bar(x - w / 2, r6, w, color=C1, label="b6"), "{:.0f}")
+    barlabels(ax[0], ax[0].bar(x + w / 2, r12, w, color=C2, label="b12"), "{:.0f}")
+    ax[0].set_xticks(x, nm, fontsize=8); ax[0].legend(); ax[0].set_ylabel("暗柏油中渲染表面在地底的 %")
+    ax[0].set_title("馬路有一半靠地底面元撐（拿掉地底顆粒就變透明＝使用者看到的「特定視角馬路透明」）；b12 地面估計受水面影響，看相對值", fontsize=9.5)
+    barlabels(ax[1], ax[1].bar(x - w / 2, v6, w, color=C1, label="b6"), "{:.1f}")
+    barlabels(ax[1], ax[1].bar(x + w / 2, v12, w, color=C2, label="b12"), "{:.1f}")
+    ax[1].set_xticks(x, nm, fontsize=8); ax[1].legend(); ax[1].set_ylabel("地面下 10 m 以上顆粒佔實際混合貢獻 %")
+    ax[1].set_title("深度失真正則 100（60k）把地底貢獻壓到官方水準；15k 下無效（沒有收割期可以拉正）", fontsize=9.5)
+    save(fig, d, "n18_road.png")
+
+
 DOCS = {
     "01_訓練時間組成": ["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -1154,6 +1272,9 @@ DOCS = {
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout", "n12_fail3"],
     "13_trim判準VC與opacity二元熵": ["n13_race", "n13_swap"],
     "15_現行最佳best1_組成與取捨": ["n15_time", "n15_tradeoff", "n09_blockf1"],
+    "16_步數與SH_輕量化": ["n16_steps", "n16_sh", "n16_official"],
+    "17_塊外遮罩訓練": ["n17_mask"],
+    "18_馬路地底面元與幾何正則": ["n18_road"],
 }
 
 
@@ -1192,7 +1313,7 @@ def main():
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
-              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff):
+              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
