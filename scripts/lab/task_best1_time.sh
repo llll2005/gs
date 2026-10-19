@@ -5,6 +5,7 @@
 #                 best0      g44_best0 的 ckpt，best0 旗標＋lean＋record_reduce（加速旗標關）
 #                 best0fast  同 ckpt，再開 backward 飽和跳過＋先加總（隔離兩個加速旗標）
 #                 best1      g44_best1 的 ckpt，best1 全部旗標（含兩個加速旗標）
+#                 best1run   同 best1，再開累加式 trim（10-19；CITYGS_TIME_ARMS="best1 best1run" 只跑這兩組）
 #               增生期＝@14,999 起（densify 與每 500 步 trim 照常）；收割期＝@41,999 起、densify_until_iter 0（不增生、不 trim）
 #               => 一塊 60k 的時間 ≈ 30k x 增生期每步 ＋ 30k x 收割期每步（另加驗證／存檔）
 #   full <塊>   best1 完整 60k 獨佔重跑（跑次 g44_best1time，不跑圖表資料包 => 台帳 START/DONE 就是純訓練牆鐘）
@@ -53,6 +54,7 @@ L=logs/best1_time_b${B}_$(date +%m%d_%H%M).log
         best0fast) SRC=g44_best0; A=best0; XA=(--model.renderer.init_args.bwd_sat_skip true --model.renderer.init_args.bwd_reduce true) ;;
         best1)     SRC=g44_best1; A=best1; XA=() ;;
         best1pb)   SRC=g44_best1; A=best1; XA=(--model.renderer.init_args.bwd_pair_bit true) ;;   # ★ 10-16 配對貢獻 bit
+        best1run)  SRC=g44_best1; A=best1; XA=(--model.renderer.init_args.trim_running_vc true) ;;   # ★ 10-19 累加式 trim（現行最快）
         *) echo "⛔ 不認得的計時臂 $arm"; continue ;;
       esac
       CK=$(ls outputs/${RUN_PREFIX}$SRC/blocks/block_$B/checkpoints/*step=$S.ckpt 2>/dev/null | head -1)

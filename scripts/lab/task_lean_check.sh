@@ -18,6 +18,9 @@
 # 用法：[solo] bash scripts/lab/task_lean_check.sh            驗證＋計時（不動共用環境）
 #       [solo] bash scripts/lab/task_lean_check.sh install    驗證通過後才用：把新光柵器裝進 gspl（舊路徑已驗證不變）
 #       [solo] bash scripts/lab/task_lean_check.sh profile_runs <塊> <跑次...>   各跑次 60k ckpt 的 kernel 拆解
+#       [solo] bash scripts/lab/task_lean_check.sh profile_now <塊> <跑次[@步]...>   ★ 10-19「第 1 步」：現行最快設定
+#              （lean＋backward 飽和跳過／先加總＋累加式 trim；步 < 30000 視為增生期、開 absgrad 累加）的 kernel 拆解
+#              ＋每視角可見／有梯度的顆粒比例（稀疏 Adam 能省多少的上限）。不給 @步＝該跑次最後一個 ckpt
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
 set -u
 cd "$(dirname "$0")/../.." || exit 1
@@ -31,6 +34,24 @@ if [ "${1:-}" = profile_runs ]; then      # profile_runs <塊> <跑次...>：對
     echo "════ $r"
     conda run -n gspl --no-capture-output python tools/check_lean_render.py profile --ckpt "$c" --lean 0
   done 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images' | tee "$L"
+  exit 0
+fi
+if [ "${1:-}" = profile_now ]; then      # profile_now <塊> <跑次[@步]...>
+  shift; B=$1; shift
+  if [ -f .lab_machine ]; then PFX=lab/; else case "$(pwd)" in */hdd/11213/*) PFX=lab/ ;; *) PFX= ;; esac; fi
+  L=logs/profile_now_b${B}_$(date +%m%d_%H%M).log
+  for spec in "$@"; do
+    r=${spec%@*}; st=; [ "$r" != "$spec" ] && st=${spec#*@}
+    D=outputs/${PFX}$r/blocks/block_$B/checkpoints
+    if [ -n "$st" ]; then c=$(ls $D/*-step=$st.ckpt 2>/dev/null | head -1)
+    else c=$(ls $D/*.ckpt 2>/dev/null | grep -v _inbox | sort -t= -k3 -n | tail -1); fi
+    [ -n "$c" ] || { echo "（$spec 沒有 ckpt，略過）"; continue; }
+    s0=$(basename "$c" | sed -E 's/.*step=([0-9]+).*/\1/'); AB=0; [ "$s0" -lt 30000 ] && AB=1
+    echo "════ $r @$s0（absgrad 累加=$AB）"
+    conda run -n gspl --no-capture-output python tools/check_lean_render.py profile --ckpt "$c" --lean 1 --fast 1 --running 1 --absgrad $AB --steps 24
+    conda run -n gspl --no-capture-output python tools/check_lean_render.py visible --ckpt "$c" --ncam 0 --fast 1 --absgrad $AB
+  done 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images|找不到深度圖|No depth maps|CUPTI|cupti|STAGE:' | tee "$L"
+  echo "log：$L"
   exit 0
 fi
 if [ "${1:-}" = install ]; then

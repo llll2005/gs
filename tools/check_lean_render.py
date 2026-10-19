@@ -17,6 +17,9 @@
   compare python tools/check_lean_render.py compare <a.pt> <b.pt> [--label 說明]
   profile python tools/check_lean_render.py profile --ckpt <ckpt> --lean 0|1 [--steps 12]
           kernel 層級拆解一個訓練步＋一次 trim record pass（逐配對／逐顆／逐像素／逐參數）；--fused 1 用 fused Adam
+          ★ 10-19：--fast 1 --running 1 --absgrad 0|1 => 現行最快設定（lean＋backward 加速＋累加式 trim）
+  visible python tools/check_lean_render.py visible --ckpt <ckpt> [--ncam 0] [--fast 1]
+          每個訓練視角看得到／有梯度的顆粒比例（全部、盒內）=> 稀疏 Adam 能省多少的上限
   adamcheck python tools/check_lean_render.py adamcheck --ckpt <ckpt>
           fused Adam vs 預設 foreach：同梯度 1 步／50 步的參數差（以更新量為單位）與計時
 """
@@ -148,6 +151,100 @@ def cmd_dump(a):
     print(f"-> {a.out}")
 
 
+def _apply_speed_flags(renderer, a):
+    """★ 2026-10-19 現行最快設定（使用者 10-19「第 1 步」）。-1＝沿用 ckpt 裡 renderer 的設定。
+    --fast 1     backward 飽和跳過＋先加總、record 先加總（best1 的兩個加速旗標＋record_reduce）
+    --running 1  累加式 trim（lean 訓練 forward 順便累加 V/C；不開時 E 欄＝週期 trim 每台相機的 record 成本）
+    --absgrad 1  增生期（backward 多累加 |dL/ds|）；0＝收割期；-1＝沿用 training_forward 的判斷（module=None => 關）"""
+    fa = int(getattr(a, "fast", -1))
+    if fa >= 0:
+        renderer.bwd_sat_skip = renderer.bwd_reduce = renderer.record_reduce = bool(fa)
+    ru = int(getattr(a, "running", -1))
+    if ru >= 0:
+        renderer.trim_running_vc = bool(ru)
+    renderer._acc_announced = True
+    TF = {}
+    ab = int(getattr(a, "absgrad", -1))
+    if ab >= 0:
+        renderer.absgrad_gate = True
+        renderer._absgrad_announced = True
+        TF["_absgrad"] = bool(ab)
+    return TF
+
+
+def _flag_str(renderer, TF):
+    keys = ("lean_train", "bwd_sat_skip", "bwd_reduce", "record_reduce", "trim_running_vc", "exact_conic_aabb", "absgrad_gate")
+    return "  ".join(f"{k}={int(bool(getattr(renderer, k, False)))}" for k in keys) + f"  absgrad 累加={int(bool(TF.get('_absgrad', False)))}"
+
+
+def cmd_visible(a):
+    """★ 2026-10-19 每個訓練視角看得到多少比例的顆粒 => 稀疏 Adam（只更新本步有梯度的顆粒）最多能省多少。
+    vis   radii>0：通過視錐與尺寸剔除、進了 binning（gsplat／Taming 的 visible Adam 用的就是這個遮罩）
+    grad  光度 loss 對該顆有非零梯度：真的混合進至少一個像素（lean＋飽和跳過下＝這步實際有梯度的那批）
+    盒內  中心在本塊分區盒內（不外擴；合併時保留的那批）
+    ⚠ 正則項（opacity 二元熵、scale）對**全部**顆粒都有梯度 => 稀疏 Adam 等於改了它們的語意（只在可見時生效），不是逐位元等價。"""
+    from internal.utils.gaussian_model_loader import GaussianModelLoader
+    from internal.utils.ssim import ssim
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from crop_inbox_ckpt import inbox_mask
+    dev = torch.device("cuda")
+    model, renderer, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(
+        a.ckpt, device=dev, eval_mode=False, pre_activate=False)
+    renderer.lean_train = bool(a.lean)
+    renderer._lean_announced = True
+    a.running = 0                       # 只量可見性，不累加 trim 狀態
+    TF = _apply_speed_flags(renderer, a)
+    ck = torch.load(a.ckpt, map_location="cpu")
+    dmh = ck["datamodule_hyper_parameters"]
+    _pp = dmh["parser"]
+    if getattr(_pp, "points_from", None) == "ply" and not os.path.exists(os.path.join(dmh["path"], _pp.ply_file)):
+        _pp.points_from = "random"
+    cams = _pp.instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)),
+                           global_rank=0).get_outputs().train_set.cameras
+    del ck
+    params = dict(model.gaussians.items())
+    for p in params.values():
+        p.requires_grad_(True)
+    N = model.n_gaussians
+    inb = inbox_mask(model.get_xyz.detach().cpu(), _pp, 0.0).to(dev)
+    n_in = int(inb.sum())
+    idx = list(range(len(cams))) if a.ncam <= 0 else np.linspace(0, len(cams) - 1, a.ncam).round().astype(int).tolist()
+    bg = torch.zeros(3, device=dev)
+    ever_vis = torch.zeros(N, dtype=torch.bool, device=dev)
+    ever_grad = torch.zeros(N, dtype=torch.bool, device=dev)
+    rows = []
+    for c in idx:
+        cam = cams[c].to_device(dev)
+        for p in params.values():
+            p.grad = None
+        out = renderer.training_forward(0, None, cam, model, bg, **TF)
+        img = out["render"]
+        tgt = torch.rand(img.shape, device=dev, generator=torch.Generator(device=dev).manual_seed(1000 + c))
+        loss = 0.8 * (img - tgt).abs().mean() + 0.2 * (1 - ssim(img, tgt))
+        loss.backward()
+        vis = out["radii"] > 0
+        g = torch.zeros(N, dtype=torch.bool, device=dev)
+        for p in params.values():
+            if p.grad is not None:
+                g |= (p.grad.reshape(N, -1) != 0).any(1)
+        ever_vis |= vis
+        ever_grad |= g
+        rows.append([float(vis.float().mean()), float(g.float().mean()),
+                     float((vis & inb).sum()) / max(n_in, 1), float((g & inb).sum()) / max(n_in, 1),
+                     float(inb[vis].float().mean()) if bool(vis.any()) else 0.0])
+    R = np.array(rows)
+    print(f"N={N:,}  盒內 {n_in:,}（{n_in / N:.1%}）  視角 {len(idx)}／{len(cams)}  ckpt={os.path.basename(a.ckpt)}")
+    print("   生效旗標：" + _flag_str(renderer, TF))
+    print("── 每視角比例（平均／中位／p10／p90）")
+    for j, nm in enumerate(["可見 radii>0 ／全部", "有梯度 ／全部", "可見 ／盒內顆粒（只算盒內）", "有梯度 ／盒內顆粒（只算盒內）", "可見顆粒中盒內的佔比"]):
+        v = R[:, j]
+        print(f"   {nm:<26} {v.mean():7.1%} {np.median(v):7.1%} {np.percentile(v, 10):7.1%} {np.percentile(v, 90):7.1%}")
+    print(f"── 這 {len(idx)} 個視角都沒看到：{1 - float(ever_vis.float().mean()):.2%}；都沒梯度：{1 - float(ever_grad.float().mean()):.2%}"
+          f"（盒內 {1 - float(ever_grad[inb].float().mean()) if n_in else 0:.2%}）")
+    print(f"── 稀疏 Adam 的上限：每步平均只有 {R[:, 1].mean():.1%} 的顆粒有光度梯度 => Adam 工作量最多省 {1 - R[:, 1].mean():.1%}"
+          f"（以 radii>0 當遮罩則省 {1 - R[:, 0].mean():.1%}）")
+
+
 def cmd_profile(a):
     """kernel 層級拆解一個訓練步（forward／loss／backward／Adam）＋一次 trim 的 record pass。
     回答「時間是不是花在梯度」以及梯度裡是「逐 (像素,顆粒) 配對」還是「逐顆」或「逐像素」的部分。"""
@@ -160,6 +257,7 @@ def cmd_profile(a):
         a.ckpt, device=dev, eval_mode=False, pre_activate=False)
     renderer.lean_train = bool(a.lean)
     renderer._lean_announced = True
+    TF = _apply_speed_flags(renderer, a)
     ck = torch.load(a.ckpt, map_location="cpu")
     dmh = ck["datamodule_hyper_parameters"]
     _pp = dmh["parser"]
@@ -189,7 +287,7 @@ def cmd_profile(a):
         tgt = tgt_for(cam, c)
         opt.zero_grad(set_to_none=True)
         with record_function("A_forward"):
-            out = renderer.training_forward(0, None, cam, model, bg)
+            out = renderer.training_forward(0, None, cam, model, bg, **TF)
         with record_function("B_loss"):
             img = out["render"]
             loss = 0.8 * (img - tgt).abs().mean() + 0.2 * (1 - ssim(img, tgt))
@@ -210,6 +308,7 @@ def cmd_profile(a):
     S = len(idx)
     ka = prof.key_averages()
     print(f"N={model.n_gaussians:,}  lean={a.lean}  fused_adam={getattr(a, 'fused', 0)}  步數={S}（每步換一台相機）  ckpt={os.path.basename(a.ckpt)}")
+    print("   生效旗標：" + _flag_str(renderer, TF))
     print("── 階段（kernel 時間，ms/步；以 record_function 歸屬）")
     for nm in ["A_forward", "B_loss", "C_backward", "D_adam", "E_trim_record_1cam"]:
         e = [k for k in ka if k.key == nm]
@@ -375,9 +474,15 @@ def main():
     c = sp.add_parser("compare"); c.add_argument("a"); c.add_argument("b"); c.add_argument("--label", default="")
     pr = sp.add_parser("profile"); pr.add_argument("--ckpt", required=True); pr.add_argument("--lean", type=int, default=0)
     pr.add_argument("--steps", type=int, default=12); pr.add_argument("--fused", type=int, default=0)
+    vi = sp.add_parser("visible"); vi.add_argument("--ckpt", required=True); vi.add_argument("--lean", type=int, default=1)
+    vi.add_argument("--ncam", type=int, default=0, help="0＝全部訓練視角")
+    for q in (pr, vi):
+        q.add_argument("--fast", type=int, default=-1, help="1＝backward 飽和跳過＋先加總、record 先加總；0＝關；-1＝沿用 ckpt")
+        q.add_argument("--absgrad", type=int, default=-1, help="1＝增生期（backward 累加 |g|）；0＝收割期；-1＝沿用")
+    pr.add_argument("--running", type=int, default=-1, help="1＝累加式 trim（訓練 forward 累加 V/C）；0＝關；-1＝沿用 ckpt")
     ac = sp.add_parser("adamcheck"); ac.add_argument("--ckpt", required=True)
     a = ap.parse_args()
-    {"dump": cmd_dump, "compare": cmd_compare, "profile": cmd_profile, "adamcheck": cmd_adamcheck}[a.cmd](a)
+    {"dump": cmd_dump, "compare": cmd_compare, "profile": cmd_profile, "adamcheck": cmd_adamcheck, "visible": cmd_visible}[a.cmd](a)
 
 
 if __name__ == "__main__":
