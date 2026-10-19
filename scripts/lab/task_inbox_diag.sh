@@ -12,7 +12,7 @@ O=../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim
 L=logs/inbox_diag_b${B}_$(date +%m%d_%H%M).log
 bad=0
 if [ $# -gt 1 ]; then
-  shift; XA=(--hidden_all)
+  shift; XA=(--hidden_all); [ "${DIAG_HIDDEN:-1}" = 0 ] && XA=()   # 全因子消融用 DIAG_HIDDEN=0 跳過全相機的中空檢查
   for r in "$@"; do
     if [ "$r" = official ]; then c=$(ls $O/blocks/block_$B/checkpoints/*step=60000.ckpt | head -1)
     else c=$(ls outputs/lab/$r/blocks/block_$B/checkpoints/*.ckpt 2>/dev/null | sort -t= -k3 -n | tail -1); fi
