@@ -474,7 +474,8 @@ fi
 #   使用者規則：同家族已有舊跑次且**要比時間**的臂不開（牆鐘／it/s 會不可比）；需要幾何通道的臂（cdist*）不可開。
 #   resolved config 會多一項 lean_train => diff 的預期變數數 +1。
 if [ "${CITYGS_LEAN:-0}" = 1 ]; then
-  case "$ARM" in cdist*|best0dist*|best1dist*|bestdist*|best*dist*|best*normal|best*depth|best*geo) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
+  # ★ 2026-10-19 dist 臂可以開 lean 了（dist 版 lean：光柵器 forward MODE 5＋backward DST；renderer 依 lambda_dist 自動切換）
+  case "$ARM" in best*normal|best*depth|best*geo) echo "⛔ $ARM 需要幾何通道，不能開 lean"; exit 2 ;; esac
   EXTRA+=(--model.renderer.init_args.lean_train true); EXP=$((EXP + 1))
   echo "lean_train=true（CITYGS_LEAN=1）"
 fi

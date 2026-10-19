@@ -49,11 +49,18 @@ def cmd_dump(a):
         renderer.absgrad_gate = True
         renderer._absgrad_announced = True
     TF = {"_absgrad": bool(_ab)} if _ab >= 0 else {}
+    # ★ 2026-10-19 dist 版 lean 驗證：--dist w => loss 加 w*mean(rend_dist)；lean 開時明確走 lean_dist（MODE 5＋DST）
+    DW = float(getattr(a, "dist", 0.0) or 0.0)
+    if DW > 0:
+        TF["_lean_dist"] = bool(a.lean)
     renderer.bwd_sat_skip = bool(getattr(a, "bwd_sat", 0))   # ★ 2026-10-09 backward 最佳化
     renderer.bwd_reduce = bool(getattr(a, "bwd_red", 0))
     renderer.bwd_pair_bit = bool(getattr(a, "pair_bit", 0))   # ★ 2026-10-16 配對貢獻 bit
     ck = torch.load(a.ckpt, map_location="cpu")
     dmh = ck["datamodule_hyper_parameters"]
+    _pp = dmh["parser"]
+    if getattr(_pp, "points_from", None) == "ply" and not os.path.exists(os.path.join(dmh["path"], _pp.ply_file)):
+        _pp.points_from = "random"      # 只要相機；init PLY 不在本機時不讀
     cams = dmh["parser"].instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)),
                                      global_rank=0).get_outputs().train_set.cameras
     del ck
@@ -71,11 +78,13 @@ def cmd_dump(a):
         out = renderer.training_forward(0, None, cam, model, bg, **TF)
         img = out["render"]
         loss = 0.8 * (img - tgt).abs().mean() + 0.2 * (1 - ssim(img, tgt))
+        if DW > 0:
+            loss = loss + DW * out["rend_dist"].mean()
         loss.backward()
         return out
 
-    res = {"renders": [], "radii": [], "trans": [], "cover": [], "tiles": [], "N": N,
-           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}{('+ab' + str(_ab)) if _ab >= 0 else ''}{'+sat' if renderer.bwd_sat_skip else ''}{'+red' if renderer.bwd_reduce else ''}{'+pb' if renderer.bwd_pair_bit else ''}"}
+    res = {"renders": [], "radii": [], "trans": [], "cover": [], "tiles": [], "dists": [], "N": N,
+           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}{('+ab' + str(_ab)) if _ab >= 0 else ''}{'+sat' if renderer.bwd_sat_skip else ''}{'+red' if renderer.bwd_reduce else ''}{'+pb' if renderer.bwd_pair_bit else ''}{('+dist' + str(DW)) if DW > 0 else ''}"}
     gsum = {k: torch.zeros_like(p, dtype=torch.float64) for k, p in params.items()}
     vsum = None
     for c in idx:
@@ -84,6 +93,8 @@ def cmd_dump(a):
         tgt = torch.rand((3, int(cam.height), int(cam.width)), device=dev, generator=g)
         out = step(cam, tgt)
         res["renders"].append(out["render"].detach().cpu())
+        if out.get("rend_dist") is not None:
+            res["dists"].append(out["rend_dist"].detach().cpu())
         res["radii"].append(out["radii"].detach().cpu())
         if out.get("tiles") is not None:
             res["tiles"].append(out["tiles"].detach().cpu())
@@ -110,6 +121,8 @@ def cmd_dump(a):
         out = renderer.training_forward(0, None, cam, model, bg, **TF)
         img = out["render"]
         loss = 0.8 * (img - tgt).abs().mean() + 0.2 * (1 - ssim(img, tgt))
+        if DW > 0:
+            loss = loss + DW * out["rend_dist"].mean()
         e1.record()
         loss.backward()
         e2.record()
@@ -149,6 +162,9 @@ def cmd_profile(a):
     renderer._lean_announced = True
     ck = torch.load(a.ckpt, map_location="cpu")
     dmh = ck["datamodule_hyper_parameters"]
+    _pp = dmh["parser"]
+    if getattr(_pp, "points_from", None) == "ply" and not os.path.exists(os.path.join(dmh["path"], _pp.ply_file)):
+        _pp.points_from = "random"      # 只要相機；init PLY 不在本機時不讀
     cams = dmh["parser"].instantiate(path=dmh["path"], output_path=os.path.dirname(os.path.dirname(a.ckpt)),
                                      global_rank=0).get_outputs().train_set.cameras
     del ck
@@ -298,6 +314,9 @@ def cmd_compare(a):
     print(f"  渲染 {len(ren)} 張：不同像素值 {nd}（最大差 {max(r[0] for r in ren):.3e}）"
           + ("  ✅ 逐位元相同" if nd == 0 else "  ⛔ 不相同"))
     ok &= nd == 0
+    if A.get("dists") and B.get("dists"):
+        dd = [_cmp(x, y) for x, y in zip(A["dists"], B["dists"])]
+        print(f"  distortion 圖 {len(dd)} 張：不同像素 {sum(r[2] for r in dd)}（最大差 {max(r[0] for r in dd):.3e}、相對 {max(r[1] for r in dd):.2e}）")
     rd = sum(int((x != y).sum()) for x, y in zip(A["radii"], B["radii"]))
     print(f"  radii：不同 {rd}" + ("  ✅" if rd == 0 else "  ⛔"))
     ok &= rd == 0
@@ -351,6 +370,7 @@ def main():
     d.add_argument("--tile-cull", dest="tile_cull", type=int, default=0)
     d.add_argument("--bwd-sat", dest="bwd_sat", type=int, default=0); d.add_argument("--bwd-red", dest="bwd_red", type=int, default=0)
     d.add_argument("--pair-bit", dest="pair_bit", type=int, default=0)
+    d.add_argument("--dist", type=float, default=0.0, help="loss 加 dist*mean(rend_dist)；lean=1 時走 dist 版 lean（2026-10-19）")
     d.add_argument("--absgrad", type=int, default=-1, help="1/0＝absgrad_gate 開且明確要／不要 absgrad 累加；-1＝不碰")
     c = sp.add_parser("compare"); c.add_argument("a"); c.add_argument("b"); c.add_argument("--label", default="")
     pr = sp.add_parser("profile"); pr.add_argument("--ckpt", required=True); pr.add_argument("--lean", type=int, default=0)

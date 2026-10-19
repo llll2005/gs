@@ -87,7 +87,9 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-10-16 bit4 = 配對貢獻 bit（forward 的 lean 訓練記；其他 mode 填全 1 => 等同沒開）
                 | (16 if getattr(raster_settings, "bwd_pair_bit", False) else 0)
                 # ★ 2026-10-16 bit5 = 訓練中累加 V/C（lean 訓練 forward 順便填 transmittance＝Σ T·α、num_covered＝覆蓋數）
-                | (32 if getattr(raster_settings, "train_record", False) else 0)),
+                | (32 if getattr(raster_settings, "train_record", False) else 0)
+                # ★ 2026-10-19 bit6 = dist 版 lean（訓練 forward 多算 distortion 通道；forward.cu MODE 5）
+                | (64 if getattr(raster_settings, "lean_dist", False) else 0)),
         )
 
         # Invoke C++/CUDA rasterizer
@@ -140,13 +142,24 @@ class _RasterizeGaussians(torch.autograd.Function):
         colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
 
         geom_grad = True
+        dst_grad = False
         if getattr(raster_settings, "lean_render", False):
-            if grad_depth is not None:
+            if grad_depth is not None and getattr(raster_settings, "lean_dist", False):
+                # ★ 2026-10-19 dist 版 lean：只有 distortion 通道（6）有算 => 其他通道（深度／alpha／法線／中位深度）不可有梯度
+                _other = torch.cat([grad_depth[:6], grad_depth[7:]])
+                if torch.count_nonzero(_other) > 0:
+                    raise RuntimeError(
+                        "lean_dist=True 時只算了 distortion 通道，但深度／alpha／法線／中位深度也被接進了 loss"
+                        "（normal／depth 權重 > 0？）=> 關掉 lean")
+                dst_grad = True
+                grad_depth = grad_depth.contiguous()
+            elif grad_depth is not None:
                 raise RuntimeError(
                     "lean_render=True 時幾何輸出（深度／法線／distortion，只有 alpha 有算）沒有計算，"
                     "但它們被接進了 loss（normal／dist／depth 權重 > 0？）=> 關掉 lean_render")
+            else:
+                grad_depth = torch.empty(0, device=means3D.device)
             geom_grad = False
-            grad_depth = torch.empty(0, device=means3D.device)
             if grad_out_color is None:
                 grad_out_color = torch.zeros((3, raster_settings.image_height, raster_settings.image_width),
                                              device=means3D.device)
@@ -181,7 +194,9 @@ class _RasterizeGaussians(torch.autograd.Function):
                 | (4 if getattr(raster_settings, "bwd_sat_skip", False) else 0)
                 | (8 if getattr(raster_settings, "bwd_reduce", False) else 0)
                 # ★ 2026-10-16 bit4 = 用 forward 記的配對貢獻 bit 擠掉無貢獻配對（只在 lean／geom 關時生效）
-                | (16 if getattr(raster_settings, "bwd_pair_bit", False) else 0))
+                | (16 if getattr(raster_settings, "bwd_pair_bit", False) else 0)
+                # ★ 2026-10-19 bit5 = dist 版 lean 的 distortion 梯度（backward.cu renderCUDA_opt<DST=true>）
+                | (32 if dst_grad else 0))
 
         # Compute gradients for relevant tensors by invoking backward method
         if raster_settings.debug:
@@ -239,6 +254,7 @@ class GaussianRasterizationSettings(NamedTuple):
     bwd_reduce : bool = False     # ★ 2026-10-09 backward 梯度 block 內先加總再寫全域（只差浮點加總順序）
     bwd_pair_bit : bool = False   # ★ 2026-10-16 forward 記配對貢獻 bit、backward 只處理被混合過的配對（有效配對與順序相同）
     train_record : bool = False   # ★ 2026-10-16 lean 訓練 forward 順便累加逐顆 Σ T·α 與覆蓋數（取代 trim 的全相機 record pass）
+    lean_dist : bool = False      # ★ 2026-10-19 dist 版 lean：lean forward 多算 distortion、backward 加它的梯度（需 lean_render）
     absgrad : bool = True   # ★ 2026-10-09：False => backward 不做 absgrad 的 atomicAdd（只有 dL_dmean2D.z 變 0）
     # ★ 2026-10-02：剃除沒人用的計算（見 forward.cu 的 MODE 與 backward.cu 的 GEOM）。
     #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。

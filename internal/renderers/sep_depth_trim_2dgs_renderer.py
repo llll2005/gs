@@ -221,6 +221,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
         _conic = getattr(self, "exact_conic_aabb", False)
         # lean：訓練步（training_forward 傳 _lean=True）與 record（trim pass）才用；驗證／測試走完整輸出
         _lean = bool(getattr(self, "lean_train", False)) and (bool(kwargs.get("_lean", False)) or record_transmittance)
+        # ★ 2026-10-19 dist 版 lean（使用者 10-19：dist 臂也要有 lean 的最佳化，時間才可比）：training_forward 在 lambda_dist > 0 時設 _lean_dist
+        _lean_dist = _lean and (not record_transmittance) and bool(kwargs.get("_lean_dist", False))
+        if _lean_dist and "lean_dist" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError("lambda_dist > 0 且開了 lean_train，但光柵器不認得 lean_dist 欄位 —— 沒重編（或關掉 lean）")
         if _lean and "lean_render" not in GaussianRasterizationSettings._fields:
             raise RuntimeError(
                 "設了 lean_train 但光柵器不認得 lean_render 欄位 —— 沒重編。\n"
@@ -257,6 +261,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"return_tiles": True}
                if "return_tiles" in GaussianRasterizationSettings._fields else {}),
             **({"lean_render": True} if _lean else {}),
+            **({"lean_dist": True} if _lean_dist else {}),
             **({"bwd_sat_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_sat_skip", False)) else {}),
             **({"bwd_reduce": True} if (_lean and not record_transmittance and getattr(self, "bwd_reduce", False)) else {}),
             **({"bwd_pair_bit": True} if (_lean and not record_transmittance and getattr(self, "bwd_pair_bit", False)) else {}),
@@ -400,6 +405,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 self._lean_announced = True
                 print("[lean] ✅ 首次觸發：訓練 forward 只算顏色＋alpha、backward 跳過幾何梯度、trim pass 只算 T*alpha 與覆蓋數", flush=True)
             rets['rend_alpha'] = render_alpha
+            if _lean_dist:
+                rets['rend_dist'] = allmap[6:7]   # MODE 5 有算 distortion（算式同完整路徑）
+                if not getattr(self, "_lean_dist_announced", False):
+                    self._lean_dist_announced = True
+                    print("[lean-dist] ✅ 首次觸發：lean forward 多算 distortion、backward 加它的梯度（飽和跳過／先加總照用）", flush=True)
             return rets
 
         # get normal map
@@ -459,6 +469,14 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if not self._absgrad_announced and not need:
                 self._absgrad_announced = True
                 print(f"[absgrad-gate] ✅ 首次關閉 absgrad 累加：step {step}（absgrad_densify={w}、densify_until={until}）")
+        if "_lean_dist" not in kwargs:
+            # ★ 2026-10-19：深度失真正則有作用的步 => dist 版 lean（其他幾何 loss 若 > 0，光柵器 backward 會當場報錯）
+            mcfg = getattr(getattr(module, "metric", None), "config", None)
+            lam = float(getattr(mcfg, "lambda_dist", 0.0) or 0.0)
+            frm = int(getattr(mcfg, "dist_regularization_from_iter", 0) or 0)
+            # ⚠ metric 收到的是 trainer.global_step + 1（gaussian_splatting.training_step），renderer 這裡是 trainer.global_step
+            #   => 用 step + 1 判斷，且寧可早一步開（多算一步 distortion 無害；少算一步 metric 會讀不到 rend_dist）
+            kwargs["_lean_dist"] = lam > 0 and (step + 1) >= frm
         return self(viewpoint_camera=viewpoint_camera, pc=pc, bg_color=bg_color, render_types=render_types,
                     _lean=True, **kwargs)
 

@@ -415,6 +415,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 //   MODE 2  trim pass（record_transmittance）用：只累積 T*alpha 與覆蓋數，不算顏色也不算幾何
 //           —— record 模式的呼叫端只取這兩個量，顏色與 7 個通道算完即丟
 //   三者的 T 序列、early-out（done）與 record 的計數條件完全相同（都只依賴 alpha 與 T）。
+//   MODE 5  ★ 2026-10-19 dist 版 lean：MODE 1 ＋ 深度失真（distortion）通道與它的兩個累積量（dist1／dist2 存 final_T），
+//           算式與 MODE 0 逐字相同；法線／深度／中位深度照樣不算。給 lambda_dist > 0 但其他幾何 loss 為 0 的訓練步（使用者 10-19）。
 template <uint32_t CHANNELS, int MODE>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
@@ -466,13 +468,14 @@ renderCUDA(
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
 	__shared__ uint8_t s_used[(MODE == 1) ? BLOCK_SIZE : 1];
+	constexpr bool LEANLIKE = (MODE == 1 || MODE == 5);   // 訓練用的 lean forward（MODE 5 多算 distortion）
 	const bool rec_pair = (MODE == 1) && (pair_used != nullptr);
 	// ★ 2026-10-16 訓練中累加 V/C（取代 trim 的 record pass）：MODE 1 且 record_transmittance=true（rasterizer_impl 在 bit 32 時這樣傳）
 	//   => 在與 record pass 完全相同的位置（近平面／power 檢查之後、alpha<1/255 之前）累加 T*alpha 與覆蓋數；
 	//   每批先在 shared 累加，批末每個配對一次全域 atomic（同 recordReduceCUDA 的模式）。
-	const bool rec_acc = (MODE == 1) && record_transmittance;
-	__shared__ float s_ta1[(MODE == 1) ? BLOCK_SIZE : 1];
-	__shared__ int s_cn1[(MODE == 1) ? BLOCK_SIZE : 1];
+	const bool rec_acc = LEANLIKE && record_transmittance;
+	__shared__ float s_ta1[LEANLIKE ? BLOCK_SIZE : 1];
+	__shared__ int s_cn1[LEANLIKE ? BLOCK_SIZE : 1];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -602,6 +605,15 @@ renderCUDA(
 			dist1 += mapped_depth * alpha * T;
 			dist2 += mapped_depth * mapped_depth * alpha * T;
 			}
+			if (MODE == 5) {
+			// ★ 2026-10-19 與 MODE 0 的 distortion 算式逐字相同（只拿掉 median／法線／深度）
+			float A = 1-T;
+			float mapped_depth = (FAR_PLANE * depth - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * depth);
+			float error = mapped_depth * mapped_depth * A + dist2 - 2 * mapped_depth * dist1;
+			distortion += error * alpha * T;
+			dist1 += mapped_depth * alpha * T;
+			dist2 += mapped_depth * mapped_depth * alpha * T;
+			}
 #endif
 
 			// Eq. (3) from 3D Gaussian splatting paper.
@@ -637,7 +649,12 @@ renderCUDA(
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
 
 #if RENDER_AXUTILITY
-		if (MODE == 1) out_others[pix_id + ALPHA_OFFSET * H * W] = 1 - T;   // alpha 免費，留著
+		if (LEANLIKE) out_others[pix_id + ALPHA_OFFSET * H * W] = 1 - T;   // alpha 免費，留著
+		if (MODE == 5) {
+		final_T[pix_id + H * W] = dist1;
+		final_T[pix_id + 2 * H * W] = dist2;
+		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
+		}
 		if (MODE == 0) {
 		n_contrib[pix_id + H * W] = median_contributor;
 		final_T[pix_id + H * W] = dist1;
@@ -915,6 +932,7 @@ void FORWARD::render(
 		transmittance, num_covered_pixels); return; }
 	if (mode == 1) { renderCUDA<NUM_CHANNELS, 1> << <grid, block >> > (_RENDER_ARGS); return; }
 	if (mode == 2) { renderCUDA<NUM_CHANNELS, 2> << <grid, block >> > (_RENDER_ARGS); return; }
+	if (mode == 5) { renderCUDA<NUM_CHANNELS, 5> << <grid, block >> > (_RENDER_ARGS); return; }   // ★ 2026-10-19 dist 版 lean
 #undef _RENDER_ARGS
 	renderCUDA<NUM_CHANNELS, 0> << <grid, block >> > (
 		ranges,

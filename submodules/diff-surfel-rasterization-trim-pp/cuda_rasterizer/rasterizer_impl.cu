@@ -469,7 +469,8 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	const float* transMat_ptr = transMat_precomp != nullptr ? transMat_precomp : geomState.transMat;
 	// ★ 2026-10-16 bit 16 = 配對貢獻 bit。只有 lean 訓練 forward（mode 1）會記；其他 mode 一律填 1（backward 不擠任何配對 => 等同沒開）
-	const int fmode = flag_audit ? 3 : ((record_transmittance && (lean & 4)) ? 4 : ((lean & 1) ? (record_transmittance ? 2 : 1) : 0));
+	// ★ 2026-10-19 bit 64 = dist 版 lean（訓練 forward 多算 distortion => MODE 5）
+	const int fmode = flag_audit ? 3 : ((record_transmittance && (lean & 4)) ? 4 : ((lean & 1) ? (record_transmittance ? 2 : ((lean & 64) ? 5 : 1)) : 0));
 	uint8_t* pair_used = nullptr;
 	if ((lean & 16) && num_rendered > 0) {
 		CHECK_CUDA(cudaMemset(binningState.pair_used, fmode == 1 ? 0 : 1, num_rendered), debug)
@@ -494,7 +495,7 @@ int CudaRasterizer::Rasterizer::forward(
 		transmittance,
 		num_covered_pixels,
 		// ★ 2026-10-16 bit 32＝訓練中累加 V/C：MODE 1 收到 record_transmittance=true 時在訓練 forward 裡順便累加（見 forward.cu rec_acc）
-		record_transmittance || ((lean & 32) && fmode == 1),
+		record_transmittance || ((lean & 32) && (fmode == 1 || fmode == 5)),
 		// lean：訓練 => 只算顏色（MODE 1）；record => 只算 T*alpha 與覆蓋數（MODE 2）。見 forward.cu
 		fmode, pair_used), debug)
 

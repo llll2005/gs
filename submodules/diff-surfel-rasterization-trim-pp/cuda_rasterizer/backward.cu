@@ -480,8 +480,11 @@ renderCUDA(
 //   RED：block 內先加總 —— 每個 (像素,顆粒) 的梯度先在 warp 內 cg::reduce、再 atomicAdd 到 shared memory，
 //        每批結束時每顆只做一次全域 atomic（同 forward.cu recordReduceCUDA 的模式）。只差浮點加總順序。
 //   梯度量（逐顆 16 個）：顏色 3、transMat 9（ray-splat 分支）、mean2D.xy 2（次像素 fallback）、absgrad 1、opacity 1。
+//   ★ 2026-10-19 DST（dist 版 lean，使用者 10-19）：另加深度失真（distortion）的梯度，算式與 renderCUDA<GEOM=true> 逐字相同
+//        （dL_dweight／last_dL_dT 回傳到 alpha、dL_dmd -> dL_dz 經交點深度到 transMat；次像素分支加到 transMat[8]）；
+//        法線／深度／alpha 累積／中位深度的梯度照樣不算（呼叫端保證那些通道沒進 loss）。DST=false 時程式路徑與舊版相同。
 #define OPT_NG 16
-template <uint32_t C, bool ABS, bool SAT, bool RED>
+template <uint32_t C, bool ABS, bool SAT, bool RED, bool DST>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA_opt(
 	const uint2* __restrict__ ranges,
@@ -499,7 +502,8 @@ renderCUDA_opt(
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
-	const uint8_t* __restrict__ pair_used)
+	const uint8_t* __restrict__ pair_used,
+	const float* __restrict__ dL_depths)
 {
 	// ★ 2026-10-16 PB（pair_used != nullptr）：配對貢獻 bit。forward 記下「這個 (tile,顆粒) 配對有沒有被任一像素混合」；
 	//   沒被混合的配對對每個像素都是 valid=false（條件逐條相同：contributor<last、NEAR_PLANE、power、alpha>=1/255）=> 梯度恆 0。
@@ -554,6 +558,12 @@ renderCUDA_opt(
 		bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
 	float last_alpha = 0;
 	float last_color[C] = { 0 };
+	// ★ 2026-10-19 DST：distortion 的上游梯度與 forward（MODE 5）存下的累積量
+	const float dL_dreg = (DST && inside) ? dL_depths[DISTORTION_OFFSET * H * W + pix_id] : 0.f;
+	const float final_D = (DST && inside) ? final_Ts[pix_id + H * W] : 0.f;
+	const float final_D2 = (DST && inside) ? final_Ts[pix_id + 2 * H * W] : 0.f;
+	const float final_A = 1 - T_final;
+	float last_dL_dT = 0.f;
 
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
@@ -640,12 +650,29 @@ renderCUDA_opt(
 							dL_dalpha += (c - accum_rec[ch]) * dL_dpixel[ch];
 							g[ch] = dchannel_dcolor * dL_dpixel[ch];
 						}
+						float dL_dz = 0.0f;
+						if (DST) {
+							// 與 renderCUDA<GEOM=true> 的 distortion 部分逐字相同
+							float m_d = (FAR_PLANE * c_d - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d);
+							float dmd_dd = (FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d * c_d);
+							float dL_dweight = 0;
+#if DETACH_WEIGHT
+							dL_dweight += 0;
+#else
+							dL_dweight += (final_D2 + m_d * m_d * final_A - 2 * m_d * final_D) * dL_dreg;
+#endif
+							dL_dalpha += dL_dweight - last_dL_dT;
+							last_dL_dT = dL_dweight * alpha + (1 - alpha) * last_dL_dT;
+							float dL_dmd = 2.0f * (T * alpha) * (m_d * final_A - final_D) * dL_dreg;
+							dL_dz += dL_dmd * dmd_dd;
+						}
 						dL_dalpha *= T;
 						last_alpha = alpha;
 						dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
 						const float dL_dG = nor_o.w * dL_dalpha;
 						if (rho3d <= rho2d) {
-							const float2 dL_ds = { dL_dG * -G * s.x, dL_dG * -G * s.y };
+							const float2 dL_ds = DST ? float2{ dL_dG * -G * s.x + dL_dz * Tw.x, dL_dG * -G * s.y + dL_dz * Tw.y }
+							                         : float2{ dL_dG * -G * s.x, dL_dG * -G * s.y };
 							if (ABS) g[14] = fabsf(dL_ds.x) + fabsf(dL_ds.y);
 							const float dsx_pz = dL_ds.x / p.z;
 							const float dsy_pz = dL_ds.y / p.z;
@@ -657,9 +684,11 @@ renderCUDA_opt(
 							g[9]  = pixf.x * dL_dk.x + pixf.y * dL_dl.x;
 							g[10] = pixf.x * dL_dk.y + pixf.y * dL_dl.y;
 							g[11] = pixf.x * dL_dk.z + pixf.y * dL_dl.z;
+							if (DST) { g[9] += dL_dz * s.x; g[10] += dL_dz * s.y; g[11] += dL_dz * 1.0f; }
 						} else {
 							g[12] = dL_dG * (-G * FilterInvSquare * d.x);
 							g[13] = dL_dG * (-G * FilterInvSquare * d.y);
+							if (DST) g[11] = dL_dz;   // 次像素分支：深度梯度進 transMat[8]（同 GEOM 路徑）
 						}
 						g[15] = G * dL_dalpha;
 					}
@@ -686,6 +715,7 @@ renderCUDA_opt(
 				if (g[12] != 0.f || g[13] != 0.f) {
 					atomicAdd(&dL_dmean2D[gid].x, g[12]);
 					atomicAdd(&dL_dmean2D[gid].y, g[13]);
+					if (DST && g[11] != 0.f) atomicAdd(&dL_dtransMat[gid * 9 + 8], g[11]);
 				} else {
 					for (int k = 0; k < 9; k++) atomicAdd(&dL_dtransMat[gid * 9 + k], g[3 + k]);
 #if ABSGRAD
@@ -1015,11 +1045,14 @@ void BACKWARD::render(
 	const bool sat = (flags & 4) != 0;
 	const bool red = (flags & 8) != 0;
 	const bool pbit = (flags & 16) != 0 && pair_used != nullptr;   // ★ 2026-10-16 配對貢獻 bit
-	if (!geom && (sat || red || pbit)) {
-#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr)
-#define OPT_L(A, S, R) renderCUDA_opt<NUM_CHANNELS, A, S, R> << <grid, block >> >(OPT_ARGS)
-		if (absg) { if (sat && red) OPT_L(true, true, true); else if (sat) OPT_L(true, true, false); else if (red) OPT_L(true, false, true); else OPT_L(true, false, false); }
-		else      { if (sat && red) OPT_L(false, true, true); else if (sat) OPT_L(false, true, false); else if (red) OPT_L(false, false, true); else OPT_L(false, false, false); }
+	const bool dst = (flags & 32) != 0;                              // ★ 2026-10-19 dist 版 lean（只在 geom 關時；forward 要是 MODE 5）
+	if (!geom && (sat || red || pbit || dst)) {
+#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr), (dst ? dL_depths : nullptr)
+#define OPT_L(A, S, R, D) renderCUDA_opt<NUM_CHANNELS, A, S, R, D> << <grid, block >> >(OPT_ARGS)
+#define OPT_SR(A, D) { if (sat && red) OPT_L(A, true, true, D); else if (sat) OPT_L(A, true, false, D); else if (red) OPT_L(A, false, true, D); else OPT_L(A, false, false, D); }
+		if (dst) { if (absg) OPT_SR(true, true) else OPT_SR(false, true) }
+		else     { if (absg) OPT_SR(true, false) else OPT_SR(false, false) }
+#undef OPT_SR
 #undef OPT_L
 #undef OPT_ARGS
 		return;
