@@ -29,11 +29,12 @@ fi
 cat <<'TXT'
 CityGaussian 指令速查（bash scripts/help.sh <名稱> 看單支；各腳本也都能直接加 --help）
 
-紀錄       紀錄/README.md（入口）→ 紀錄/研究總覽.md §0 → 紀錄/實驗分析/NN_*.md＋同名圖；完整指令手冊在 紀錄/完整指令手冊.md
+紀錄       紀錄/README.md（入口）→ 紀錄/研究總覽.md §0 → 紀錄/實驗分析/NN_*.md＋同名圖；手冊 紀錄/完整指令手冊.md；教訓 紀錄/方法論.md
 
 同步       git commit && git push，然後  JTOK=<token> bash scripts/setup/lab_pull.sh [--no-build]
            ⛔ token 只放在單一指令前面，不寫進任何檔案
-lab 遠端   JTOK=<token> python scripts/setup/lab.py -h        子指令：run／q／bg／log／ps／ls／put／ckpts／get／pull／getfile
+lab 遠端   JTOK=<token> python scripts/setup/lab.py -h        子指令：run／q／bg／log／ps／ls／put／ckpts／get／pull／getfile／renders
+           ⚠ get／ckpts／getfile 的跑次名帶 lab/（lab.py get lab/<跑次> <塊> <步數>）；renders 不帶
            JTOK=<token> python scripts/setup/lab.py q         看 lab 佇列（跑中的槽、待跑、最近完成）
 
 佇列       bash scripts/runner.sh --help                      佇列行寫法（[cpu]／[solo]／標籤）、啟動／停止
@@ -41,7 +42,8 @@ lab 遠端   JTOK=<token> python scripts/setup/lab.py -h        子指令：run�
 
 訓練（lab） bash scripts/lab/task_cmp.sh --help                對比骨架：臂清單（含每臂的覆寫旗標）與環境變數
            CITYGS_DRY=1 bash scripts/lab/task_cmp.sh <塊> <臂>   乾跑：只印完整訓練指令
-           現行最佳：STEPS=60000 CITYGS_FAMILY=cs60_ bash scripts/lab/task_cmp.sh <塊> sfmdup4
+           基底 best1：CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=60000 CITYGS_FAMILY=g44_ bash scripts/lab/task_cmp.sh <塊> best1
+           init 份數：bash scripts/lab/pick_dup.sh <塊> <cap> [crop]   全場景：bash scripts/lab/task_fullscene.sh merge|test <跑次>
 官方線     bash scripts/lab/task_citygs_origin.sh --help      官方 CityGSV2 參考線（prep → coarse → 16 塊 → 合併 → held-out、量測）
 舊結論重測 bash scripts/lab/task_recheck.sh --help            幾何／held-out／失敗區／空區雕刻／tau／coarse 閘門
 速度驗證   bash scripts/lab/task_lean_check.sh --help ／ task_speed2_check.sh ／ task_tile_audit.sh
@@ -53,6 +55,10 @@ lab 遠端   JTOK=<token> python scripts/setup/lab.py -h        子指令：run�
   python tools/lab_cmp_report.py --blk <塊>                  lab 對比家族一覽（在 lab 上跑）
   bash scripts/task_load_compare.sh --help                   成本欄：同工具同相機量終點模型的 Load
   python tools/eval_official_test.py --ckpt <ckpt>           官方 741 幀 held-out
+  bash scripts/lab/task_full44.sh swap <塊> <跑次...>         換塊評測（定案用；同塊對官方見手冊 §4-5）
+  bash scripts/lab/task_block_f1.sh arms <塊> <跑次...>       區塊幾何 F1
+  bash scripts/lab/task_inbox_diag.sh <塊> [跑次...|official] 塊內外比例、馬路地底、中空、邊緣（tools/inbox_diag.py）
+  bash scripts/lab/task_round_report.sh <塊> <跑次...>        補 test 圖＋全套診斷
   python tools/plot_analysis.py                              重畫 紀錄/實驗分析/ 全部的圖
 TXT
 

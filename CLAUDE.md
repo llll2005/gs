@@ -22,8 +22,11 @@ competitive with CityGaussianV2.
 **Records have a single entry (reorganised 2026-10-03): `紀錄/README.md` -> `紀錄/研究總覽.md` (the only body;
 §0 = one-page current status, §10 = which old-era conclusions were re-measured) -> `紀錄/實驗分析/NN_*.md`, each paired with a
 same-named `NN_*.png` (doc tables = the numbers on the figure; regenerate with `python tools/plot_analysis.py`).
-The previous bodies are archived: `紀錄/new_archived/研究總覽_v2_至2026-10-03.md` (09-13..10-03) and
+The previous bodies are archived: `紀錄/new_archived/研究總覽_v4_至2026-10-19.md`, `_v3_至2026-10-15`, `_v2_至2026-10-03` and
 `紀錄/new_archived/研究總覽_v1_至2026-09-13.md` — **code comments citing "研究總覽 §11.x/§13.x/§16.x" mean v1**.
+**2026-10-19 reorganisation (user)**: the body keeps only what is currently valid; methodology lessons => `紀錄/方法論.md`;
+every closed line + reopen condition => `紀錄/new_archived/已關閉的線.md` (cumulative); era table => `紀錄/new_archived/年代與舊結論處理狀態.md`;
+retired manual sections => `紀錄/new_archived/完整指令手冊_退役段落_至2026-10-19.md`. New analyses 16 (steps/SH), 17 (out-of-block mask), 18 (road underground splats).
 `_ctx.md`, the indexes, the survival list and the speed Q&A are also in `new_archived/` (one-line reason per file).
 Read those before proposing mechanisms — this section is a summary and goes stale.**
 
@@ -229,7 +232,7 @@ python utils/depth_init_blocks.py data/matrix_city/aerial/train/block_all --bloc
 ```bash
 conda run -n gspl python -u main.py fit --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply --data.parser.block_id 12 --model.density.init_args.cap_max 2600000 -n <run_name>
 ```
-Don't hand-type the recipe flags. Look commands up with `bash scripts/help.sh` / `<script> --help` (generated from the scripts themselves: arm/mode lists, per-arm overrides, env vars); `CITYGS_DRY=1 bash scripts/lab/task_cmp.sh <blk> <arm>` prints the full resolved training command. Current best: `STEPS=60000 CITYGS_FAMILY=cs60_ bash scripts/lab/task_cmp.sh <blk> sfmdup4`.
+Don't hand-type the recipe flags. Look commands up with `bash scripts/help.sh` / `<script> --help` (generated from the scripts themselves: arm/mode lists, per-arm overrides, env vars); `CITYGS_DRY=1 bash scripts/lab/task_cmp.sh <blk> <arm>` prints the full resolved training command. Base recipe: `CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=60000 CITYGS_FAMILY=g44_ bash scripts/lab/task_cmp.sh <blk> best1` (task_cmp saves only the final ckpt by default since 10-18; `CITYGS_SAVE_ITERS` to keep intermediates).
 ⚠ **`down_sample_factor: 1.2` 是全域設定，而且一直都是。** 影像以全解析度存在
 `input/`，1.2 倍是 **dataparser 載入時**算的（`configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml`
 的 `image_dir: input` + `down_sample_factor: 1.2`）；`images_1.2` 只是 `-> input` 的別名
