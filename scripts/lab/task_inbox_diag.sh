@@ -15,7 +15,9 @@ if [ $# -gt 1 ]; then
   shift; XA=(--hidden_all); [ "${DIAG_HIDDEN:-1}" = 0 ] && XA=()   # 全因子消融用 DIAG_HIDDEN=0 跳過全相機的中空檢查
   for r in "$@"; do
     if [ "$r" = official ]; then c=$(ls $O/blocks/block_$B/checkpoints/*step=60000.ckpt | head -1)
-    else c=$(ls outputs/lab/$r/blocks/block_$B/checkpoints/*.ckpt 2>/dev/null | sort -t= -k3 -n | tail -1); fi
+    else c=$(ls outputs/lab/$r/blocks/block_$B/checkpoints/*.ckpt 2>/dev/null | grep -v _inbox | sort -t= -k3 -n | tail -1); fi
+    # ★ 10-20：沒有 ckpt（跑次失敗或還沒跑）=> 跳過、其他照評（原本空路徑讓 inbox_diag 崩潰、整個任務記 FAIL）
+    [ -n "$c" ] || { echo "⚠ $r block $B 沒有 ckpt => 跳過（其他照評）" | tee -a "$L"; continue; }
     echo "== $r：$c" | tee -a "$L"
     conda run -n gspl --no-capture-output python tools/inbox_diag.py --ckpt "$c" --ref_ckpt "$REF" --views 24 "${XA[@]}" 2>&1 \
       | grep -E '^N |^ +|^\[|Error|Traceback' | tee -a "$L"

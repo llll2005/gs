@@ -138,7 +138,15 @@ short_of () { local x; x=$(printf '%s' "$1" | grep -oE '[a-zA-Z0-9_./-]+\.sh( [a
 #    變成一次只啟動一個，看起來像平行沒生效）。改用明確的整數計數器 nrun。
 if [ "$SLOTS" -gt 1 ]; then
   log "runner 啟動（**平行 $SLOTS 槽**；佇列 $Q；每槽保留 ${GPU_RESERVE_MIB}MiB；錯開 ${STAGGER}s）"
-  declare -A P_LABEL P_CMD P_START P_SHORT P_SLOT
+  declare -A P_LABEL P_CMD P_START P_SHORT P_SLOT P_TASK P_SOLO RETRY
+  # ★ 2026-10-20 外部佔卡（lab 共用卡）：失敗時若卡上仍有外部佔用 => 放回佇列（不算失敗），同一任務最多 EXT_RETRY_MAX 次
+  EXT_RETRY_MAX=${RUNNER_EXT_RETRY_MAX:-6}
+  EXT_HOLD_S=${RUNNER_EXT_HOLD_S:-300}     # 最近 2 小時看過外部佔卡 => [solo] 要卡連續空這麼久才開工
+  _EXT_SEEN=0; _FREE_SINCE=0
+  requeue_task () {   # 把任務（連同標籤）插回佇列最前面；暫存檔放在佇列旁邊（不寫 /tmp）
+    local lbl="$1" t="$2" tmp="$Q.requeue.$$"
+    { printf '# %s\n%s\n' "$lbl" "$t"; cat "$Q" 2>/dev/null; } > "$tmp" && mv "$tmp" "$Q"
+  }
   declare -a FREE_SLOTS=()
   for i in $(seq 1 "$SLOTS"); do FREE_SLOTS+=("$i"); done
   nrun=0
@@ -156,11 +164,21 @@ if [ "$SLOTS" -gt 1 ]; then
         log "✔ DONE   [槽 ${P_SLOT[$pid]}] ${P_LABEL[$pid]}  (rc=0, ${dur}s)"
         ledger "TASK DONE   [${P_SHORT[$pid]:-?}] ${P_LABEL[$pid]} (${dur}s)"
       else
-        log "✘ FAIL   [槽 ${P_SLOT[$pid]}] ${P_LABEL[$pid]}  (rc=$rc, ${dur}s)"
-        ledger "TASK FAIL   [${P_SHORT[$pid]:-?}] ${P_LABEL[$pid]} rc=$rc (${dur}s)"
+        _u=""; [ "${P_SOLO[$pid]:-0}" -eq 1 ] && _u=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+        _k="${P_TASK[$pid]}"; _r=${RETRY[$_k]:-0}
+        if [ -n "$_u" ] && [ "$_u" -ge "$GPU_FREE_MIB" ] && [ "$_r" -lt "$EXT_RETRY_MAX" ]; then
+          # [solo] 結束後卡上還有 >= GPU_FREE_MIB 的佔用＝不是我們的 => 失敗多半是被外部行程擠爆（10-20 實例：OOM 時我方只配置 2~4 GB）
+          RETRY[$_k]=$((_r + 1)); _EXT_SEEN=$(date +%s); _FREE_SINCE=0
+          requeue_task "${P_LABEL[$pid]}" "$_k"
+          log "⟲ REQUEUE [槽 ${P_SLOT[$pid]}] ${P_LABEL[$pid]}  (rc=$rc, ${dur}s；結束後卡上仍佔 ${_u}MiB => 外部佔卡，放回佇列第 $((_r + 1))／${EXT_RETRY_MAX} 次)"
+          ledger "TASK REQUEUE [${P_SHORT[$pid]:-?}] ${P_LABEL[$pid]} rc=$rc (${dur}s；外部佔卡 ${_u}MiB)"
+        else
+          log "✘ FAIL   [槽 ${P_SLOT[$pid]}] ${P_LABEL[$pid]}  (rc=$rc, ${dur}s)"
+          ledger "TASK FAIL   [${P_SHORT[$pid]:-?}] ${P_LABEL[$pid]} rc=$rc (${dur}s)"
+        fi
       fi
       FREE_SLOTS+=("${P_SLOT[$pid]}")
-      unset "P_LABEL[$pid]" "P_CMD[$pid]" "P_START[$pid]" "P_SHORT[$pid]" "P_SLOT[$pid]"
+      unset "P_LABEL[$pid]" "P_CMD[$pid]" "P_START[$pid]" "P_SHORT[$pid]" "P_SLOT[$pid]" "P_TASK[$pid]" "P_SOLO[$pid]"
       nrun=$((nrun - 1)); got=$((got + 1))
       solo_running=0
     done
@@ -191,8 +209,14 @@ if [ "$SLOTS" -gt 1 ]; then
       #   40 秒～7 分鐘一個連續燒掉（與 pgrep／讀不到 nvidia-smi 同一家族：沒看到別人 ≠ 卡是空的）。
       if [ "$needs_gpu" -eq 1 ] && [ "$solo" -eq 1 ]; then
         used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+        _now=$(date +%s)
+        if [ -n "$used" ] && [ "$used" -lt "$GPU_FREE_MIB" ] && [ $((_now - _EXT_SEEN)) -lt 7200 ]; then
+          # 最近 2 小時看過外部佔卡：它常是間歇的（10-20 13:27～14:11 卡空出來幾分鐘又被佔回，5 格連續 OOM）=> 要連續空 EXT_HOLD_S 秒
+          [ "$_FREE_SINCE" -eq 0 ] && { _FREE_SINCE=$_now; log "   ⏳ 卡空了，但最近 2 小時有外部佔卡 => 連續空 ${EXT_HOLD_S}s 才開 [solo]"; }
+          [ $((_now - _FREE_SINCE)) -lt "$EXT_HOLD_S" ] && break
+        fi
         if [ -z "$used" ] || [ "$used" -ge "$GPU_FREE_MIB" ]; then
-          _now=$(date +%s)
+          _EXT_SEEN=$_now; _FREE_SINCE=0
           if [ $((_now - ${_EXT_LOGGED:-0})) -ge 1800 ]; then
             log "   ⏳ 下一個是 [solo]，但卡上已用 ${used:-?}MiB（>= ${GPU_FREE_MIB}；外部行程佔卡？）—— 等它釋放（每 30 分鐘提醒一次）"
             _EXT_LOGGED=$_now
@@ -216,7 +240,8 @@ if [ "$SLOTS" -gt 1 ]; then
       { printf '\n===== %s | 槽 %s | %s =====\n' "$(date '+%m-%d %H:%M:%S')" "$slot" "$lbl" >> "$slog"
         bash -c "$xcmd" >> "$slog" 2>&1 9>&- ; } &
       pid=$!
-      P_LABEL[$pid]="$lbl"; P_CMD[$pid]="$cmd"; P_START[$pid]=$(date +%s)
+      P_LABEL[$pid]="$lbl"; P_CMD[$pid]="$cmd"; P_START[$pid]=$(date +%s); P_TASK[$pid]="$task"; P_SOLO[$pid]=$solo
+      _FREE_SINCE=0                          # 下一個 [solo] 要重新等連續空閒（只在最近 2 小時有外部佔卡時才生效）
       P_SHORT[$pid]=$(short_of "$cmd"); P_SLOT[$pid]="$slot"
       nrun=$((nrun + 1))
       if [ "$solo" -eq 1 ]; then
