@@ -186,6 +186,20 @@ if [ "$SLOTS" -gt 1 ]; then
         log "   ⏳ 下一個是 [solo]（獨佔整張卡），等現有 $nrun 個跑完"
         break
       fi
+      # ★ 2026-10-20：[solo] 也要看卡上的實際用量，不只看自己的任務。
+      #   10-20 04:34 UTC 起 lab 卡上出現容器外的行程（22 GB、100%），[solo] 只等自己的任務 => 10 個訓練一啟動就 OOM、
+      #   40 秒～7 分鐘一個連續燒掉（與 pgrep／讀不到 nvidia-smi 同一家族：沒看到別人 ≠ 卡是空的）。
+      if [ "$needs_gpu" -eq 1 ] && [ "$solo" -eq 1 ]; then
+        used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+        if [ -z "$used" ] || [ "$used" -ge "$GPU_FREE_MIB" ]; then
+          _now=$(date +%s)
+          if [ $((_now - ${_EXT_LOGGED:-0})) -ge 1800 ]; then
+            log "   ⏳ 下一個是 [solo]，但卡上已用 ${used:-?}MiB（>= ${GPU_FREE_MIB}；外部行程佔卡？）—— 等它釋放（每 30 分鐘提醒一次）"
+            _EXT_LOGGED=$_now
+          fi
+          break
+        fi
+      fi
       if [ "$needs_gpu" -eq 1 ] && [ "$solo" -eq 0 ] && ! gpu_room; then
         used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
         log "   ⏳ VRAM 不足以再開一個（目前 ${used}MiB，需留 ${GPU_RESERVE_MIB}MiB）；執行中 $nrun"
