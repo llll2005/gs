@@ -1076,45 +1076,57 @@ def _time_logs():
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     from parse_best1_time import parse
     base = os.path.join(DST, "data", "best1_time")
-    return {6: parse(os.path.join(base, "best1_time_b6_1015_0655.log")), 12: parse(os.path.join(base, "best1_time_b12_1015_0602.log"))}
+    T = {6: parse(os.path.join(base, "best1_time_b6_1015_0655.log")), 12: parse(os.path.join(base, "best1_time_b12_1015_0602.log"))}
+    # ★ 10-19：累加式 trim／＋融合 Adam／＋稀疏 Adam（b6，同 ckpt 同工具；累加停止條件修正後的那次）
+    T[6].update(parse(os.path.join(base, "best1_time_b6_1019_1559.log")))
+    return T
 
 
 def n15_time(d):
-    """best1 的時間（lab 3090 [solo]、真實訓練迴圈，`task_best1_time.sh loop`）：best0 → ＋加速旗標 → best1，增生期逐段＋收割期，60k 估計。"""
+    """best1 的時間（lab 3090 [solo]、真實訓練迴圈，`task_best1_time.sh loop`）：best0 → ＋加速旗標 → best1 → ＋累加式 trim → ＋融合／稀疏 Adam。
+    ⚠ 10-19 修正換算：真實步時間本來就不含 trim => 每步 = 真實步 ＋ 第 12 段 ＋ trim 單次/500（舊版少算約 16 ms）。"""
     T = _time_logs()
-    arms = [("best0", "best0"), ("best0fast", "＋加速"), ("best1", "★best1")]
+    groups = [(6, [("best0", "best0"), ("best0fast", "＋加速"), ("best1", "★best1"), ("best1run", "＋累加\ntrim"),
+                   ("best1runfa", "＋融合\nAdam"), ("best1runsa", "＋稀疏\nAdam")]),
+              (12, [("best0", "best0"), ("best0fast", "＋加速"), ("best1", "★best1")])]
     segs = [("backward", C1), ("forward", C3), ("trim_per_step", C2), ("optimizer", C4), ("loss", "#c9b458")]
-    fig, axs = plt.subplots(1, 3, figsize=(17, 4.4), gridspec_kw={"width_ratios": [1.5, 1, 1]})
-    ax = axs[0]; xs, lbl = [], []
-    for bi, b in enumerate((6, 12)):
-        for ai, (a, nm) in enumerate(arms):
-            g = T[b][(a, "grow")]; x = bi * 4 + ai; xs.append(x); lbl.append(f"b{b}\n{nm}")
-            bot = 0
-            for k, c in segs:
-                v = g.get(k, 0.0); ax.bar(x, v, 0.7, bottom=bot, color=c, label=k if (bi == 0 and ai == 0) else None); bot += v
-            ax.plot([x - 0.4, x + 0.4], [g["step"]] * 2, color="k", lw=2, label="真實每步（不同步）" if (bi == 0 and ai == 0) else None)
-            ax.text(x, bot + 1.5, f"{g['step']:.0f}", ha="center", fontsize=8.5, fontweight="bold")
-    ax.set_xticks(xs); ax.set_xticklabels(lbl, fontsize=8); ax.set_ylabel("ms／步（增生期；trim 按真實週期 500 步攤平）")
-    ax.legend(fontsize=7.5, ncol=3, loc="upper right"); ax.set_ylim(0, 125)
-    ax.set_title("增生期每步（@14,999 起 1,200 步；堆疊＝逐段同步量、黑線與數字＝真實每步）：backward −35~−44%，trim 不變", fontsize=9)
+    cols = {"best0": MUTED, "best0fast": "#7fa9e0", "best1": C1, "best1run": "#4c9a6a", "best1runfa": "#d08a2c", "best1runsa": "#b0b0b0"}
+    pos = []
+    x = 0
+    for b, arms in groups:
+        for a, nm in arms:
+            pos.append((x, b, a, nm)); x += 1
+        x += 1
+    fig, axs = plt.subplots(1, 3, figsize=(19, 4.8), gridspec_kw={"width_ratios": [1.6, 1, 1]})
+    ax = axs[0]
+    for k, (x, b, a, nm) in enumerate(pos):
+        g = T[b][(a, "grow")]; bot = 0
+        for sk, c in segs:
+            v = g.get(sk, 0.0); ax.bar(x, v, 0.7, bottom=bot, color=c, label=sk if k == 0 else None); bot += v
+        ax.plot([x - 0.4, x + 0.4], [g["step"]] * 2, color="k", lw=2, label="真實每步" if k == 0 else None)
+        ax.text(x, max(bot, g["step"]) + 1.5, f"{g['step']:.0f}", ha="center", fontsize=8.5, fontweight="bold")
+    ax.set_xticks([p[0] for p in pos]); ax.set_xticklabels([f"b{p[1]}\n{p[3]}" for p in pos], fontsize=7.5)
+    ax.set_ylabel("ms／步（增生期；trim 按真實週期 500 步攤平）"); ax.legend(fontsize=7.5, ncol=3, loc="upper right"); ax.set_ylim(0, 130)
+    ax.set_title("增生期每步（@14,999 起 1,200 步；堆疊＝逐段同步量、黑線與數字＝真實每步）", fontsize=9)
     ax = axs[1]
-    for bi, b in enumerate((6, 12)):
-        for ai, (a, nm) in enumerate(arms):
-            h = T[b][(a, "harvest")]; x = bi * 4 + ai
-            ax.bar(x, h["backward"], 0.7, color=C1); ax.bar(x, h["step"] - h["backward"], 0.7, bottom=h["backward"], color="#d8d6cf")
-            ax.text(x, h["step"] + 1, f"{h['step']:.0f}", ha="center", fontsize=8)
-    ax.set_xticks(xs); ax.set_xticklabels(lbl, fontsize=8); ax.set_ylim(0, 80); ax.set_ylabel("ms／步（收割期，不增生）")
-    ax.set_title("收割期每步（@41,999 起）：藍＝backward", fontsize=9.5)
+    for x, b, a, nm in pos:
+        h = T[b][(a, "harvest")]
+        ax.bar(x, h["backward"], 0.7, color=C1); ax.bar(x, h.get("optimizer", 0), 0.7, bottom=h["backward"], color=C4)
+        ax.bar(x, h["step"] - h["backward"] - h.get("optimizer", 0), 0.7, bottom=h["backward"] + h.get("optimizer", 0), color="#d8d6cf")
+        ax.text(x, h["step"] + 1, f"{h['step']:.0f}", ha="center", fontsize=8)
+    ax.set_xticks([p[0] for p in pos]); ax.set_xticklabels([f"b{p[1]}\n{p[3]}" for p in pos], fontsize=7)
+    ax.set_ylim(0, 80); ax.set_ylabel("ms／步（收割期，不增生）")
+    ax.set_title("收割期每步（@41,999 起）：藍＝backward、紫＝optimizer（Adam）", fontsize=9)
     ax = axs[2]
-    for bi, b in enumerate((6, 12)):
-        for ai, (a, nm) in enumerate(arms):
-            g, h = T[b][(a, "grow")], T[b][(a, "harvest")]; m = 30000 * (g["step"] + h["step"]) / 1000 / 60; x = bi * 4 + ai
-            ax.bar(x, m, 0.7, color=[MUTED, "#7fa9e0", C1][ai]); ax.text(x, m + 1, f"{m:.0f}", ha="center", fontsize=8.5)
-    ax.set_xticks(xs); ax.set_xticklabels(lbl, fontsize=8); ax.set_ylabel("分鐘／60k（估計）"); ax.set_ylim(0, 95)
-    b6 = [30000 * (T[6][(a, 'grow')]['step'] + T[6][(a, 'harvest')]['step']) / 6e4 for a, _ in arms]
-    b12 = [30000 * (T[12][(a, 'grow')]['step'] + T[12][(a, 'harvest')]['step']) / 6e4 for a, _ in arms]
-    ax.set_title(f"一塊 60k ≈ 30k×增生＋30k×收割（不含驗證／存檔）：best1 比 best0 b6 {100*(b6[2]/b6[0]-1):+.0f}%、b12 {100*(b12[2]/b12[0]-1):+.0f}%", fontsize=9)
-    fig.suptitle("現行 best1 的訓練時間（4x4、lab RTX 3090 [solo]、量測期間卡上無其他行程；官方 release 同 N 約 214 ms／步，每步 2 次 backward，`09` §0.3）", fontsize=10)
+    for x, b, a, nm in pos:
+        g, h = T[b][(a, "grow")], T[b][(a, "harvest")]; m = 30000 * (g["step"] + h["step"]) / 1000 / 60
+        ax.bar(x, m, 0.7, color=cols[a]); ax.text(x, m + 1, f"{m:.0f}", ha="center", fontsize=8.5)
+    ax.set_xticks([p[0] for p in pos]); ax.set_xticklabels([f"b{p[1]}\n{p[3]}" for p in pos], fontsize=7)
+    ax.set_ylabel("分鐘／60k（估計）"); ax.set_ylim(0, 100)
+    e = lambda b, a: 30000 * (T[b][(a, 'grow')]['step'] + T[b][(a, 'harvest')]['step']) / 6e4
+    ax.set_title(f"一塊 60k ≈ 30k×增生＋30k×收割（不含驗證／存檔）\nb6：best1 {e(6,'best1'):.0f} → 累加 trim {e(6,'best1run'):.0f} → 融合 Adam {e(6,'best1runfa'):.0f} 分"
+                 f"（實測 68 → 54 → 45）", fontsize=9)
+    fig.suptitle("現行 best1 的訓練時間（4x4、lab RTX 3090 [solo]、量測期間卡上無其他行程；b6 後三組 10-19 量、其餘 10-15；官方 release 同 N 約 214 ms／步，`09` §0.3）", fontsize=10)
     save(fig, d, "n15_time.png")
 
 
@@ -1122,23 +1134,29 @@ def n15_tradeoff(d):
     """採用中的機制：品質變化 vs 成本變化（品質＝換塊評測本塊幾何區域 PSNR 兩塊平均，或逐位元相同＝0）。"""
     T = _time_logs()
     tm = lambda a, b: np.mean([30000 * (T[k][(b, 'grow')]['step'] + T[k][(b, 'harvest')]['step']) / (30000 * (T[k][(a, 'grow')]['step'] + T[k][(a, 'harvest')]['step'])) - 1 for k in (6, 12)]) * 100
+    tm6 = lambda a, b: ((T[6][(b, 'grow')]['step'] + T[6][(b, 'harvest')]['step']) / (T[6][(a, 'grow')]['step'] + T[6][(a, 'harvest')]['step']) - 1) * 100
     P = [("conic 精確外接盒（09-21）", 0.00, -40.1, "Load", "22k b6 29.05 vs 29.05；forward −26%", (6, 8)),
          ("lean_render（10-02）", 0.00, -20.9, "每步", "渲染逐位元相同", (6, 8)),
          ("record_reduce（10-03）", 0.00, -10.9, "每步（增生期）", "每次 trim −35%；逐位元相同", (-150, -34)),
          ("飽和跳過＋先加總（10-10）", 0.02, tm("best0", "best0fast"), "60k 時間", "增生期 backward −26~−29%（4x4）", (8, 10)),
          ("opacity_reg 0（best0，10-10）", -0.02, -33.0, "Load", "F1 +0.11／+0.14；高樓塊 b10 +0.96 dB", (6, -26)),
-         ("★ 二元熵＋V/C（best1，10-14）", -0.04, tm("best0fast", "best1"), "60k 時間", "Load −34／−35%；F1 再 +0.06～0.07", (8, -26))]
+         ("★ 二元熵＋V/C（best1，10-14）", -0.04, tm("best0fast", "best1"), "60k 時間", "Load −34／−35%；F1 再 +0.06～0.07", (8, -26)),
+         # ★ 10-19 候選（下一個基底；時間只有 b6 的同工具量測）
+         ("候選：累加式 trim（10-16）", 0.02, tm6("best1", "best1run"), "60k 時間（b6）", "F1 平；60k 實測 68 → 54 分", (-230, 22)),
+         ("候選：融合 Adam（10-19）", 0.00, tm6("best1run", "best1runfa"), "60k 時間（b6）", "與 torch 逐位元相同；實測 54 → 45 分", (-40, 66))]
     fig, ax = plt.subplots(figsize=(13, 4.6))
     ax.axhspan(-0.03, 0.03, color="#e1e0d9", alpha=0.7, lw=0)
     for nm, dq, dc, unit, note, off in P:
         mk = "^" if unit == "Load" else "o"; c = C1 if nm.startswith("★") else (C2 if unit == "Load" else C3)
-        ax.plot(dc, dq, marker=mk, color=c, ms=11 if nm.startswith("★") else 9, lw=0)
+        cand = nm.startswith("候選")
+        ax.plot(dc, dq, marker=mk, color=c, ms=11 if nm.startswith("★") else 9, lw=0 if not cand else 1.5,
+                markerfacecolor="none" if cand else c)
         ax.annotate(f"{nm}\n{unit} {dc:+.0f}%｜{note}", (dc, dq), xytext=off, textcoords="offset points", fontsize=7.5)
     ax.axvline(0, color=MUTED, lw=1); ax.axhline(0, color=MUTED, lw=1)
     ax.set_xlim(-45, 5); ax.set_ylim(-0.15, 0.1)
     ax.set_xlabel("成本變化 %（▲＝精確 Load、●＝每步／60k 訓練時間；越左越便宜）")
     ax.set_ylabel("Δ 品質（dB；換塊評測兩塊平均，灰帶 ±0.03＝雜訊）")
-    ax.set_title("best1 的每個組成：品質都在雜訊附近，成本一路往左（逐項相對上一個基底；best0 → best1 合計 60k 時間 −16%／−23%、Load −34%／−35%）", fontsize=9.5)
+    ax.set_title(f"best1 的每個組成：品質都在雜訊附近，成本一路往左（逐項相對上一個基底；best0 → best1 合計 60k 時間 {tm('best0','best1'):.0f}%、Load −34%／−35%；空心＝候選）", fontsize=9.5)
     save(fig, d, "n15_tradeoff.png")
 
 
