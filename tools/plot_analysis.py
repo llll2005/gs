@@ -1278,6 +1278,119 @@ def n18_road(d):
     save(fig, d, "n18_road.png")
 
 
+# ══════════════ 19 全因子消融（10-18～10-22） ══════════════
+# (臂, cap 百萬, 步數千, 換塊 Δ（相對 full44 基準合併模型）, LPIPS, 區塊 F1, 每塊分鐘（台帳 START→DONE）, 暗柏油表面在地底 %, 地面下 10 m 顆粒的實際貢獻 %)
+# 來源：lab logs/swap_b{6,12}_102*.log、outputs/lab/geom_f1/blocks/arms_b{6,12}.log、logs/inbox_diag_b{6,12}_102*.log、logs/quad_progress.log
+N19 = {
+    6: [('無遮罩', 1.0, 30, -0.196, 0.1232, 0.4185, 22, 48.9, 5.63),
+         ('無遮罩＋dist', 1.0, 30, -0.109, 0.1228, 0.4409, 25, 42.7, 4.77),
+         ('遮罩＋dist', 1.0, 30, 0.025, 0.1174, 0.5901, 24, 17.4, 0.81),
+         ('遮罩', 1.0, 30, -0.005, 0.1174, 0.5728, 18, 18.9, 1.98),
+         ('無遮罩', 2.5, 30, 0.237, 0.1176, 0.5207, 34, 42.2, 4.79),
+         ('無遮罩＋dist', 2.5, 30, 0.26, 0.1176, 0.541, 38, 35.7, 3.23),
+         ('遮罩＋dist', 2.5, 30, 0.072, 0.1159, 0.6436, 34, 8.5, 0.33),
+         ('遮罩', 2.5, 30, 0.031, 0.1159, 0.6294, 31, 11.0, 1.28),
+         ('無遮罩', 5.0, 30, 0.339, 0.1155, 0.5866, 53, 25.9, 1.56),
+         ('無遮罩＋dist', 5.0, 30, 0.353, 0.1156, 0.6118, 58, 21.7, 0.52),
+         ('遮罩＋dist', 5.0, 30, -0.001, 0.1159, 0.6185, 57, 6.4, 0.55),
+         ('遮罩', 5.0, 30, 0.002, 0.1158, 0.6203, 53, 9.3, 1.22),
+         ('無遮罩', 1.0, 40, -0.352, 0.1226, 0.4408, 28, 42.9, 5.01),
+         ('無遮罩＋dist', 1.0, 40, -0.325, 0.1222, 0.4592, 32, 37.2, 3.9),
+         ('遮罩＋dist', 1.0, 40, -0.224, 0.1174, 0.6122, 28, 15.4, 0.37),
+         ('遮罩', 1.0, 40, -0.248, 0.1174, 0.5898, 24, 17.3, 1.47),
+         ('無遮罩', 2.5, 40, 0.006, 0.1175, 0.5417, 45, 39.2, 4.56),
+         ('無遮罩＋dist', 2.5, 40, 0.036, 0.1175, 0.5616, 51, 33.5, 2.57),
+         ('遮罩＋dist', 2.5, 40, -0.176, 0.1161, 0.6567, 78, 8.3, 0.13),
+         ('遮罩', 2.5, 40, -0.184, 0.116, 0.6462, 41, 10.1, 0.82),
+         ('無遮罩', 5.0, 40, 0.114, 0.1154, 0.6161, 70, 22.7, 1.66),
+         ('無遮罩＋dist', 5.0, 40, 0.122, 0.1156, 0.636, 77, 18.6, 0.08),
+         ('遮罩＋dist', 5.0, 40, -0.237, 0.1163, 0.6232, 74, 6.3, 0.21),
+         ('遮罩', 5.0, 40, -0.24, 0.1161, 0.6263, 69, 9.3, 0.94),
+         ('無遮罩', 1.0, 50, -0.357, 0.1223, 0.4494, 35, 39.1, 5.24),
+         ('無遮罩＋dist', 1.0, 50, -0.399, 0.1221, 0.4738, 42, 31.3, 2.07),
+         ('遮罩＋dist', 1.0, 50, -0.305, 0.1175, 0.622, 35, 14.6, 0.28),
+         ('遮罩', 1.0, 50, -0.301, 0.1174, 0.6006, 31, 16.2, 0.96),
+         ('無遮罩', 2.5, 50, -0.022, 0.1175, 0.5576, 56, 36.5, 4.12),
+         ('無遮罩＋dist', 2.5, 50, -0.015, 0.1175, 0.5785, 66, 30.3, 2.33),
+         ('遮罩＋dist', 2.5, 50, -0.296, 0.1164, 0.66, 58, 8.7, 0.03),
+         ('遮罩', 2.5, 50, -0.296, 0.1163, 0.6505, 52, 10.0, 0.75),
+         ('無遮罩', 5.0, 50, 0.054, 0.1155, 0.6291, 88, 22.4, 0.68),
+         ('無遮罩＋dist', 5.0, 50, 0.026, 0.1158, 0.6444, 96, 16.9, 0.11),
+         ('遮罩＋dist', 5.0, 50, -0.366, 0.1168, 0.6161, 93, 6.1, 0.44),
+         ('遮罩', 5.0, 50, -0.351, 0.1166, 0.6183, 86, 8.6, 1.1)],
+    12: [('無遮罩', 1.0, 30, -0.456, 0.1235, 0.585, 21, 64.8, 14.89),
+         ('無遮罩＋dist', 1.0, 30, -0.416, 0.1241, 0.6103, 24, 49.1, 20.6),
+         ('遮罩＋dist', 1.0, 30, -0.117, 0.1165, 0.735, 22, 46.0, 6.68),
+         ('遮罩', 1.0, 30, -0.137, 0.116, 0.7195, 18, 52.9, 6.45),
+         ('無遮罩', 2.5, 30, -0.065, 0.1161, 0.7171, 31, 54.0, 9.97),
+         ('無遮罩＋dist', 2.5, 30, -0.126, 0.1173, 0.7408, 35, 39.1, 0.61),
+         ('遮罩＋dist', 2.5, 30, -0.032, 0.1129, 0.7977, 35, 31.4, 0.86),
+         ('遮罩', 2.5, 30, -0.068, 0.1127, 0.7946, 45, 45.9, 3.57),
+         ('遮罩＋dist', 1.0, 50, -0.128, 0.1165, 0.7579, 34, 41.0, 3.78),
+         ('遮罩', 1.0, 50, -0.082, 0.1164, 0.7416, 29, 47.5, 3.86),
+         ('無遮罩', 2.5, 50, -0.093, 0.1165, 0.7225, 52, 54.4, 8.01),
+         ('無遮罩＋dist', 2.5, 50, -0.121, 0.1177, 0.7531, 66, 41.2, 1.43),
+         ('遮罩＋dist', 2.5, 50, -0.073, 0.1133, 0.7931, 63, 26.2, 0.66),
+         ('遮罩', 2.5, 50, -0.078, 0.113, 0.7815, 51, 39.7, 2.05)],
+}
+N19_REF = {6: dict(best1=(-0.049, 0.1175, 0.559, 68, 37.7, 4.6), off_f1=0.554, off_road=16.3),
+           12: dict(best1=(-0.108, 0.1168, 0.727, 66, 52.4, 6.4), off_f1=0.678, off_road=38.5)}
+N19_COL = {"無遮罩": MUTED, "無遮罩＋dist": C2, "遮罩": C3, "遮罩＋dist": C1}
+N19_MK = {1.0: "o", 2.5: "s", 5.0: "^"}
+N19_SUSPECT = {(6, "遮罩＋dist", 2.5, 40), (12, "遮罩", 2.5, 30)}   # 時間可能被外部佔卡拖慢（品質可用）
+
+
+def n19_fact(d):
+    """全因子：區塊 F1 對每塊訓練時間（顏色＝臂、形狀＝cap、旁註＝步數）；水平線＝best1 60k 與官方 release。"""
+    fig, axs = plt.subplots(1, 2, figsize=(17, 5.6))
+    for ax, b in zip(axs, (6, 12)):
+        ref = N19_REF[b]
+        for arm, cap, st, dg, lp, f1, mi, road, ug in N19[b]:
+            win = arm == "遮罩＋dist" and st == 30 and cap in (1.0, 2.5)
+            sus = (b, arm, cap, st) in N19_SUSPECT
+            ax.scatter(mi, f1, s=110 if win else 60, marker=N19_MK[cap], color=N19_COL[arm], edgecolor="k" if win else "none", lw=1.6, zorder=5 if win else 3)
+            ax.annotate(f"{st}k" + ("⚠" if sus else ""), (mi, f1), xytext=(5, 5) if win else (5, -3), textcoords="offset points",
+                        fontsize=7.5 if win else 7, color="k" if win else INK2, fontweight="bold" if win else None)
+        b1 = ref["best1"]
+        ax.scatter(b1[3], b1[2], marker="*", s=260, color="k", zorder=4)
+        ax.annotate("best1 60k", (b1[3], b1[2]), xytext=(6, 4), textcoords="offset points", fontsize=8.5, fontweight="bold")
+        ax.axhline(ref["off_f1"], color="k", ls="--", lw=1)
+        ax.text(98, ref["off_f1"] + 0.003, f"官方 release {ref['off_f1']:.3f}（每塊 4~6 小時）", ha="right", fontsize=8)
+        ax.set_xlim(10, 100); ax.set_xlabel("每塊訓練時間（分；台帳 START→DONE，lab 3090 [solo]）"); ax.set_ylabel("區塊幾何 F1")
+        ax.set_title(f"b{b}：粗框＝遮罩＋dist100 30k（2.5M／1M）；⚠＝時間可能被外部佔卡拖慢", fontsize=9.5)
+    from matplotlib.lines import Line2D
+    h = [Line2D([], [], marker="o", ls="", color=c, label=a, ms=8) for a, c in N19_COL.items()] + \
+        [Line2D([], [], marker=m, ls="", color="#888", label=f"cap {c:g}M", ms=8) for c, m in N19_MK.items()]
+    axs[0].legend(handles=h, fontsize=8, ncol=2, loc="lower right")
+    fig.suptitle("全因子消融（SH3、週期 trim、init 跟 cap 走）：遮罩是主槓桿；遮罩＋dist100＋2.5M＋30k 兩塊 F1 最高、時間約 best1 的一半（b12 只跑縮減後的 14 格）", fontsize=10)
+    save(fig, d, "n19_fact.png")
+
+
+def n19_road(d):
+    """30k 的馬路地底比例與部署大小（盒內顆數）：遮罩把容量留在本塊。"""
+    fig, axs = plt.subplots(1, 2, figsize=(17, 4.6), gridspec_kw={"width_ratios": [1.4, 1]})
+    sel = [("無遮罩", 2.5), ("無遮罩＋dist", 2.5), ("遮罩", 1.0), ("遮罩＋dist", 1.0), ("遮罩", 2.5), ("遮罩＋dist", 2.5)]
+    nm = [f"{a}\n{c:g}M 30k" for a, c in sel] + ["best1\n60k", "官方\nrelease"]
+    def road(b, a, c):
+        return next(r[7] for r in N19[b] if r[0] == a and r[1] == c and r[2] == 30)
+    r6 = [road(6, a, c) for a, c in sel] + [N19_REF[6]["best1"][4], N19_REF[6]["off_road"]]
+    r12 = [road(12, a, c) for a, c in sel] + [N19_REF[12]["best1"][4], N19_REF[12]["off_road"]]
+    x = np.arange(len(nm)); w = 0.38; ax = axs[0]
+    barlabels(ax, ax.bar(x - w / 2, r6, w, color=C1, label="b6"), "{:.0f}")
+    barlabels(ax, ax.bar(x + w / 2, r12, w, color=C2, label="b12"), "{:.0f}")
+    ax.set_xticks(x, nm, fontsize=8); ax.legend(fontsize=8); ax.set_ylabel("暗柏油中渲染表面在地底的 %")
+    ax.set_title("馬路靠地底面元撐的比例（`18` 的量法）：遮罩＋dist 2.5M 兩塊都低於官方", fontsize=9.5)
+    ax = axs[1]
+    # 盒內顆數（百萬）＝合併時保留、部署的大小；官方 release 盒內 105.3 萬／93.6 萬（`16` §3）
+    inb = {"best1 60k": (0.435, 0.648), "遮罩＋dist 1M 30k": (0.654, 0.757), "遮罩＋dist 2.5M 30k": (1.566, 1.885), "官方 release": (1.053, 0.936)}
+    x = np.arange(len(inb))
+    barlabels(ax, ax.bar(x - w / 2, [v[0] for v in inb.values()], w, color=C1, label="b6"), "{:.2f}")
+    barlabels(ax, ax.bar(x + w / 2, [v[1] for v in inb.values()], w, color=C2, label="b12"), "{:.2f}")
+    ax.set_xticks(x, [k.replace(" ", "\n", 1) for k in inb], fontsize=8); ax.set_ylabel("盒內顆數（百萬）＝部署大小")
+    ax.set_title("代價：遮罩把顆粒留在本塊 => 合併後模型變大（2.5M 版是 best1 的 3.6／2.9 倍）", fontsize=9.5)
+    save(fig, d, "n19_road.png")
+
+
 DOCS = {
     "01_訓練時間組成": ["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -1293,6 +1406,7 @@ DOCS = {
     "16_步數與SH_輕量化": ["n16_steps", "n16_sh", "n16_official"],
     "17_塊外遮罩訓練": ["n17_mask"],
     "18_馬路地底面元與幾何正則": ["n18_road"],
+    "19_全因子消融_遮罩dist_cap步數": ["n19_fact", "n19_road"],
 }
 
 
@@ -1331,7 +1445,7 @@ def main():
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
-              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road):
+              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
