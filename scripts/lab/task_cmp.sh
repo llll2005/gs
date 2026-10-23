@@ -107,7 +107,7 @@ case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
-  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000|bestsh1softm1|bestmaskdist100|bestmaskpt|bestrunfa|bestrunsa|bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15)
+  bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000|bestsh1softm1|bestmaskdist100|bestmaskpt|bestrunfa|bestrunsa|bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15|bestmaskdistrfed10b4)
               P=$(_bestply)
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=3
               case "$CASEARM" in
@@ -153,7 +153,7 @@ case "$CASEARM" in
                 # ★ 2026-10-17 使用者「作」：塊外遮罩（tools/block_mask44.py；A 塊內照常、B 塊外且空＝目標背景色、C 不計分）＋隨機背景＋初始化裁到本塊盒
                 #   （sfmfill_sweep44_crop，外擴 m_c）；配方其餘＝累加式 trim。rbg＝只開隨機背景的對照（拆開隨機背景本身的影響）
                 # ★ 2026-10-18 使用者消融「sh3、dist 100、遮罩、cap={1M,2.5M,5M}」：dist 要幾何通道 => 不開 lean => 週期 trim（不用累加式）
-                bestmask|bestmaskdist100|bestmaskpt|bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15)    [ "$GRID" = 44 ] || { echo "⛔ bestmask 只支援 4x4"; exit 2; }
+                bestmask|bestmaskdist100|bestmaskpt|bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15|bestmaskdistrfed10b4)    [ "$GRID" = 44 ] || { echo "⛔ bestmask 只支援 4x4"; exit 2; }
                              _MD=data/matrix_city/aerial/train/block_all/block_masks44/block_$BLK
                              [ -f "$_MD/stats.json" ] || { echo "⛔ 缺遮罩 $_MD（先跑 tools/block_mask44.py --blocks $BLK）"; exit 2; }
                              P="sfmfill_sweep44_crop/dup$K44/block_${BLK}.ply"
@@ -165,7 +165,7 @@ case "$CASEARM" in
                                bestmaskdist100) EXTRA+=(--model.metric.init_args.lambda_dist 100) ;;
                                bestmaskpt)      ;;   # 週期 trim（全因子消融：遮罩開、dist 關；統一 trim 方式）
                                # ★ 2026-10-22 使用者：全因子贏家（遮罩＋dist100＋30k）＋融合 Adam＋累加式 trim（dist 版 lean 下 MODE 5 也累加 V/C；本機 1,300 步驗過）
-                               bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15)  EXTRA+=(--model.metric.init_args.lambda_dist 100 --model.renderer.init_args.trim_running_vc true
+                               bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15|bestmaskdistrfed10b4)  EXTRA+=(--model.metric.init_args.lambda_dist 100 --model.renderer.init_args.trim_running_vc true
                                                         --model.gaussian.init_args.optimization.optimizer.class_path FusedAdam) ;;
                              esac ;;
                 bestrbg)     EXTRA+=(--model.renderer.init_args.trim_running_vc true --model.random_background true) ;;
@@ -481,6 +481,8 @@ case "$CASEARM" in
   # 10-23 使用者「維持高速」：不退回 opacity_reg／熵，改成熵只往 0 推（b0 換塊 +0.017、訓練 +16%）；ed15＝增生結束（STEPS/2）後恢復雙向
   bestmaskdistrfed)   EXTRA+=(--model.metric.init_args.opacity_entropy_side down) ;;
   bestmaskdistrfed15) EXTRA+=(--model.metric.init_args.opacity_entropy_side down --model.metric.init_args.opacity_entropy_both_from_iter "$HALF") ;;
+  # 10-24 b0：10k（STEPS/3）切回雙向且權重 0.008 => 換塊 −0.008（追平）、純訓練 +11%、冗餘中層無（實驗分析 20 §6）
+  bestmaskdistrfed10b4) EXTRA+=(--model.metric.init_args.opacity_entropy_side down --model.metric.init_args.opacity_entropy_both_from_iter "$((STEPS / 3))" --model.metric.init_args.opacity_entropy_both_reg 0.008) ;;
 esac
 [ "$GRID" = 44 ] && { EXTRA+=("${G44[@]}"); EXP=$((EXP + 1)); }
 # run_fit 收尾會 diff resolved config；基準就是同排程的 `cs_base`
@@ -530,6 +532,7 @@ arm_desc() {
     bestmaskdistrfoe) echo "bestmaskdistrf＋opacity L1 0.002＋二元熵關（＝舊最佳的 opacity 設定）｜兩者一起放回" ;;
     bestmaskdistrfed)   echo "bestmaskdistrf＋二元熵只往 0 推（opacity_entropy_side down）｜保留熵的回收、拿掉把多餘顆粒鎖成不透明的那一半" ;;
     bestmaskdistrfed15) echo "bestmaskdistrfed，但增生結束（STEPS/2）後恢復雙向｜後半段重新兩極化、拿回 ed 的 +16% 訓練時間" ;;
+    bestmaskdistrfed10b4) echo "bestmaskdistrfed，STEPS/3 後恢復雙向且熵權重 0.002 → 0.008｜冗餘層在前 1/3 定型；切回後加快兩極化拿回時間" ;;
     bestsoft)   echo "訓練中累加 V／C＋GaussianSpa 式軟投影（rho 100）取代硬剪｜被淘汰的慢慢拉到 0 由 MCMC 回收，增生期末硬剪" ;;
     bestsoft10|bestsoft1) echo "同 bestsoft 但軟投影 rho ${CASEARM#bestsoft}（rho 100 時 b12 −4.7 dB）｜較弱的拉力讓有用的顆粒留在支撐內" ;;
     bestmask)   echo "塊外遮罩訓練（Depth Anything 前處理的三值遮罩：塊內照常、塊外且空＝扣分到透明、其餘不計分）＋隨機背景＋裁盒初始化｜盒外顆粒失去存在理由 => 顆數與時間" ;;

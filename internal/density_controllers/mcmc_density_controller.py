@@ -185,8 +185,9 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
 
     def compute_relocation(self, opacity_old, scale_old, N) -> Tuple[torch.Tensor, torch.Tensor]:
         # assert torch.all(N <= self.config.N_max)  # whether such a check is necessary?
+        # ★ 2026-10-24：o 恰好 1.0 時 Eq.9 在 float32 相消、大 n 算出負 scale（詳 mcmc_2dgs 子類同名方法）=> 夾到 1−eps
         return compute_relocation(
-            opacity_old,
+            opacity_old.clamp(max=1.0 - torch.finfo(torch.float32).eps),
             scale_old,
             N,
             self.binoms,

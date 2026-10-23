@@ -880,7 +880,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if self.config.densify_blind_report:
                 self._report_densify_blindness(gaussian_model, global_step)
             self._err_triggered_unlock(gaussian_model, optimizers, global_step)
+            # ★ 2026-10-24：參數非有限的顆粒（compute_relocation 修正前在 o=1.0 算出的 NaN scale）併入死亡 => 搬家，
+            #   再清它們的 Adam 狀態（relocate_gs 依論文只清宿主、保留被搬者的動量，而 NaN 動量會讓它下一步又變 NaN）
+            _nf = ~(torch.isfinite(gaussian_model.scales).all(-1) & torch.isfinite(gaussian_model.means).all(-1)
+                    & torch.isfinite(gaussian_model.opacities).all(-1))
+            _nf_idx = None
+            if bool(_nf.any()):
+                _nf_idx = _nf.nonzero(as_tuple=True)[0]
+                dead_mask = dead_mask | _nf
+                print(f"[nonfinite] ⚠⚠ step {global_step}: {_nf_idx.numel():,} 顆參數非有限 => 併入死亡搬家、清 Adam 狀態", flush=True)
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
+            if _nf_idx is not None:
+                self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_nf_idx)
             # ★ 2026-09-05：被 relocate 的粒子已經換位置換尺度了，但 `_max_radii2D` 還是
             #   **搬走前**的半徑。`add_new_gs`（下一行）的 `cost_aware_densify` 會讀它
             #   ⇒ 會用陳舊的大半徑去加權「剛剛被搬走、現在很小」的粒子。歸零才正確。
@@ -1564,6 +1575,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if d < 3:
             pad = torch.zeros((scale_old.shape[0], 3 - d), dtype=scale_old.dtype, device=scale_old.device)
             scale_old = torch.cat([scale_old, pad], dim=-1)
+        # ★ 2026-10-24 BUG 修正：父代 o 恰好 1.0（float32 的 sigmoid 在 x>~16.6 飽和）時 new_opacity=1 不衰減，
+        #   Eq.9 分母的交錯二項式和在 float32 下相消 => lab GPU 實測係數 n31 0.248（應 ≈0.51）、n35 −0.051、n40 −3e-4
+        #   => log 成 NaN scale（10-22 遮罩全場景 b1 有 15,234 顆，opacity 1.0 永不死、還會當父代把 NaN 複製出去）。
+        #   夾到 1−eps 後全部 n 正常；o<1−eps 的父代逐位元不變。
+        _top = 1.0 - torch.finfo(torch.float32).eps
+        _sat = opacity_old > _top
+        if bool(_sat.any()):
+            opacity_old = opacity_old.clamp(max=_top)
+            self._reloc_sat_calls = getattr(self, "_reloc_sat_calls", 0) + 1
+            if self._reloc_sat_calls == 1 or self._reloc_sat_calls % 50 == 0:
+                print(f"[mcmc-reloc] ✅ 父代 o=1.0 夾到 1−eps：{int(_sat.sum()):,} 顆，其中 n>=31（修正前會算錯／NaN）"
+                      f"{int((_sat & (N >= 31)).sum()):,} 顆（第 {self._reloc_sat_calls} 次）", flush=True)
         new_opacity, new_scaling = compute_relocation(opacity_old, scale_old, N, self.binoms)
         return new_opacity, new_scaling[:, :d]
 

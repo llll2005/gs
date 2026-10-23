@@ -13,6 +13,7 @@
 #          ★ 10-22 遮罩臂的 4x4 全場景（使用者：遮罩＋dist100＋30k 的 2.5M 與 1M，各加融合 Adam＋累加式 trim，都跑 4x4）：
 #          補產缺的塊外遮罩（tools/block_mask44.py，CPU 每塊約 3 分）＋逐塊 init 跟 cap 走（scripts/lab/pick_dup.sh <塊> <cap> 1）
 #          => 每個 cap 16 塊＋merge＋test 插到佇列最前；臂＝MASKPLAN_ARM（預設 best1maskdistrf）、跑次 g44s<k>km<cap/1e5>_<臂>
+#          佇列註解：MASKPLAN_NOTE（訓練行）／MASKPLAN_TAG（合併、測試行）
 #          多個 cap 一次給（同一個行程依序做，避免兩個前處理同時產遮罩／搶 make_sfm_fill_init 的鎖）
 #   環境變數：FULLSCENE_ARM（預設 best1run）、FULLSCENE_FLAGS（每塊額外旗標；預設 record_reduce＋absgrad_gate，與單變數臂相同）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac
@@ -124,10 +125,10 @@ EOF
         k=$(bash scripts/lab/pick_dup.sh "$b" "$CAP" 1 | tail -1)
         case "$k" in ''|*[!0-9]*) echo "⛔ block $b cap $CAP 算不出 dup（$k）"; rm -f "$INS"; exit 2 ;; esac
         echo "  cap $CAP block $b => 裁盒 dup$k"
-        echo "# ★★★★★★ 使用者 10-22：遮罩＋dist100＋融合 Adam＋累加式 trim ${K}k cap $CAP 全場景 b$b dup$k" >> "$INS"
+        echo "# ★★★★★★ ${MASKPLAN_NOTE:-使用者 10-22：遮罩＋dist100＋融合 Adam＋累加式 trim} ${K}k cap $CAP 全場景 b$b dup$k" >> "$INS"
         echo "[solo] CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=$ST CITYGS_CAP=$CAP CITYGS_DUP44=$k CITYGS_FAMILY=$FAM bash scripts/lab/task_cmp.sh $b $A $FLAGS" >> "$INS"
       done
-      printf '# ★★★★★★ 使用者 10-22：合併 %s\n[solo] bash scripts/lab/task_fullscene.sh merge %s\n# ★★★★★★ 使用者 10-22：官方 741 幀 %s\n[solo] bash scripts/lab/task_fullscene.sh test %s\n' "$RN" "$RN" "$RN" "$RN" >> "$INS"
+      printf '# ★★★★★★ %s：合併 %s\n[solo] bash scripts/lab/task_fullscene.sh merge %s\n# ★★★★★★ %s：官方 741 幀 %s\n[solo] bash scripts/lab/task_fullscene.sh test %s\n' "${MASKPLAN_TAG:-使用者 10-22}" "$RN" "$RN" "${MASKPLAN_TAG:-使用者 10-22}" "$RN" "$RN" >> "$INS"
     done
     Q=scripts/queue.txt; cp "$Q" "scripts/queue.bak_maskplan_$(date +%m%d_%H%M)"
     python3 - "$Q" "$INS" <<'PYINS'
