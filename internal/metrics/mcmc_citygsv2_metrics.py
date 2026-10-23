@@ -56,6 +56,10 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     ★ 2026-10-23（記憶 mask_fullscene_regression_1023）：遮罩臂 2.5M 在水面上方長出 opacity≈1 的冗餘層，關熵（或放回 L1）就消失，
     但關熵會失去它省的 Load（`13`：−12～−23%）。假說：省 Load 的是「往 0 推 => MCMC 早回收」那一半，
     冗餘層是「往 1 推」那一半把光度梯度弱的多餘顆粒鎖成不透明 => 只留往下那一半。"""
+    opacity_entropy_both_from_iter: int = -1
+    """>=0 時，`opacity_entropy_side=down` 只用到這一步，之後改回雙向（-1＝一直單向）。
+    ★ 2026-10-23：down 在 b0 換塊 +0.017（現行 −0.169）但 opacity 中位 0.64、訓練 +16%（1730 → 2000 s）；
+    假說：冗餘層在增生期形成 => 增生結束後恢復往 1 推，後半段重新兩極化、拿回速度。"""
 
     exposure_comp: bool = False
     """★ 2026-10-15 使用者同意（研究總覽 §3.4、§11）：逐影像曝光補償。MatrixCity GT 有逐幀曝光不一致（場景越暗越被提亮，
@@ -220,6 +224,12 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             _o = opacities.clamp(1e-6, 1 - 1e-6)
             _Hi = -(_o * torch.log(_o) + (1 - _o) * torch.log(1 - _o))
             _side = str(getattr(self.config, "opacity_entropy_side", "both"))
+            _bf = int(getattr(self.config, "opacity_entropy_both_from_iter", -1))
+            if _side == "down" and 0 <= _bf <= step:
+                _side = "both"
+                if not getattr(self, "_ent_both_announced", False):
+                    self._ent_both_announced = True
+                    print(f"[opacity-entropy] ✅ step={step} 單向（down）改回雙向", flush=True)
             if _side == "down":
                 _Hi = _Hi * (_o.detach() < 0.5)
             elif _side != "both":

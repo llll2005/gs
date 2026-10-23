@@ -152,13 +152,17 @@ def main():
             model.properties = props
             per = {}
             ms = []
-            for i in need:
+            # 計時另跑一輪（只渲染、不算指標）：10-23 第一版混在指標迴圈裡，同一個模型「基準」與「自我檢查」差 8%（暖機）
+            for _ in range(5):
+                renderer(cams[selB[0]].to_device(dev), model, bg_color=bg)
+            for i in selB:
                 cam = cams[i].to_device(dev)
                 torch.cuda.synchronize(); t0 = time.perf_counter()
+                renderer(cam, model, bg_color=bg)
+                torch.cuda.synchronize(); ms.append((time.perf_counter() - t0) * 1e3)
+            for i in need:
+                cam = cams[i].to_device(dev)
                 oo = renderer(cam, model, bg_color=bg)
-                torch.cuda.synchronize()
-                if i in selB:
-                    ms.append((time.perf_counter() - t0) * 1e3)
                 out = oo["render"].clamp(0, 1)
                 ny, nx = out.shape[1] // T, out.shape[2] // T
                 if cin is None:          # 基準：算每個 tile 離接縫的距離（之後各變體共用）
@@ -199,7 +203,7 @@ def main():
                         mb = bi == b
                         acc[b] += [float(tse[mb].sum()), float(tcn[mb].sum())]
             res[vn] = per
-            rms[vn] = (ms[5:] if len(ms) > 10 else ms, int(props["means"].shape[0]))   # 前 5 幀暖身不計（同 eval_official_test）
+            rms[vn] = (ms, int(props["means"].shape[0]))
             model.properties = {k: v[:1] for k, v in props.items()}; del props; torch.cuda.empty_cache()
             print(f"  渲染完 {vn}（{len(need)} 幀）", flush=True)
     rps = lambda r, s: -10 * np.log10(max(sum(r[i][4] for i in s) / max(sum(r[i][5] for i in s), 1), 1e-12))
