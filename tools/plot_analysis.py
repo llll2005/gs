@@ -1391,6 +1391,60 @@ def n19_road(d):
     save(fig, d, "n19_road.png")
 
 
+# 20：遮罩臂全場景回退（10-23）。逐塊＝官方 741 幀依相機位置歸塊（labrun/perblock_1023.py），Δ 相對 full44_best
+N20_BLK = {"遮罩 2.5M（現行 opacity）": [-0.533, -0.206, -0.129, -0.142, -0.299, -0.046, -0.079, -0.094, -0.103, -0.044, -0.063, -0.033, -0.120, +0.043, -0.032, -0.106],
+           "遮罩 1M（現行 opacity）": [-0.586, -0.318, -0.218, -0.177, -0.421, -0.234, -0.190, -0.189, -0.339, -0.238, -0.217, -0.165, -0.324, -0.200, -0.294, -0.377]}
+# b0 換塊評測（logs/swap_b0_1023_1132.log、_1238.log；172 幀）：整張 Δ、本塊區域 Δ、幾何區域 Δ、接縫帶 Δ（0~.05、.05~.1、.1~.2、.2~.3、>.3）
+N20_SWAP = [("2.5M 現行", -0.169, -0.503, -0.676, [-1.46, -0.89, -0.46, -0.32, -0.16]),
+            ("2.5M 現行（重跑）", -0.180, -0.544, -0.734, [-1.48, -1.01, -0.48, -0.32, -0.20]),
+            ("2.5M o（L1 放回）", -0.065, -0.177, -0.322, [-0.28, -0.21, -0.17, -0.16, -0.13]),
+            ("2.5M ne（熵關）", -0.055, -0.239, -0.366, [-0.33, -0.17, -0.02, -0.05, -0.36]),
+            ("★ 2.5M oe（兩者）", +0.004, -0.023, -0.044, [-0.02, +0.01, -0.03, -0.05, +0.01]),
+            ("1M 現行", -0.086, -0.225, -0.421, [-0.24, -0.23, -0.30, -0.10, -0.23]),
+            ("1M oe", -0.046, -0.144, -0.276, [-0.12, -0.15, -0.18, -0.02, -0.18])]
+# b0 漂浮位置（現行 2.5M 漂浮物 xy 取 3000 點、半徑 0.01）的中層（高度 0.25~0.7、o>0.1）中位、盒內 opacity 中位（labrun/layers_v.py）
+N20_LAYER = [("2.5M 現行", 69, 1.00), ("2.5M o", 0, 1.00), ("2.5M ne", 0, 0.91), ("2.5M oe", 0, 0.18), ("舊最佳 60k", 0, 0.34)]
+
+
+def n20_blocks(d):
+    """全場景逐塊 Δ（官方 741 幀依相機位置歸塊）：2.5M 的損失集中在 b0／b4／b1，1M 是全面小輸。"""
+    fig, ax = plt.subplots(figsize=(17, 4.4))
+    x = np.arange(16); k = len(N20_BLK); w = 0.8 / k
+    for j, (nm, v) in enumerate(N20_BLK.items()):
+        barlabels(ax, ax.bar(x + (j - (k - 1) / 2) * w, v, w, color=(C2, C4, C1, C3)[j], label=nm), "{:+.2f}", dy=-10, size=6.5)
+    ax.axhline(0, color="k", lw=0.8)
+    ax.set_xticks(x, [f"b{b}" for b in range(16)]); ax.set_ylabel("PSNR Δ（dB，相對 full44_best 60k）")
+    ax.legend(fontsize=8, loc="lower right")
+    ax.set_title("4x4 全場景、官方 741 幀依相機位置歸塊：遮罩 2.5M 輸在 b0（−0.53，水面）／b4／b1；1M 每塊都小輸（容量）", fontsize=9.5)
+    save(fig, d, "n20_blocks.png")
+
+
+def n20_swap(d):
+    """b0 換塊評測：opacity 變體、重跑對照、1M；接縫帶；漂浮位置的中層。"""
+    fig, axs = plt.subplots(1, 3, figsize=(18, 4.8), gridspec_kw={"width_ratios": [1.5, 1.2, 0.9]})
+    ax = axs[0]; y = np.arange(len(N20_SWAP)); h = 0.38
+    b1 = ax.barh(y - h / 2, [r[1] for r in N20_SWAP], h, color=C1, label="整張畫面 Δ")
+    b2 = ax.barh(y + h / 2, [r[2] for r in N20_SWAP], h, color=C2, label="本塊區域 Δ（alpha 定義）")
+    for bars in (b1, b2):
+        for b in bars:
+            v = b.get_width(); ax.annotate(f"{v:+.3f}", (v, b.get_y() + b.get_height() / 2), xytext=(-3 if v < 0 else 3, 0),
+                                           textcoords="offset points", ha="right" if v < 0 else "left", va="center", fontsize=7, color=INK2)
+    ax.axvline(0, color="k", lw=0.8); ax.set_yticks(y, [r[0] for r in N20_SWAP], fontsize=8.5); ax.invert_yaxis()
+    ax.set_xlabel("PSNR Δ（dB，相對 full44_best；b0 視角 172 幀）"); ax.legend(fontsize=8, loc="lower left")
+    ax.set_title("只換 b0：opacity 改回舊值（oe）追平；重跑對照與原跑次差 0.01", fontsize=9.5)
+    ax = axs[1]; xs = ["0~.05", ".05~.1", ".1~.2", ".2~.3", ">.3"]
+    for (nm, *_, band), c, ls in zip(N20_SWAP, (C2, C2, C4, C3, C1, MUTED, INK2), ("-", ":", "-", "-", "-", "-", "--")):
+        ax.plot(xs, band, ls, marker="o", color=c, lw=2 if "★" in nm else 1.3, label=nm)
+    ax.axhline(0, color="k", lw=0.8); ax.set_xlabel("離接縫距離（內部格距）"); ax.set_ylabel("本塊區域 PSNR Δ")
+    ax.legend(fontsize=7, ncol=2, loc="lower right"); ax.set_title("損失集中在接縫旁（水面在 b0 邊緣）", fontsize=9.5)
+    ax = axs[2]; x = np.arange(len(N20_LAYER))
+    barlabels(ax, ax.bar(x, [r[1] for r in N20_LAYER], 0.6, color=C2), "{:.0f}")
+    ax.set_xticks(x, [r[0].replace(" ", "\n", 1) for r in N20_LAYER], fontsize=8); ax.set_ylabel("漂浮位置的中層顆數（中位）")
+    a2 = ax.twinx(); a2.plot(x, [r[2] for r in N20_LAYER], "D", color=C1, ms=7); a2.set_ylim(0, 1.1); a2.set_ylabel("盒內 opacity 中位", color=C1)
+    a2.grid(False); ax.set_title("中層＝多出來的不透明層（三個變體都沒有）", fontsize=9.5)
+    save(fig, d, "n20_swap.png")
+
+
 DOCS = {
     "01_訓練時間組成": ["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -1407,6 +1461,7 @@ DOCS = {
     "17_塊外遮罩訓練": ["n17_mask"],
     "18_馬路地底面元與幾何正則": ["n18_road"],
     "19_全因子消融_遮罩dist_cap步數": ["n19_fact", "n19_road"],
+    "20_全場景遮罩回退與opacity": ["n20_blocks", "n20_swap"],
 }
 
 
@@ -1445,7 +1500,7 @@ def main():
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
-              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road):
+              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
