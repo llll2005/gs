@@ -59,7 +59,11 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     opacity_entropy_both_from_iter: int = -1
     """>=0 時，`opacity_entropy_side=down` 只用到這一步，之後改回雙向（-1＝一直單向）。
     ★ 2026-10-23：down 在 b0 換塊 +0.017（現行 −0.169）但 opacity 中位 0.64、訓練 +16%（1730 → 2000 s）；
-    假說：冗餘層在增生期形成 => 增生結束後恢復往 1 推，後半段重新兩極化、拿回速度。"""
+    假說：冗餘層在增生期形成 => 增生結束後恢復往 1 推，後半段重新兩極化、拿回速度。
+    ★ 10-24 結果：10k 切回 => 換塊 +0.008、盒內 o>0.9 回到 75%、沒有中層，但純訓練仍 +14%（前 10k 就慢 12%）；15k 切回只回到 51%。"""
+    opacity_entropy_both_reg: float = -1.0
+    """>=0 時，`opacity_entropy_both_from_iter` 切回雙向之後改用這個權重（-1＝沿用 `opacity_entropy_reg`）。
+    ★ 2026-10-24：10k 切回在 0.002 下兩極化不夠快（訓練後段仍比現行慢 12～19%）=> 測切回後加大權重。"""
 
     exposure_comp: bool = False
     """★ 2026-10-15 使用者同意（研究總覽 §3.4、§11）：逐影像曝光補償。MatrixCity GT 有逐幀曝光不一致（場景越暗越被提亮，
@@ -227,9 +231,12 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             _bf = int(getattr(self.config, "opacity_entropy_both_from_iter", -1))
             if _side == "down" and 0 <= _bf <= step:
                 _side = "both"
+                _bw = float(getattr(self.config, "opacity_entropy_both_reg", -1.0))
+                if _bw >= 0:
+                    _ew = _bw
                 if not getattr(self, "_ent_both_announced", False):
                     self._ent_both_announced = True
-                    print(f"[opacity-entropy] ✅ step={step} 單向（down）改回雙向", flush=True)
+                    print(f"[opacity-entropy] ✅ step={step} 單向（down）改回雙向，權重={_ew:g}", flush=True)
             if _side == "down":
                 _Hi = _Hi * (_o.detach() < 0.5)
             elif _side != "both":
