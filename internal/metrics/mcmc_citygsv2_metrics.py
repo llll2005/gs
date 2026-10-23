@@ -51,6 +51,11 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     梯度 dH/do = ln((1-o)/o)：o=0.5 為 0、o=0.1 約 2.2 ⇒ 權重與 opacity_reg 同量級（0.002）時，極端處約 L1 的 2 倍。"""
     opacity_entropy_from_iter: int = 0
     """從這一步開始加熵正則（要在 densify_until 之前才會被回收機制吃到）。"""
+    opacity_entropy_side: str = "both"
+    """"both"＝原版（o<0.5 往 0、o>0.5 往 1）；"down"＝只對 o<0.5 的顆粒加（只往 0 推，o>0.5 的不受力）。
+    ★ 2026-10-23（記憶 mask_fullscene_regression_1023）：遮罩臂 2.5M 在水面上方長出 opacity≈1 的冗餘層，關熵（或放回 L1）就消失，
+    但關熵會失去它省的 Load（`13`：−12～−23%）。假說：省 Load 的是「往 0 推 => MCMC 早回收」那一半，
+    冗餘層是「往 1 推」那一半把光度梯度弱的多餘顆粒鎖成不透明 => 只留往下那一半。"""
 
     exposure_comp: bool = False
     """★ 2026-10-15 使用者同意（研究總覽 §3.4、§11）：逐影像曝光補償。MatrixCity GT 有逐幀曝光不一致（場景越暗越被提亮，
@@ -213,14 +218,20 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         _ew = float(getattr(self.config, "opacity_entropy_reg", 0.0))
         if _ew > 0 and step >= int(getattr(self.config, "opacity_entropy_from_iter", 0)):
             _o = opacities.clamp(1e-6, 1 - 1e-6)
-            _H = -(_o * torch.log(_o) + (1 - _o) * torch.log(1 - _o)).mean()
+            _Hi = -(_o * torch.log(_o) + (1 - _o) * torch.log(1 - _o))
+            _side = str(getattr(self.config, "opacity_entropy_side", "both"))
+            if _side == "down":
+                _Hi = _Hi * (_o.detach() < 0.5)
+            elif _side != "both":
+                raise ValueError(f"opacity_entropy_side={_side!r}（只接受 both／down）")
+            _H = _Hi.mean()
             metrics["loss"] = metrics["loss"] + _ew * _H
             metrics["op_ent"] = _H.detach()
             pbar["op_ent"] = False
             if not getattr(self, "_ent_announced", False):
                 self._ent_announced = True
                 _od = _o.detach()
-                print(f"[opacity-entropy] ✅ 首次觸發 step={step} 權重={_ew:g}  H={float(_H):.4f}  "
+                print(f"[opacity-entropy] ✅ 首次觸發 step={step} 權重={_ew:g} 方向={_side}  H={float(_H):.4f}  "
                       f"o∈(0.1,0.9) 佔 {100 * float(((_od > 0.1) & (_od < 0.9)).float().mean()):.1f}%", flush=True)
 
         # ★ 2026-10-16 GaussianSpa 式軟投影（renderer.trim_soft_rho；狀態掛在模型上）：支撐外的顆粒拉向 opacity 0
