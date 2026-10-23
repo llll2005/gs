@@ -16,6 +16,7 @@ b12 實例：我方單塊 −3.84 dB vs 官方，合併後 +0.73（紀錄/實驗
 用法：python tools/swap_block_eval.py --block 6 --cand <候選.ckpt> [<候選2.ckpt> ...] [--names a b] [--sanity] [--all]
 """
 import argparse
+import time
 import glob
 import os
 import sys
@@ -134,6 +135,7 @@ def main():
     tdist = {}
     regeo = {}
     rbin = {}
+    rms = {}     # ★ 2026-10-23 使用者（「維持高速的情況下維持分數」）：換塊後合併模型在第 B 塊視角的渲染時間，與品質同表 => 修法要同時看兩欄
     need = sorted(set(i for _, s in sets for i in s))
     # 「本塊負責區域」：基準第 B 塊的顆粒單獨渲染時 alpha > 0.5 的像素（合併後這些像素主要由第 B 塊決定）；
     #   整張畫面的 PSNR 會被其他 15 塊稀釋（塊視角上第 B 塊只佔畫面一部分），這個區域的 PSNR 才是第 B 塊換配方的直接效果。
@@ -149,9 +151,14 @@ def main():
             props = {k: (base[k] if cin is None else torch.cat([base[k][~mmask], cin[k]], 0)).to(dev) for k in base}
             model.properties = props
             per = {}
+            ms = []
             for i in need:
                 cam = cams[i].to_device(dev)
+                torch.cuda.synchronize(); t0 = time.perf_counter()
                 oo = renderer(cam, model, bg_color=bg)
+                torch.cuda.synchronize()
+                if i in selB:
+                    ms.append((time.perf_counter() - t0) * 1e3)
                 out = oo["render"].clamp(0, 1)
                 ny, nx = out.shape[1] // T, out.shape[2] // T
                 if cin is None:          # 基準：算每個 tile 離接縫的距離（之後各變體共用）
@@ -192,6 +199,7 @@ def main():
                         mb = bi == b
                         acc[b] += [float(tse[mb].sum()), float(tcn[mb].sum())]
             res[vn] = per
+            rms[vn] = (ms[5:] if len(ms) > 10 else ms, int(props["means"].shape[0]))   # 前 5 幀暖身不計（同 eval_official_test）
             model.properties = {k: v[:1] for k, v in props.items()}; del props; torch.cuda.empty_cache()
             print(f"  渲染完 {vn}（{len(need)} 幀）", flush=True)
     rps = lambda r, s: -10 * np.log10(max(sum(r[i][4] for i in s) / max(sum(r[i][5] for i in s), 1), 1e-12))
@@ -220,6 +228,12 @@ def main():
             ps = -10 * np.log10(max(r[b, 0] / max(r[b, 1], 1), 1e-12)); p0 = -10 * np.log10(max(b0[b, 0] / max(b0[b, 1], 1), 1e-12))
             cells.append(f"{ps:>6.2f}({ps - p0:+.2f})" if r[b, 1] > 0 else f"{'—':>11}")
         print(f"{vn:<26} " + " ".join(cells))
+    print(f"\n=== 渲染時間（換塊後合併模型，第 {B} 塊視角；⚠ 獨佔整卡才可比）===")
+    print(f"{'':<26} {'N':>12} {'ms/幀':>8} {'中位':>8} {'FPS':>7} {'相對基準':>9}")
+    m0 = np.mean(rms["基準（原樣）"][0])
+    for vn, _ in variants:
+        w, n = rms[vn]
+        print(f"{vn:<26} {n:>12,} {np.mean(w):>8.2f} {np.median(w):>8.2f} {1e3 / np.mean(w):>7.1f} {np.mean(w) / m0 - 1:>+8.1%}")
 
 
 if __name__ == "__main__":
