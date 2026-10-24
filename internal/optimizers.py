@@ -1,5 +1,6 @@
 from typing import Tuple
 import math
+import weakref
 from dataclasses import dataclass
 from typing import Any
 import torch
@@ -148,6 +149,69 @@ class _FusedAdam(torch.optim.Adam):
         self._n_calls = 0
         self._keep_grad = set()     # 本步沒走 Adam、梯度要留著累加的參數（id）
         self._sh_skip_announced = False
+        self._ext_stepped = set()   # ★ 10-24 本步已在光柵器 backward 裡做完 Adam 的參數（id；sh_adam_args 登記、step 清掉）
+        self._sh_key = None
+        self._sh_cached = None
+
+    @torch.no_grad()
+    def sh_adam_args(self, step_key=None, debug=False):
+        """★ 2026-10-24 SH 的 Adam 融進光柵器 backward（renderer.sh_adam_in_backward；cuda_rasterizer/sh_adam.h）。
+        回傳 (m_dc, v_dc, m_rest, v_rest, acc_rest 或 None, hp, 驗證 dict 或 None)；hp＝CPU float32
+        [b1, 1-b1, b2, 1-b2, eps, step_size_dc, bc2s_dc, step_size_rest, bc2s_rest, apply_rest, 驗證]，算法與 step() 相同。
+        shs_dc 每步 step 計數 +1；shs_rest 依 sh_rest_interval：本步（第 n 次 step）不跳過才 +1 並更新，否則梯度在 acc_rest 累加
+        ——與 Python 版（step() 跳過 shs_rest 組、梯度靠 autograd 累加）同一套規則。acc_rest 綁在 shs_rest 參數物件上：
+        densify／relocation 換掉參數 => 累加重來（Python 版換參數後 .grad 也是 None）。
+        同一個 step_key 只算一次（梯度 checkpoint 會把 forward 重跑一次）。這兩組在本步的 step() 會被跳過。"""
+        if step_key is not None and self._sh_key == step_key and self._sh_cached is not None:
+            return self._sh_cached
+        if self.sparse:
+            raise RuntimeError("sh_adam_in_backward 只實作稠密 Adam（sparse=True 時 SH 會被當成稠密更新）")
+        grp = {g.get("name"): g for g in self.param_groups if g.get("name") in ("shs_dc", "shs_rest")}
+        if set(grp) != {"shs_dc", "shs_rest"}:
+            raise RuntimeError("sh_adam_args：這個 optimizer 沒有 shs_dc 與 shs_rest 兩組")
+        n = self._n_calls + 1                    # 本步是第 n 次 step()（step() 在 backward 之後才被呼叫）
+        k = self.sh_rest_interval
+        apply_rest = not (k > 1 and n > self.sh_rest_interval_from and n % k != 0)
+        out = {}
+        for nm in ("shs_dc", "shs_rest"):
+            g = grp[nm]
+            if g["weight_decay"] != 0 or g["amsgrad"] or g["maximize"]:
+                raise RuntimeError("FusedAdam 只支援 weight_decay=0、amsgrad=False、maximize=False")
+            p = g["params"][0]
+            st = self.state[p]
+            if len(st) == 0:
+                st["step"] = torch.tensor(0.)
+                st["exp_avg"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+                st["exp_avg_sq"] = torch.zeros_like(p, memory_format=torch.preserve_format)
+            b1, b2 = g["betas"]
+            if nm == "shs_dc" or apply_rest:
+                st["step"] += 1
+                t = float(st["step"])
+                out[nm] = (st, (g["lr"] / (1 - b1 ** t)) * -1, math.sqrt(1 - b2 ** t), b1, b2, g["eps"])
+            else:
+                out[nm] = (st, 0.0, 1.0, b1, b2, g["eps"])
+            self._ext_stepped.add(id(p))
+        acc = None
+        if k > 1:
+            pr = grp["shs_rest"]["params"][0]
+            ref = getattr(self, "_sh_acc_ref", None)
+            if ref is None or ref() is not pr or self._sh_acc.shape != pr.shape:
+                self._sh_acc = torch.zeros_like(pr)
+                self._sh_acc_ref = weakref.ref(pr)
+            acc = self._sh_acc
+        (sd, ssd, bcd, b1, b2, eps), (sr, ssr, bcr, b1r, b2r, epsr) = out["shs_dc"], out["shs_rest"]
+        if (b1, b2, eps) != (b1r, b2r, epsr):
+            raise RuntimeError("sh_adam_args：shs_dc 與 shs_rest 的 betas／eps 不同（光柵器只收一組）")
+        hp = torch.tensor([b1, 1 - b1, b2, 1 - b2, eps, ssd, bcd, ssr, bcr, 1.0 if apply_rest else 0.0, 1.0 if debug else 0.0],
+                          dtype=torch.float32)
+        res = (sd["exp_avg"], sd["exp_avg_sq"], sr["exp_avg"], sr["exp_avg_sq"], acc, hp, ({} if debug else None))
+        self._sh_key, self._sh_cached = step_key, res
+        if not getattr(self, "_sh_adam_announced", False):
+            self._sh_adam_announced = True
+            print(f"[sh-adam-bwd] ✅ 首次觸發：SH 的 Adam 在光柵器 backward 裡做（step {int(sd['step'])}、"
+                  f"lr dc {grp['shs_dc']['lr']:g}／rest {grp['shs_rest']['lr']:g}、rest 每 {k} 步"
+                  + ("，其間梯度在光柵器內累加" if k > 1 else "") + "）", flush=True)
+        return res
 
     def zero_grad(self, set_to_none: bool = True):
         if not self._keep_grad:
@@ -182,6 +246,8 @@ class _FusedAdam(torch.optim.Adam):
                 raise RuntimeError("FusedAdam 只支援 weight_decay=0、amsgrad=False、maximize=False")
             b1, b2 = group["betas"]
             lr, eps = group["lr"], group["eps"]
+            if self._ext_stepped and any(id(p) in self._ext_stepped for p in group["params"]):
+                continue                # ★ 10-24 SH 的 Adam 已在光柵器 backward 裡做完（sh_adam_args）
             if sh_skip and group.get("name") == "shs_rest":
                 for p in group["params"]:
                     if p.grad is not None:
@@ -223,6 +289,7 @@ class _FusedAdam(torch.optim.Adam):
                            else ("、⚠ 稀疏模式但這步沒有遮罩（走稠密）" if self.sparse else ""))
                     print(f"[fused-adam] ✅ 首次觸發：{'稀疏' if self.sparse else '稠密'}融合 Adam（{group.get('name')}，"
                           f"{p.numel():,} 個元素{vis}）", flush=True)
+        self._ext_stepped.clear()
         return loss
 
 

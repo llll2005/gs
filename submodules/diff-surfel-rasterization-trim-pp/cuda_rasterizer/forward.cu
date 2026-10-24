@@ -70,6 +70,59 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 	return glm::max(result, 0.0f);
 }
 
+// ★ 2026-10-24 SH 分開存放：sh[0] 從 shs_dc 讀、sh[1..] 從 shs_rest 讀；算式與 computeColorFromSH 逐字相同（只換係數來源）。
+//   原函式一字不動 => 沒開的路徑 codegen 不受影響。
+__device__ glm::vec3 computeColorFromSHSplit(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos,
+	const float* shs_dc, const float* shs_rest, bool* clamped)
+{
+	glm::vec3 pos = means[idx];
+	glm::vec3 dir = pos - campos;
+	dir = dir / glm::length(dir);
+
+	const glm::vec3* rr = ((const glm::vec3*)shs_rest) + idx * (max_coeffs - 1);
+#define SHK(k) rr[(k) - 1]
+	glm::vec3 result = SH_C0 * ((const glm::vec3*)shs_dc)[idx];
+
+	if (deg > 0)
+	{
+		float x = dir.x;
+		float y = dir.y;
+		float z = dir.z;
+		result = result - SH_C1 * y * SHK(1) + SH_C1 * z * SHK(2) - SH_C1 * x * SHK(3);
+
+		if (deg > 1)
+		{
+			float xx = x * x, yy = y * y, zz = z * z;
+			float xy = x * y, yz = y * z, xz = x * z;
+			result = result +
+				SH_C2[0] * xy * SHK(4) +
+				SH_C2[1] * yz * SHK(5) +
+				SH_C2[2] * (2.0f * zz - xx - yy) * SHK(6) +
+				SH_C2[3] * xz * SHK(7) +
+				SH_C2[4] * (xx - yy) * SHK(8);
+
+			if (deg > 2)
+			{
+				result = result +
+					SH_C3[0] * y * (3.0f * xx - yy) * SHK(9) +
+					SH_C3[1] * xy * z * SHK(10) +
+					SH_C3[2] * y * (4.0f * zz - xx - yy) * SHK(11) +
+					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * SHK(12) +
+					SH_C3[4] * x * (4.0f * zz - xx - yy) * SHK(13) +
+					SH_C3[5] * z * (xx - yy) * SHK(14) +
+					SH_C3[6] * x * (xx - 3.0f * yy) * SHK(15);
+			}
+		}
+	}
+#undef SHK
+	result += 0.5f;
+
+	clamped[3 * idx + 0] = (result.x < 0);
+	clamped[3 * idx + 1] = (result.y < 0);
+	clamped[3 * idx + 2] = (result.z < 0);
+	return glm::max(result, 0.0f);
+}
+
 // Compute a 2D-to-2D mapping matrix from a tangent plane into a image plane
 // given a 2D gaussian parameters.
 __device__ bool computeTransMat(const glm::vec3 &p_world, const glm::vec4 &quat, const glm::vec2 &scale, const float *viewmat, const float4 &intrins, float tan_fovx, float tan_fovy, float* transMat, float3 &normal) {
@@ -211,7 +264,8 @@ __device__ bool computeAABB(const float *transMat, float2 & center, float2 & ext
 }
 
 // Perform initial steps for each Gaussian prior to rasterization.
-template<int C>
+// ★ 2026-10-24 SPLIT（模板參數）：SH 分開存放，shs＝dc、shs_rest＝其餘係數。SPLIT=false 時與原 kernel 相同。
+template<int C, bool SPLIT>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
 	const glm::vec2* scales,
@@ -238,7 +292,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	uint32_t* tiles_touched,
 	ushort4* rects,
 	bool exact_conic_aabb,
-	bool prefiltered)
+	bool prefiltered,
+	const float* shs_rest)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -388,7 +443,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// compute colors
 	if (colors_precomp == nullptr) {
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+		glm::vec3 result = SPLIT ? computeColorFromSHSplit(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, shs_rest, clamped)
+		                         : computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
 		rgb[idx * C + 0] = result.x;
 		rgb[idx * C + 1] = result.y;
 		rgb[idx * C + 2] = result.z;
@@ -981,9 +1037,18 @@ void FORWARD::preprocess(int P, int D, int M,
 	uint32_t* tiles_touched,
 	ushort4* rects,
 	bool exact_conic_aabb,
-	bool prefiltered)
+	bool prefiltered,
+	const float* shs_rest)
 {
-	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
+#define PRE_ARGS P, D, M, means3D, scales, scale_modifier, rotations, opacities, shs, clamped, transMat_precomp, colors_precomp, \
+		viewmatrix, projmatrix, cam_pos, W, H, tan_fovx, tan_fovy, pp_shifty, focal_x, focal_y, radii, means2D, depths, transMats, \
+		rgb, normal_opacity, grid, tiles_touched, rects, exact_conic_aabb, prefiltered, shs_rest
+	if (shs_rest != nullptr) {   // ★ 2026-10-24 SH 分開存放
+		preprocessCUDA<NUM_CHANNELS, true> << <(P + 255) / 256, 256 >> > (PRE_ARGS);
+		return;
+	}
+#undef PRE_ARGS
+	preprocessCUDA<NUM_CHANNELS, false> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
 		scales,
@@ -1010,6 +1075,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		tiles_touched,
 		rects,
 		exact_conic_aabb,
-		prefiltered
+		prefiltered,
+		nullptr
 		);
 }

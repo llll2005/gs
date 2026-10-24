@@ -17,6 +17,7 @@
 #include "device_launch_parameters.h"
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
+#include "sh_adam.h"
 
 namespace BACKWARD
 {
@@ -66,7 +67,12 @@ namespace BACKWARD
 		float* dL_dsh,
 		glm::vec3* dL_dmeans,
 		glm::vec2* dL_dscale,
-		glm::vec4* dL_drot);
+		glm::vec4* dL_drot,
+		// ★ 2026-10-24 SH 分開存放（shs_rest 非 nullptr）：shs／dL_dsh 是 dc、shs_rest／dL_dsh_rest 是其餘係數；
+		//   sh_adam 非 nullptr => 不寫梯度，直接就地更新 shs／shs_rest 與它們的 Adam 動量（sh_adam.h）
+		float* shs_rest = nullptr,
+		float* dL_dsh_rest = nullptr,
+		const ShAdamArgs* sh_adam = nullptr);
 }
 
 #endif

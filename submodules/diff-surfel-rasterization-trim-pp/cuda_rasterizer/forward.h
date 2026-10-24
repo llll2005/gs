@@ -49,7 +49,8 @@ namespace FORWARD
 		uint32_t* tiles_touched,
 		ushort4* rects,
 		bool exact_conic_aabb,
-		bool prefiltered);
+		bool prefiltered,
+		const float* shs_rest = nullptr);   // ★ 2026-10-24 非 nullptr => SH 分開存放（shs 是 dc，M 是含 dc 的總係數數）
 
 	// Main rasterization method.
 	void render(

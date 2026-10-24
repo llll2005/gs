@@ -28,7 +28,12 @@ def rasterize_gaussians(
     rotations,
     cov3Ds_precomp,
     raster_settings,
+    sh_rest=None,
+    sh_adam=None,
 ):
+    # ★ 2026-10-24 sh_rest 非 None => SH 分開存放（sh＝dc (N,1,3)、sh_rest＝(N,M-1,3)，省掉每步的 torch.cat）；
+    #   sh_adam＝(m_dc, v_dc, m_rest, v_rest, acc_rest 或 None, hp, 驗證 dict 或 None) => SH 的 Adam 在 backward 裡就地做完
+    #   （不回傳 SH 梯度；hp＝CPU float32 [b1, 1-b1, b2, 1-b2, eps, ss_dc, bc2s_dc, ss_rest, bc2s_rest, apply_rest, 驗證]）。見 cuda_rasterizer/sh_adam.h
     return _RasterizeGaussians.apply(
         means3D,
         means2D,
@@ -39,6 +44,8 @@ def rasterize_gaussians(
         rotations,
         cov3Ds_precomp,
         raster_settings,
+        sh_rest,
+        sh_adam,
     )
 
 class _RasterizeGaussians(torch.autograd.Function):
@@ -54,7 +61,11 @@ class _RasterizeGaussians(torch.autograd.Function):
         rotations,
         cov3Ds_precomp,
         raster_settings,
+        sh_rest=None,
+        sh_adam=None,
     ):
+        if sh_rest is None:
+            sh_rest = _empty_like_dev(means3D)
 
         # Restructure arguments the way that the C++ lib expects them
         args = (
@@ -90,6 +101,7 @@ class _RasterizeGaussians(torch.autograd.Function):
                 | (32 if getattr(raster_settings, "train_record", False) else 0)
                 # ★ 2026-10-19 bit6 = dist 版 lean（訓練 forward 多算 distortion 通道；forward.cu MODE 5）
                 | (64 if getattr(raster_settings, "lean_dist", False) else 0)),
+            sh_rest,
         )
 
         # Invoke C++/CUDA rasterizer
@@ -118,7 +130,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
-        ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
+        ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer, sh_rest)
+        ctx.sh_adam = sh_adam
         # ★ 2026-09-21：`tiles` = 逐顆 tile 數（精確的 binning 成本）。整數張量、不可微，
         #   明確標記以免 autograd 為它建圖。見 rasterizer.h 的長註解。
         if not getattr(raster_settings, "return_tiles", False):
@@ -139,7 +152,18 @@ class _RasterizeGaussians(torch.autograd.Function):
         num_rendered = ctx.num_rendered
         raster_settings = ctx.raster_settings
         assert not raster_settings.record_transmittance, 'should not execute backward for calculate transmittance'
-        colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
+        colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer, sh_rest = ctx.saved_tensors
+        sh_adam = ctx.sh_adam
+        split = sh_rest.numel() > 0
+        if sh_adam is not None:
+            assert split, "sh_adam 需要 SH 分開存放（sh_rest）"
+            # sh_adam＝(m_dc, v_dc, m_rest, v_rest, acc_rest 或 None, hp(11), 驗證用 dict 或 None)
+            a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp = sh_adam[:6]
+            if a_acc is None:
+                a_acc = _empty_like_dev(means3D)
+        else:
+            a_m_dc = a_v_dc = a_m_rest = a_v_rest = a_acc = _empty_like_dev(means3D)
+            a_hp = _EMPTY_HP
 
         geom_grad = True
         dst_grad = False
@@ -196,29 +220,34 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-10-16 bit4 = 用 forward 記的配對貢獻 bit 擠掉無貢獻配對（只在 lean／geom 關時生效）
                 | (16 if getattr(raster_settings, "bwd_pair_bit", False) else 0)
                 # ★ 2026-10-19 bit5 = dist 版 lean 的 distortion 梯度（backward.cu renderCUDA_opt<DST=true>）
-                | (32 if dst_grad else 0))
+                | (32 if dst_grad else 0),
+                sh_rest, a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp)
 
         # Compute gradients for relevant tensors by invoking backward method
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_sh_rest = _C.rasterize_gaussians_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
+             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_sh_rest = _C.rasterize_gaussians_backward(*args)
 
+        if sh_adam is not None and len(sh_adam) > 6 and isinstance(sh_adam[6], dict):
+            sh_adam[6]["g_dc"], sh_adam[6]["g_rest"] = grad_sh, grad_sh_rest
         grads = (
             grad_means3D,
             grad_means2D,
-            grad_sh,
+            None if sh_adam is not None else grad_sh,         # Adam 已在 backward 裡做完 => 不回傳 SH 梯度（p.grad 維持 None）
             grad_colors_precomp,
             grad_opacities,
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
+            None,
+            (grad_sh_rest if (split and sh_adam is None) else None),
             None,
         )
 
@@ -283,7 +312,8 @@ class GaussianRasterizer(nn.Module):
 
         return visible
 
-    def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None,
+                shs_rest = None, sh_adam = None):
 
         raster_settings = self.raster_settings
 
@@ -317,8 +347,22 @@ class GaussianRasterizer(nn.Module):
             rotations,
             cov3D_precomp,
             raster_settings,
+            shs_rest,
+            sh_adam,
         )
 
+
+# ★ 2026-10-24 呼叫端（renderer）用它判斷這份光柵器支不支援 SH 分開存放／SH Adam 融進 backward（沒重編 => 屬性不存在 => 當場報錯）
+SH_SPLIT_SUPPORTED = True
+_EMPTY_DEV = {}
+_EMPTY_HP = torch.empty(0, dtype=torch.float32)
+
+
+def _empty_like_dev(t):
+    e = _EMPTY_DEV.get(t.device)
+    if e is None:
+        e = _EMPTY_DEV[t.device] = torch.empty(0, dtype=torch.float32, device=t.device)
+    return e
 
 
 # ★ 2026-10-19 融合／稀疏 Adam（rasterize_points.cu FusedAdamCUDA；呼叫端＝internal/optimizers.py FusedAdam）

@@ -12,6 +12,10 @@ class GS2DMetrics(VanillaMetrics):
     lambda_dist_ramp_until: int = 0
     """★ 2026-10-18 使用者「堆疊懲罰從 0 逐步加強」：>0 時 dist 權重從 dist_regularization_from_iter 線性升到此步才達 lambda_dist
     （0＝原行為：到 from_iter 一步跳到 lambda_dist）。動機：dist 1000 從頭固定 => −2~3 dB；增生初期幾何未成形時不宜強壓。"""
+    lambda_dist_interval: int = 1
+    """★ 2026-10-24 >1 時 dist 只在 step % k == 0 的步算、權重乘 k（期望值不變）；其餘步光柵器走不含 distortion 的 lean
+    （renderer.training_forward 用同一個規則決定 _lean_dist）。動機：本機量到 dist100 讓每步 +21%（render forward +4.6 ms、
+    backward +10.9 ms；紀錄/加速論文對照.md），而它的作用是幾何（F1、馬路地底），不一定要每步都壓。1＝原行為。"""
 
     def instantiate(self, *args, **kwargs) -> MetricImpl:
         return GS2DMetricsImpl(self)
@@ -31,6 +35,13 @@ class GS2DMetricsImpl(VanillaMetricsImpl):
             if not getattr(self, "_dist_ramp_announced", False) and lambda_dist > 0 and step <= _ru:   # sanity check 用假步數，排除
                 self._dist_ramp_announced = True
                 print(f"[dist-ramp] ✅ 首次觸發 step={step}：權重 {lambda_dist:.4g}（線性升到 step {_ru} 達 {self.config.lambda_dist:g}）", flush=True)
+
+        _di = int(getattr(self.config, "lambda_dist_interval", 1) or 1)
+        if _di > 1 and lambda_dist > 0:
+            lambda_dist = lambda_dist * _di if step % _di == 0 else 0.0
+            if lambda_dist > 0 and not getattr(self, "_dist_interval_announced", False):
+                self._dist_interval_announced = True
+                print(f"[dist-interval] ✅ 首次觸發 step={step}：dist 每 {_di} 步算一次、權重 {lambda_dist:.4g}（＝{_di} 倍）", flush=True)
 
         # 2026-08-26：權重為 0 時**跳過計算**，不要算完再乘 0。
         # 原本兩項都是無條件全幅逐像素計算、且帶 grad 進 loss ⇒ backward 也走一遍。

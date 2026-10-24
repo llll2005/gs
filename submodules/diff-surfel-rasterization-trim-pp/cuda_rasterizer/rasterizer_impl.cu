@@ -344,7 +344,8 @@ int CudaRasterizer::Rasterizer::forward(
 	bool debug,
 	int* out_tiles,
 	bool exact_conic_aabb,
-	int lean)   // 0 舊路徑／1 lean／3 audit（見 forward.cu auditCUDA）
+	int lean,   // 0 舊路徑／1 lean／3 audit（見 forward.cu auditCUDA）
+	const float* shs_rest)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -398,7 +399,8 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.tiles_touched,
 		geomState.rects,
 		exact_conic_aabb,
-		prefiltered
+		prefiltered,
+		shs_rest
 	), debug)
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
@@ -535,7 +537,10 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dscale,
 	float* dL_drot,
 	bool debug,
-	int geom_grad)
+	int geom_grad,
+	float* shs_rest,
+	float* dL_dsh_rest,
+	const ShAdamArgs* sh_adam)
 {
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
@@ -609,5 +614,8 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dsh,
 		(glm::vec3*)dL_dmean3D,
 		(glm::vec2*)dL_dscale,
-		(glm::vec4*)dL_drot), debug)
+		(glm::vec4*)dL_drot,
+		shs_rest,
+		dL_dsh_rest,
+		sh_adam), debug)
 }

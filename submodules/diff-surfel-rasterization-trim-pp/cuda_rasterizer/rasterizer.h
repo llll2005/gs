@@ -15,6 +15,8 @@
 #include <vector>
 #include <functional>
 
+#include "sh_adam.h"
+
 namespace CudaRasterizer
 {
 	class Rasterizer
@@ -63,7 +65,8 @@ namespace CudaRasterizer
 			// ★ 2026-09-21 執行期旗標（見 auxiliary.h 的長註解）：編譯期版本讓 lab 的
 			//   三槽平行 A/B **無法同時跑**，且誤用不會報錯。
 			bool exact_conic_aabb = false,
-			int lean = 0);
+			int lean = 0,
+			const float* shs_rest = nullptr);   // ★ 2026-10-24 SH 分開存放（shs＝dc；M＝含 dc 的總係數數）
 
 		static void backward(
 			const int P, int D, int M, int R,
@@ -96,7 +99,11 @@ namespace CudaRasterizer
 			float* dL_dscale,
 			float* dL_drot,
 			bool debug,
-			int geom_grad = 1);   // bit0 geom、bit1 關 absgrad
+			int geom_grad = 1,   // bit0 geom、bit1 關 absgrad
+			// ★ 2026-10-24 SH 分開存放／SH 的 Adam 融進 backward（cuda_rasterizer/sh_adam.h）
+			float* shs_rest = nullptr,
+			float* dL_dsh_rest = nullptr,
+			const ShAdamArgs* sh_adam = nullptr);
 	};
 };
 

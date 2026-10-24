@@ -48,6 +48,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_schedule: str = "",
             trim_by_mean_contribution: bool = False,
             trim_cost_beta_px: float = 0.0,
+            sh_split: bool = False,
+            sh_adam_in_backward: bool = False,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -100,6 +102,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #                    支撐外的在 loss 加 rho/2·mean((o+λ)²)（λ 每次投影累加 o）把 opacity 拉向 0、由 MCMC 回收；
         #                    增生期最後一次 trim 把仍在支撐外的硬剪掉。出處：GaussianSpa（ADMM 稀疏化）＋判準換成我方 V/C。
         self.trim_running_vc = trim_running_vc
+        # ★ 2026-10-24 SH 分開存放／SH 的 Adam 融進 backward（紀錄/加速論文對照.md A5、B2；光柵器 cuda_rasterizer/sh_adam.h）
+        #   sh_split             訓練步把 shs_dc (N,1,3) 與 shs_rest (N,15,3) 分開交給光柵器，不再每步 torch.cat 成 (N,16,3)
+        #                        （本機 4050、1.29M 顆：cat 的 forward＋backward 9.1 ms／步）。渲染逐位元相同。
+        #   sh_adam_in_backward  （需 sh_split＋FusedAdam）SH 兩組的 Adam 在光柵器 backward 裡就地做完，不寫出 SH 梯度；
+        #                        更新式與 FusedAdam 逐條相同。差別：densify 那一步（每 150 步）SH 照樣更新（原流程那步所有參數都不更新）。
+        self.sh_split = sh_split
+        self.sh_adam_in_backward = sh_adam_in_backward
         self.trim_soft_rho = trim_soft_rho
         self._acc_stop = False
         # ★ 2026-10-09 `trim_schedule`＝"步數:門檻,..."（使用者的三次門檻剪）：只在這幾步 trim，剪掉 v <= 門檻的（v＝現行判準：
@@ -303,6 +312,23 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
         # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
         shs, colors_precomp = self._get_color_inputs(pc, viewpoint_camera, record_transmittance)
+        # ★ 2026-10-24 SH 分開存放（只在訓練步、基底的 SH 顏色路徑、沒有塊外池時）
+        _sh_adam = kwargs.get("_sh_adam", None)
+        shs_rest = None
+        if (getattr(self, "sh_split", False) or _sh_adam is not None) and bool(kwargs.get("_lean", False)) \
+                and not record_transmittance and colors_precomp is None \
+                and type(self)._get_color_inputs is SepDepthTrim2DGSRenderer._get_color_inputs \
+                and getattr(pc, "_outside_pool", None) is None and hasattr(pc, "shs_dc"):
+            import diff_trim_surfel_rasterization as _R
+            if not getattr(_R, "SH_SPLIT_SUPPORTED", False):
+                raise RuntimeError("設了 sh_split／sh_adam_in_backward 但光柵器不支援 —— 沒重編（rm -rf build 後重裝；lab 用 lab_pull.sh）")
+            shs, shs_rest = pc.shs_dc, pc.shs_rest
+            if not getattr(self, "_sh_split_announced", False):
+                self._sh_split_announced = True
+                print(f"[sh-split] ✅ 首次觸發：SH 分開交給光柵器 dc {tuple(shs.shape)}＋rest {tuple(shs_rest.shape)}"
+                      + ("；SH 的 Adam 在 backward 裡做" if _sh_adam is not None else ""), flush=True)
+        elif _sh_adam is not None:
+            raise RuntimeError("sh_adam_in_backward：這一步走不了 SH 分開存放（非訓練步／顏色預先算好／塊外池）=> SH 會漏掉更新")
 
         # ★ 2026-10-10 塊外池（internal/utils/outside_pool.py）：可訓練集合之後串接池內顆粒（SH0、不受 MCMC 管）。
         #   means2D 的池那段是不帶梯度的 0 => screenspace_points 只收到可訓練那 N_in 列的梯度；逐顆輸出下面切回前 N_in 筆。
@@ -335,6 +361,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             scales=scales,
             rotations=rotations,
             cov3D_precomp=cov3D_precomp,
+            **({"shs_rest": shs_rest, "sh_adam": _sh_adam} if shs_rest is not None else {}),
         )
 
         if kwargs.get("_audit", False):
@@ -476,7 +503,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
             frm = int(getattr(mcfg, "dist_regularization_from_iter", 0) or 0)
             # ⚠ metric 收到的是 trainer.global_step + 1（gaussian_splatting.training_step），renderer 這裡是 trainer.global_step
             #   => 用 step + 1 判斷，且寧可早一步開（多算一步 distortion 無害；少算一步 metric 會讀不到 rend_dist）
-            kwargs["_lean_dist"] = lam > 0 and (step + 1) >= frm
+            _di = int(getattr(mcfg, "lambda_dist_interval", 1) or 1)       # ★ 10-24 dist 每 k 步（與 metric 同一規則：metric 的 step＝這裡的 step + 1）
+            kwargs["_lean_dist"] = lam > 0 and (step + 1) >= frm and (_di <= 1 or (step + 1) % _di == 0)
+        if getattr(self, "sh_adam_in_backward", False) and "_sh_adam" not in kwargs:
+            # ★ 2026-10-24 SH 的 Adam 融進 backward：向持有 shs_dc／shs_rest 的 FusedAdam 拿本步的 m／v 與超參數（同一步只拿一次）
+            opts = [o for o in (getattr(module, "gaussian_optimizers", None) or []) if hasattr(o, "sh_adam_args")
+                    and any(g.get("name") == "shs_rest" for g in o.param_groups)]
+            if len(opts) != 1:
+                raise RuntimeError("sh_adam_in_backward 需要 optimizer＝FusedAdam（internal/optimizers.py），且 shs_dc／shs_rest 在同一個 optimizer")
+            kwargs["_sh_adam"] = opts[0].sh_adam_args(step_key=step)
         return self(viewpoint_camera=viewpoint_camera, pc=pc, bg_color=bg_color, render_types=render_types,
                     _lean=True, **kwargs)
 

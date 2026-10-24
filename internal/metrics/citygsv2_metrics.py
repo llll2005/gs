@@ -54,6 +54,8 @@ class CityGSV2Metrics(GS2DMetrics):
 
     lambda_dist_ramp_until: int = 0     # ★ 2026-10-18 dist 漸進（說明見 GS2DMetrics）
 
+    lambda_dist_interval: int = 1       # ★ 2026-10-24 dist 每 k 步算一次、權重乘 k（說明見 GS2DMetrics）
+
     depth_loss_type: Literal["l1", "l1+ssim", "l2", "kl"] = "l1"
 
     depth_loss_ssim_weight: float = 0.2

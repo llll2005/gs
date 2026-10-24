@@ -138,6 +138,134 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 	dL_dmeans[idx] += glm::vec3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
 }
 
+// ★ 2026-10-24 SH 的 Adam 更新（單一元素）：與 rasterize_points.cu fusedAdamCUDA<VAR=1> 逐條相同的 intrinsics。
+__device__ __forceinline__ void shAdam1(float& p, const float g, float& m, float& v,
+	const float b1, const float omb1, const float b2, const float omb2, const float eps, const float ss, const float bc2s)
+{
+	float mi = __fmul_rn(m, b1);
+	float vi = __fmul_rn(v, b2);
+	mi = __fmaf_rn(omb1, g, mi);
+	vi = __fmaf_rn(omb2, __fmul_rn(g, g), vi);
+	const float d = __fadd_rn(__fdiv_rn(__fsqrt_rn(vi), bc2s), eps);
+	const float q = __fdiv_rn(mi, d);
+	p = __fmaf_rn(ss, q, p);
+	m = mi;
+	v = vi;
+}
+
+// ★ 2026-10-24 SH 分開存放的 backward：梯度算式與 computeColorFromSH（backward）逐字相同；只換係數來源，
+//   每個係數的梯度輸出到 g[0..15]（呼叫端決定寫到哪：分開的梯度陣列，或 shared memory 再合併做 Adam）。
+//   對位置的回傳（view-dependent color）照原版累加進 dL_dmeans。未算到的高階係數（deg < 3）g 維持 0。
+__device__ void computeColorFromSHSplitBwd(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos,
+	const float* shs_dc, const float* shs_rest, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans,
+	glm::vec3* g)
+{
+	glm::vec3 pos = means[idx];
+	glm::vec3 dir_orig = pos - campos;
+	glm::vec3 dir = dir_orig / glm::length(dir_orig);
+
+	const glm::vec3* rr = ((const glm::vec3*)shs_rest) + idx * (max_coeffs - 1);
+#define SHK(k) rr[(k) - 1]
+	for (int k = 0; k < 16; k++) g[k] = glm::vec3(0.f);
+
+	glm::vec3 dL_dRGB = dL_dcolor[idx];
+	dL_dRGB.x *= clamped[3 * idx + 0] ? 0 : 1;
+	dL_dRGB.y *= clamped[3 * idx + 1] ? 0 : 1;
+	dL_dRGB.z *= clamped[3 * idx + 2] ? 0 : 1;
+
+	glm::vec3 dRGBdx(0, 0, 0);
+	glm::vec3 dRGBdy(0, 0, 0);
+	glm::vec3 dRGBdz(0, 0, 0);
+	float x = dir.x;
+	float y = dir.y;
+	float z = dir.z;
+
+	float dRGBdsh0 = SH_C0;
+	g[0] = dRGBdsh0 * dL_dRGB;
+	if (deg > 0)
+	{
+		float dRGBdsh1 = -SH_C1 * y;
+		float dRGBdsh2 = SH_C1 * z;
+		float dRGBdsh3 = -SH_C1 * x;
+		g[1] = dRGBdsh1 * dL_dRGB;
+		g[2] = dRGBdsh2 * dL_dRGB;
+		g[3] = dRGBdsh3 * dL_dRGB;
+
+		dRGBdx = -SH_C1 * SHK(3);
+		dRGBdy = -SH_C1 * SHK(1);
+		dRGBdz = SH_C1 * SHK(2);
+
+		if (deg > 1)
+		{
+			float xx = x * x, yy = y * y, zz = z * z;
+			float xy = x * y, yz = y * z, xz = x * z;
+
+			float dRGBdsh4 = SH_C2[0] * xy;
+			float dRGBdsh5 = SH_C2[1] * yz;
+			float dRGBdsh6 = SH_C2[2] * (2.f * zz - xx - yy);
+			float dRGBdsh7 = SH_C2[3] * xz;
+			float dRGBdsh8 = SH_C2[4] * (xx - yy);
+			g[4] = dRGBdsh4 * dL_dRGB;
+			g[5] = dRGBdsh5 * dL_dRGB;
+			g[6] = dRGBdsh6 * dL_dRGB;
+			g[7] = dRGBdsh7 * dL_dRGB;
+			g[8] = dRGBdsh8 * dL_dRGB;
+
+			dRGBdx += SH_C2[0] * y * SHK(4) + SH_C2[2] * 2.f * -x * SHK(6) + SH_C2[3] * z * SHK(7) + SH_C2[4] * 2.f * x * SHK(8);
+			dRGBdy += SH_C2[0] * x * SHK(4) + SH_C2[1] * z * SHK(5) + SH_C2[2] * 2.f * -y * SHK(6) + SH_C2[4] * 2.f * -y * SHK(8);
+			dRGBdz += SH_C2[1] * y * SHK(5) + SH_C2[2] * 2.f * 2.f * z * SHK(6) + SH_C2[3] * x * SHK(7);
+
+			if (deg > 2)
+			{
+				float dRGBdsh9 = SH_C3[0] * y * (3.f * xx - yy);
+				float dRGBdsh10 = SH_C3[1] * xy * z;
+				float dRGBdsh11 = SH_C3[2] * y * (4.f * zz - xx - yy);
+				float dRGBdsh12 = SH_C3[3] * z * (2.f * zz - 3.f * xx - 3.f * yy);
+				float dRGBdsh13 = SH_C3[4] * x * (4.f * zz - xx - yy);
+				float dRGBdsh14 = SH_C3[5] * z * (xx - yy);
+				float dRGBdsh15 = SH_C3[6] * x * (xx - 3.f * yy);
+				g[9] = dRGBdsh9 * dL_dRGB;
+				g[10] = dRGBdsh10 * dL_dRGB;
+				g[11] = dRGBdsh11 * dL_dRGB;
+				g[12] = dRGBdsh12 * dL_dRGB;
+				g[13] = dRGBdsh13 * dL_dRGB;
+				g[14] = dRGBdsh14 * dL_dRGB;
+				g[15] = dRGBdsh15 * dL_dRGB;
+
+				dRGBdx += (
+					SH_C3[0] * SHK(9) * 3.f * 2.f * xy +
+					SH_C3[1] * SHK(10) * yz +
+					SH_C3[2] * SHK(11) * -2.f * xy +
+					SH_C3[3] * SHK(12) * -3.f * 2.f * xz +
+					SH_C3[4] * SHK(13) * (-3.f * xx + 4.f * zz - yy) +
+					SH_C3[5] * SHK(14) * 2.f * xz +
+					SH_C3[6] * SHK(15) * 3.f * (xx - yy));
+
+				dRGBdy += (
+					SH_C3[0] * SHK(9) * 3.f * (xx - yy) +
+					SH_C3[1] * SHK(10) * xz +
+					SH_C3[2] * SHK(11) * (-3.f * yy + 4.f * zz - xx) +
+					SH_C3[3] * SHK(12) * -3.f * 2.f * yz +
+					SH_C3[4] * SHK(13) * -2.f * xy +
+					SH_C3[5] * SHK(14) * -2.f * yz +
+					SH_C3[6] * SHK(15) * -3.f * 2.f * xy);
+
+				dRGBdz += (
+					SH_C3[1] * SHK(10) * xy +
+					SH_C3[2] * SHK(11) * 4.f * 2.f * yz +
+					SH_C3[3] * SHK(12) * 3.f * (2.f * zz - xx - yy) +
+					SH_C3[4] * SHK(13) * 4.f * 2.f * xz +
+					SH_C3[5] * SHK(14) * (xx - yy));
+			}
+		}
+	}
+#undef SHK
+
+	glm::vec3 dL_ddir(glm::dot(dRGBdx, dL_dRGB), glm::dot(dRGBdy, dL_dRGB), glm::dot(dRGBdz, dL_dRGB));
+	float3 dL_dmean = dnormvdv(float3{ dir_orig.x, dir_orig.y, dir_orig.z }, float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
+	dL_dmeans[idx] += glm::vec3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
+}
+
 
 // Backward version of the rendering procedure.
 // ★ 2026-10-02 GEOM（lean_render）：GEOM=true 就是原本的 kernel，原始碼一字不動。
@@ -564,6 +692,7 @@ renderCUDA_opt(
 	const float final_D2 = (DST && inside) ? final_Ts[pix_id + 2 * H * W] : 0.f;
 	const float final_A = 1 - T_final;
 	float last_dL_dT = 0.f;
+	float nor_sink = 0.f;
 
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{
@@ -695,6 +824,15 @@ renderCUDA_opt(
 				}
 			}
 			const int gid = collected_id[j];
+#ifndef BWD_TIMING_NOR
+#define BWD_TIMING_NOR 0
+#endif
+			// ★ 2026-10-24 純計時（預設 0）：BWD_TIMING_NOR=1 拿掉歸約與 atomic（梯度是錯的），只量「逐配對的計算」本身
+			//   => 與正常版的差＝歸約／atomic 的成本＝逐顆平行 backward 最多能省的上限
+			if (BWD_TIMING_NOR) {
+				if (valid) { float sm = 0.f; for (int k = 0; k < OPT_NG; k++) sm += g[k]; nor_sink += sm; }
+				continue;
+			}
 			if (RED) {
 				const unsigned m = warp.ballot(valid);
 				if (m == 0) continue;
@@ -741,6 +879,7 @@ renderCUDA_opt(
 			}
 		}
 	}
+	if (BWD_TIMING_NOR && nor_sink == 1.2345e-30f) dL_dopacity[0] = nor_sink;   // 讓編譯器留著逐配對計算
 }
 
 inline __device__ void computeTransMat(
@@ -825,7 +964,9 @@ inline __device__ void computeTransMat(
 
 
 
-template<int C>
+// ★ 2026-10-24 SHMODE：0＝原 kernel（SH 串接、寫 dL_dshs）；1＝SH 分開存放、梯度分兩個陣列寫（dc／rest）。
+//   SHMODE=0 時程式路徑與原版相同。SH 的 Adam 融進 backward 走另一個 kernel（preprocessShAdamCUDA）。
+template<int C, int SHMODE>
 __global__ void preprocessCUDA(
 	int P, int D, int M,
 	const float3* means3D,
@@ -852,7 +993,9 @@ __global__ void preprocessCUDA(
 	// grad output
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots)
+	glm::vec4* dL_drots,
+	const float* shs_rest,
+	float* dL_dshs_rest)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P || !(radii[idx] > 0))
@@ -888,8 +1031,108 @@ __global__ void preprocessCUDA(
 	dL_dscales[idx] = dL_dscale;
 	dL_drots[idx] = dL_drot;
 
+	if (SHMODE == 0) {
 	if (shs)
 		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs, clamped, (glm::vec3*)dL_dcolors, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs);
+	} else {
+		glm::vec3 g[16];
+		computeColorFromSHSplitBwd(idx, D, M, (glm::vec3*)means3D, *campos, shs, shs_rest, clamped,
+			(glm::vec3*)dL_dcolors, (glm::vec3*)dL_dmean3Ds, g);
+		((glm::vec3*)dL_dshs)[idx] = g[0];
+		const int nk = (D + 1) * (D + 1);       // 與原版相同：只寫有算的係數（其餘維持呼叫端的 0）
+		for (int k = 1; k < nk && k < M; k++)
+			((glm::vec3*)dL_dshs_rest)[idx * (M - 1) + (k - 1)] = g[k];
+	}
+}
+
+// ★ 2026-10-24 SH 的 Adam 融進 backward（sh_adam.h）：逐顆前處理 backward＋SH 的 Adam，一個 block 128 顆。
+//   每條執行緒算自己那顆的幾何梯度與 16 個 SH 係數的梯度，SH 梯度先放進 shared memory；
+//   block 同步後，整個 block 依記憶體順序合併讀寫這 128 顆連續的 p／m／v（第一版每顆自己跨步更新 48 個 float，
+//   沒有合併存取 => 比獨立的 FusedAdam 慢 3.5 倍，本機 1.29M 顆 backward +44 ms）。
+//   看不到的顆粒（radii == 0）梯度 0，照樣做 Adam（＝稠密 Adam）。
+//   高階 SH 每 k 步才更新（sh_rest_interval，A.acc_rest 非 nullptr）：rest 的梯度在 acc_rest 累加（acc + g，與 autograd
+//   累加順序相同），A.apply_rest 那一步用累加和走 Adam 並歸零；dc 每步都更新（同 Python 版只跳過 shs_rest 那組）。
+//   dbg_ddc／dbg_drest 非 nullptr（驗證）：把用到的梯度也寫出來。
+#define SHA_T 128
+template<int C>
+__global__ void __launch_bounds__(SHA_T) preprocessShAdamCUDA(
+	int P, int D, int M,
+	const float3* means3D,
+	const float* transMats,
+	const int* radii,
+	float* shs_dc,
+	float* shs_rest,
+	const bool* clamped,
+	const glm::vec2* scales,
+	const glm::vec4* rotations,
+	const float* viewmatrix,
+	const float focal_x, const float focal_y,
+	const float tan_fovx, const float tan_fovy, const float pp_shifty,
+	const glm::vec3* campos,
+	const float* dL_dtransMats,
+	const float* dL_dnormal3Ds,
+	const float* dL_dcolors,
+	glm::vec3* dL_dmean3Ds,
+	glm::vec2* dL_dscales,
+	glm::vec4* dL_drots,
+	float* dbg_ddc,
+	float* dbg_drest,
+	const ShAdamArgs A)
+{
+	__shared__ float s_g[SHA_T * 48];
+	const int t = threadIdx.x;
+	const int base = blockIdx.x * SHA_T;
+	const int idx = base + t;
+	const int G = 3 * M;
+	glm::vec3 g[16];
+	for (int k = 0; k < 16; k++) g[k] = glm::vec3(0.f);
+	if (idx < P && radii[idx] > 0) {
+		const float* transMat = &(transMats[9 * idx]);
+		const float* dL_dtransMat = &(dL_dtransMats[9 * idx]);
+		const float* dL_dnormal3D = &(dL_dnormal3Ds[3 * idx]);
+		glm::vec3 p_world = glm::vec3(means3D[idx].x, means3D[idx].y, means3D[idx].z);
+		float4 intrins = {focal_x, focal_y, focal_x * tan_fovx, focal_y * tan_fovy + pp_shifty};
+		glm::vec3 dL_dmean3D;
+		glm::vec2 dL_dscale;
+		glm::vec4 dL_drot;
+		computeTransMat(p_world, rotations[idx], scales[idx], viewmatrix, intrins, tan_fovx, tan_fovy, transMat,
+			dL_dtransMat, dL_dnormal3D, dL_dmean3D, dL_dscale, dL_drot);
+		dL_dmean3Ds[idx] = dL_dmean3D;
+		dL_dscales[idx] = dL_dscale;
+		dL_drots[idx] = dL_drot;
+		computeColorFromSHSplitBwd(idx, D, M, (glm::vec3*)means3D, *campos, shs_dc, shs_rest, clamped,
+			(const glm::vec3*)dL_dcolors, dL_dmean3Ds, g);
+	}
+	for (int k = 0; k < M; k++) {
+		s_g[t * G + 3 * k + 0] = g[k].x;
+		s_g[t * G + 3 * k + 1] = g[k].y;
+		s_g[t * G + 3 * k + 2] = g[k].z;
+	}
+	__syncthreads();
+	const int n = min(SHA_T, P - base);
+	for (int e = t; e < 3 * n; e += SHA_T) {
+		const int64_t gi = (int64_t)base * 3 + e;
+		const float gg = s_g[(e / 3) * G + (e % 3)];
+		if (dbg_ddc != nullptr) dbg_ddc[gi] = gg;
+		shAdam1(shs_dc[gi], gg, A.m_dc[gi], A.v_dc[gi], A.b1, A.omb1, A.b2, A.omb2, A.eps, A.ss_dc, A.bc2s_dc);
+	}
+	const int R3 = G - 3;
+	for (int e = t; e < R3 * n; e += SHA_T) {
+		const int64_t gi = (int64_t)base * R3 + e;
+		const float gg = s_g[(e / R3) * G + 3 + (e % R3)];
+		if (dbg_drest != nullptr) dbg_drest[gi] = gg;
+		if (A.acc_rest != nullptr) {
+			const float a = A.acc_rest[gi] + gg;
+			if (A.apply_rest) {
+				shAdam1(shs_rest[gi], a, A.m_rest[gi], A.v_rest[gi], A.b1, A.omb1, A.b2, A.omb2, A.eps, A.ss_rest, A.bc2s_rest);
+				A.acc_rest[gi] = 0.f;
+			} else {
+				A.acc_rest[gi] = a;
+			}
+		} else {
+			shAdam1(shs_rest[gi], gg, A.m_rest[gi], A.v_rest[gi], A.b1, A.omb1, A.b2, A.omb2, A.eps, A.ss_rest, A.bc2s_rest);
+		}
+	}
 }
 
 __global__ void computeAABB(int P, 
@@ -967,9 +1210,12 @@ void BACKWARD::preprocess(
 	float* dL_dshs,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots)
+	glm::vec4* dL_drots,
+	float* shs_rest,
+	float* dL_dshs_rest,
+	const ShAdamArgs* sh_adam)
 {
-	// Propagate gradients for the path of 2D conic matrix computation. 
+	// Propagate gradients for the path of 2D conic matrix computation.
 	// Somewhat long, thus it is its own kernel rather than being part of 
 	// "preprocess". When done, loss gradient w.r.t. 3D means has been
 	// modified and gradient w.r.t. 3D covariance matrix has been computed.	
@@ -987,7 +1233,22 @@ void BACKWARD::preprocess(
 		dL_dtransMats);
 	
 	// propagate gradients from transMat to mean3d, scale, rot, sh, color
-	preprocessCUDA<NUM_CHANNELS><< <(P + 255) / 256, 256 >> > (
+	// ★ 2026-10-24 SH 分開存放／Adam 融進 backward（sh_adam.h）
+	if (shs_rest != nullptr && sh_adam != nullptr) {
+		// 驗證模式：dL_dshs／dL_dshs_rest 非 nullptr => 也寫出用到的 SH 梯度
+		preprocessShAdamCUDA<NUM_CHANNELS><< <(P + SHA_T - 1) / SHA_T, SHA_T >> >(
+			P, D, M, (float3*)means3D, transMats, radii, (float*)shs, shs_rest, clamped, (glm::vec2*)scales, (glm::vec4*)rotations,
+			viewmatrix, focal_x, focal_y, tan_fovx, tan_fovy, pp_shifty, campos, dL_dtransMats, dL_dnormal3Ds, dL_dcolors,
+			dL_dmean3Ds, dL_dscales, dL_drots, dL_dshs, dL_dshs_rest, *sh_adam);
+		return;
+	}
+	if (shs_rest != nullptr) {
+		preprocessCUDA<NUM_CHANNELS, 1><< <(P + 255) / 256, 256 >> >(P, D, M, (float3*)means3D, transMats, radii, shs, clamped,
+			(glm::vec2*)scales, (glm::vec4*)rotations, scale_modifier, viewmatrix, projmatrix, focal_x, focal_y, tan_fovx, tan_fovy,
+			pp_shifty, campos, dL_dtransMats, dL_dnormal3Ds, dL_dcolors, dL_dshs, dL_dmean3Ds, dL_dscales, dL_drots, shs_rest, dL_dshs_rest);
+		return;
+	}
+	preprocessCUDA<NUM_CHANNELS, 0><< <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		(float3*)means3D,
 		transMats,
@@ -1011,7 +1272,9 @@ void BACKWARD::preprocess(
 		dL_dshs,
 		dL_dmean3Ds,
 		dL_dscales,
-		dL_drots
+		dL_drots,
+		nullptr,
+		nullptr
 	);
 }
 
