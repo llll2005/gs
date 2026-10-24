@@ -11,7 +11,9 @@
 | (a) | ckpt 的組成（10-10 更新為 60k 終點 N 2.34M：參數 0.506＋Adam 1.011 GiB）：2/3 是 Adam；參數裡主要是 SH 高階；幾何 40 B 合併成一格 | §1.1 |
 | (b) | 一個 60k 跑次目錄：中間 ckpt 佔大宗 | §1.2 |
 | (c) | CPU RAM 影像快取：舊預設每視角 25.6 MB → 現行 uint8＋不載深度 4.3 MB | §2 |
-| (d) | 對照官方：單塊 60k ckpt（b6）、合併 ckpt、部署大小（只存參數）—— 我方 vs release vs 論文設定（lab `citygs_official_storage.log`） | — |
+| (d) | 對照官方：單塊 ckpt（b6）、合併 ckpt、部署大小（只存參數）—— **★ 現行 ed10b4**、full44 vs release vs 論文設定（lab `citygs_official_storage.log`） | `20` §7 |
+
+**10-24 更新（現行最佳 ed10b4，`20` §7）**：單塊 ckpt（b6，30k）1.46 GiB（2.25M、696 B／顆：參數 232＋Adam 464；`chart_data/storage.txt`）；合併 ckpt 18.0 GiB（19,371,580,895 B，含 Adam；只留各塊盒內 27.83M 顆）；**部署（只存參數）27.83M × 232 B = 6.01 GiB，是 release（3.37 GiB）的 1.79 倍**（顆數 +14%、每顆 SH3 232 B vs 官方 SH2 148 B）=> 存儲是現行配方唯一輸官方的資源項；輕量化（1M 版或降 SH）待使用者決定。
 
 **10-14 對照官方（使用者要求：官方跑次的數據放進對應的我方圖表）**：單塊 ckpt 我方 1.52 GiB（2.34M、697 B／顆）vs release 3.00（7.11M、453 B／顆）；合併 ckpt 11.4 vs 40.5 GiB（官方把 16 塊的 Adam 疊進合併檔，1,566 B／顆）；**部署（只存參數）官方較小**：我方 17.63M × 232 B = 3.81 GiB vs release 24.48M × 148 B = 3.37 GiB —— 我方顆數少 28%，但 SH3 每顆多 57%（SH 階數的取捨＝佇列中的 sh2／1／0）。官方的 CPU RAM 快取未量。
 

@@ -227,22 +227,23 @@ LBL3 = ["★ 我方 4x4", "官方 release", "官方論文設定"]
 
 def n09_full44_merged(d):
     """合併模型、官方 741 幀 held-out，三者同一支工具（tools/eval_official_test.py）。"""
-    q = {"PSNR": [27.739, 27.261, 27.280], "SSIM": [0.8790, 0.8671, 0.8697], "LPIPS（越低越好）": [0.1293, 0.1540, 0.1467]}
-    r = {"N（百萬）": [17.63, 24.48, 24.72], "渲染 FPS": [35.6, 21.9, 21.9],
-         "16 塊總 N（百萬）": [37.44, 129.55, 87.89]}
+    # ★ 10-24 加上現行最佳 ed10b4（g44s30km25_best1maskdistrfed10b4；實驗分析 20 §7）；16 塊總 N＝16 x 2.25M
+    q = {"PSNR": [27.868, 27.739, 27.261, 27.280], "SSIM": [0.8785, 0.8790, 0.8671, 0.8697], "LPIPS（越低越好）": [0.1153, 0.1293, 0.1540, 0.1467]}
+    r = {"N（百萬）": [27.83, 17.63, 24.48, 24.72], "渲染 FPS": [40.2, 35.6, 21.9, 21.9],
+         "16 塊總 N（百萬）": [36.0, 37.44, 129.55, 87.89]}
     fig, axs = plt.subplots(1, 6, figsize=(17, 3.6))
-    cols = [C1, MUTED, C2]
+    cols = ["#123f7a", C1, MUTED, C2]
     for ax, (k, v) in zip(axs, list(q.items()) + list(r.items())):
-        bars = ax.bar(range(3), v, color=cols, width=0.65)
+        bars = ax.bar(range(4), v, color=cols, width=0.7)
         fmt = "{:.3f}" if max(v) < 1 else ("{:.2f}" if max(v) < 50 else "{:.1f}")
         barlabels(ax, bars, fmt=fmt, size=8)
         lo = min(v); hi = max(v)
         if k in ("PSNR", "SSIM", "LPIPS（越低越好）"):
             ax.set_ylim(lo - (hi - lo) * 1.2, hi + (hi - lo) * 0.6)
-        ax.set_xticks(range(3)); ax.set_xticklabels(["我方", "release", "論文\n設定"], fontsize=8.5)
+        ax.set_xticks(range(4)); ax.set_xticklabels(["★ed10b4", "full44", "release", "論文\n設定"], fontsize=8)
         ax.set_title(k, fontsize=10)
-    fig.suptitle("合併模型・官方 741 幀 held-out（三者同一支評分工具）：我方三項全贏、顆數少 28%、FPS 1.6 倍"
-                 "　（PSNR 領先保守估計 +0.1~+0.5 dB：見面板 d 的光柵器偏差）", fontsize=10.5)
+    fig.suptitle("合併模型・官方 741 幀 held-out（同一支評分工具）：★ 現行 ed10b4 27.868／.8785／.1153、FPS 1.8 倍（30k、7.3 h）；full44 三項全贏官方、顆數少 28%"
+                 "\n（PSNR 領先保守估計：見面板 d 的光柵器偏差；ed10b4 顆數比 release 多 14%）", fontsize=10)
     save(fig, d, "n09_full44_merged.png")
 
 
@@ -872,25 +873,35 @@ LOAD44 = {
     "pap": [6.167, 5.117, 6.596, 5.273, 5.741, 6.653, 7.938, 6.273, 6.481, 7.697, 8.131, 6.909, 7.450, 8.776, 8.479, 6.643],
 }
 BEST0 = {"peak": {6: 3.95, 12: 3.92}, "load": {6: 1.893, 12: 1.859}}   # g44_best0 60k（台帳峰值實佔 GB；chart_data/load.txt ③ 中位，百萬）
-BEST1 = {"peak": {6: 3.92, 12: 3.92}, "load": {6: 1.259, 12: 1.212}}   # ★ 現行 g44_best1 60k（10-14 台帳峰值實佔；chart_data/load.txt 精確中位）
+BEST1 = {"peak": {6: 3.92, 12: 3.92}, "load": {6: 1.259, 12: 1.212}}   # g44_best1 60k（10-14 台帳峰值實佔；chart_data/load.txt 精確中位）
+# ★ 10-24 現行最佳 ed10b4 全場景（g44s30km25_best1maskdistrfed10b4：遮罩＋dist100＋30k＋cap 2.5M＋融合 Adam＋累加式 trim＋熵只往 0 推、10k 後切回 ×4）
+#   min＝純訓練（train_status val step0 → 30k，labrun/time_1024.py；與台帳 START→DONE 差 ≤1 分）；pk＝台帳峰值實佔 GB
+#   fs＝再加融合 SSIM（現行最快；只有 b0／b6 實測）
+ED = {"min": [1712 / 60, 1689 / 60, 1545 / 60, 1705 / 60, 1612 / 60, 1728 / 60, 1586 / 60, 1717 / 60,
+              1606 / 60, 1600 / 60, 1582 / 60, 1668 / 60, 1767 / 60, 1493 / 60, 1549 / 60, 1785 / 60],
+      "pk": [3.87, 3.92, 3.90, 3.93, 3.86, 3.90, 3.93, 3.93, 3.87, 3.89, 3.90, 3.90, 3.92, 3.87, 3.87, 3.89],
+      "fs_min": {0: 1501 / 60, 6: 1380 / 60}}
 
 
 def n01_blocktime(d):
     """逐塊訓練時間（4x4、60k、lab 3090）：我方 full44 vs 官方 release vs 論文設定（原 09(b) 右）。"""
-    x = np.arange(16); wd = 0.27
+    x = np.arange(16); wd = 0.21
     fig, ax = plt.subplots(figsize=(14, 3.8))
-    for k, c, dx, lb in [("omin", C1, -wd, "我方 full44（舊配方）"), ("rmin", MUTED, 0, LBL3[1]), ("pmin", C2, wd, LBL3[2])]:
+    ax.bar(x - 1.5 * wd, [m / 60 for m in ED["min"]], wd, color="#123f7a", label="★ 我方 ed10b4（現行最佳，30k）")
+    for k, c, dx, lb in [("omin", C1, -0.5 * wd, "我方 full44（10-05 舊配方，60k）"), ("rmin", MUTED, 0.5 * wd, LBL3[1]), ("pmin", C2, 1.5 * wd, LBL3[2])]:
         bars = ax.bar(x + dx, [m / 60 for m in F44[k]], wd, color=c, label=lb)
         if k != "omin":
             for b_, e in zip(bars, F44["rext" if k == "rmin" else "pext"]):
                 if e > 2000:
                     b_.set_hatch("///"); b_.set_alpha(0.45)
-    # ★ 10-15 現行 best1 b6 完整 60k 獨佔實測 68.0 分（`task_best1_time.sh full 6`，量測期間卡上無其他行程；`15` §2）
-    ax.plot([6 - wd], [68.0 / 60], marker="*", color="#123f7a", ms=16, lw=0, label="★ 我方 best1（現行，b6 實測 68 分）", zorder=5)
-    ax.annotate("68 分", (6 - wd, 68.0 / 60), xytext=(-6, -16), textcoords="offset points", fontsize=8, color="#123f7a", ha="center")
-    ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練時間（h）"); ax.legend(fontsize=8, loc="upper left")
-    ax.set_title("逐塊訓練時間（斜線＝期間同卡外部佔用 > 2 GB，不可引用）：block 0~9 乾淨的合計 我方 full44 19.3 h vs release 40.3 h（0.48 倍）\n"
-                 "★ 現行 best1 b6 實測 68 分 vs 同塊 release 240 分（0.28 倍）；長條的我方＝full44（opacity_reg 0.002 舊配方）", fontsize=9.5)
+    fb = sorted(ED["fs_min"])
+    ax.plot([b - 1.5 * wd for b in fb], [ED["fs_min"][b] / 60 for b in fb], marker="*", color="#e8a33d", ms=13, lw=0,
+            label="＋融合 SSIM（現行最快；b0／b6 實測）", zorder=5)
+    ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練時間（h）"); ax.legend(fontsize=8, loc="upper left", ncol=2)
+    e09 = sum(ED["min"][:10]) / 60
+    ax.set_title(f"逐塊訓練時間（斜線＝期間同卡外部佔用 > 2 GB，不可引用）：block 0~9 乾淨的合計 ★ ed10b4 {e09:.2f} h／full44 19.3 h／release 40.3 h"
+                 f"（ed10b4 是 release 的 {e09 / 40.3:.2f} 倍）\n"
+                 "16 塊合計 ed10b4 7.32 h（每塊 25~30 分）；＋融合 SSIM b6 23.0 分、b0 25.0 分（再 −13%／−12%）", fontsize=9.5)
     save(fig, d, "n01_blocktime.png")
 
 
@@ -898,12 +909,13 @@ def n02_peak3(d):
     """訓練峰值（GB）：現行 best1（b6／b12）、full44 舊配方、官方 release／論文設定（同塊）；16 塊全貌。"""
     fig, axs = plt.subplots(1, 2, figsize=(16, 4.3), gridspec_kw={"width_ratios": [1, 1.8]})
     ax = axs[0]
-    grp = [("★ 我方 best1（現行）", [BEST1["peak"][6], BEST1["peak"][12]], C1),
+    grp = [("★ 我方 ed10b4（現行，30k 2.5M）", [ED["pk"][6], ED["pk"][12]], "#123f7a"),
+           ("我方 best1（10-14，60k）", [BEST1["peak"][6], BEST1["peak"][12]], C1),
            ("我方 full44（opacity_reg 0.002）", [F44["opk"][6], F44["opk"][12]], "#7fa9e0"),
            ("官方 release", [F44["rpk"][6], F44["rpk"][12]], MUTED), ("官方論文設定", [F44["ppk"][6], F44["ppk"][12]], C2)]
-    x = np.arange(2); wd = 0.2
+    x = np.arange(2); wd = 0.16
     for k, (lb, v, c) in enumerate(grp):
-        barlabels(ax, ax.bar(x + (k - 1.5) * wd, v, wd, color=c, label=lb), "{:.2f}", size=7.5)
+        barlabels(ax, ax.bar(x + (k - 2) * wd, v, wd, color=c, label=lb), "{:.2f}", size=7)
     ax.axhline(6.44, color="#c0392b", lw=1, ls="--"); ax.text(1.45, 6.6, "6 GiB 卡", color="#c0392b", fontsize=8, ha="right")
     ax.set_xticks(x); ax.set_xticklabels(["block 6", "block 12"]); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7.5, loc="upper left")
     ax.set_ylim(0, 14.5); ax.set_title("同塊訓練峰值：我方 3.9~4.1 GB vs 官方 6.2~12.7 GB", fontsize=9.5)
@@ -911,35 +923,36 @@ def n02_peak3(d):
     xx = np.arange(16)
     for k, c, mk, lb in [("opk", C1, "o", "我方 full44"), ("rpk", MUTED, "s", LBL3[1]), ("ppk", C2, "^", LBL3[2])]:
         ax.plot(xx, F44[k], marker=mk, color=c, lw=0, ms=6, label=lb)
-    ax.plot([6, 12], [BEST1["peak"][6], BEST1["peak"][12]], marker="*", color="#123f7a", lw=0, ms=11, label="★ 我方 best1（現行，b6／b12）")
+    ax.plot(xx, ED["pk"], marker="*", color="#123f7a", lw=0, ms=10, label="★ 我方 ed10b4（現行）")
     ax.axhline(6.44, color="#c0392b", lw=1, ls="--")
     ax.set_xticks(xx); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7.5, ncol=2)
-    ax.set_title("16 塊：我方 4.05~4.17；release 7.65~14.56；論文設定 5.24~11.23（只有 b3、b7 低於 6 GiB）", fontsize=9.5)
+    ax.set_title("16 塊：★ ed10b4 3.86~3.93；full44 4.05~4.17；release 7.65~14.56；論文設定 5.24~11.23（只有 b3、b7 低於 6 GiB）", fontsize=9.5)
     save(fig, d, "n02_peak3.png")
 
 
 def n03_official(d):
     """成果檔與部署大小：單塊 ckpt（b6）、合併 ckpt、部署（只算參數）——我方 vs 官方（`citygs_official_storage.log`）。"""
     fig, axs = plt.subplots(1, 3, figsize=(17, 4.2))
-    lab = ["★ 我方", "官方 release", "官方論文設定"]; col = [C1, MUTED, C2]
+    lab = ["★ 我方\ned10b4", "我方\nfull44", "官方\nrelease", "官方\n論文設定"]; col = ["#123f7a", C1, MUTED, C2]
     ax = axs[0]
-    v = [1.52, 3.0, 2.3]; n = [2.34, 7.11, 5.31]          # GiB（官方 storage log 的「GB」是 2^30；我方 1,628,658,586 B）
+    # GiB（官方 storage log 的「GB」是 2^30；full44 1,628,658,586 B；ed10b4 b6 30k ckpt 2.25M 顆 x 696 B，chart_data/storage.txt「1.5 GB」）
+    v = [2.25e6 * 696 / 2**30, 1.52, 3.0, 2.3]; n = [2.25, 2.34, 7.11, 5.31]
     b = ax.bar(lab, v, color=col); barlabels(ax, b, "{:.2f} GiB", size=8)
-    for i in range(3):
-        ax.text(i, v[i] / 2, f"N {n[i]:.2f}M\n{2**30 * v[i] / (n[i] * 1e6):.0f} B／顆", ha="center", color="white", fontsize=8)
-    ax.set_ylabel("GiB"); ax.set_title("單塊 60k ckpt（block 6；含 Adam）\n我方 SH3 696 B／顆；官方 SH2 456 B／顆（參數 148＋Adam 296＋緩衝 12）", fontsize=9)
+    for i in range(4):
+        ax.text(i, v[i] / 2, f"N {n[i]:.2f}M\n{2**30 * v[i] / (n[i] * 1e6):.0f} B／顆", ha="center", color="white", fontsize=7.5)
+    ax.set_ylabel("GiB"); ax.set_title("單塊 ckpt（block 6；含 Adam；ed10b4 30k、其餘 60k）\n我方 SH3 696 B／顆；官方 SH2 456 B／顆（參數 148＋Adam 296＋緩衝 12）", fontsize=9)
     ax = axs[1]
-    v = [11.43, 40.5, 29.0]; n = [17.63, 24.48, 24.72]    # GiB（我方 merged.ckpt 11,703 MiB）
+    v = [19371580895 / 2**30, 11.43, 40.5, 29.0]; n = [27.83, 17.63, 24.48, 24.72]    # GiB（ed10b4 merged.ckpt 19,371,580,895 B；full44 11,703 MiB）
     b = ax.bar(lab, v, color=col); barlabels(ax, b, "{:.1f} GiB", size=8)
-    ax.set_ylabel("GiB"); ax.set_title("合併 ckpt：官方合併時把 16 塊的優化器狀態一起疊進去（1,566 B／顆）\n=> 40.5 GiB 主要是 Adam，不是模型", fontsize=9)
+    ax.set_ylabel("GiB"); ax.set_title("合併 ckpt（含優化器狀態；我方只留各塊盒內顆粒）\n官方合併時把 16 塊的優化器狀態一起疊進去（1,566 B／顆）", fontsize=9)
     ax = axs[2]
-    per = [232, 148, 148]
-    v = [n[i] * 1e6 * per[i] / 2**30 for i in range(3)]
+    per = [232, 232, 148, 148]
+    v = [n[i] * 1e6 * per[i] / 2**30 for i in range(4)]
     b = ax.bar(lab, v, color=col); barlabels(ax, b, "{:.2f} GiB", size=8)
-    for i in range(3):
-        ax.text(i, v[i] / 2, f"{n[i]:.2f}M 顆\n× {per[i]} B", ha="center", color="white", fontsize=8)
-    ax.set_ylabel("GiB"); ax.set_title("部署（只存參數、float32）：⚠ 官方較小 —— SH2 每顆 148 B，我方 SH3 232 B\n（我方顆數少 28%，但每顆多 57%；SH 階數的取捨見佇列 sh2／1／0）", fontsize=9)
-    fig.suptitle("儲存對照官方（lab `citygs_official_storage.log`；我方 ckpt 實測檔案大小）；官方 CPU RAM 快取未量", fontsize=10)
+    for i in range(4):
+        ax.text(i, v[i] / 2, f"{n[i]:.2f}M 顆\n× {per[i]} B", ha="center", color="white", fontsize=7.5)
+    ax.set_ylabel("GiB"); ax.set_title("部署（只存參數、float32）：⚠ 官方較小 —— SH2 每顆 148 B，我方 SH3 232 B\n★ ed10b4 顆數 +14%、每顆 +57% => 部署是 release 的 1.79 倍（輕量化的待辦）", fontsize=9)
+    fig.suptitle("儲存對照官方（lab `citygs_official_storage.log`；我方 ckpt 實測檔案大小；ed10b4＝10-24 現行最佳）；官方 CPU RAM 快取未量", fontsize=10)
     save(fig, d, "n03_official.png")
 
 
