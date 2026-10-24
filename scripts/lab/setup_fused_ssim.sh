@@ -6,13 +6,13 @@
 #   裝完自我檢查：與現行 ssim、float64 真值比 SSIM 值與梯度，並計時。
 set -e
 cd "$(dirname "$0")/../.."
+#   ⚠ 容器的 PYTHONPATH 指向系統 python3.12 的 torch => 一律走 conda run（同 _common.sh），不直接呼叫 env 的 python
 G=/root/miniconda3/envs/gspl
-PY=$G/bin/python
-if ! $PY -c "import fused_ssim" 2>/dev/null; then
-  env CUDA_HOME=$G CUDA_PATH=$G TORCH_CUDA_ARCH_LIST=8.6 $PY -m pip install --no-build-isolation --no-deps \
-    "git+https://github.com/rahul-goel/fused-ssim@a7c48d6dd7ac6dc39a7958c7c4452e0b10418f38" 2>&1 | tail -3
+if ! conda run -n gspl python -c "import fused_ssim" >/dev/null 2>&1; then
+  conda run -n gspl --no-capture-output env CUDA_HOME=$G CUDA_PATH=$G TORCH_CUDA_ARCH_LIST=8.6 pip install --no-build-isolation --no-deps \
+    "git+https://github.com/rahul-goel/fused-ssim@a7c48d6dd7ac6dc39a7958c7c4452e0b10418f38" 2>&1 | tail -25
 fi
-$PY - <<'EOF'
+conda run -n gspl --no-capture-output python - <<'EOF'
 import sys, time, torch
 sys.path.insert(0, ".")
 from fused_ssim import fused_ssim
