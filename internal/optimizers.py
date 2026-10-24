@@ -114,16 +114,24 @@ class FusedAdam(OptimizerConfig):
                        ⚠ 行為改變：opacity 二元熵與 scale 正則只在可見時作用（每步約 1/10 的顆粒）；不可見的顆粒不再靠動量漂移
                        => 要跑品質臂（換塊評測＋F1）才能採用。
     ⚠ state 的鍵、形狀、dtype 與 torch.optim.Adam 完全相同（繼承它）=> density controller 的 cat／prune／relocate 與 ckpt 照用。
+
+    sh_rest_interval>1（2026-10-24，Taming 3DGS §4.2 🟨；紀錄/加速論文對照.md B4）：高階 SH（`shs_rest` 參數群，佔每顆 59 個 float 的 45 個）
+                       從第 sh_rest_interval_from 次 step 起只在 n % k == 0 時才走 Adam；中間各步不清它的梯度 => autograd 累加，
+                       走的那步用 k 步梯度的和（Adam 對梯度尺度近似不變 => 等同 k 步一個大批次）。
+                       densify／relocation 事件會換掉 nn.Parameter（梯度歸 None）=> 那段累加作廢，從下一步重新累加。
     """
     sparse: bool = False
     variant: int = -1          # -1＝光柵器預設（FUSED_ADAM_VARIANT）；0／1 只給驗證工具用
+    sh_rest_interval: int = 1  # 1＝每步都更新（原行為）
+    sh_rest_interval_from: int = 0
 
     def instantiate(self, params, lr: float, *args, **kwargs) -> Any:
-        return _FusedAdam(params, lr=lr, sparse=self.sparse, variant=self.variant, **kwargs)
+        return _FusedAdam(params, lr=lr, sparse=self.sparse, variant=self.variant,
+                          sh_rest_interval=self.sh_rest_interval, sh_rest_interval_from=self.sh_rest_interval_from, **kwargs)
 
 
 class _FusedAdam(torch.optim.Adam):
-    def __init__(self, params, lr, sparse=False, variant=-1, **kwargs):
+    def __init__(self, params, lr, sparse=False, variant=-1, sh_rest_interval=1, sh_rest_interval_from=0, **kwargs):
         super().__init__(params, lr=lr, **kwargs)
         try:
             from diff_trim_surfel_rasterization import fused_adam_
@@ -135,6 +143,25 @@ class _FusedAdam(torch.optim.Adam):
         self.visibility = None
         self._announced = False
         self._n_mismatch = 0
+        self.sh_rest_interval = max(1, int(sh_rest_interval))
+        self.sh_rest_interval_from = int(sh_rest_interval_from)
+        self._n_calls = 0
+        self._keep_grad = set()     # 本步沒走 Adam、梯度要留著累加的參數（id）
+        self._sh_skip_announced = False
+
+    def zero_grad(self, set_to_none: bool = True):
+        if not self._keep_grad:
+            return super().zero_grad(set_to_none=set_to_none)
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None or id(p) in self._keep_grad:
+                    continue
+                if set_to_none:
+                    p.grad = None
+                else:
+                    p.grad.detach_()
+                    p.grad.zero_()
+        self._keep_grad.clear()
 
     def on_after_backward(self, outputs, batch, gaussian_model, global_step, pl_module):
         # 由 gaussian model 的 _add_optimizer_after_backward_hook_if_available 掛上；在 density controller 的 after_backward 之後
@@ -147,11 +174,23 @@ class _FusedAdam(torch.optim.Adam):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
+        self._n_calls += 1
+        sh_skip = (self.sh_rest_interval > 1 and self._n_calls > self.sh_rest_interval_from
+                   and self._n_calls % self.sh_rest_interval != 0)
         for group in self.param_groups:
             if group["weight_decay"] != 0 or group["amsgrad"] or group["maximize"]:
                 raise RuntimeError("FusedAdam 只支援 weight_decay=0、amsgrad=False、maximize=False")
             b1, b2 = group["betas"]
             lr, eps = group["lr"], group["eps"]
+            if sh_skip and group.get("name") == "shs_rest":
+                for p in group["params"]:
+                    if p.grad is not None:
+                        self._keep_grad.add(id(p))
+                if not self._sh_skip_announced:
+                    self._sh_skip_announced = True
+                    print(f"[sh-rest-interval] ✅ 首次觸發 第 {self._n_calls} 次 step：高階 SH 每 {self.sh_rest_interval} 步才走 Adam"
+                          f"（{group['params'][0].numel():,} 個元素；中間各步梯度累加）", flush=True)
+                continue
             for p in group["params"]:
                 if p.grad is None:          # 同 torch：本步沒梯度的參數（例如 densify 後剛換成新張量）整個跳過
                     continue
