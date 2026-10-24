@@ -7,6 +7,7 @@
 # 用法（JTOK 只能用環境變數帶，絕不寫進任何檔案）：
 #     JTOK=xxx bash scripts/setup/lab_pull.sh
 #     JTOK=xxx bash scripts/setup/lab_pull.sh --no-build    # 確定不用重編時
+#     JTOK=xxx bash scripts/setup/lab_pull.sh --force-build # 不管偵測結果都重編
 #
 # 它會做的事：
 #   1. 擋住「本機還有未提交/未 push 的改動」——否則 lab 拉到的不是你在測的東西
@@ -21,6 +22,7 @@ cd "$(dirname "$0")/../.." || exit 1
 case "${1:-}" in -h|--help) exec bash scripts/_help.sh scripts/setup/lab_pull.sh ;; esac   # 說明全部從本檔讀出
 [ -n "${JTOK:-}" ] || { echo "⛔ 需要環境變數 JTOK"; exit 1; }
 BUILD=1; [ "${1:-}" = "--no-build" ] && BUILD=0
+FORCE=0; [ "${1:-}" = "--force-build" ] && FORCE=1      # 2026-10-24：不管偵測結果都重編（.lab_rast_built 還不存在時用）
 RAST=submodules/diff-surfel-rasterization-trim-pp
 
 # ── 1. 本機必須乾淨且已 push ────────────────────────────────────────────────
@@ -43,12 +45,16 @@ NEEDBUILD=0
 # ⚠ 2026-09-22 擴大偵測範圍到**整個 submodule**：先前只看 cuda_rasterizer 與 third_party，
 #   但 diff_trim_surfel_rasterization/__init__.py（Python 包裝層）改了也必須重裝，
 #   否則 lab 的 site-packages 還是舊的 => 介面不一致而且不會報錯。
-if [ \"\$OLD\" != \"\$NEW\" ] && ! git diff --quiet \$OLD \$NEW -- $RAST; then NEEDBUILD=1; fi
-echo \"光柵器需要重編：\$NEEDBUILD（本次允許重編：$BUILD）\"
+# ⚠ 2026-10-24 改成對「上次實際重編時的 commit」比（lab 本機檔 .lab_rast_built，不進版控）：原本只比這次 pull 的 OLD..NEW，
+#   之前用 --no-build 拉進來的光柵器改動，下一次 pull 就偵測不到（10-24 實際發生：預設開的 SH 分開存放差點跑在舊 .so 上）。
+BUILT=\$(cat .lab_rast_built 2>/dev/null)
+if [ -z \"\$BUILT\" ] || ! git cat-file -e \"\$BUILT\" 2>/dev/null; then BUILT=\$OLD; fi
+if ! git diff --quiet \$BUILT \$NEW -- $RAST || [ $FORCE = 1 ]; then NEEDBUILD=1; fi
+echo \"光柵器需要重編：\$NEEDBUILD（上次重編 \$(git log --oneline -1 \$BUILT | cut -c1-9)；本次允許重編：$BUILD）\"
 if [ \$NEEDBUILD = 1 ] && [ $BUILD = 1 ]; then
   G=/root/miniconda3/envs/gspl
   rm -rf $RAST/build
-  conda run -n gspl env CUDA_HOME=\$G CUDA_PATH=\$G TORCH_CUDA_ARCH_LIST=8.6 pip install --no-build-isolation --no-deps --force-reinstall $RAST 2>&1 | tail -2
+  conda run -n gspl env CUDA_HOME=\$G CUDA_PATH=\$G TORCH_CUDA_ARCH_LIST=8.6 pip install --no-build-isolation --no-deps --force-reinstall $RAST 2>&1 | tail -2 && echo \$NEW > .lab_rast_built
   conda run -n gspl python -c \"import diff_trim_surfel_rasterization as m,os,time;p=os.path.dirname(m.__file__);f=[x for x in os.listdir(p) if x.endswith('.so')][0];print('so:',f,time.strftime('%m-%d %H:%M',time.localtime(os.path.getmtime(os.path.join(p,f)))))\"
 fi
 echo 'HASH'

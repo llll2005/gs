@@ -71,6 +71,8 @@ scripts/queue.bak_*
 scripts/queue.stop
 # lab 機器的識別標記，只能存在於 lab
 .lab_machine
+# lab 上次實際重編光柵器時的 commit（scripts/setup/lab_pull.sh 用；2026-10-24）
+.lab_rast_built
 # 改光柵器前的就地備份
 submodules/diff-surfel-rasterization-trim-pp/_bak_*/
 # lab 的背景工作 log/pid
