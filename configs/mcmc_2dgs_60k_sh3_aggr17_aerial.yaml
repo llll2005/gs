@@ -51,6 +51,13 @@ model:
     class_path: internal.renderers.sep_depth_trim_2dgs_renderer.SepDepthTrim2DGSRenderer
     init_args:
       depth_ratio: 1.0
+      # ★★ 2026-10-24 起預設開（使用者 10-24）：SH 分開存放＋SH 的 Adam 融進光柵器 backward（cuda_rasterizer/sh_adam.h；紀錄/加速論文對照.md A5、B2）
+      #   渲染逐位元相同；SH 的 Adam 更新與 FusedAdam 逐位元相同（含 sh_rest_interval 的每 k 步累加）。
+      #   本機 4050、1.05M 顆：每步峰值增量 729 -> 151 MiB（少掉 cat 的串接張量與 SH 梯度緩衝），時間 k=16 −1.3%、k=1 −4.3%。
+      #   需要重編過的光柵器（沒重編 => renderer 當場報錯）；Adam 那半需要 FusedAdam（不是的話印 ⚠ 退回一般 optimizer.step）。
+      #   與舊流程唯一的行為差：densify 那一步（增生期每 150 步）SH 照樣更新（舊流程那一步所有參數都不更新）。
+      sh_split: true
+      sh_adam_in_backward: true
       # ★★★ 2026-09-22 起預設開啟：精確圓錐**不對稱**外接盒，取代上游的線性化
       #   `radius = truncated_R * extent(1)`（詳見 cuda_rasterizer/auxiliary.h 與
       #   紀錄/實驗分析/04_外接盒與binning成本.md）。

@@ -507,11 +507,19 @@ class SepDepthTrim2DGSRenderer(Renderer):
             kwargs["_lean_dist"] = lam > 0 and (step + 1) >= frm and (_di <= 1 or (step + 1) % _di == 0)
         if getattr(self, "sh_adam_in_backward", False) and "_sh_adam" not in kwargs:
             # ★ 2026-10-24 SH 的 Adam 融進 backward：向持有 shs_dc／shs_rest 的 FusedAdam 拿本步的 m／v 與超參數（同一步只拿一次）
+            #   10-24 使用者要求預設開（live config）=> 條件不符時退回「只分開存放」並印一次 ⚠（不靜默、不中斷）
             opts = [o for o in (getattr(module, "gaussian_optimizers", None) or []) if hasattr(o, "sh_adam_args")
                     and any(g.get("name") == "shs_rest" for g in o.param_groups)]
-            if len(opts) != 1:
-                raise RuntimeError("sh_adam_in_backward 需要 optimizer＝FusedAdam（internal/optimizers.py），且 shs_dc／shs_rest 在同一個 optimizer")
-            kwargs["_sh_adam"] = opts[0].sh_adam_args(step_key=step)
+            _pool = getattr(pc, "_outside_pool", None)
+            why = ("optimizer 不是 FusedAdam（或 shs_dc／shs_rest 不在同一個 optimizer）" if len(opts) != 1
+                   else "FusedAdam 是稀疏模式" if getattr(opts[0], "sparse", False)
+                   else "有塊外池（SH 要串接池內顆粒）" if (_pool is not None and _pool.n > 0) else "")
+            if why:
+                if not getattr(self, "_sh_adam_fallback_warned", False):
+                    self._sh_adam_fallback_warned = True
+                    print(f"⚠ [sh-adam-bwd] 不能在 backward 裡做 SH 的 Adam：{why} => 退回一般 optimizer.step（sh_split 照舊）", flush=True)
+            else:
+                kwargs["_sh_adam"] = opts[0].sh_adam_args(step_key=step)
         return self(viewpoint_camera=viewpoint_camera, pc=pc, bg_color=bg_color, render_types=render_types,
                     _lean=True, **kwargs)
 
