@@ -39,7 +39,7 @@ class GS2DMetricsImpl(VanillaMetricsImpl):
         _di = int(getattr(self.config, "lambda_dist_interval", 1) or 1)
         if _di > 1 and lambda_dist > 0:
             lambda_dist = lambda_dist * _di if step % _di == 0 else 0.0
-            if lambda_dist > 0 and not getattr(self, "_dist_interval_announced", False):
+            if lambda_dist > 0 and step < 10 ** 8 and not getattr(self, "_dist_interval_announced", False):   # sanity check 用假步數（1073741824），排除
                 self._dist_interval_announced = True
                 print(f"[dist-interval] ✅ 首次觸發 step={step}：dist 每 {_di} 步算一次、權重 {lambda_dist:.4g}（＝{_di} 倍）", flush=True)
 
