@@ -62,3 +62,37 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
     else:
         return ssim_map.mean(1).mean(1).mean(1)
 
+
+# 2026-10-24 可分離 SSIM（Taming 3DGS §4.2 的做法，純 PyTorch 版）：11x11 高斯窗 = g g^T，
+#   2D 卷積拆成 1x11 再 11x1（每像素 121 -> 22 次乘加），五張圖（x、y、x^2、y^2、xy）疊成一次 depthwise 卷積；
+#   zero padding 拆開後仍等價（列外為 0 => 橫向結果在列外也為 0）=> 與 `ssim` 只差浮點加總順序。
+#   窗快取在裝置上：`ssim` 每次呼叫都在 CPU 建窗再 .cuda()（pageable 複製會讓 CPU 等 GPU 佇列）。
+_SEP_WIN = {}
+
+
+def ssim_separable(img1, img2, window_size=11, size_average=True):
+    C = img1.size(-3)
+    key = (img1.device, img1.dtype, window_size, C)
+    w = _SEP_WIN.get(key)
+    if w is None:
+        g = gaussian(window_size, 1.5).to(device=img1.device, dtype=img1.dtype)
+        w = (g.view(1, 1, 1, -1).expand(5 * C, 1, 1, window_size).contiguous(),
+             g.view(1, 1, -1, 1).expand(5 * C, 1, window_size, 1).contiguous())
+        _SEP_WIN[key] = w
+    p = window_size // 2
+    x = torch.cat([img1, img2, img1 * img1, img2 * img2, img1 * img2], dim=-3)
+    y = F.conv2d(F.conv2d(x, w[0], padding=(0, p), groups=5 * C), w[1], padding=(p, 0), groups=5 * C)
+    mu1, mu2, e11, e22, e12 = y.split(C, dim=-3)
+    mu1_sq, mu2_sq, mu1_mu2 = mu1 * mu1, mu2 * mu2, mu1 * mu2
+    sigma1_sq, sigma2_sq, sigma12 = e11 - mu1_sq, e22 - mu2_sq, e12 - mu1_mu2
+
+    C1 = 0.01 ** 2
+    C2 = 0.03 ** 2
+
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+
+    if size_average:
+        return ssim_map.mean()
+    else:
+        return ssim_map.mean(1).mean(1).mean(1)
+

@@ -163,7 +163,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         from PIL import Image
         name, gt = batch[1][0], batch[1][1]
         cache = self.__dict__.setdefault("_bm_cache", {})
-        m = cache.get(name)
+        # 鍵含解析度（10-24）：train_res_schedule 降解析度時 GT 會變小，只按影像名快取會把低解析度遮罩帶到全解析度
+        key = (name, tuple(gt.shape[-2:]))
+        m = cache.get(key)
         if m is None:
             p = os.path.join(self.config.block_mask_dir, os.path.basename(str(name)))
             if not os.path.exists(p):
@@ -174,7 +176,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 return batch, outputs
             t = torch.from_numpy(np.array(Image.open(p)))[None, None].float()
             m = torch.nn.functional.interpolate(t, size=tuple(gt.shape[-2:]), mode="nearest")[0, 0].to(torch.uint8)
-            cache[name] = m
+            cache[key] = m
         m = m.to(gt.device, non_blocking=True)
         bg = getattr(pl_module, "_last_bg", None)
         if bg is None:

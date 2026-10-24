@@ -47,6 +47,9 @@ class ExponentialDecayScheduler(Scheduler):
     """The maximum number of steps."""
     ramp: Literal["linear", "cosine"] = "cosine"
     """The ramp function to use during the warmup."""
+    hold_steps: int = 0
+    """>0 時（2026-10-24，DashGaussian §7.2）：warmup 之後先維持 lr_init 到這一步，再從這一步起在 [hold_steps, max_steps] 內指數衰減到 lr_final。
+    DashGaussian 讓位置學習率在解析度升到全解析度之前不衰減。0＝原行為。"""
 
     def instantiate(self, *args, **kwargs) -> Any:
         return ExponentialDecaySchedulerImpl(self)
@@ -64,6 +67,8 @@ class ExponentialDecaySchedulerImpl(SchedulerImpl):
             lr_final = lr_init
         else:
             lr_final = self.config.lr_final
+        if int(getattr(self.config, "hold_steps", 0) or 0) > 0:
+            print(f"[lr-hold] ✅ 學習率 {lr_init:g} 保持到 step {self.config.hold_steps}，之後到 step {self.config.max_steps} 衰減到 {lr_final:g}", flush=True)
 
         def func(step):
             if lr_final <= 0 or lr_init <= 0:
@@ -80,8 +85,9 @@ class ExponentialDecaySchedulerImpl(SchedulerImpl):
                             + (lr_init - self.config.lr_pre_warmup) * step / self.config.warmup_steps
                     )
             else:
+                t0 = max(self.config.warmup_steps, int(getattr(self.config, "hold_steps", 0) or 0))
                 t = np.clip(
-                    (step - self.config.warmup_steps) / (self.config.max_steps - self.config.warmup_steps), 0, 1
+                    (step - t0) / max(1, self.config.max_steps - t0), 0, 1
                 )
                 lr = np.exp(np.log(lr_init) * (1 - t) + np.log(lr_final) * t)
             return lr / lr_init  # divided by lr_init because the multiplier is with the initial learning rate
