@@ -50,6 +50,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_cost_beta_px: float = 0.0,
             sh_split: bool = False,
             sh_adam_in_backward: bool = False,
+            reseed_views: int = 0,
+            reseed_frac: float = 1.0,
+            reseed_by_error: bool = True,
+            reseed_opacity: float = 0.5,
+            reseed_scale_px: float = 1.5,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -109,6 +114,18 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #                        更新式與 FusedAdam 逐條相同。差別：densify 那一步（每 150 步）SH 照樣更新（原流程那步所有參數都不更新）。
         self.sh_split = sh_split
         self.sh_adam_in_backward = sh_adam_in_backward
+        # ★ 2026-10-24 trim 後從渲染深度撒點（使用者 10-24「每次 trim 之後用 Mini-Splatting2 的方法撒點」；紀錄/加速論文對照.md C6）
+        #   reseed_views > 0：累加式 trim 每剪一次（增生期），挑這麼多個訓練視角，用渲染的中位深度（depth_ratio=1 時的 surf_depth；
+        #   Mini-Splatting2 用的是射線上權重最大那顆的深度）把像素反投影成新顆粒，數量＝本次剪掉的顆數 × reseed_frac（不超過 cap）。
+        #   像素只取 alpha > 0.5 的；reseed_by_error=True 依 |render − GT|（三通道平均）加權抽，否則均勻抽；只留本塊分區盒內的點。
+        #   新顆粒：顏色＝GT 像素（SH dc，高階 0）、opacity＝reseed_opacity、兩軸大小＝深度/焦距 × reseed_scale_px（約這麼多像素寬）、
+        #   面朝渲染法線（rend_normal，世界座標）；Adam 狀態補 0（Utils.cat_tensors_to_properties）。
+        #   與 MCMC 的關係：剪掉的容量原本由 add_new_gs（複製 opacity x absgrad 抽到的母點）補回；撒點先補，MCMC 照常補到 cap。
+        self.reseed_views = reseed_views
+        self.reseed_frac = reseed_frac
+        self.reseed_by_error = reseed_by_error
+        self.reseed_opacity = reseed_opacity
+        self.reseed_scale_px = reseed_scale_px
         self.trim_soft_rho = trim_soft_rho
         self._acc_stop = False
         # ★ 2026-10-09 `trim_schedule`＝"步數:門檻,..."（使用者的三次門檻剪）：只在這幾步 trim，剪掉 v <= 門檻的（v＝現行判準：
@@ -661,7 +678,102 @@ class SepDepthTrim2DGSRenderer(Renderer):
         pc._trim_state["views"] = 0
         if step >= until:
             self._acc_stop = True          # 增生期結束 => 不再累加（省 forward 的那點開銷）
+        elif int(getattr(self, "reseed_views", 0) or 0) > 0 and rho == 0:
+            self._reseed(step, module, int(float(getattr(self, "reseed_frac", 1.0)) * int(low.sum())))
         return True
+
+    @torch.no_grad()
+    def _reseed(self, step, module, n_target):
+        """★ 2026-10-24 trim 後從渲染深度撒點（說明見 __init__ 的 reseed_*）。"""
+        from internal.density_controllers.density_controller import Utils
+        from internal.utils.outside_pool import block_inside_mask
+        pc = module.gaussian_model
+        cap = int(getattr(module.density_controller.config, "cap_max", 0) or 0)
+        if cap > 0:
+            n_target = min(n_target, cap - pc.n_gaussians)
+        if n_target <= 0:
+            return
+        ds = module.trainer.train_dataloader.dataset
+        nv = max(1, min(int(self.reseed_views), len(ds)))
+        vids = torch.randperm(len(ds), generator=torch.Generator().manual_seed(int(step)))[:nv].tolist()
+        per = [n_target // nv + (1 if i < n_target % nv else 0) for i in range(nv)]
+        pcfg = module.trainer.datamodule.hparams["parser"]
+        dev = pc.get_xyz.device
+        bg = torch.zeros(3, device=dev)
+        P, Ccol, Nrm, Sc = [], [], [], []
+        chk = None
+        for vi, k in zip(vids, per):
+            if k <= 0:
+                continue
+            cam = ds.image_cameras[vi].to_device(dev)
+            out = self(cam, pc, bg_color=bg)                      # 完整輸出（非 lean）：surf_depth／rend_alpha／rend_normal
+            d, a = out["surf_depth"][0], out["rend_alpha"][0]
+            H, W = d.shape
+            _, gt, _ = ds.get_image(vi)
+            gt = gt.to(dev)
+            gt = gt.float() / 255.0 if gt.dtype == torch.uint8 else gt.float()
+            if gt.shape[-2:] != (H, W):
+                gt = torch.nn.functional.interpolate(gt[None], size=(H, W), mode="area")[0]
+            valid = (a > 0.5) & torch.isfinite(d) & (d > 0.2)
+            w = ((out["render"] - gt).abs().mean(0) if bool(getattr(self, "reseed_by_error", True)) else torch.ones_like(d)) * valid
+            nval = int((w > 0).sum())
+            if nval == 0:
+                continue
+            idx = torch.multinomial(w.flatten(), min(3 * k, nval), replacement=False)
+            v, u = idx // W, idx % W
+            z = d.flatten()[idx]
+            tx, ty = math.tan(float(cam.fov_x) * 0.5), math.tan(float(cam.fov_y) * 0.5)
+            fx, fy = W / (2 * tx), H / (2 * ty)                   # 與光柵器相同：主點在影像中心、像素中心＝索引 + 0.5
+            pcam = torch.stack([(u.float() + 0.5 - W / 2) / fx * z, (v.float() + 0.5 - H / 2) / fy * z, z, torch.ones_like(z)], -1)
+            pw = (pcam @ torch.linalg.inv(cam.world_to_camera))[:, :3]
+            keep = block_inside_mask(pw, pcfg, 0.0)
+            sel = keep.nonzero(as_tuple=True)[0][:k]
+            if sel.numel() == 0:
+                continue
+            if chk is None:                                       # 自檢：用光柵器的投影矩陣把新點投回去，應落在原像素
+                ph = torch.cat([pw[sel], torch.ones_like(pw[sel, :1])], -1) @ cam.full_projection
+                ndc = ph[:, :2] / ph[:, 3:4]
+                pix = ((ndc + 1) * torch.tensor([W, H], device=dev) - 1) * 0.5
+                chk = float((pix - torch.stack([u[sel], v[sel]], -1).float()).abs().max())
+            P.append(pw[sel])
+            Ccol.append(gt[:, v[sel], u[sel]].T)
+            Nrm.append(out["rend_normal"][:, v[sel], u[sel]].T)
+            Sc.append(z[sel] / fx * float(self.reseed_scale_px))
+        if not P:
+            return
+        P, Ccol, Nrm, Sc = torch.cat(P), torch.cat(Ccol), torch.cat(Nrm), torch.cat(Sc)
+        n = P.shape[0]
+        # 面朝法線的四元數（w, x, y, z）：把局部 z 軸轉到 n；n 幾乎是 -z 時繞 x 軸轉 180 度
+        nz = torch.nn.functional.normalize(Nrm, dim=-1)
+        bad = ~torch.isfinite(nz).all(-1) | (Nrm.norm(dim=-1) < 1e-6)
+        nz[bad] = torch.tensor([0., 0., 1.], device=dev)
+        axis = torch.stack([-nz[:, 1], nz[:, 0], torch.zeros_like(nz[:, 0])], -1)        # e_z x n
+        cosv = nz[:, 2].clamp(-1, 1)
+        q = torch.cat([(1 + cosv)[:, None], axis], -1)                                     # 未正規化的半角四元數
+        anti = (1 + cosv) < 1e-6
+        q[anti] = torch.tensor([0., 1., 0., 0.], device=dev)
+        q = torch.nn.functional.normalize(q, dim=-1)
+        props = pc.properties
+        C0 = 0.28209479177387814
+        new = {
+            "means": P,
+            "shs_dc": ((Ccol - 0.5) / C0)[:, None, :],
+            "shs_rest": torch.zeros((n,) + tuple(props["shs_rest"].shape[1:]), device=dev),
+            "opacities": torch.logit(torch.full((n, 1), float(self.reseed_opacity), device=dev)),
+            "scales": torch.log(Sc.clamp_min(1e-7))[:, None].expand(n, props["scales"].shape[1]).contiguous(),
+            "rotations": q,
+        }
+        missing = [k for k in props if k not in new]
+        if missing:
+            raise RuntimeError(f"reseed：模型有沒處理到的屬性 {missing}")
+        n0 = pc.n_gaussians
+        pc.properties = Utils.cat_tensors_to_properties(new, pc, module.gaussian_optimizers)
+        if not getattr(self, "_reseed_announced", False) or step % 5000 == 0:
+            self._reseed_announced = True
+            print(f"[reseed] {'✅ 首次觸發 ' if chk is not None and not getattr(self, '_reseed_chk_done', False) else ''}step {step}：{nv} 個視角撒 {n:,} 顆"
+                  f"（目標 {n_target:,}；N {n0:,} -> {pc.n_gaussians:,}）｜深度中位 {float(P.new_tensor(0) + Sc.median() * fx / float(self.reseed_scale_px)):.3f}"
+                  f"｜大小中位 {float(Sc.median()):.4f}" + (f"｜自檢：投回像素最大誤差 {chk:.3f} px {'✅' if chk < 0.05 else '⚠⚠ 慣例可能不對'}" if chk is not None and not getattr(self, '_reseed_chk_done', False) else ""), flush=True)
+            self._reseed_chk_done = True
 
     def after_training_step(
             self,

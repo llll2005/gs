@@ -5,6 +5,7 @@
 # 用法（佇列）：
 #   [solo] bash scripts/lab/task_fullscene.sh merge <跑次>          16 塊都跑到同一步數才合併（utils/merge_citygs_ckpts.py）
 #   [solo] bash scripts/lab/task_fullscene.sh test <跑次>           官方 741 幀 held-out（tools/eval_official_test.py；與 full44／官方同一支工具）
+#   [solo] bash scripts/lab/task_fullscene.sh halftest <跑次>       部署端半精度（tools/half_ckpt.py，輸出 deploy/merged_fp16.ckpt）＋官方 741 幀
 #   [solo] bash scripts/lab/task_fullscene.sh alloc <探針跑次> <frac> <STEPS>
 #          自適應 cap ①：tools/price_alloc.py 用共同價格 lambda（V/C 門檻）把 frac x 探針總顆數分給 16 塊，
 #          再把判決實驗 ② 插到佇列最前：同 Σcap 的「統一 cap」與「價格分配 cap」各 16 塊＋merge＋test。
@@ -57,6 +58,20 @@ case "$MODE" in
     L=logs/fullscene_test_${R}_$(date +%m%d_%H%M).log
     { echo "════ $R 合併模型：$CK（$(du -h "$CK" | cut -f1)）════"
       $PY tools/eval_official_test.py --ckpt "$CK" --save_dir "$OUT/test_official"
+    } 2>&1 | grep -vE 'pkg_resources|declare_namespace' | tee "$L"
+    exit "${PIPESTATUS[0]}" ;;
+
+  halftest)
+    # ★ 2026-10-24 部署端半精度（tools/half_ckpt.py；紀錄/加速論文對照.md C8）：合併模型 means 以外轉 float16、丟 Adam => 官方 741 幀
+    #   ⚠ 輸出放 deploy/（不放 checkpoints/：test 模式用 `ls checkpoints/*.ckpt | tail -1` 挑檔，merged_fp16 會排在 merged 後面被誤用）
+    R=${1:?跑次}; OUT=outputs/lab/$R
+    CK=$(ls "$OUT/checkpoints/"*.ckpt 2>/dev/null | tail -1)
+    [ -n "$CK" ] || { echo "⛔ $R 沒有合併 ckpt（先 merge）"; exit 2; }
+    mkdir -p "$OUT/deploy"; HK="$OUT/deploy/merged_fp16.ckpt"
+    L=logs/fullscene_halftest_${R}_$(date +%m%d_%H%M).log
+    { echo "════ $R 半精度部署：$CK -> $HK ════"
+      $PY tools/half_ckpt.py "$CK" "$HK" || exit 2
+      $PY tools/eval_official_test.py --ckpt "$HK" --save_dir "$OUT/test_official_fp16"
     } 2>&1 | grep -vE 'pkg_resources|declare_namespace' | tee "$L"
     exit "${PIPESTATUS[0]}" ;;
 
