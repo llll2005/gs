@@ -56,6 +56,28 @@ def write_xyzrgb_ply(path, xyz, rgb):
     PlyData([PlyElement.describe(el, "vertex")]).write(path)
 
 
+_DEPTH_CACHE = {}
+
+
+def _depth_points(depth_dir):
+    """★ 2026-10-24 深度補點用：讀 depth_dir 下全部 block_*.ply（utils/depth_init_blocks.py 的高斯 PLY），回傳 (xyz, rgb uint8)。
+    顏色由 f_dc 還原（rgb = f_dc x C0 + 0.5）。各塊 PLY 有重疊也無妨（只拿來挑空體素裡的點）。"""
+    if depth_dir in _DEPTH_CACHE:
+        return _DEPTH_CACHE[depth_dir]
+    import glob
+    xs, cs = [], []
+    for f in sorted(glob.glob(os.path.join(depth_dir, "block_*.ply"))):
+        v = PlyData.read(f)["vertex"]
+        xs.append(np.stack([v["x"], v["y"], v["z"]], -1).astype(np.float64))
+        dc = np.stack([v["f_dc_0"], v["f_dc_1"], v["f_dc_2"]], -1)
+        cs.append(np.clip((dc * 0.28209479177387814 + 0.5) * 255.0, 0, 255).astype(np.uint8))
+    if not xs:
+        raise SystemExit(f"⛔ fill-source=depth：{depth_dir} 底下沒有 block_*.ply")
+    _DEPTH_CACHE[depth_dir] = (np.concatenate(xs), np.concatenate(cs))
+    print(f"[depth] 讀了 {len(xs)} 個深度點 PLY、共 {len(_DEPTH_CACHE[depth_dir][0]):,} 點（{depth_dir}）", flush=True)
+    return _DEPTH_CACHE[depth_dir]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("dataset_dir")
@@ -71,6 +93,11 @@ def main():
                     help="補點的密度是 SfM 區密度的幾倍（0 = 不補，用來跑自檢關卡）")
     ap.add_argument("--fill-voxel", type=float, default=0.15,
                     help="判斷「這裡有沒有 SfM 點」的體素邊長（場景單位）")
+    ap.add_argument("--fill-source", choices=["random", "depth"], default="random",
+                    help="★ 2026-10-24（使用者 10-24：單目深度加進 dup 的前處理）Tier B 的點從哪來："
+                         "random＝空體素裡均勻亂撒、顏色取 SfM 平均（原行為）；depth＝從單目深度反投影的點（--depth-dir 的 PLY）"
+                         "裡挑落在空體素的，顏色用該點自己的顏色。點數 nB 兩者相同 => 只換 Tier B 的位置與顏色；Tier A 與 dup 複本逐點相同。")
+    ap.add_argument("--depth-dir", default=None, help="fill-source=depth 時的深度點 PLY 目錄（預設 <dataset>/depth_init，utils/depth_init_blocks.py 的輸出）")
     ap.add_argument("--pct", type=float, default=2.5,
                     help="取範圍用的百分位（避免離群點把範圍撐爆；SfM 有 z 到 -461 的離群點）")
     ap.add_argument("--verify", action="store_true", help="只印統計不寫檔")
@@ -144,7 +171,22 @@ def main():
             occupied = set(map(int, (key[ok, 0] * dim[1] + key[ok, 1]) * dim[2] + key[ok, 2]))
             n_vox = int(np.prod(dim)); n_empty = n_vox - len(occupied)
             nB = int(dens * args.fill_ratio * n_empty * vs ** 3)
-            if nB > 0 and n_empty > 0:
+            if nB > 0 and n_empty > 0 and args.fill_source == "depth":
+                # ★ 10-24 深度補點：單目深度反投影的點裡，落在 SfM 盒內且體素沒有 SfM 點的，隨機取 nB 個
+                dxyz, drgb = _depth_points(args.depth_dir or os.path.join(args.dataset_dir, "depth_init"))
+                m = np.all((dxyz >= lo) & (dxyz < hi), axis=1)
+                cx, cr = dxyz[m], drgb[m]
+                k = np.floor((cx - lo) / vs).astype(np.int64)
+                k = np.clip(k, 0, dim - 1)
+                f = (k[:, 0] * dim[1] + k[:, 1]) * dim[2] + k[:, 2]
+                keep = np.fromiter((int(v) not in occupied for v in f), bool, len(f))
+                cx, cr = cx[keep], cr[keep]
+                take = rng.choice(len(cx), size=min(nB, len(cx)), replace=False) if len(cx) > 0 else np.zeros(0, np.int64)
+                print(f"[block {blk}] 深度補點：盒內深度點 {int(m.sum()):,}、落在空體素 {len(cx):,}、取 {len(take):,}（目標 {nB:,}）")
+                parts_xyz.append(cx[take])
+                parts_rgb.append(cr[take])
+                nB = len(take)
+            elif nB > 0 and n_empty > 0:
                 # 在空體素裡撒點：先過取樣再丟掉落在已佔用體素的
                 need, got = nB, []
                 while need > 0 and len(got) < nB:

@@ -156,8 +156,12 @@ case "$CASEARM" in
                 bestmask|bestmaskdist100|bestmaskpt|bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15|bestmaskdistrfed10b4)    [ "$GRID" = 44 ] || { echo "⛔ bestmask 只支援 4x4"; exit 2; }
                              _MD=data/matrix_city/aerial/train/block_all/block_masks44/block_$BLK
                              [ -f "$_MD/stats.json" ] || { echo "⛔ 缺遮罩 $_MD（先跑 tools/block_mask44.py --blocks $BLK）"; exit 2; }
-                             P="sfmfill_sweep44_crop/dup$K44/block_${BLK}.ply"
-                             [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺裁盒初始化 $P（tools/block_mask44.py --crop_ply sfmfill_sweep44）"; exit 2; }
+                             # ★ 2026-10-24 CITYGS_CROP_INIT：換裁盒初始化目錄（預設 sfmfill_sweep44_crop；深度補點臂用 sfmfill_depth44_crop，
+                             #   tools/make_sfm_fill_init.py --fill-source depth＋block_mask44.py --crop_ply 產生）
+                             _CI=${CITYGS_CROP_INIT:-sfmfill_sweep44_crop}
+                             P="$_CI/dup$K44/block_${BLK}.ply"
+                             [ "$_CI" = sfmfill_sweep44_crop ] || echo "[init] ★ 換裁盒初始化：$P"
+                             [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺裁盒初始化 $P（tools/block_mask44.py --crop_ply ${_CI%_crop}）"; exit 2; }
                              EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"
                                     --model.random_background true --model.metric.init_args.block_mask_dir "$_MD")
                              case "$CASEARM" in
