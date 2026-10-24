@@ -591,6 +591,13 @@ class MCMC2DGSDensityController(MCMCDensityController):
     `rho3d > rho2d`（次像素 fallback）分支被寫，解析良好的粒子恆為 0。
     天真移植 3DGS 的梯度式 densify 到 2DGS 只會看到次像素 splat。"""
 
+    morton_reorder_interval: int = 0
+    """>0 時（2026-10-24，Faster-GS／LiteGS 的 Morton 重排）：densify 事件結束時，若 step 是它的倍數、或這是最後一個 densify 事件，
+    把所有逐顆狀態依中心的 Morton（Z 序）碼重排 => 同一 tile 的顆粒在記憶體中相鄰（L2 命中率）。0＝關。
+    搬的狀態：參數＋Adam 的 m／v（`prune_properties` 收 index）、`gaussian_model._trim_state`（累加式 V/C 等）、`_absgrad_accum`；
+    其餘視窗（`_max_radii2D` 等）在同一處已清空。trim 的剪枝用布林遮罩、保序 => 最後一次重排後順序在收割期不再變。
+    第一次觸發時自檢：同一相機重排前後的渲染差（應為 0 或浮點等級），並印出搬了哪些狀態。"""
+
     freeze_opacity_after_densify: bool = False
     """RTG-style harvest-phase opacity freeze: once global_step >= densify_until_iter,
     zero out opacity grads every step (Adam skips None-grad params entirely). Rationale:
@@ -926,6 +933,69 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"個高誤差高不透明父代的子代改為 opacity {self.config.transparent_corrector}")
                 self._tc_last = None
             self._err_score = None                 # window restarts with the next interval
+            _mi = int(getattr(self.config, "morton_reorder_interval", 0) or 0)
+            if _mi > 0 and (global_step % _mi == 0
+                            or global_step + self.config.densification_interval >= self.config.densify_until_iter):
+                self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
+
+    @staticmethod
+    def _morton_code(xyz: torch.Tensor) -> torch.Tensor:
+        """每軸 21 位元（以 0.5%～99.5% 分位當範圍、超出的夾到邊界）交錯成 63 位元 Morton 碼。"""
+        x = xyz.detach().float()
+        sub = x[torch.randperm(x.shape[0], device=x.device)[:1_000_000]] if x.shape[0] > 1_000_000 else x
+        lo, hi = torch.quantile(sub, 0.005, dim=0), torch.quantile(sub, 0.995, dim=0)
+        q = ((x - lo) / (hi - lo).clamp_min(1e-12) * float((1 << 21) - 1)).round().clamp(0, (1 << 21) - 1).long()
+
+        def part1by2(v):
+            v = v & 0x1fffff
+            v = (v | (v << 32)) & 0x1f00000000ffff
+            v = (v | (v << 16)) & 0x1f0000ff0000ff
+            v = (v | (v << 8)) & 0x100f00f00f00f00f
+            v = (v | (v << 4)) & 0x10c30c30c30c30c3
+            v = (v | (v << 2)) & 0x1249249249249249
+            return v
+        return part1by2(q[:, 0]) | (part1by2(q[:, 1]) << 1) | (part1by2(q[:, 2]) << 2)
+
+    @torch.no_grad()
+    def _morton_reorder(self, gaussian_model, optimizers, global_step: int, pl_module, batch) -> None:
+        n = gaussian_model.n_gaussians
+        perm = torch.argsort(self._morton_code(gaussian_model.get_xyz))
+        st = getattr(gaussian_model, "_trim_state", None) or {}
+        first = not getattr(self, "_morton_announced", False)
+
+        def snap():
+            return {k: (v.clone() if torch.is_tensor(v) else v) for k, v in st.items()}
+
+        def render():
+            cam = batch[0]
+            bg = torch.zeros(3, device=gaussian_model.get_xyz.device)
+            return pl_module.renderer(cam, gaussian_model, bg_color=bg)["render"].float()
+
+        if first:
+            s0 = snap()
+            img0 = render()
+            st.clear(); st.update(s0)          # 自檢那一次渲染不能進累加式 V/C
+        moved = []
+        gaussian_model.properties = Utils.prune_properties(perm, gaussian_model, optimizers)
+        for k in list(st.keys()):
+            if torch.is_tensor(st[k]) and st[k].shape[0] == n:
+                st[k] = st[k][perm]
+                moved.append(k)
+        g = getattr(self, "_absgrad_accum", None)
+        if g is not None and g.shape[0] == n:
+            self._absgrad_accum = g[perm]
+            moved.append("absgrad")
+        self._morton_calls = getattr(self, "_morton_calls", 0) + 1
+        if first:
+            self._morton_announced = True
+            s1 = snap()
+            img1 = render()
+            st.clear(); st.update(s1)
+            d = (img1 - img0).abs()
+            print(f"[morton] ✅ 首次觸發 step {global_step}：重排 {n:,} 顆；跟著搬的逐顆狀態 {moved or '無'}；"
+                  f"自檢（同一相機重排前後）渲染最大差 {float(d.max()):.2e}、不同像素 {float((d > 0).float().mean()) * 100:.3f}%", flush=True)
+        elif self._morton_calls % 5 == 0 or global_step + self.config.densification_interval >= self.config.densify_until_iter:
+            print(f"[morton] step {global_step}：第 {self._morton_calls} 次重排（{n:,} 顆；搬 {moved or '無'}）", flush=True)
 
     _max_radii2D: torch.Tensor = None
     _max_tiles2D: torch.Tensor = None      # 2026-09-21：精確 binning 成本的同語意視窗
