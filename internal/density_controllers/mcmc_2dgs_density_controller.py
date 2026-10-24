@@ -977,14 +977,30 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             st.clear(); st.update(s0)          # 自檢那一次渲染不能進累加式 V/C
         moved = []
         gaussian_model.properties = Utils.prune_properties(perm, gaussian_model, optimizers)
+        # ⚠ 重排發生在 add_new_gs 之後：逐顆狀態可能還是加點前的長度（新顆粒接在尾端）。
+        #   `_trim_state` 之後會在尾端補 0 而不是重設 => 不先補齊再排列，累加式 V/C 會對到錯的顆粒（10-24 功能測試抓到：印出「搬 無」）。
+        #   => 比 N 短的先在尾端補 0（與 `_trim_state` 的補法相同）再排列；比 N 長的不該發生，直接丟掉讓它重建。
         for k in list(st.keys()):
-            if torch.is_tensor(st[k]) and st[k].shape[0] == n:
-                st[k] = st[k][perm]
+            t = st[k]
+            if not torch.is_tensor(t) or t.dim() == 0:
+                continue
+            if t.shape[0] < n:
+                t = torch.cat([t, torch.zeros((n - t.shape[0],) + tuple(t.shape[1:]), dtype=t.dtype, device=t.device)])
+                moved.append(f"{k}（補 {n - st[k].shape[0]:,}）")
+            elif t.shape[0] > n:
+                del st[k]
+                moved.append(f"{k}（長度 {t.shape[0]:,} > N，丟棄）")
+                continue
+            else:
                 moved.append(k)
+            st[k] = t[perm]
         g = getattr(self, "_absgrad_accum", None)
-        if g is not None and g.shape[0] == n:
-            self._absgrad_accum = g[perm]
-            moved.append("absgrad")
+        if g is not None:
+            if g.shape[0] == n:
+                self._absgrad_accum = g[perm]
+                moved.append("absgrad")
+            else:
+                self._absgrad_accum = None        # 長度不符時下一步本來就會重設（自癒）；明確清掉，避免與排列後的順序混用
         self._morton_calls = getattr(self, "_morton_calls", 0) + 1
         if first:
             self._morton_announced = True
