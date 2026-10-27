@@ -1460,8 +1460,72 @@ def n20_swap(d):
     save(fig, d, "n20_swap.png")
 
 
+# 21：配方 A 全場景（10-24～10-26）。全場景＝官方 741 幀；逐塊＝labrun/perblock_1027.py（相機位置歸塊、可重疊）；單塊＝換塊評測＋區塊 F1
+# (名稱, PSNR, LPIPS, 合併 N（百萬）, 16 塊純訓練 h, 顏色)
+N21_FULL = [("full44 舊最佳（60k）", 27.739, .1293, 17.63, 30.7, MUTED), ("ed10b4", 27.868, .1153, 27.83, 7.32, C4),
+            ("★ 配方 A", 28.048, .1143, 27.93, 5.90, C1), ("★ A＋dist 每 4 步", 28.058, .1142, 27.75, 5.04, "#123f7a"),
+            ("★ A cap 1.5M", 27.931, .1286, 17.12, 4.48, C3), ("A cap 1M", 27.776, .1448, 11.50, 3.86, C2)]
+N21_BLK = {"配方 A − ed10b4": [+0.171, +0.137, +0.137, +0.150, +0.206, +0.177, +0.155, +0.161, +0.218, +0.203, +0.173, +0.164, +0.236, +0.233, +0.178, +0.149],
+           "A＋dist4 − ed10b4": [+0.179, +0.127, +0.131, +0.139, +0.203, +0.168, +0.171, +0.179, +0.253, +0.198, +0.184, +0.179, +0.238, +0.263, +0.204, +0.178],
+           "A 平行重跑 − ed10b4": [+0.178, +0.144, +0.155, +0.170, +0.196, +0.167, +0.168, +0.179, +0.209, +0.195, +0.178, +0.170, +0.222, +0.230, +0.183, +0.153],
+           "A cap 1.5M − ed10b4": [-0.022, -0.006, +0.056, +0.078, +0.071, +0.088, +0.091, +0.100, +0.110, +0.105, +0.077, +0.089, +0.157, +0.167, +0.070, +0.034],
+           "A cap 1M − ed10b4": [-0.241, -0.206, -0.038, +0.021, -0.087, -0.083, -0.038, +0.003, -0.056, -0.061, -0.072, -0.026, +0.028, +0.018, -0.108, -0.136]}
+# 單塊 (名稱, b6 本塊區域 Δ, b6 F1, b0 本塊區域 Δ, b0 F1)；None＝沒量
+N21_SINGLE = [("ed10b4", 0.057, 0.521, -0.040, 0.758), ("配方 A", 0.215, 0.529, 0.123, 0.737),
+              ("A＋dist 每 4 步（全場景的塊）", 0.206, 0.522, -0.022, 0.740), ("A＋dist 每 4 步（單塊）", 0.199, 0.525, 0.092, 0.741),
+              ("＋撒點 依誤差", 0.210, 0.559, 0.061, 0.743), ("＋撒點 均勻", 0.210, 0.570, None, None),
+              ("cap 1.5M", 0.203, 0.514, 0.040, 0.733), ("cap 1M", 0.172, 0.485, 0.022, 0.705)]
+
+
+def n21_full(d):
+    """全場景：PSNR 對 16 塊純訓練時間（點大小＝合併 N），官方 release 畫成水平線。"""
+    fig, ax = plt.subplots(figsize=(10, 4.2))
+    for nm, p, lp, n, h, c in N21_FULL:
+        ax.scatter(h, p, s=n * 22, color=c, alpha=0.85, edgecolor="white", lw=1, zorder=3)
+        dx, dy, ha = {"★ A＋dist 每 4 步": (-16, 10, "right"), "★ 配方 A": (16, 4, "left"), "ed10b4": (18, -10, "left"),
+                      "★ A cap 1.5M": (-14, -20, "right")}.get(nm, (12, -4, "left"))
+        ax.annotate(f"{nm}\n{p:.3f}／LPIPS {lp:.4f}／{n:.1f}M", (h, p), xytext=(dx, dy), ha=ha,
+                    textcoords="offset points", fontsize=7.5, color=INK2)
+    ax.axhline(27.261, color=MUTED, ls="--", lw=1); ax.text(12, 27.275, "官方 release 27.261（24.48M；b0~9 就要 40.3 h）", fontsize=7.5, color=INK2)
+    ax.set_xscale("log"); ax.set_xticks([4, 5, 6, 8, 12, 20, 30]); ax.set_xticklabels(["4", "5", "6", "8", "12", "20", "30"])
+    ax.set_xlim(2.6, 60); ax.set_ylim(27.2, 28.2)
+    ax.set_xlabel("16 塊純訓練時間（h，對數；[solo]）"); ax.set_ylabel("官方 741 幀 PSNR")
+    ax.set_title("4x4 全場景：配方 A 28.048（5.90 h）、＋dist 每 4 步 28.058（5.04 h）；cap 1.5M 用舊最佳的顆數贏它", fontsize=9.5)
+    save(fig, d, "n21_full.png")
+
+
+def n21_blocks(d):
+    """逐塊 Δ（相對 ed10b4）：配方 A 16 塊全贏；dist 每 4 步與平行重跑同級；1.5M 只在 b0／b1 輸。"""
+    fig, ax = plt.subplots(figsize=(17, 4.4))
+    x = np.arange(16); k = len(N21_BLK); w = 0.84 / k
+    for j, (nm, v) in enumerate(N21_BLK.items()):
+        ax.bar(x + (j - (k - 1) / 2) * w, v, w, color=(C1, "#123f7a", "#9cc3ee", C3, C2)[j], label=nm)
+    ax.axhline(0, color="k", lw=0.8)
+    ax.set_xticks(x, [f"b{b}" for b in range(16)]); ax.set_ylabel("PSNR Δ（dB，相對 ed10b4）")
+    ax.legend(fontsize=8, ncol=5, loc="lower center")
+    ax.set_title("官方 741 幀逐塊：配方 A 全贏 ed10b4（+0.14～+0.24）；＋dist 每 4 步 與 A 差 −0.01～+0.04＝平行重跑同級（−0.01～+0.02）；1M 輸在 b0／b1／b15", fontsize=9.5)
+    save(fig, d, "n21_blocks.png")
+
+
+def n21_single(d):
+    """單塊：本塊區域 Δ（換塊評測）對區塊 F1；b6 圓、b0 方。撒點把 b6 的 F1 往上推；b0 的區域 Δ 重跑就差 0.11。"""
+    fig, axs = plt.subplots(1, 2, figsize=(14, 4.8))
+    cols = [C4, C1, "#123f7a", "#5a8fd0", C3, "#0e7a52", "#d9a400", C2]
+    for ax, (bi, ci, title) in zip(axs, ((1, 2, "b6（324 幀）：撒點 F1 +0.03／+0.04，PSNR 不變"), (3, 4, "b0（172 幀）：dist 每 4 步兩次訓練本塊區域差 0.11（重跑噪音）"))):
+        for r, c in zip(N21_SINGLE, cols):
+            if r[bi] is None: continue
+            ax.scatter(r[bi], r[ci], s=70, color=c, marker="o" if bi == 1 else "s", zorder=3)
+            left = bi == 1 and "單塊" in r[0]
+            ax.annotate(r[0], (r[bi], r[ci]), xytext=(-6 if left else 6, 3), ha="right" if left else "left",
+                        textcoords="offset points", fontsize=7.5, color=INK2)
+        ax.set_xlabel("本塊區域 PSNR Δ（換塊評測，相對 full44_best）"); ax.set_ylabel("區塊幾何 F1")
+        ax.set_title(title, fontsize=9.5)
+    axs[1].annotate("", (0.092, 0.7415), (-0.022, 0.7415), arrowprops=dict(arrowstyle="<->", color=MUTED, lw=0.9))
+    save(fig, d, "n21_single.png")
+
+
 DOCS = {
-    "01_訓練時間組成": ["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
+    "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
     "03_儲存與RAM": ["fig4_ckpt_storage", "fig6_run_dir", "fig5_ram_cache", "n03_official"],
     "04_外接盒與binning成本": ["cc1_quality_delta", "n04_time", "n04_load", "cc4_proxy_decoupled", "n04_load3"],
@@ -1477,6 +1541,7 @@ DOCS = {
     "18_馬路地底面元與幾何正則": ["n18_road"],
     "19_全因子消融_遮罩dist_cap步數": ["n19_fact", "n19_road"],
     "20_全場景遮罩回退與opacity": ["n20_blocks", "n20_swap"],
+    "21_配方A全場景_加速cap與撒點": ["n21_full", "n21_blocks", "n21_single"],
 }
 
 
@@ -1515,7 +1580,7 @@ def main():
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
-              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap):
+              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
