@@ -1,6 +1,5 @@
 from typing import Tuple
 import math
-import weakref
 from dataclasses import dataclass
 from typing import Any
 import torch
@@ -161,14 +160,16 @@ class _FusedAdam(torch.optim.Adam):
         shs_dc 每步 step 計數 +1；shs_rest 依 sh_rest_interval：本步（第 n 次 step）不跳過才 +1 並更新，否則梯度在 acc_rest 累加
         ——與 Python 版（step() 跳過 shs_rest 組、梯度靠 autograd 累加）同一套規則。acc_rest 綁在 shs_rest 參數物件上：
         densify／relocation 換掉參數 => 累加重來（Python 版換參數後 .grad 也是 None）。
-        同一個 step_key 只算一次（梯度 checkpoint 會把 forward 重跑一次）。這兩組在本步的 step() 會被跳過。"""
-        if step_key is not None and self._sh_key == step_key and self._sh_cached is not None:
-            return self._sh_cached
+        同一個 step_key 只算一次（梯度 checkpoint 會把 forward 重跑一次）。這兩組在本步的 step() 會被跳過。
+        ⚠ 10-27：快取只存 CPU 的 hp、acc_rest 存在參數物件的屬性上 —— 原本快取整個 tuple、acc 存在 optimizer 上，
+        densify／trim 換掉參數後舊的 m／v 與 acc 要到下一步才放（N 2.25M 約 0.86 GB）=> 實際訓練峰值反而比 Python 版高 0.39 GB。"""
         if self.sparse:
             raise RuntimeError("sh_adam_in_backward 只實作稠密 Adam（sparse=True 時 SH 會被當成稠密更新）")
         grp = {g.get("name"): g for g in self.param_groups if g.get("name") in ("shs_dc", "shs_rest")}
         if set(grp) != {"shs_dc", "shs_rest"}:
             raise RuntimeError("sh_adam_args：這個 optimizer 沒有 shs_dc 與 shs_rest 兩組")
+        if step_key is not None and self._sh_key == step_key and self._sh_cached is not None:
+            return self._sh_pack(grp, self._sh_cached, debug)
         n = self._n_calls + 1                    # 本步是第 n 次 step()（step() 在 backward 之後才被呼叫）
         k = self.sh_rest_interval
         apply_rest = not (k > 1 and n > self.sh_rest_interval_from and n % k != 0)
@@ -191,27 +192,31 @@ class _FusedAdam(torch.optim.Adam):
             else:
                 out[nm] = (st, 0.0, 1.0, b1, b2, g["eps"])
             self._ext_stepped.add(id(p))
-        acc = None
-        if k > 1:
-            pr = grp["shs_rest"]["params"][0]
-            ref = getattr(self, "_sh_acc_ref", None)
-            if ref is None or ref() is not pr or self._sh_acc.shape != pr.shape:
-                self._sh_acc = torch.zeros_like(pr)
-                self._sh_acc_ref = weakref.ref(pr)
-            acc = self._sh_acc
         (sd, ssd, bcd, b1, b2, eps), (sr, ssr, bcr, b1r, b2r, epsr) = out["shs_dc"], out["shs_rest"]
         if (b1, b2, eps) != (b1r, b2r, epsr):
             raise RuntimeError("sh_adam_args：shs_dc 與 shs_rest 的 betas／eps 不同（光柵器只收一組）")
         hp = torch.tensor([b1, 1 - b1, b2, 1 - b2, eps, ssd, bcd, ssr, bcr, 1.0 if apply_rest else 0.0, 1.0 if debug else 0.0],
                           dtype=torch.float32)
-        res = (sd["exp_avg"], sd["exp_avg_sq"], sr["exp_avg"], sr["exp_avg_sq"], acc, hp, ({} if debug else None))
-        self._sh_key, self._sh_cached = step_key, res
+        self._sh_key, self._sh_cached = step_key, hp
         if not getattr(self, "_sh_adam_announced", False):
             self._sh_adam_announced = True
             print(f"[sh-adam-bwd] ✅ 首次觸發：SH 的 Adam 在光柵器 backward 裡做（step {int(sd['step'])}、"
                   f"lr dc {grp['shs_dc']['lr']:g}／rest {grp['shs_rest']['lr']:g}、rest 每 {k} 步"
                   + ("，其間梯度在光柵器內累加" if k > 1 else "") + "）", flush=True)
-        return res
+        return self._sh_pack(grp, hp, debug)
+
+    def _sh_pack(self, grp, hp, debug):
+        """每次都從目前的 optimizer 狀態取 m／v（不在 optimizer 上留 GPU 張量的參照）；acc_rest 跟著 shs_rest 參數物件走，
+        參數被換掉（densify／prune）時隨舊參數一起釋放，新參數第一次用到時從 0 開始累加。"""
+        sd, sr = self.state[grp["shs_dc"]["params"][0]], self.state[grp["shs_rest"]["params"][0]]
+        acc = None
+        if self.sh_rest_interval > 1:
+            pr = grp["shs_rest"]["params"][0]
+            acc = getattr(pr, "_sh_acc", None)
+            if acc is None or acc.shape != pr.shape:
+                acc = torch.zeros_like(pr)
+                pr._sh_acc = acc
+        return sd["exp_avg"], sd["exp_avg_sq"], sr["exp_avg"], sr["exp_avg_sq"], acc, hp, ({} if debug else None)
 
     def zero_grad(self, set_to_none: bool = True):
         if not self._keep_grad:

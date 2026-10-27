@@ -32,6 +32,9 @@ def main(src, dst=None):
         if k in KEEP32 or not t.is_floating_point():
             b16 += t.numel() * t.element_size()
             continue
+        if not torch.isfinite(t).all():   # 例：10-24 修正前的 relocation NaN scale（遮罩臂全場景 b1 15,234 顆）
+            nf = int((~torch.isfinite(t.reshape(t.shape[0], -1))).any(1).sum())
+            raise SystemExit(f"⛔ {k} 原檔（float32）就有 {nf:,} 顆非有限值，不是轉型溢位 —— 不輸出（tools/ckpt_nonfinite.py 查是哪幾塊）")
         h = t.to(torch.float16)
         if not torch.isfinite(h).all():
             raise SystemExit(f"⛔ {k} 轉 float16 後有非有限值（超出 ±65504？）—— 不輸出")
