@@ -3,7 +3,7 @@ Usage:  python web_demo/serve.py [port=8080]
 
 Endpoints:
   GET  /files.json    -> list of .ply files in this directory
-  GET  /ckpts.json    -> local checkpoints under outputs/ (newest first) — no upload needed
+  GET  /ckpts.json    -> local checkpoints under outputs/**/{checkpoints,deploy}/ (newest first) — no upload needed
   POST /convert_local -> body {"path": "outputs/.../x.ckpt"}, converts IN PLACE on the server
   GET  /current.json  -> {"file": "block_9.ply", "ts": 1234567890}
   POST /select        -> body {"file": "xxx.ply"}, updates current and ts
@@ -43,7 +43,8 @@ class Handler(SimpleHTTPRequestHandler):
             out = []
             root = os.path.join(PROJECT_ROOT, "outputs")
             for dirpath, _dirs, files in os.walk(root):
-                if os.path.basename(dirpath) != "checkpoints":
+                # 10-29：半精度部署檔（tools/half_ckpt.py）放在 deploy/，不放 checkpoints/ => 兩個都掃
+                if os.path.basename(dirpath) not in ("checkpoints", "deploy"):
                     continue
                 for fn in files:
                     if not fn.endswith(".ckpt"):
@@ -114,9 +115,9 @@ class Handler(SimpleHTTPRequestHandler):
                 run = f"lab_{parts[1]}"
             blk   = next((x for x in parts if x.startswith("block_")), "")
             stem  = os.path.splitext(os.path.basename(full))[0]
-            step  = stem.split("step=")[-1] if "step=" in stem else stem
+            tag   = f"step{stem.split('step=')[-1]}" if "step=" in stem else stem   # merged_fp16 => 不加 step 前綴
             from utils.export_splat_ply import FORMAT_TAG      # 10-14：格式修正後換檔名，不讀舊的錯誤快取
-            ply_name = f"{run}{('_' + blk) if blk else ''}_step{step}_{FORMAT_TAG}.ply"
+            ply_name = f"{run}{('_' + blk) if blk else ''}_{tag}_{FORMAT_TAG}.ply"
             ply_path = os.path.join(SERVE_DIR, ply_name)
 
             if os.path.exists(ply_path):

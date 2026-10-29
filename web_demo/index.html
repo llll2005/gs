@@ -75,6 +75,11 @@
     #drop-overlay.active { opacity: 1; }
 
     /* ── status bar ───────────────────────────────────────────── */
+    /* 10-29：FPS（使用者要比 2.5M／1.5M／1M 在本機的流暢度；上限＝螢幕更新率） */
+    #fps {
+      position: fixed; top: 12px; right: 16px; font: 12px monospace; color: #9f9;
+      background: rgba(0,0,0,0.55); padding: 4px 8px; border-radius: 4px; white-space: pre; pointer-events: none;
+    }
     #status {
       position: fixed; bottom: 16px; left: 16px;
       font-size: 12px; color: #888;
@@ -115,6 +120,7 @@
 </div>
 
 <div id="status">就緒</div>
+<div id="fps">FPS —</div>
 
 <script type="importmap">
 {
@@ -332,7 +338,7 @@ async function refreshCkptList() {
   const cks = await fetch("/ckpts.json").then(r => r.json()).catch(() => []);
   ckptSel.innerHTML = "";
   if (!cks.length) {
-    ckptSel.innerHTML = '<option disabled selected>— 找不到 outputs/**/checkpoints/*.ckpt —</option>';
+    ckptSel.innerHTML = '<option disabled selected>— 找不到 outputs/**/{checkpoints,deploy}/*.ckpt —</option>';
     return;
   }
   const head = document.createElement("option");
@@ -411,7 +417,20 @@ window.addEventListener("resize", () => {
   renderer.setSize(innerWidth, innerHeight);
 });
 
-renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+// ── FPS：每秒更新一次；平均＝幀數／秒，最慢＝這一秒內最長的一幀（卡頓看這個） ──
+const fpsEl = document.getElementById("fps");
+let fpsN = 0, fpsT0 = performance.now(), fpsPrev = fpsT0, fpsWorst = 0;
+renderer.setAnimationLoop(() => {
+  controls.update(); renderer.render(scene, camera);
+  const now = performance.now(); fpsWorst = Math.max(fpsWorst, now - fpsPrev); fpsPrev = now; fpsN++;
+  if (now - fpsT0 >= 1000) {
+    const fps = fpsN * 1000 / (now - fpsT0);
+    const n = currentSplat?.numSplats ?? currentSplat?.packedSplats?.numSplats;
+    fpsEl.textContent = `FPS ${fps.toFixed(1)}  平均 ${(1000 / fps).toFixed(1)} ms  最慢 ${fpsWorst.toFixed(0)} ms` +
+                        (n ? `\n顆數 ${n.toLocaleString()}` : "");
+    fpsN = 0; fpsT0 = now; fpsWorst = 0;
+  }
+});
 </script>
 </body>
 </html>
