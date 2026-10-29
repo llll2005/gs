@@ -583,6 +583,9 @@ class DataModule(LightningDataModule):
         if float(getattr(w, "init", 1.0)) != 0.0:
             print(f"[depth] skip_unused_depth：深度權重 init={w.init} 不為 0 => 照常載入", flush=True)
             return
+        if bool(getattr(getattr(m, "config", None), "depth_support", False)):
+            print("[depth] skip_unused_depth：metric 開了 depth_support（多視角深度支撐要讀單目深度）=> 照常載入", flush=True)
+            return
         n = 0
         for name in ("train_set", "val_set", "test_set"):
             s = getattr(self.dataparser_outputs, name, None)

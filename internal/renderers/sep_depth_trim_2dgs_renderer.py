@@ -247,6 +247,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         _conic = getattr(self, "exact_conic_aabb", False)
         # lean：訓練步（training_forward 傳 _lean=True）與 record（trim pass）才用；驗證／測試走完整輸出
         _lean = bool(getattr(self, "lean_train", False)) and (bool(kwargs.get("_lean", False)) or record_transmittance)
+        # ★ 2026-10-29 這一步要幾何通道（normal loss）=> 光柵器不走 lean（其餘照舊：kwargs["_lean"] 仍標示這是訓練步，SH 分開存放／Adam 進 backward 不受影響）
+        if kwargs.get("_geo", False) and not record_transmittance:
+            _lean = False
         # ★ 2026-10-19 dist 版 lean（使用者 10-19：dist 臂也要有 lean 的最佳化，時間才可比）：training_forward 在 lambda_dist > 0 時設 _lean_dist
         _lean_dist = _lean and (not record_transmittance) and bool(kwargs.get("_lean_dist", False))
         if _lean_dist and "lean_dist" not in GaussianRasterizationSettings._fields:
@@ -492,7 +495,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ⚠ 2026-08-28：用 `getattr` 不是 `self.skip_surf_normal` —— ckpt 當 init 時 renderer 是
         # 從 checkpoint **反序列化**的（紀錄/new_archived/_ctx.md 陷阱 1），舊 ckpt 沒有這個屬性 => AttributeError。
         # `opprofile` 就是這樣死的。新增 renderer 屬性一律要對舊 ckpt 保持相容。
-        if not getattr(self, "skip_surf_normal", False):
+        if not getattr(self, "skip_surf_normal", False) or kwargs.get("_geo", False):
             surf_normal = self.depth_to_normal(viewpoint_camera, surf_depth)
             surf_normal = surf_normal.permute(2, 0, 1)
             # remember to multiply with accum_alpha since render_normal is unnormalized.
@@ -522,6 +525,16 @@ class SepDepthTrim2DGSRenderer(Renderer):
             #   => 用 step + 1 判斷，且寧可早一步開（多算一步 distortion 無害；少算一步 metric 會讀不到 rend_dist）
             _di = int(getattr(mcfg, "lambda_dist_interval", 1) or 1)       # ★ 10-24 dist 每 k 步（與 metric 同一規則：metric 的 step＝這裡的 step + 1）
             kwargs["_lean_dist"] = lam > 0 and (step + 1) >= frm and (_di <= 1 or (step + 1) % _di == 0)
+        if "_geo" not in kwargs:
+            # ★ 2026-10-29 normal loss 有作用的步 => 要幾何通道（rend_normal、surf_normal）：該步不走 lean（與 metric 同一規則：metric 的 step＝這裡的 step + 1）
+            mcfg = getattr(getattr(module, "metric", None), "config", None)
+            ln = float(getattr(mcfg, "lambda_normal", 0.0) or 0.0)
+            nfr = int(getattr(mcfg, "normal_regularization_from_iter", 0) or 0)
+            _ni = int(getattr(mcfg, "lambda_normal_interval", 1) or 1)
+            kwargs["_geo"] = ln > 0 and (step + 1) > nfr and (_ni <= 1 or (step + 1) % _ni == 0)
+            if kwargs["_geo"] and not getattr(self, "_geo_announced", False):
+                self._geo_announced = True
+                print(f"[normal-geo] ✅ 首次觸發 step={step}：這一步光柵器不走 lean、算 surf_normal（normal 每 {_ni} 步）", flush=True)
         if getattr(self, "sh_adam_in_backward", False) and "_sh_adam" not in kwargs:
             # ★ 2026-10-24 SH 的 Adam 融進 backward：向持有 shs_dc／shs_rest 的 FusedAdam 拿本步的 m／v 與超參數（同一步只拿一次）
             #   10-24 使用者要求預設開（live config）=> 條件不符時退回「只分開存放」並印一次 ⚠（不靜默、不中斷）

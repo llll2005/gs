@@ -88,6 +88,32 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
       C 渲染值抄到 GT 並截斷梯度（同上游 `masked_pixels` 慣例：vanilla_metrics／spotless_metrics）=> L1 為 0、SSIM 視窗看到相同值
     出處：⬜ C 類處理沿用上游慣例；🟨 隨機背景學透明度是 NeRF／3DGS 常見技巧；依分塊三值遮罩（射線幾何判定 C）⚠ 未查證是否已有人做。"""
 
+    plane_reg: float = 0.0
+    """★ 2026-10-29 逐顆共面正則（`geom_gate.py`；使用者：法向正則併進熵的逐顆算法、減少計算）。0＝關。
+    不渲染法向／深度圖：Morton 序近鄰、只算落在自己平面上的鄰居，loss＝1 - |n_i . n_j| 的加權平均。"""
+    plane_from_iter: int = 1000
+    plane_every: int = 10
+    """每幾步重算 Morton 近鄰與全體 q（顆數一變就立刻重算）。"""
+    plane_k: int = 6
+    plane_sigma: float = 0.5
+    """鄰居到 i 平面的距離容忍度，以 i 的面元長軸為單位。"""
+    plane_radius: float = 3.0
+    """鄰居距離容忍度，以 i 的面元長軸為單位（長軸下限＝全體中位，避免極小面元找不到鄰居）。"""
+    plane_frac: float = 0.1
+    """每步只對這個比例的顆粒算帶梯度的共面 loss（隨機抽樣）；全體 q 每 plane_every 步算一次、不帶梯度。"""
+    geom_gate_tau: float = -1.0
+    """>=0 時啟用共面閘門：q_i < tau（q＝與鄰居法向 |cos| 的加權平均；0.5＝平均差 60 度；且附近有共面鄰居可比）
+    的顆粒不受熵的往 1 推，改加 geom_gate_down_reg x -log(1-o)。"""
+    geom_gate_down_reg: float = 0.002
+    """閘門外顆粒的下壓力權重；-log(1-o) 對 logit 的梯度＝o，o≈1 時仍推得動（L1 的梯度 o(1-o) 會飽和）。"""
+    depth_support: bool = False
+    """★ 2026-10-29 多視角深度支撐（`geom_gate.DepthSupport`）：一直在單目表面前方（浮塊）或從未貼面（地底、內部）的顆粒進閘門外。
+    需要載入單目深度（dataset 的 skip_unused_depth 會看這個旗標）。"""
+    depth_support_from_iter: int = 1000
+    depth_support_delta_front: float = 0.05
+    depth_support_delta_back: float = 0.05
+    depth_support_window: int = 400
+
     def instantiate(self, *args, **kwargs) -> "MCMCCityGSV2MetricsModule":
         return MCMCCityGSV2MetricsModule(self)
 
@@ -197,6 +223,70 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         batch = (batch[0], (name, g2) + tuple(batch[1][2:])) + tuple(batch[2:])
         return batch, out
 
+    def _geom_gate_step(self, gaussian_model, step, batch, metrics, pbar, opacities):
+        """★ 2026-10-29 共面 loss＋深度支撐 => 閘門（bool [N]，掛在 gaussian_model._geom_gate 給 density controller 抽樣用）。
+        兩者都沒開或還沒到起始步 => 回傳 None（訓練行為與原本完全相同）。"""
+        c = self.config
+        use_plane = (float(getattr(c, "plane_reg", 0.0)) > 0 or float(getattr(c, "geom_gate_tau", -1.0)) >= 0) \
+            and step >= int(getattr(c, "plane_from_iter", 1000))
+        use_ds = bool(getattr(c, "depth_support", False)) and step >= int(getattr(c, "depth_support_from_iter", 1000))
+        if not (use_plane or use_ds):
+            return None
+        from .geom_gate import morton_neighbors, quat_normals, plane_q, plane_loss, DepthSupport
+        xyz = gaussian_model.get_xyz
+        n = xyz.shape[0]
+        gate = torch.ones(n, dtype=torch.bool, device=xyz.device)
+        if use_plane:
+            nrm = quat_normals(gaussian_model.get_rotations())
+            od = opacities.detach()
+            st = getattr(self, "_plane_state", None)
+            if st is None or st["n"] != n or step - st["step"] >= int(c.plane_every):
+                with torch.no_grad():
+                    s1 = gaussian_model.get_scales().detach().max(dim=-1).values
+                    s1 = s1.clamp_min(s1.median())
+                    nbr = morton_neighbors(xyz, int(c.plane_k))
+                    q, sw = plane_q(xyz.detach(), nrm.detach(), s1, od, nbr, c.plane_sigma, c.plane_radius)
+                st = self._plane_state = {"n": n, "step": step, "nbr": nbr, "s1": s1, "q": q, "sw": sw}
+                if not getattr(self, "_plane_announced", False) or step % 2000 == 0:
+                    self._plane_announced = True
+                    valid = sw > 0.05
+                    print(f"[geom-plane] {'✅ 首次觸發' if step < int(c.plane_from_iter) + int(c.plane_every) else '　'} step={step} N={n:,}："
+                          f"有共面鄰居 {100 * float(valid.float().mean()):.1f}%、q 中位 {float(q[valid].median()) if bool(valid.any()) else float('nan'):.3f}、"
+                          f"q<tau({c.geom_gate_tau:g}) {100 * float(((q < c.geom_gate_tau) & valid).float().mean()):.1f}%", flush=True)
+            if float(c.plane_reg) > 0:
+                m = max(1, int(n * float(c.plane_frac)))
+                idx = torch.randint(0, n, (m,), device=xyz.device)
+                lp = plane_loss(xyz, nrm, st["s1"], od, st["nbr"], idx, c.plane_sigma, c.plane_radius)
+                metrics["loss"] = metrics["loss"] + float(c.plane_reg) * lp
+                metrics["plane"] = lp.detach()
+                pbar["plane"] = False
+            if float(c.geom_gate_tau) >= 0:
+                gate &= ~((st["q"] < float(c.geom_gate_tau)) & (st["sw"] > 0.05))
+        if use_ds:
+            ds = getattr(self, "_depth_support", None)
+            if ds is None:
+                ds = self._depth_support = DepthSupport(c.depth_support_delta_front, c.depth_support_delta_back, int(c.depth_support_window))
+            inv = batch[2] if len(batch) > 2 else None
+            if isinstance(inv, tuple):
+                inv = inv[0]
+            if inv is None:
+                if not getattr(self, "_ds_warned", False):
+                    self._ds_warned = True
+                    print("⚠⚠ [depth-support] 拿不到單目深度（batch[2] 是 None：skip_unused_depth 跳過了？）=> 深度支撐不會生效", flush=True)
+            else:
+                cam = batch[0]
+                done = ds.update(step, xyz, cam.world_to_camera, cam.fx, cam.fy, cam.cx, cam.cy, int(cam.width), int(cam.height), inv.to(xyz.device))
+                if done and (not getattr(self, "_ds_announced", False) or step % 2000 < int(c.depth_support_window)):
+                    print(f"[depth-support] {'✅ 首次判定' if not getattr(self, '_ds_announced', False) else '　'} step={step}："
+                          f"視窗內看過 >=3 次 {100 * ds.last['seen']:.1f}%、一直在前方 {100 * ds.last['front']:.2f}%、從未貼面 {100 * ds.last['never']:.2f}%", flush=True)
+                    self._ds_announced = True
+                if ds.support is not None and ds.support.shape[0] == n:
+                    gate &= ds.support
+        gaussian_model._geom_gate = gate
+        metrics["gate_off"] = (~gate).float().mean()
+        pbar["gate_off"] = False
+        return gate
+
     def get_train_metrics(self, pl_module, gaussian_model, step: int, batch, outputs) -> Tuple[Dict[str, Any], Dict[str, bool]]:
         if getattr(self.config, "block_mask_dir", ""):
             batch, outputs = self._block_mask_apply(pl_module, step, batch, outputs)
@@ -225,6 +315,15 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             + _oreg_w * opacity_reg \
             + self.config.scale_reg * scale_reg
 
+        _gate = self._geom_gate_step(gaussian_model, step, batch, metrics, pbar, opacities)
+        if _gate is not None and float(getattr(self.config, "geom_gate_down_reg", 0.0)) > 0 and not bool(_gate.all()):
+            # 閘門外：-log(1-o) = softplus(logit)，對 logit 的梯度＝o（飽和也推得動）；除以 N＝與熵同尺度（全體平均）
+            _raw = gaussian_model.opacities.reshape(-1)
+            _dn = torch.nn.functional.softplus(_raw[~_gate]).sum() / _raw.shape[0]
+            metrics["loss"] = metrics["loss"] + float(self.config.geom_gate_down_reg) * _dn
+            metrics["gate_dn"] = _dn.detach()
+            pbar["gate_dn"] = False
+
         _ew = float(getattr(self.config, "opacity_entropy_reg", 0.0))
         if _ew > 0 and step >= int(getattr(self.config, "opacity_entropy_from_iter", 0)):
             _o = opacities.clamp(1e-6, 1 - 1e-6)
@@ -243,6 +342,8 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 _Hi = _Hi * (_o.detach() < 0.5)
             elif _side != "both":
                 raise ValueError(f"opacity_entropy_side={_side!r}（只接受 both／down）")
+            if _gate is not None:
+                _Hi = _Hi * ~((_o.detach() >= 0.5) & ~_gate)      # ★ 10-29 閘門外不給往 1 推（往 0 那半照舊）
             _H = _Hi.mean()
             metrics["loss"] = metrics["loss"] + _ew * _H
             metrics["op_ent"] = _H.detach()

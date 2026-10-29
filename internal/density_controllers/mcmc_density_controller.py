@@ -34,6 +34,10 @@ class MCMCDensityController(DensityController):
 
     min_opacity: float = 0.005
 
+    geom_gate_sampling: bool = False
+    """★ 2026-10-29 增生母點與搬遷目標的抽樣機率乘上 metric 算的幾何閘門（gaussian_model._geom_gate；共面一致／深度支撐）：
+    閘門外（亂向的「毛」、一直在單目表面前方的浮塊、從未貼面的地底顆粒）幾乎不會被抽來複製。九成顆粒 o≈1 時 p ∝ o 已沒有資訊。"""
+
     N_max: int = 51
     """
     https://github.com/ubc-vision/3dgs-mcmc/blob/main/utils/reloc_utils.py
@@ -280,6 +284,7 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
 
         # sample from alive ones based on opacity（2026-10-09：抽成方法，子類可改權重；預設行為不變）
         probs = self._relocate_probs(gaussian_model, alive_indices)
+        probs = self._geom_gate_probs(gaussian_model, probs, alive_indices)
         # `reinit_idx` are the sampled alive indices; `ratio` are the values of sample frequency, `ratio[index]=frequency`
         reinit_idx, ratio = self._sample_alives(alive_indices=alive_indices, probs=probs, num=dead_indices.shape[0])
 
@@ -312,6 +317,21 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
 
     def _relocate_probs(self, gaussian_model, alive_indices):
         return gaussian_model.get_opacities()[alive_indices, 0]
+
+    def _geom_gate_probs(self, gaussian_model, probs, indices=None):
+        """★ 2026-10-29 見 config.geom_gate_sampling。閘門長度對不上（顆數剛變）就不乘。"""
+        if not getattr(self.config, "geom_gate_sampling", False):
+            return probs
+        g = getattr(gaussian_model, "_geom_gate", None)
+        if g is None or g.shape[0] != gaussian_model.n_gaussians:
+            return probs
+        g = g if indices is None else g[indices]
+        if g.shape[0] != probs.shape[0]:
+            return probs
+        if not getattr(self, "_gate_samp_announced", False):
+            self._gate_samp_announced = True
+            print(f"[geom-gate-sampling] ✅ 首次觸發：閘門外 {int((~g).sum()):,}/{g.shape[0]:,} 顆的抽樣機率乘 1e-3", flush=True)
+        return probs * (g.to(probs.dtype) + 1e-3)
 
     def add_new_gs(self, gaussian_model, optimizers):
         cap_max = self.config.cap_max
@@ -530,6 +550,7 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
                 # rescale so that mass(over) / total == share
                 probs = probs.clone()
                 probs[over] *= (share / (1.0 - share)) * m_rest / m_over
+        probs = self._geom_gate_probs(gaussian_model, probs)
         add_idx, ratio = self._sample_alives(probs=probs, num=num_gs)
 
         new_params = self._get_new_params(gaussian_model, add_idx, ratio=ratio)

@@ -16,6 +16,10 @@ class GS2DMetrics(VanillaMetrics):
     """★ 2026-10-24 >1 時 dist 只在 step % k == 0 的步算、權重乘 k（期望值不變）；其餘步光柵器走不含 distortion 的 lean
     （renderer.training_forward 用同一個規則決定 _lean_dist）。動機：本機量到 dist100 讓每步 +21%（render forward +4.6 ms、
     backward +10.9 ms；紀錄/加速論文對照.md），而它的作用是幾何（F1、馬路地底），不一定要每步都壓。1＝原行為。"""
+    lambda_normal_interval: int = 1
+    """★ 2026-10-29 >1 時 normal loss 只在 step % k == 0 的步算、權重乘 k（期望值不變）；其餘步光柵器照走 lean
+    （renderer.training_forward 用同一個規則決定該步要不要幾何通道）。動機：法向一致性把 b12 面元朝向一致度 0.80 -> 0.95
+    （修立面毛邊），但幾何通道讓每塊 +50~60% 時間。1＝原行為（每步都算；lean 配方下該步自動退回非 lean）。"""
 
     def instantiate(self, *args, **kwargs) -> MetricImpl:
         return GS2DMetricsImpl(self)
@@ -35,6 +39,13 @@ class GS2DMetricsImpl(VanillaMetricsImpl):
             if not getattr(self, "_dist_ramp_announced", False) and lambda_dist > 0 and step <= _ru:   # sanity check 用假步數，排除
                 self._dist_ramp_announced = True
                 print(f"[dist-ramp] ✅ 首次觸發 step={step}：權重 {lambda_dist:.4g}（線性升到 step {_ru} 達 {self.config.lambda_dist:g}）", flush=True)
+
+        _ni = int(getattr(self.config, "lambda_normal_interval", 1) or 1)
+        if _ni > 1 and lambda_normal > 0:
+            lambda_normal = lambda_normal * _ni if step % _ni == 0 else 0.0
+            if lambda_normal > 0 and step < 10 ** 8 and not getattr(self, "_normal_interval_announced", False):
+                self._normal_interval_announced = True
+                print(f"[normal-interval] ✅ 首次觸發 step={step}：normal 每 {_ni} 步算一次、權重 {lambda_normal:.4g}（＝{_ni} 倍）", flush=True)
 
         _di = int(getattr(self.config, "lambda_dist_interval", 1) or 1)
         if _di > 1 and lambda_dist > 0:
