@@ -10,6 +10,7 @@
 #   heldout     塊內官方 held-out（PSNR／SSIM／LPIPS／紋理比／ms 每幀）  `12` §6          tools/eval_official_test.py --block
 #   geom        渲染深度 vs SfM 可見點 slope／corr＋懸空統計            `12` §1          tools/measure_depth_bias.py、audit_geometry.py
 #   storage     ckpt 組成與跑次目錄                                     `03`             tools/run_storage_audit.py
+#   facade      立面面元貼牆度／平躺比例（只 4x4；10-30）                `22`             tools/facade_orient.py
 #   heldout1499、geom1499、failure、tau   只對 >= 60,000 步的跑次（`12` 的圖只用 60k）
 #     failure   失敗 tile（先存 val 渲染圖）                            `12` §3          task_savepics.sh＋tools/failure_map.py
 #     tau       訓練後 tile 覆蓋 tau                                    `12` §5          tools/measure_tau.py
@@ -81,6 +82,8 @@ PYEOF
   # 全場景（block null，例：coarse）沒有塊視角 => 只量 load／storage／timing
   case "$b" in ''|*[!0-9]*) BLOCKWISE=0 ;; *) BLOCKWISE=1 ;; esac
   [ "$BLOCKWISE" = 1 ] && { _do heldout _heldout "$ck"; _do geom _geom "$ck" last; }
+  # 10-30：立面貼牆度（離開空拍視角會不會扭曲；held-out 量不到）—— 只有 4x4（工具用 4x4 分區盒）
+  [ "$BLOCKWISE" = 1 ] && [ "$x" = 4 ] && _do facade $PY tools/facade_orient.py --block "$b" --ckpt "$ck"
   if [ "$BLOCKWISE" = 1 ] && [ "$st" -ge 60000 ]; then
     local c1499; c1499=$(ls "$bd"/checkpoints/*step=1499.ckpt 2>/dev/null | head -1)
     if [ -n "$c1499" ]; then
