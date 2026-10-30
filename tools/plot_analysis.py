@@ -3,7 +3,7 @@
 
 做法：
   1. 舊的三支畫圖腳本（plot_cost_frontier／plot_resource_report／plot_commonconf_ab）以 CITYGS_FIG_OUT 指向暫存目錄畫面板
-  2. 本檔畫新的面板（速度、tile 上限、新年代重測、init、成本感知取樣、官方參考線）
+  2. 本檔畫新的面板（速度、tile 上限、新年代重測、init、成本感知取樣、CityGS 參考線）
   3. 依 DOCS 的對應把面板直向拼成一張，左上角加 (a)(b)… => 紀錄/實驗分析/<文件名>.png
 數字全部寫在本檔與那三支腳本裡；出處寫在各分析文件的「資料」欄。
 用法：python tools/plot_analysis.py
@@ -168,22 +168,22 @@ def n08_init60k(d):
 
 
 def n09_official_blocks(d):
-    """官方 block 3／6：release（trim 從未執行）vs 論文設定（trim 執行＋ω0.9、prune 0.025）。10-10：拿掉「一行修正」那欄（使用者）。"""
-    lines = ["官方 release\n（trim 從未執行）", "官方論文設定\n（trim 執行＋ω0.9、prune 0.025）"]
+    """CityGS block 3／6：release（trim 從未執行）vs 論文設定（trim 執行＋ω0.9、prune 0.025）。10-10：拿掉「一行修正」那欄（使用者）。"""
+    lines = ["CityGS release\n（trim 從未執行）", "CityGS 論文設定\n（trim 執行＋ω0.9、prune 0.025）"]
     n3 = [5.23, 3.05]; v3 = [31.69, 31.78]; n6 = [7.11, 5.31]; v6 = [30.14, 30.35]
     fig, axs = plt.subplots(1, 2, figsize=(13, 3.4))
     x = np.arange(2); wd = 0.36
     for ax, (a3, a6, fmt, yl, tt) in zip(axs, [(n3, n6, "{:.2f}M", "終點顆數 N（百萬）", "終點顆數：論文設定少 25~42%"),
                                                 (v3, v6, "{:.2f}", "val PSNR（dB，val⊂train）", "val：論文設定反而略高")]):
-        barlabels(ax, ax.bar(x - wd / 2, a3, wd, color=C1, label="官方 block 3"), fmt=fmt)
-        barlabels(ax, ax.bar(x + wd / 2, a6, wd, color=C2, label="官方 block 6"), fmt=fmt)
+        barlabels(ax, ax.bar(x - wd / 2, a3, wd, color=C1, label="CityGS block 3"), fmt=fmt)
+        barlabels(ax, ax.bar(x + wd / 2, a6, wd, color=C2, label="CityGS block 6"), fmt=fmt)
         ax.set_xticks(x); ax.set_xticklabels(lines, fontsize=8.5); ax.set_ylabel(yl); ax.legend(fontsize=8); ax.set_title(tt, fontsize=10)
     axs[1].set_ylim(29.5, 32.2)
     save(fig, d, "n09_official_blocks.png")
 
 
 def n09_trim(d):
-    """官方 block 3：trim 有沒有執行（同官方程式碼與 config，只差 trim 是否真的跑）。"""
+    """CityGS block 3：trim 有沒有執行（同 CityGS 程式碼與 config，只差 trim 是否真的跑）。"""
     met = [("終點顆數（百萬）", 5.23, 0.91, "{:.2f}"), ("val PSNR（dB）", 31.69, 30.87, "{:.2f}"),
            ("訓練峰值實佔（GB）", 7.30, 2.75, "{:.2f}"), ("訓練時間（h）", 3.31, 2.29, "{:.2f}")]
     fig, axs = plt.subplots(1, 4, figsize=(15, 3.4))
@@ -194,13 +194,13 @@ def n09_trim(d):
         if "PSNR" in nm:
             ax.set_ylim(29.5, 32.2)
     axs[3].text(1, 2.29 * 0.5, "⚠ 期間外部\n佔卡約 2 GB", ha="center", fontsize=7.5, color="white")
-    fig.suptitle("官方 block 3：trim 真的執行時顆數 -83%、峰值 -62%、val -0.8 dB —— release 的 aerial trim 階段其實從沒剪過", fontsize=10.5)
+    fig.suptitle("CityGS block 3：trim 真的執行時顆數 -83%、峰值 -62%、val -0.8 dB —— release 的 aerial trim 階段其實從沒剪過", fontsize=10.5)
     save(fig, d, "n09_trim.png")
 
 
-# 10-09：我方最佳解 4x4（16 塊 [solo]、lean＋record_reduce、dup4、cap 2.6M）vs 官方 release vs 官方論文設定
+# 10-09：我方最佳解 4x4（16 塊 [solo]、lean＋record_reduce、dup4、cap 2.6M）vs CityGS release vs CityGS 論文設定
 #   資料：lab outputs/lab/full44_best（chart_data、台帳）、cityGS_origin(_trimfix)/outputs/*/blocks、logs/citygs_official_resources.tsv
-#   峰值實佔一律 GB（1e9）：官方 MiB x 1.048576 / 1000；時間 = 分鐘（我方台帳 START->DONE；官方 wall_s）
+#   峰值實佔一律 GB（1e9）：CityGS MiB x 1.048576 / 1000；時間 = 分鐘（我方台帳 START->DONE；CityGS wall_s）
 F44 = {
     'oh': [20.239, 19.675, 22.011, 20.452, 19.714, 17.9, 19.316, 19.017, 21.96, 19.767, 20.406, 21.354, 22.545, 22.073, 21.824, 22.738],
     'rh': [20.114, 19.947, 21.322, 17.15, 20.025, 18.357, 19.171, 16.871, 21.124, 17.491, 18.43, 18.961, 26.387, 22.869, 22.206, 23.212],
@@ -217,33 +217,36 @@ F44 = {
     'rext': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5302, 16251, 6174, 7128, 8914, 18161],
     'pext': [8290, 5722, 3674, 4610, 7358, 5108, 7712, 6448, 7698, 8278, 14854, 11654, 14704, 8696, 12228, 17351],
 }
-# 10-10：合併模型在各 4x4 塊 held-out 視角上的逐塊平均（tools/merged_heldout_by_block.py；我方 PNG 量化版、官方 release 用我方評分工具的逐幀 CSV）
+# 10-10：合併模型在各 4x4 塊 held-out 視角上的逐塊平均（tools/merged_heldout_by_block.py；我方 PNG 量化版、CityGS release 用我方評分工具的逐幀 CSV）
 M44 = {"n": [172, 213, 228, 193, 240, 306, 324, 271, 237, 359, 382, 271, 116, 181, 219, 171],
        "o": [28.101, 27.454, 26.762, 26.711, 28.033, 27.617, 27.212, 27.054, 28.039, 27.572, 27.458, 27.344, 27.823, 27.314, 27.977, 28.396],
        "r": [27.340, 27.180, 26.707, 26.687, 27.385, 27.312, 27.067, 26.976, 27.321, 27.190, 27.201, 27.209, 27.098, 26.905, 27.493, 27.901]}
 
-LBL3 = ["★ 我方 4x4", "官方 release", "官方論文設定"]
+LBL3 = ["★ 我方 4x4", "CityGS release", "CityGS 論文設定"]
 
 
 def n09_full44_merged(d):
-    """合併模型、官方 741 幀 held-out，三者同一支工具（tools/eval_official_test.py）。"""
-    # ★ 10-24 加上現行最佳 ed10b4（g44s30km25_best1maskdistrfed10b4；實驗分析 20 §7）；16 塊總 N＝16 x 2.25M
-    q = {"PSNR": [27.868, 27.739, 27.261, 27.280], "SSIM": [0.8785, 0.8790, 0.8671, 0.8697], "LPIPS（越低越好）": [0.1153, 0.1293, 0.1540, 0.1467]}
-    r = {"N（百萬）": [27.83, 17.63, 24.48, 24.72], "渲染 FPS": [40.2, 35.6, 21.9, 21.9],
-         "16 塊總 N（百萬）": [36.0, 37.44, 129.55, 87.89]}
-    fig, axs = plt.subplots(1, 6, figsize=(17, 3.6))
-    cols = ["#123f7a", C1, MUTED, C2]
+    """合併模型、MatrixCity test 741 幀 held-out，同一支工具（tools/eval_official_test.py）。"""
+    # ★ 10-30 換成現行最佳 A＋dist4（g44s30km25fssh16di4_best1maskdistrfed10b4）與輕量版 cap 1.5M（實驗分析 21 §1）；
+    #   16 塊總 N＝16 x 每塊終點 N（cap 的 0.9：2.25M／1.35M）
+    lab = ["★A＋\ndist4", "A cap\n1.5M", "full44\n舊最佳", "release", "論文\n設定"]
+    q = {"PSNR": [28.058, 27.931, 27.739, 27.261, 27.280], "SSIM": [0.8824, 0.8774, 0.8790, 0.8671, 0.8697],
+         "LPIPS（越低越好）": [0.1142, 0.1286, 0.1293, 0.1540, 0.1467]}
+    r = {"合併 N（百萬）": [27.75, 17.12, 17.63, 24.48, 24.72], "渲染 FPS": [40.6, 50.3, 35.6, 21.9, 21.9],
+         "16 塊總 N（百萬）": [36.0, 21.6, 37.44, 129.55, 87.89]}
+    fig, axs = plt.subplots(1, 6, figsize=(18, 3.8))
+    cols = ["#123f7a", C3, C1, MUTED, C2]
     for ax, (k, v) in zip(axs, list(q.items()) + list(r.items())):
-        bars = ax.bar(range(4), v, color=cols, width=0.7)
+        bars = ax.bar(range(5), v, color=cols, width=0.72)
         fmt = "{:.3f}" if max(v) < 1 else ("{:.2f}" if max(v) < 50 else "{:.1f}")
-        barlabels(ax, bars, fmt=fmt, size=8)
+        barlabels(ax, bars, fmt=fmt, size=7.5)
         lo = min(v); hi = max(v)
         if k in ("PSNR", "SSIM", "LPIPS（越低越好）"):
             ax.set_ylim(lo - (hi - lo) * 1.2, hi + (hi - lo) * 0.6)
-        ax.set_xticks(range(4)); ax.set_xticklabels(["★ed10b4", "full44", "release", "論文\n設定"], fontsize=8)
+        ax.set_xticks(range(5)); ax.set_xticklabels(lab, fontsize=7.5)
         ax.set_title(k, fontsize=10)
-    fig.suptitle("合併模型・官方 741 幀 held-out（同一支評分工具）：★ 現行 ed10b4 27.868／.8785／.1153、FPS 1.8 倍（30k、7.3 h）；full44 三項全贏官方、顆數少 28%"
-                 "\n（PSNR 領先保守估計：見面板 d 的光柵器偏差；ed10b4 顆數比 release 多 14%）", fontsize=10)
+    fig.suptitle("合併模型・MatrixCity test 741 幀 held-out（同一支評分工具）：★ 現行 A＋dist4 28.058／.8824／.1142、FPS 1.85 倍、16 塊純訓練 5.04 h；"
+                 "輕量版 cap 1.5M 用比舊最佳少 3% 的顆數贏它\n（PSNR 領先保守估計：見面板 d 的光柵器偏差；A＋dist4 合併顆數比 release 多 13%，半精度部署 3.15 vs 3.37 GiB）", fontsize=10)
     save(fig, d, "n09_full44_merged.png")
 
 
@@ -255,8 +258,8 @@ def n09_full44_blocks(d):
         ax.bar(x + dx, F44[k], wd, color=c, label=lb)
     ax.set_ylim(15, 27.5); ax.set_xticks(x); ax.set_xticklabels([str(i) for i in x], fontsize=8)
     ax.set_xlabel("4x4 block"); ax.set_ylabel("同塊 held-out PSNR（dB，下界）"); ax.legend(fontsize=7.5, ncol=3, loc="upper left")
-    ax.set_title("同塊 held-out（我方塊視角）：平均 20.69／20.23／19.90；LPIPS 官方 16 塊全較好\n"
-                 "⚠ 偏向官方：官方單塊從全場景 coarse 起步、看得到塊外", fontsize=9.5)
+    ax.set_title("同塊 held-out（我方塊視角）：平均 20.69／20.23／19.90；LPIPS CityGS 16 塊全較好\n"
+                 "⚠ 偏向 CityGS：CityGS 單塊從全場景 coarse 起步、看得到塊外", fontsize=9.5)
     ax = axs[1]
     for k, c, mk, lb in [("opk", C1, "o", LBL3[0]), ("rpk", MUTED, "s", LBL3[1]), ("ppk", C2, "^", LBL3[2])]:
         ax.plot(x, F44[k], marker=mk, color=c, lw=0, ms=6, label=lb)
@@ -277,7 +280,7 @@ def n09_full44_blocks(d):
 
 
 def n09_merged_blocks(d):
-    """同一批塊視角：單塊模型 vs 合併模型（我方 vs 官方 release）。b12 單塊輸 3.8 dB，合併後贏 0.73。"""
+    """同一批塊視角：單塊模型 vs 合併模型（我方 vs CityGS release）。b12 單塊輸 3.8 dB，合併後贏 0.73。"""
     x = np.arange(16); wd = 0.38
     fig, axs = plt.subplots(1, 2, figsize=(16, 3.9), gridspec_kw={"width_ratios": [1.3, 1]})
     ax = axs[0]
@@ -288,7 +291,7 @@ def n09_merged_blocks(d):
     for i in (12,):
         ax.annotate(f"b12 單塊 {ds[i]:+.2f}\n合併 {dm[i]:+.2f}", (i, ds[i]), xytext=(-70, -6), textcoords="offset points", fontsize=8.5, color="#c0392b",
                     arrowprops=dict(arrowstyle="->", color="#c0392b", lw=0.8))
-    ax.set_xticks(x); ax.set_xlabel("4x4 block（held-out 視角 = 相機落在該塊訓練相機 AABB 內）"); ax.set_ylabel("我方 − 官方 release（dB）")
+    ax.set_xticks(x); ax.set_xlabel("4x4 block（held-out 視角 = 相機落在該塊訓練相機 AABB 內）"); ax.set_ylabel("我方 − CityGS release（dB）")
     ax.legend(fontsize=8, loc="lower right")
     ax.set_title("同一批視角：單塊模型 我方 9/16 塊贏；合併模型 我方 16/16 塊贏（+0.02~+0.76）", fontsize=9.5)
     ax = axs[1]
@@ -296,18 +299,18 @@ def n09_merged_blocks(d):
     ax.bar([0.4, 1.4], [M44["o"][12], M44["r"][12]], 0.35, color=[C1, C1])
     for xx, v in zip([0, 1, 0.4, 1.4], [F44["oh"][12], F44["rh"][12], M44["o"][12], M44["r"][12]]):
         ax.text(xx, v + 0.2, f"{v:.2f}", ha="center", fontsize=8.5)
-    ax.set_xticks([0.2, 1.2]); ax.set_xticklabels(["我方", "官方 release"]); ax.set_ylim(15, 30); ax.set_ylabel("held-out PSNR（b12 的 116 幀）")
-    ax.set_title("b12（角落塊 000_003）：灰＝單塊、藍＝合併\n我方單塊缺 5.3 dB 的塊外內容；官方單塊（9.71M，從全場景 coarse 微調）只缺 0.7", fontsize=9.5)
+    ax.set_xticks([0.2, 1.2]); ax.set_xticklabels(["我方", "CityGS release"]); ax.set_ylim(15, 30); ax.set_ylabel("held-out PSNR（b12 的 116 幀）")
+    ax.set_title("b12（角落塊 000_003）：灰＝單塊、藍＝合併\n我方單塊缺 5.3 dB 的塊外內容；CityGS 單塊（9.71M，從全場景 coarse 微調）只缺 0.7", fontsize=9.5)
     save(fig, d, "n09_merged_blocks.png")
 
 
 def n09_stepprof(d):
-    """同 N 附近的每步逐段時間（每標記點同步）：官方 stepprof b6（開頭 1,500 步）vs 我方 b6 @14,999 起 1,200 步。"""
+    """同 N 附近的每步逐段時間（每標記點同步）：CityGS stepprof b6（開頭 1,500 步）vs 我方 b6 @14,999 起 1,200 步。"""
     segs = ["forward", "backward", "optimizer", "loss", "週期 trim\n（÷500 攤平）", "其他"]
     ours = [21.15, 68.75, 15.14, 5.06, 35.95, 10.81]
     rel = [47.45, 137.96, 15.66, 6.11, 0.0, 6.55]
-    pap = [41.61, 127.95, 10.74, 6.13, 58.20, 0.0]   # 官方 stepprof 的 trim 列已是每步攤平（1,500 步窗）；其他欄為負值（-14.8）記 0
-    names = ["★ 我方 b6\nN 2.29M（lean＋rr）", "官方 release b6\nN 2.50M（trim 不跑）", "官方論文設定 b6\nN 1.75M（含 trim）"]
+    pap = [41.61, 127.95, 10.74, 6.13, 58.20, 0.0]   # CityGS stepprof 的 trim 列已是每步攤平（1,500 步窗）；其他欄為負值（-14.8）記 0
+    names = ["★ 我方 b6\nN 2.29M（lean＋rr）", "CityGS release b6\nN 2.50M（trim 不跑）", "CityGS 論文設定 b6\nN 1.75M（含 trim）"]
     fig, ax = plt.subplots(figsize=(12, 3.8))
     cols = [C1, C2, C3, C4, "#c9b458", MUTED]
     for i, row in enumerate([ours, rel, pap]):
@@ -321,7 +324,7 @@ def n09_stepprof(d):
         ax.text(left + 3, i, f"{left:.0f} ms", va="center", fontsize=9, color=INK2)
     ax.set_yticks(range(3)); ax.set_yticklabels(names, fontsize=8.5); ax.invert_yaxis()
     ax.set_xlabel("每步 ms（逐段同步計時）"); ax.legend(fontsize=8, ncol=6, loc="upper center", bbox_to_anchor=(0.5, -0.2))
-    ax.set_title("同 N 附近：官方每步做 2 次 backward（loss 與 depth 的 extra_loss 各一次，各約 64~69 ms）、forward 帶幾何通道；"
+    ax.set_title("同 N 附近：CityGS 每步做 2 次 backward（loss 與 depth 的 extra_loss 各一次，各約 64~69 ms）、forward 帶幾何通道；"
                  "我方 depth／normal 權重 0 => 1 次 backward＋lean", fontsize=9.5)
     save(fig, d, "n09_stepprof.png")
 
@@ -340,28 +343,28 @@ def n09_evalgap(d):
     ax = axs[0]
     sc = ax.scatter(xo, yo, c=np.clip(br, 0, 1.1), cmap="viridis", s=9, vmin=0, vmax=1.1)
     ax.plot([8, 36], [8, 36], color=MUTED, lw=0.8, ls="--")
-    ax.set_xlabel("官方工具（官方光柵器）逐幀 PSNR"); ax.set_ylabel("我方工具（我方光柵器）逐幀 PSNR")
-    cb = fig.colorbar(sc, ax=ax, fraction=0.046); cb.set_label("官方渲染亮度／GT 亮度", fontsize=8)
-    ax.set_title("　　同一個官方 release 模型、741 幀\n　　左上角那群＝官方渲染變暗／全黑的幀", fontsize=9.5)
+    ax.set_xlabel("CityGS 工具（CityGS 光柵器）逐幀 PSNR"); ax.set_ylabel("我方工具（我方光柵器）逐幀 PSNR")
+    cb = fig.colorbar(sc, ax=ax, fraction=0.046); cb.set_label("CityGS 渲染亮度／GT 亮度", fontsize=8)
+    ax.set_title("　　同一個 CityGS release 模型、741 幀\n　　左上角那群＝CityGS 渲染變暗／全黑的幀", fontsize=9.5)
     ax = axs[1]
     x = np.arange(len(A)); wd = 0.4
-    ax.bar(x - wd / 2, [float(r["psnr"]) for r in A], wd, color=MUTED, label="官方程式碼＋官方光柵器（直接渲染）")
-    ax.bar(x + wd / 2, [float(r["psnr"]) for r in B], wd, color=C1, label="官方程式碼＋只換我方光柵器")
+    ax.bar(x - wd / 2, [float(r["psnr"]) for r in A], wd, color=MUTED, label="CityGS 程式碼＋CityGS 光柵器（直接渲染）")
+    ax.bar(x + wd / 2, [float(r["psnr"]) for r in B], wd, color=C1, label="CityGS 程式碼＋只換我方光柵器")
     ax.axvline(15.5, color=INK2, lw=0.8, ls=":")
-    ax.text(7.5, 33, "官方 test 最暗的 16 幀", ha="center", fontsize=8.5, color=INK2)
+    ax.text(7.5, 33, "MatrixCity test 最暗的 16 幀", ha="center", fontsize=8.5, color=INK2)
     ax.text(18.5, 33, "正常幀 6 張", ha="center", fontsize=8.5, color=INK2)
     ax.set_xticks(x); ax.set_xticklabels([r["name"][:4] for r in A], rotation=60, fontsize=7.5); ax.set_ylim(0, 35)
     ax.set_ylabel("PSNR（dB）"); ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.17), ncol=2)
     ax.set_title("二分：繞過 test 迴圈仍重現（0184 10.31，逐位數相同）；只換光柵器即恢復\n暗幀 alpha 0.9997（畫面是滿的）=> 壞在顏色路徑", fontsize=9.5)
     ax = axs[2]
-    est = [("官方工具（原數字）", 25.79, MUTED), ("官方工具・只算正常幀\n（亮度比 ≥0.85，645 幀）", 27.18, MUTED),
+    est = [("CityGS 工具（原數字）", 25.79, MUTED), ("CityGS 工具・只算正常幀\n（亮度比 ≥0.85，645 幀）", 27.18, MUTED),
            ("我方工具（暗幀已正常）", 27.26, MUTED), ("我方工具＋正常幀光柵器偏差補回\n（+0.35，上界）", 27.61, MUTED),
            ("★ 我方 4x4（我方工具）", 27.74, C1)]
     for i, (lb, v, c) in enumerate(est):
         ax.barh(i, v, color=c, height=0.6); ax.text(v + 0.03, i, f"{v:.2f}", va="center", fontsize=9)
     ax.set_yticks(range(len(est))); ax.set_yticklabels([e[0] for e in est], fontsize=8); ax.invert_yaxis()
-    ax.set_xlim(25.5, 28.2); ax.set_xlabel("官方 741 幀 PSNR（dB）")
-    ax.set_title("官方 release 的合理分數 ≈ 27.2~27.6\n=> 我方領先 +0.1~+0.5 dB（論文報告 27.23）", fontsize=9.5)
+    ax.set_xlim(25.5, 28.2); ax.set_xlabel("MatrixCity test 741 幀 PSNR（dB）")
+    ax.set_title("CityGS release 的合理分數 ≈ 27.2~27.6\n=> 我方領先 +0.1~+0.5 dB（論文報告 27.23）", fontsize=9.5)
     save(fig, d, "n09_evalgap.png")
 
 
@@ -478,7 +481,7 @@ REP12 = ["預設 conic", "★ dup4（現行）", "oreg0", "vpctilek", "oent", "v
 
 
 def n12_recheck(d):
-    """10-10 改版：只留代表性跑次（使用者）；幾何改成 60k 的 corr 長條＋官方合併模型參考線。"""
+    """10-10 改版：只留代表性跑次（使用者）；幾何改成 60k 的 corr 長條＋CityGS 合併模型參考線。"""
     corr = {6: [0.769, 0.910, 0.876, 0.893, 0.877, 0.939], 13: [0.743, 0.725, 0.916, 0.742, 0.849, 0.718]}
     fail = {6: [1.49, 1.28, 0.02, 1.42, 0.75, 1.49], 13: [2.30, 1.60, 0.12, 1.92, 1.01, 2.10]}
     fig, axs = plt.subplots(1, 3, figsize=(17, 4.4))
@@ -487,11 +490,11 @@ def n12_recheck(d):
     barlabels(ax, ax.bar(x - wd / 2, corr[6], wd, color=C1, label="b6"), fmt="{:.2f}", size=7)
     barlabels(ax, ax.bar(x + wd / 2, corr[13], wd, color=C2, label="b13"), fmt="{:.2f}", size=7)
     ax.axhline(0.993, color=C1, ls="--", lw=1); ax.axhline(0.948, color=C2, ls="--", lw=1)
-    ax.text(5.6, 0.996, "官方合併模型（b6 視角）0.99", ha="right", fontsize=7.5, color=C1)
-    ax.text(5.6, 0.951, "官方合併（b13）0.95", ha="right", fontsize=7.5, color=C2)
+    ax.text(5.6, 0.996, "CityGS 合併模型（b6 視角）0.99", ha="right", fontsize=7.5, color=C1)
+    ax.text(5.6, 0.951, "CityGS 合併（b13）0.95", ha="right", fontsize=7.5, color=C2)
     ax.set_ylim(0.6, 1.05); ax.set_xticks(x); ax.set_xticklabels(REP12, rotation=15, fontsize=8)
     ax.set_ylabel("渲染深度 vs SfM 可見點深度的 corr（60k）"); ax.legend(fontsize=8, loc="lower left")
-    ax.set_title("幾何：越接近 1 越準；oreg0 兩塊都明顯較好\n（官方是合併模型、塊外有鄰塊，單塊模型天生吃虧）", fontsize=9.5)
+    ax.set_title("幾何：越接近 1 越準；oreg0 兩塊都明顯較好\n（CityGS 是合併模型、塊外有鄰塊，單塊模型天生吃虧）", fontsize=9.5)
     ax = axs[1]
     k = ["k≥1", "k≥3", "k≥10"]; xk = np.arange(3); w4 = 0.2
     for i, (nm, v, c) in enumerate([("b6 顆數%", [0.49, 0.29, 0.12], C1), ("b6 不透明度質量%", [0.12, 0.03, 0.00], "#86b6ee"),
@@ -503,7 +506,7 @@ def n12_recheck(d):
     barlabels(ax, ax.bar(x - wd / 2, fail[6], wd, color=C1, label="b6（11,952 tile）"), fmt="{:.2f}%", size=7)
     barlabels(ax, ax.bar(x + wd / 2, fail[13], wd, color=C2, label="b13（16,853 tile）"), fmt="{:.2f}%", size=7)
     ax.set_xticks(x); ax.set_xticklabels(REP12, rotation=15, fontsize=8); ax.set_ylabel("失敗 tile（%）"); ax.legend(fontsize=8)
-    ax.set_title("失敗區（GT std≥0.1、corr<0.6）：oreg0 幾乎消失（0.02／0.12%）\n（官方逐塊模型的同一統計：待量）", fontsize=9.5)
+    ax.set_title("失敗區（GT std≥0.1、corr<0.6）：oreg0 幾乎消失（0.02／0.12%）\n（CityGS 逐塊模型的同一統計：待量）", fontsize=9.5)
     fig.suptitle("60k 代表性跑次（5x5 b6／b13）", fontsize=10.5)
     save(fig, d, "n12_recheck.png")
 
@@ -528,7 +531,7 @@ def n12_heldout(d):
     ax.set_xticks(x); ax.set_xticklabels(REP12, rotation=15, fontsize=8.5)
     ax.set_ylim(0.3, 0.72); ax.set_ylabel("塊內 held-out LPIPS（越低越好）"); ax.legend(fontsize=8)
     ax.set_title("held-out LPIPS：oreg0 兩塊都最好", fontsize=10)
-    fig.suptitle("塊內官方 held-out（b6 210 幀／b13 276 幀）—— 單塊模型看不到鄰塊內容，絕對值是下界；全場景對官方見 `09`", fontsize=10.5)
+    fig.suptitle("塊內 MatrixCity test held-out（b6 210 幀／b13 276 幀）—— 單塊模型看不到鄰塊內容，絕對值是下界；全場景對 CityGS 見 `09`", fontsize=10.5)
     save(fig, d, "n12_heldout.png")
 
 
@@ -540,10 +543,10 @@ SEGN = {"backward": "backward", "forward": "forward（光柵化）", "trim": "�
 
 
 def n01_steps(d):
-    """每步逐段時間（增生期；lab 3090 [solo]；每標記點同步）：官方兩條線＋我方近期改動。"""
+    """每步逐段時間（增生期；lab 3090 [solo]；每標記點同步）：CityGS 兩條線＋我方近期改動。"""
     rows = [
-        ("官方 release b6\nN 2.50M（trim 不跑）｜10-06", dict(forward=47.45, backward=137.96, optimizer=15.66, loss=6.11, trim=0, loop=6.55, other=0), "＝真實步（無 trim）"),
-        ("官方論文設定 b6\nN 1.75M（trim 執行）｜10-06", dict(forward=41.61, backward=127.95, optimizer=10.74, loss=6.13, trim=58.20, loop=0, other=0), "trim 為取樣窗攤平"),
+        ("CityGS release b6\nN 2.50M（trim 不跑）｜10-06", dict(forward=47.45, backward=137.96, optimizer=15.66, loss=6.11, trim=0, loop=6.55, other=0), "＝真實步（無 trim）"),
+        ("CityGS 論文設定 b6\nN 1.75M（trim 執行）｜10-06", dict(forward=41.61, backward=127.95, optimizer=10.74, loss=6.13, trim=58.20, loop=0, other=0), "trim 為取樣窗攤平"),
         ("我方 lean 關\nb6 N 2.29M｜10-02", dict(forward=36.69, backward=84.85, optimizer=15.15, loss=5.02, trim=27875 / 500, loop=8.00, other=3.33), ""),
         ("＋lean_render\n（-20.9%／步）｜10-02", dict(forward=21.13, backward=68.64, optimizer=15.15, loss=5.05, trim=27589 / 500, loop=8.03, other=3.32), ""),
         ("＋record_reduce（現行）\ntrim 每次 -35%｜10-03", dict(forward=21.15, backward=68.75, optimizer=15.14, loss=5.06, trim=17975 / 500, loop=8.02, other=2.79), ""),
@@ -565,7 +568,7 @@ def n01_steps(d):
     ax.set_yticks(range(len(rows))); ax.set_yticklabels([r[0] for r in rows], fontsize=8.5); ax.invert_yaxis()
     ax.set_xlim(0, 330); ax.set_xlabel("每步 ms（增生期；我方 trim 按真實週期 500 步攤平；全部 lab 3090 獨佔）")
     ax.legend(fontsize=8, ncol=7, loc="upper center", bbox_to_anchor=(0.5, -0.13))
-    ax.set_title("同 N 附近的每步時間：官方每步 2 次 backward（深度 extra_loss）；我方 lean／record_reduce／飽和跳過＋先加總逐步降下來", fontsize=10.5)
+    ax.set_title("同 N 附近的每步時間：CityGS 每步 2 次 backward（深度 extra_loss）；我方 lean／record_reduce／飽和跳過＋先加總逐步降下來", fontsize=10.5)
     save(fig, d, "n01_steps.png")
 
 
@@ -690,9 +693,9 @@ def n05_main(d):
 
 
 def n05_official(d):
-    """全場景（合併模型）對官方：渲染成本 vs 官方 741 幀 held-out（同一支評分工具、同 600 台相機量 Load）。"""
-    pts = [("★ 我方 4x4", 2.52, 27.739, 0.129, 17.63, C1), ("官方 release", 5.92, 27.261, 0.154, 24.48, MUTED),
-           ("官方論文設定", 5.92, 27.280, 0.147, 24.72, C2)]
+    """全場景（合併模型）對 CityGS：渲染成本 vs MatrixCity test 741 幀 held-out（同一支評分工具、同 600 台相機量 Load）。"""
+    pts = [("★ 我方 4x4", 2.52, 27.739, 0.129, 17.63, C1), ("CityGS release", 5.92, 27.261, 0.154, 24.48, MUTED),
+           ("CityGS 論文設定", 5.92, 27.280, 0.147, 24.72, C2)]
     fig, ax = plt.subplots(figsize=(10, 4.3))
     for nm, x, y, lp, n, c in pts:
         ax.plot(x, y, "o", color=c, ms=12)
@@ -700,8 +703,8 @@ def n05_official(d):
     ax.errorbar(5.92, 27.4, yerr=0.2, fmt="none", ecolor=MUTED, capsize=6, lw=1)
     ax.text(5.98, 27.62, "release 合理區間 27.2~27.6\n（光柵器偏差，09 §0.1）", fontsize=7.5, color=INK2)
     ax.set_xlim(1.5, 7.5); ax.set_ylim(27.0, 27.95)
-    ax.set_xlabel("合併模型渲染成本：精確 Σtiles 中位（百萬／視角）"); ax.set_ylabel("官方 741 幀 held-out PSNR")
-    ax.set_title("全場景對官方 CityGSV2：我方渲染成本 -57%、品質同級或略好", fontsize=10)
+    ax.set_xlabel("合併模型渲染成本：精確 Σtiles 中位（百萬／視角）"); ax.set_ylabel("MatrixCity test 741 幀 held-out PSNR")
+    ax.set_title("全場景對 CityGSV2：我方渲染成本 -57%、品質同級或略好", fontsize=10)
     save(fig, d, "n05_official.png")
 
 
@@ -812,7 +815,7 @@ def n13_race(d):
         ax.set_xlabel("精確 Load 中位變化 %（三點＝保留 90/70/50% 顆數）"); ax.set_ylabel("Δ 本塊區域 PSNR（dB）")
         lo = min(-4.0, ax.get_ylim()[0]); ax.set_ylim(max(lo, -4.0), 0.3)
     axs[0].legend(fontsize=7.5, loc="lower right")
-    fig.suptitle("單次剪枝不重訓、官方 test held-out、只剪本塊盒內顆粒（v/c 掉到 −10 dB，超出畫面）", fontsize=10)
+    fig.suptitle("單次剪枝不重訓、MatrixCity test held-out、只剪本塊盒內顆粒（v/c 掉到 −10 dB，超出畫面）", fontsize=10)
     save(fig, d, "n13_race.png")
 
 
@@ -864,9 +867,9 @@ def n13_swap(d):
     save(fig, d, "n13_swap.png")
 
 
-# ══════════════ 10-14 使用者：官方數據放進對應的我方圖表＋現行最佳（best0）══════════════
+# ══════════════ 10-14 使用者：CityGS 數據放進對應的我方圖表＋現行最佳（best0）══════════════
 OFFD = os.path.join(DST, "data", "official")      # lab logs/ 的副本（2026-10-14 下載；citygs_official_*、full44_*）
-# 我方 full44（cs60_sfmdup4 配方、opacity_reg 0.002）逐塊精確 Load 中位（chart_data/load.txt ③）；官方取自 citygs_official_blockload*.log 60k
+# 我方 full44（cs60_sfmdup4 配方、opacity_reg 0.002）逐塊精確 Load 中位（chart_data/load.txt ③）；CityGS 取自 citygs_official_blockload*.log 60k
 LOAD44 = {
     "ours": [2.576, 2.433, 2.789, 2.975, 2.305, 2.517, 2.834, 3.008, 2.338, 2.335, 2.555, 2.536, 2.870, 2.367, 2.211, 2.625],
     "rel": [6.329, 5.297, 6.737, 5.398, 5.694, 7.041, 8.229, 6.409, 6.530, 7.717, 8.093, 6.900, 7.372, 8.685, 8.813, 7.163],
@@ -883,81 +886,99 @@ ED = {"min": [1712 / 60, 1689 / 60, 1545 / 60, 1705 / 60, 1612 / 60, 1728 / 60, 
       "fs_min": {0: 1501 / 60, 6: 1380 / 60}}
 
 
+# ★ 10-26 現行最佳 A＋dist4 全場景（g44s30km25fssh16di4_best1maskdistrfed10b4＝ed10b4＋融合 SSIM＋高階 SH 每 16 步＋dist 每 4 步）與 cap 1.5M（g44s30km15fssh16_…）
+#   s＝純訓練秒（labrun/time_1024.py）；pk＝台帳峰值實佔 GB（labrun/peak_1027.py）——⚠ 修正前的程式（SH Adam 快取回歸，實驗分析 21 §5）
+#   pk_fix＝修正後（0b1f0e9）第一批台帳：A＋dist4＋均勻撒點全場景 b0~b6（10-28；撒點跑次，其餘同配方；該全場景在 b6 後撤下）
+AD4 = {"s": [1203, 1187, 1079, 1195, 1083, 1202, 1084, 1186, 1087, 1098, 1083, 1149, 1215, 1008, 1052, 1234],
+       "pk": [4.68, 4.71, 4.63, 4.72, 4.61, 4.68, 4.68, 4.70, 4.66, 4.69, 4.66, 4.67, 4.72, 4.62, 4.63, 4.69],
+       "pk_fix": [4.14, 4.15, 4.15, 4.15, 4.15, 4.15, 4.15]}
+A15 = {"s": [1013, 1097, 971, 1066, 1039, 1042, 920, 1040, 977, 938, 958, 1036, 1074, 910, 958, 1093],
+       "pk": [3.00, 3.03, 2.96, 3.02, 2.97, 2.98, 2.99, 3.00, 2.99, 2.99, 2.96, 3.00, 3.02, 2.94, 2.95, 3.00]}
+
+
 def n01_blocktime(d):
-    """逐塊訓練時間（4x4、60k、lab 3090）：我方 full44 vs 官方 release vs 論文設定（原 09(b) 右）。"""
+    """逐塊訓練時間（4x4、lab 3090 [solo]）：★ 現行 A＋dist4（30k）vs 我方 full44（60k）vs CityGS release／論文設定（60k）。"""
     x = np.arange(16); wd = 0.21
     fig, ax = plt.subplots(figsize=(14, 3.8))
-    ax.bar(x - 1.5 * wd, [m / 60 for m in ED["min"]], wd, color="#123f7a", label="★ 我方 ed10b4（現行最佳，30k）")
-    for k, c, dx, lb in [("omin", C1, -0.5 * wd, "我方 full44（10-05 舊配方，60k）"), ("rmin", MUTED, 0.5 * wd, LBL3[1]), ("pmin", C2, 1.5 * wd, LBL3[2])]:
+    ax.bar(x - 1.5 * wd, [t / 3600 for t in AD4["s"]], wd, color="#123f7a", label="★ 我方 A＋dist4（現行最佳，30k）")
+    for k, c, dx, lb in [("omin", C1, -0.5 * wd, "我方 full44（10-05 舊最佳，60k）"), ("rmin", MUTED, 0.5 * wd, LBL3[1]), ("pmin", C2, 1.5 * wd, LBL3[2])]:
         bars = ax.bar(x + dx, [m / 60 for m in F44[k]], wd, color=c, label=lb)
         if k != "omin":
             for b_, e in zip(bars, F44["rext" if k == "rmin" else "pext"]):
                 if e > 2000:
                     b_.set_hatch("///"); b_.set_alpha(0.45)
-    fb = sorted(ED["fs_min"])
-    ax.plot([b - 1.5 * wd for b in fb], [ED["fs_min"][b] / 60 for b in fb], marker="*", color="#e8a33d", ms=13, lw=0,
-            label="＋融合 SSIM（現行最快；b0／b6 實測）", zorder=5)
-    ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練時間（h）"); ax.legend(fontsize=8, loc="upper left", ncol=2)
-    e09 = sum(ED["min"][:10]) / 60
-    ax.set_title(f"逐塊訓練時間（斜線＝期間同卡外部佔用 > 2 GB，不可引用）：block 0~9 乾淨的合計 ★ ed10b4 {e09:.2f} h／full44 19.3 h／release 40.3 h"
-                 f"（ed10b4 是 release 的 {e09 / 40.3:.2f} 倍）\n"
-                 "16 塊合計 ed10b4 7.32 h（每塊 25~30 分）；＋融合 SSIM b6 23.0 分、b0 25.0 分（再 −13%／−12%）", fontsize=9.5)
+    ax.plot(x - 1.5 * wd, [m / 60 for m in ED["min"]], marker="_", color="#e8a33d", ms=11, mew=2, lw=0, label="ed10b4（10-24，30k）", zorder=5)
+    ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練時間（h）"); ax.legend(fontsize=8, loc="upper left", ncol=3)
+    e09 = sum(AD4["s"][:10]) / 3600
+    ax.set_title(f"逐塊訓練時間（斜線＝期間同卡外部佔用 > 2 GB，不可引用）：block 0~9 乾淨的合計 ★ A＋dist4 {e09:.2f} h／full44 19.3 h／release 40.3 h"
+                 f"（A＋dist4 是 release 的 {e09 / 40.3:.2f} 倍）\n"
+                 f"16 塊合計 A＋dist4 {sum(AD4['s']) / 3600:.2f} h（每塊 17~21 分）、ed10b4 7.32 h、cap 1.5M {sum(A15['s']) / 3600:.2f} h", fontsize=9.5)
     save(fig, d, "n01_blocktime.png")
 
 
 def n02_peak3(d):
-    """訓練峰值（GB）：現行 best1（b6／b12）、full44 舊配方、官方 release／論文設定（同塊）；16 塊全貌。"""
+    """訓練峰值（GB）：現行 A＋dist4（修正前／後）、cap 1.5M、full44 舊配方、CityGS release／論文設定（同塊）；16 塊全貌。"""
     fig, axs = plt.subplots(1, 2, figsize=(16, 4.3), gridspec_kw={"width_ratios": [1, 1.8]})
     ax = axs[0]
-    grp = [("★ 我方 ed10b4（現行，30k 2.5M）", [ED["pk"][6], ED["pk"][12]], "#123f7a"),
-           ("我方 best1（10-14，60k）", [BEST1["peak"][6], BEST1["peak"][12]], C1),
-           ("我方 full44（opacity_reg 0.002）", [F44["opk"][6], F44["opk"][12]], "#7fa9e0"),
-           ("官方 release", [F44["rpk"][6], F44["rpk"][12]], MUTED), ("官方論文設定", [F44["ppk"][6], F44["ppk"][12]], C2)]
-    x = np.arange(2); wd = 0.16
+    grp = [("★ A＋dist4 修正後（b6；10-28 撒點跑次實測，b12 未量）", [AD4["pk_fix"][6], np.nan], "#123f7a"),
+           ("A＋dist4 修正前（台帳）", [AD4["pk"][6], AD4["pk"][12]], "#5a8fd0"),
+           ("A cap 1.5M 修正前", [A15["pk"][6], A15["pk"][12]], C3),
+           ("我方 full44（舊最佳）", [F44["opk"][6], F44["opk"][12]], "#a9c6ec"),
+           ("CityGS release", [F44["rpk"][6], F44["rpk"][12]], MUTED), ("CityGS 論文設定", [F44["ppk"][6], F44["ppk"][12]], C2)]
+    x = np.arange(2); wd = 0.13
     for k, (lb, v, c) in enumerate(grp):
-        barlabels(ax, ax.bar(x + (k - 2) * wd, v, wd, color=c, label=lb), "{:.2f}", size=7)
+        bars = ax.bar(x + (k - 2.5) * wd, v, wd, color=c, label=lb)
+        barlabels(ax, [b_ for b_, vv in zip(bars, v) if not np.isnan(vv)], "{:.2f}", size=6.5)
     ax.axhline(6.44, color="#c0392b", lw=1, ls="--"); ax.text(1.45, 6.6, "6 GiB 卡", color="#c0392b", fontsize=8, ha="right")
-    ax.set_xticks(x); ax.set_xticklabels(["block 6", "block 12"]); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7.5, loc="upper left")
-    ax.set_ylim(0, 14.5); ax.set_title("同塊訓練峰值：我方 3.9~4.1 GB vs 官方 6.2~12.7 GB", fontsize=9.5)
+    ax.set_xticks(x); ax.set_xticklabels(["block 6", "block 12"]); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7, loc="upper left")
+    ax.set_ylim(0, 15.5); ax.set_title("同塊訓練峰值：我方 A＋dist4 4.15 GB（修正後）、1.5M 3.0 GB vs CityGS 6.2~12.7 GB", fontsize=9.5)
     ax = axs[1]
     xx = np.arange(16)
-    for k, c, mk, lb in [("opk", C1, "o", "我方 full44"), ("rpk", MUTED, "s", LBL3[1]), ("ppk", C2, "^", LBL3[2])]:
+    for k, c, mk, lb in [("opk", "#a9c6ec", "o", "我方 full44"), ("rpk", MUTED, "s", LBL3[1]), ("ppk", C2, "^", LBL3[2])]:
         ax.plot(xx, F44[k], marker=mk, color=c, lw=0, ms=6, label=lb)
-    ax.plot(xx, ED["pk"], marker="*", color="#123f7a", lw=0, ms=10, label="★ 我方 ed10b4（現行）")
+    ax.plot(xx, AD4["pk"], marker="*", color="#5a8fd0", lw=0, ms=9, label="A＋dist4 修正前")
+    ax.plot(xx[:7], AD4["pk_fix"], marker="*", color="#123f7a", lw=0, ms=12, label="★ A＋dist4 修正後（b0~b6）")
+    ax.plot(xx, A15["pk"], marker="D", color=C3, lw=0, ms=5, label="A cap 1.5M 修正前")
     ax.axhline(6.44, color="#c0392b", lw=1, ls="--")
-    ax.set_xticks(xx); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7.5, ncol=2)
-    ax.set_title("16 塊：★ ed10b4 3.86~3.93；full44 4.05~4.17；release 7.65~14.56；論文設定 5.24~11.23（只有 b3、b7 低於 6 GiB）", fontsize=9.5)
+    ax.set_xticks(xx); ax.set_xlabel("4x4 block"); ax.set_ylabel("訓練峰值實佔（GB）"); ax.legend(fontsize=7.5, ncol=3)
+    ax.set_title("16 塊：★ A＋dist4 修正後 4.14~4.15（修正前 4.61~4.72）；1.5M 2.94~3.03；full44 4.05~4.17；release 7.65~14.56；論文設定 5.24~11.23", fontsize=9.5)
     save(fig, d, "n02_peak3.png")
 
 
 def n03_official(d):
-    """成果檔與部署大小：單塊 ckpt（b6）、合併 ckpt、部署（只算參數）——我方 vs 官方（`citygs_official_storage.log`）。"""
-    fig, axs = plt.subplots(1, 3, figsize=(17, 4.2))
-    lab = ["★ 我方\ned10b4", "我方\nfull44", "官方\nrelease", "官方\n論文設定"]; col = ["#123f7a", C1, MUTED, C2]
+    """成果檔與部署大小：單塊 ckpt（b6）、合併 ckpt、部署——我方 vs CityGS（`citygs_official_storage.log`）。"""
+    fig, axs = plt.subplots(1, 3, figsize=(18, 4.3), gridspec_kw={"width_ratios": [0.9, 1.1, 1.1]})
+    lab = ["★ 我方\ned10b4", "我方\nfull44", "CityGS\nrelease", "CityGS\n論文設定"]; col = ["#123f7a", C1, MUTED, C2]
     ax = axs[0]
-    # GiB（官方 storage log 的「GB」是 2^30；full44 1,628,658,586 B；ed10b4 b6 30k ckpt 2.25M 顆 x 696 B，chart_data/storage.txt「1.5 GB」）
+    # GiB（CityGS storage log 的「GB」是 2^30；full44 1,628,658,586 B；ed10b4 b6 30k ckpt 2.25M 顆 x 696 B，chart_data/storage.txt「1.5 GB」）
     v = [2.25e6 * 696 / 2**30, 1.52, 3.0, 2.3]; n = [2.25, 2.34, 7.11, 5.31]
     b = ax.bar(lab, v, color=col); barlabels(ax, b, "{:.2f} GiB", size=8)
     for i in range(4):
         ax.text(i, v[i] / 2, f"N {n[i]:.2f}M\n{2**30 * v[i] / (n[i] * 1e6):.0f} B／顆", ha="center", color="white", fontsize=7.5)
-    ax.set_ylabel("GiB"); ax.set_title("單塊 ckpt（block 6；含 Adam；ed10b4 30k、其餘 60k）\n我方 SH3 696 B／顆；官方 SH2 456 B／顆（參數 148＋Adam 296＋緩衝 12）", fontsize=9)
+    ax.set_ylabel("GiB"); ax.set_title("單塊 ckpt（block 6；含 Adam；ed10b4 30k、其餘 60k）\n我方 SH3 696 B／顆；CityGS SH2 456 B／顆（參數 148＋Adam 296＋緩衝 12）", fontsize=9)
+    lab5 = ["★ A＋\ndist4", "A cap\n1.5M", "full44\n舊最佳", "CityGS\nrelease", "CityGS\n論文設定"]; col5 = ["#123f7a", C3, C1, MUTED, C2]
+    n5 = [27.75, 17.12, 17.63, 24.48, 24.72]
     ax = axs[1]
-    v = [19371580895 / 2**30, 11.43, 40.5, 29.0]; n = [27.83, 17.63, 24.48, 24.72]    # GiB（ed10b4 merged.ckpt 19,371,580,895 B；full44 11,703 MiB）
-    b = ax.bar(lab, v, color=col); barlabels(ax, b, "{:.1f} GiB", size=8)
-    ax.set_ylabel("GiB"); ax.set_title("合併 ckpt（含優化器狀態；我方只留各塊盒內顆粒）\n官方合併時把 16 塊的優化器狀態一起疊進去（1,566 B／顆）", fontsize=9)
+    # GiB：A＋dist4／1.5M 取自 half_ckpt 的輸出（17.99／11.10 GiB）；full44 11,703 MiB；CityGS storage log
+    v = [17.99, 11.10, 11.43, 40.5, 29.0]
+    b = ax.bar(lab5, v, color=col5); barlabels(ax, b, "{:.1f} GiB", size=8)
+    ax.tick_params(axis="x", labelsize=8)
+    ax.set_ylabel("GiB"); ax.set_title("合併 ckpt（含優化器狀態；我方只留各塊盒內顆粒）\nCityGS 合併時把 16 塊的優化器狀態一起疊進去（1,566 B／顆）", fontsize=9)
     ax = axs[2]
-    per = [232, 232, 148, 148]
-    v = [n[i] * 1e6 * per[i] / 2**30 for i in range(4)]
-    b = ax.bar(lab, v, color=col); barlabels(ax, b, "{:.2f} GiB", size=8)
-    for i in range(4):
-        ax.text(i, v[i] / 2, f"{n[i]:.2f}M 顆\n× {per[i]} B", ha="center", color="white", fontsize=7.5)
-    ax.set_ylabel("GiB"); ax.set_title("部署（只存參數、float32）：⚠ 官方較小 —— SH2 每顆 148 B，我方 SH3 232 B\n★ ed10b4 顆數 +14%、每顆 +57% => 部署是 release 的 1.79 倍（輕量化的待辦）", fontsize=9)
-    fig.suptitle("儲存對照官方（lab `citygs_official_storage.log`；我方 ckpt 實測檔案大小；ed10b4＝10-24 現行最佳）；官方 CPU RAM 快取未量", fontsize=10)
+    v = [3.15, 1.95, 17.63e6 * 232 / 2**30, 24.48e6 * 148 / 2**30, 24.72e6 * 148 / 2**30]
+    note = ["半精度", "半精度", "float32", "float32\nSH2", "float32\nSH2"]
+    b = ax.bar(lab5, v, color=col5); barlabels(ax, b, "{:.2f} GiB", size=8)
+    for i in range(5):
+        ax.text(i, v[i] / 2, f"{n5[i]:.2f}M\n{note[i]}", ha="center", color="white", fontsize=7.2)
+    ax.tick_params(axis="x", labelsize=8)
+    ax.set_ylabel("GiB"); ax.set_title("部署（只存參數；我方 tools/half_ckpt.py：means 以外 float16、741 幀 PSNR 不變）\n"
+                                       "★ A＋dist4 是 release 的 0.94 倍、cap 1.5M 0.58 倍", fontsize=9)
+    fig.suptitle("儲存對照 CityGS（lab `citygs_official_storage.log`；我方 ckpt 實測檔案大小；A＋dist4＝10-26 現行最佳）；CityGS CPU RAM 快取未量", fontsize=10)
     save(fig, d, "n03_official.png")
 
 
 def n04_load3(d):
-    """逐塊精確 Load 中位（同一支工具、各模型自己那塊的訓練相機）：我方 full44／best0 vs 官方。"""
+    """逐塊精確 Load 中位（同一支工具、各模型自己那塊的訓練相機）：我方 full44／best0 vs CityGS。"""
     x = np.arange(16); wd = 0.27
     fig, ax = plt.subplots(figsize=(14, 3.9))
     for k, c, dx, lb in [("ours", C1, -wd, "我方 full44（opacity_reg 0.002）"), ("rel", MUTED, 0, LBL3[1]), ("pap", C2, wd, LBL3[2])]:
@@ -968,7 +989,7 @@ def n04_load3(d):
     ax.set_xticks(x); ax.set_xlabel("4x4 block"); ax.set_ylabel("精確 Load 中位（百萬 tile／視角）"); ax.legend(fontsize=7.5, ncol=2, loc="upper left")
     ax.set_ylim(0, 10.5)
     ax.set_title(f"逐塊渲染成本：我方 full44 平均是 release 的 {100 * r:.0f}%；best0 再低約 1/3、現行 best1 又再低約 1/3（b6 1.26M／b12 1.21M）\n"
-                 "（60k 終點、各模型自己那塊的全部訓練相機；官方 lab `citygs_official_blockload*.log`、我方 `chart_data/load.txt`）", fontsize=9.5)
+                 "（60k 終點、各模型自己那塊的全部訓練相機；CityGS lab `citygs_official_blockload*.log`、我方 `chart_data/load.txt`）", fontsize=9.5)
     save(fig, d, "n04_load3.png")
 
 
@@ -1015,7 +1036,7 @@ def _prune(name):
 
 
 def n06_prune3(d):
-    """合併模型依 opacity 剪枝（不重訓）、官方 741 幀 held-out、同一支評分工具：我方 vs release vs 論文設定（lab full44_prunecurve_*.tsv，10-10）。"""
+    """合併模型依 opacity 剪枝（不重訓）、MatrixCity test 741 幀 held-out、同一支評分工具：我方 vs release vs 論文設定（lab full44_prunecurve_*.tsv，10-10）。"""
     fig, axs = plt.subplots(1, 2, figsize=(16, 4.4))
     for nm, c, mk, lb in [("ours", C1, "o", "★ 我方 4x4"), ("release", MUTED, "s", LBL3[1]), ("paper", C2, "^", LBL3[2])]:
         k, n, p, l = _prune(nm)
@@ -1024,15 +1045,15 @@ def n06_prune3(d):
             axs[0].annotate(f"{int(round(kk * 100))}%", (nn, pp), xytext=(3, -10), textcoords="offset points", fontsize=7, color=c)
         axs[1].plot([100 * x for x in k], [x - p[0] for x in p], marker=mk, color=c, label=lb)
     axs[0].set_xlabel("保留顆數 N（百萬）"); axs[0].set_ylabel("held-out PSNR（dB）"); axs[0].invert_xaxis(); axs[0].legend(fontsize=8)
-    axs[0].set_title("絕對值：同 N 時我方都較高（我方 8.8M 26.21 vs 官方 12.2~12.4M 25.07~25.80）", fontsize=9.5)
+    axs[0].set_title("絕對值：同 N 時我方都較高（我方 8.8M 26.21 vs CityGS 12.2~12.4M 25.07~25.80）", fontsize=9.5)
     axs[1].set_xlabel("保留比例（%，依 opacity 由高到低）"); axs[1].set_ylabel("Δ PSNR vs 不剪（dB）"); axs[1].invert_xaxis(); axs[1].legend(fontsize=8)
-    axs[1].set_title("相對值：剪 10% 官方兩條線都 0.000（≈ 245 萬顆白付）、25% release −0.04／論文設定 −0.26；\n我方 10% −0.04、25% −0.38 => 我方的顆粒用得較滿", fontsize=9.5)
-    fig.suptitle("合併模型依 opacity 剪枝（不重訓；官方 741 幀 held-out、同一支評分工具）", fontsize=10.5)
+    axs[1].set_title("相對值：剪 10% CityGS 兩條線都 0.000（≈ 245 萬顆白付）、25% release −0.04／論文設定 −0.26；\n我方 10% −0.04、25% −0.38 => 我方的顆粒用得較滿", fontsize=9.5)
+    fig.suptitle("合併模型依 opacity 剪枝（不重訓；MatrixCity test 741 幀 held-out、同一支評分工具）", fontsize=10.5)
     save(fig, d, "n06_prune3.png")
 
 
 def n12_fail3(d):
-    """合併模型逐塊（各塊 held-out 視角）：PSNR 與失敗 tile 比例，我方 vs 官方（lab full44_failheld.txt）。"""
+    """合併模型逐塊（各塊 held-out 視角）：PSNR 與失敗 tile 比例，我方 vs CityGS（lab full44_failheld.txt）。"""
     import re
     rows = []
     for l in open(os.path.join(OFFD, "full44_failheld.txt"), encoding="utf-8"):
@@ -1055,13 +1076,13 @@ def n12_fail3(d):
     ax.set_ylabel("失敗 tile %（過對比門檻的 tile 中）"); ax.legend(fontsize=8)
     ax.set_title(f"⚠ 失敗 tile：我方反而較多（全 {float(allr[6]):.2f}% vs {float(allr[8]):.2f}%／{float(allr[10]):.2f}%）——多在每格離接縫遠處（10-12 接縫檢查）；\n"
                  "區塊 10 換成 best0 後該塊 0.40% -> 0.17%（10-12），全場景 best0 未重跑", fontsize=9.5)
-    fig.suptitle("合併模型逐塊對照官方（官方 741 幀 held-out、同一支評分工具；失敗 tile＝48px、GT 灰階 std >= 0.10 且 corr < 0.6）", fontsize=10.5)
+    fig.suptitle("合併模型逐塊對照 CityGS（MatrixCity test 741 幀 held-out、同一支評分工具；失敗 tile＝48px、GT 灰階 std >= 0.10 且 corr < 0.6）", fontsize=10.5)
     save(fig, d, "n12_fail3.png")
 
 
 # ══════════════ 10-15 使用者：圖表更新到現行最佳 best1（最快）＋報告用的組成與取捨（`實驗分析/15`）══════════════
-F1B = {   # 區塊幾何 F1（tools/block_f1.py，不配準；官方＝全場景網格裁到本塊、全部相機；我方＝換塊、本塊相機；`09` §6.1）
-    "官方 release": {6: (.423, .803, .554), 12: (.566, .847, .678)},
+F1B = {   # 區塊幾何 F1（tools/block_f1.py，不配準；CityGS＝全場景網格裁到本塊、全部相機；我方＝換塊、本塊相機；`09` §6.1）
+    "CityGS release": {6: (.423, .803, .554), 12: (.566, .847, .678)},
     "我方 full44（舊配方）": {6: (.272, .667, .386), 12: (.423, .680, .521)},
     "我方 best0": {6: (.372, .750, .498), 12: (.588, .766, .665)},
     "★ 我方 best1（現行）": {6: (.430, .801, .559), 12: (.654, .819, .727)},
@@ -1069,7 +1090,7 @@ F1B = {   # 區塊幾何 F1（tools/block_f1.py，不配準；官方＝全場景
 
 
 def n09_blockf1(d):
-    """區塊級幾何 F1（10-15）：官方 release vs 我方三代配方，b6／b12；長條＝F1，標 P／R。"""
+    """區塊級幾何 F1（10-15）：CityGS release vs 我方三代配方，b6／b12；長條＝F1，標 P／R。"""
     fig, ax = plt.subplots(figsize=(13, 3.9))
     keys = list(F1B); cols = [MUTED, "#7fa9e0", C3, C1]; wd = 0.2; x = np.arange(2)
     for k, (nm, c) in enumerate(zip(keys, cols)):
@@ -1080,8 +1101,8 @@ def n09_blockf1(d):
             ax.text(b_.get_x() + b_.get_width() / 2, F + 0.01, f"{F:.3f}\nP {P:.2f}／R {R:.2f}", ha="center", fontsize=7.5)
     ax.set_xticks(x); ax.set_xticklabels(["block 6", "block 12"]); ax.set_ylim(0, 0.9); ax.set_ylabel("F1（dTau 0.0065）")
     ax.legend(fontsize=8, ncol=4, loc="upper left")
-    ax.set_title("區塊幾何 F1（MatrixCity 空拍 GT、官方抽網格參數、不配準）：舊配方落後官方 0.17；opacity_reg 0 補回大半，best1 追平（b6）／超過（b12）官方\n"
-                 "（全場景不配準：我方 full44 0.425 vs 官方 0.590；best1 全場景未訓練）", fontsize=9.5)
+    ax.set_title("區塊幾何 F1（MatrixCity 空拍 GT、CityGS 抽網格參數、不配準）：舊配方落後 CityGS 0.17；opacity_reg 0 補回大半，best1 追平（b6）／超過（b12）CityGS\n"
+                 "（全場景不配準：我方 full44 0.425 vs CityGS 0.590；best1 全場景未訓練）", fontsize=9.5)
     save(fig, d, "n09_blockf1.png")
 
 
@@ -1139,7 +1160,7 @@ def n15_time(d):
     e = lambda b, a: 30000 * (T[b][(a, 'grow')]['step'] + T[b][(a, 'harvest')]['step']) / 6e4
     ax.set_title(f"一塊 60k ≈ 30k×增生＋30k×收割（不含驗證／存檔）\nb6：best1 {e(6,'best1'):.0f} → 累加 trim {e(6,'best1run'):.0f} → 融合 Adam {e(6,'best1runfa'):.0f} 分"
                  f"（實測 68 → 54 → 45）", fontsize=9)
-    fig.suptitle("現行 best1 的訓練時間（4x4、lab RTX 3090 [solo]、量測期間卡上無其他行程；b6 後三組 10-19 量、其餘 10-15；官方 release 同 N 約 214 ms／步，`09` §0.3）", fontsize=10)
+    fig.suptitle("現行 best1 的訓練時間（4x4、lab RTX 3090 [solo]、量測期間卡上無其他行程；b6 後三組 10-19 量、其餘 10-15；CityGS release 同 N 約 214 ms／步，`09` §0.3）", fontsize=10)
     save(fig, d, "n15_time.png")
 
 
@@ -1194,12 +1215,12 @@ def n16_steps(d):
     ax[0].axhspan(-0.03, 0.03, color="#e1e0d9", lw=0); ax[0].set_ylabel("Δ 本塊新視角 PSNR（dB，相對 best1）")
     ax[1].set_ylabel("LPIPS（換塊評測，越低越好）"); ax[2].set_ylabel("區塊幾何 F1")
     for b, c, v in ((6, C1, 0.554), (12, C2, 0.678)):
-        ax[2].axhline(v, color=c, ls="--", lw=1); ax[2].annotate(f"官方 b{b} {v}", (60, v), fontsize=7.5, color=c, ha="right", va="bottom")
+        ax[2].axhline(v, color=c, ls="--", lw=1); ax[2].annotate(f"CityGS b{b} {v}", (60, v), fontsize=7.5, color=c, ha="right", va="bottom")
     for a in ax:
         a.set_xlabel("每塊訓練時間（分；lab 3090 [solo]）"); a.legend()
     ax[0].set_title("短訓練在 PSNR 上反而贏（15k 最高）", fontsize=9.5)
     ax[1].set_title("但 LPIPS 隨步數變差（細節少）", fontsize=9.5)
-    ax[2].set_title("幾何 F1 隨步數單調下降（15k 兩塊都低於官方）", fontsize=9.5)
+    ax[2].set_title("幾何 F1 隨步數單調下降（15k 兩塊都低於 CityGS）", fontsize=9.5)
     save(fig, d, "n16_steps.png")
 
 
@@ -1222,59 +1243,66 @@ def n16_sh(d):
 
 
 def n16_official(d):
-    """同塊對官方：官方 release 合併模型只換第 6／12 塊（同光柵器、同 held-out 視角）＋資源。"""
+    """同塊對 CityGS：CityGS release 合併模型只換第 6／12 塊（同光柵器、同 held-out 視角）＋資源。"""
     fig, ax = plt.subplots(1, 2, figsize=(13, 4.0))
     nm = ["15k＋SH1", "SH1 60k"]; x = np.arange(2); w = 0.38
     barlabels(ax[0], ax[0].bar(x - w / 2, [0.53, 0.61], w, color=C1, label="b6"), "{:+.2f}")
     barlabels(ax[0], ax[0].bar(x + w / 2, [0.54, 0.24], w, color=C2, label="b12"), "{:+.2f}")
-    ax[0].axhline(0.35, color=MUTED, ls=":", lw=1); ax[0].annotate("我方光柵器讀官方約低 0.35（10-09）", (1.4, 0.36), fontsize=7.5, color=INK2, ha="right")
-    ax[0].set_xticks(x, nm); ax[0].legend(); ax[0].set_ylabel("Δ 本塊新視角 PSNR（dB，相對官方 release）")
-    ax[0].set_title("換進官方模型：兩塊都贏（扣掉光柵器落差後約 +0.2）", fontsize=9.5)
+    ax[0].axhline(0.35, color=MUTED, ls=":", lw=1); ax[0].annotate("我方光柵器讀 CityGS 約低 0.35（10-09）", (1.4, 0.36), fontsize=7.5, color=INK2, ha="right")
+    ax[0].set_xticks(x, nm); ax[0].legend(); ax[0].set_ylabel("Δ 本塊新視角 PSNR（dB，相對 CityGS release）")
+    ax[0].set_title("換進 CityGS 模型：兩塊都贏（扣掉光柵器落差後約 +0.2）", fontsize=9.5)
     lab = ["訓練時間\n(分)", "峰值 VRAM\n(GB)", "盒內顆數\n(萬)"]
     ours = [12.5, 2.08, 66.0]; off = [315.0, 8.42, 99.5]
     xx = np.arange(3)
     b1 = ax[1].bar(xx - w / 2, np.array(ours) / np.array(off), w, color=C1, label="我方 15k＋SH1")
-    ax[1].bar(xx + w / 2, [1, 1, 1], w, color=MUTED, label="官方（=1）")
+    ax[1].bar(xx + w / 2, [1, 1, 1], w, color=MUTED, label="CityGS（=1）")
     for i, (o, f) in enumerate(zip(ours, off)):
         ax[1].annotate(f"{o:g} vs {f:g}", (i - w / 2, o / f), xytext=(0, 3), textcoords="offset points", ha="center", fontsize=7.5)
-    ax[1].set_xticks(xx, lab); ax[1].set_ylabel("相對官方（b6／b12 平均）"); ax[1].legend()
+    ax[1].set_xticks(xx, lab); ax[1].set_ylabel("相對 CityGS（b6／b12 平均）"); ax[1].legend()
     ax[1].set_title("資源：時間 4%、VRAM 25%、盒內顆數 66%；幾何 F1 輸（0.441／0.653 vs 0.554／0.678）", fontsize=9)
     save(fig, d, "n16_official.png")
 
 
 def n17_mask(d):
-    """塊外遮罩（20k、累加式 trim），相對對照 g44s20k_best1run。"""
-    nm = ["對照\n20k", "只開\n隨機背景", "遮罩\ncap 2.6M", "遮罩\ncap 1.2M"]
-    f6 = [0.474, 0.504, 0.545, 0.532]; f12 = [0.699, 0.702, 0.753, 0.741]
-    q6 = [0, -0.01, -0.11, -0.15]; q12 = [0, 0.06, 0.02, -0.01]
-    lp6 = [.1182, .1181, .1165, .1176]; lp12 = [.1166, .1168, .1133, .1153]
-    tm = [20, 20, 15, 11.5]; pk = [3.93, 3.93, 3.56, 1.95]
-    fig, ax = plt.subplots(1, 3, figsize=(15, 4.2))
-    x = np.arange(4); w = 0.38
+    """塊外遮罩（20k、累加式 trim），相對對照 g44s20k_best1run。「只開隨機背景」臂只留在文件（使用者 10-30：圖上不比）。"""
+    nm = ["對照\n20k", "遮罩\ncap 2.6M", "遮罩\ncap 1.2M"]
+    f6 = [0.474, 0.545, 0.532]; f12 = [0.699, 0.753, 0.741]
+    q6 = [0, -0.11, -0.15]; q12 = [0, 0.02, -0.01]
+    lp6 = [.1182, .1165, .1176]; lp12 = [.1166, .1133, .1153]
+    tm = [20, 15, 11.5]; pk = [3.92, 3.56, 1.95]
+    fig, ax = plt.subplots(1, 4, figsize=(17, 4.2))
+    x = np.arange(len(nm)); w = 0.38
     barlabels(ax[0], ax[0].bar(x - w / 2, f6, w, color=C1, label="b6"), "{:.3f}")
     barlabels(ax[0], ax[0].bar(x + w / 2, f12, w, color=C2, label="b12"), "{:.3f}")
     ax[0].axhline(0.554, color=C1, ls="--", lw=1); ax[0].axhline(0.678, color=C2, ls="--", lw=1)
-    ax[0].set_ylim(0.35, 0.8); ax[0].set_xticks(x, nm); ax[0].legend(); ax[0].set_ylabel("區塊幾何 F1（虛線＝官方）")
+    ax[0].set_ylim(0.35, 0.8); ax[0].set_xticks(x, nm); ax[0].legend(); ax[0].set_ylabel("區塊幾何 F1（虛線＝CityGS）")
     ax[0].set_title("幾何：遮罩 +0.07／+0.05", fontsize=9.5)
-    ax[1].plot(x, q6, "o-", color=C1, label="Δ PSNR b6"); ax[1].plot(x, q12, "o-", color=C2, label="Δ PSNR b12")
-    ax[1].axhspan(-0.03, 0.03, color="#e1e0d9", lw=0); ax[1].set_ylabel("Δ 本塊新視角 PSNR（dB，相對對照）")
-    a2 = ax[1].twinx(); a2.plot(x, lp6, "s--", color=C1, alpha=0.6, label="LPIPS b6"); a2.plot(x, lp12, "s--", color=C2, alpha=0.6, label="LPIPS b12")
-    a2.set_ylabel("LPIPS（虛線）"); ax[1].set_xticks(x, nm); ax[1].legend(loc="lower left", fontsize=7.5); a2.legend(loc="lower right", fontsize=7.5)
-    ax[1].set_title("渲染：PSNR −0.15~+0.06、LPIPS 變好（b12 .1166 -> .1133）", fontsize=9.5)
-    barlabels(ax[2], ax[2].bar(x - w / 2, tm, w, color=C3, label="時間（分）"), "{:.1f}")
-    a3 = ax[2].twinx(); a3.bar(x + w / 2, pk, w, color=C4, label="峰值 VRAM（GB）")
+    for off, vals, c, lb in ((-w / 2, q6, C1, "b6"), (w / 2, q12, C2, "b12")):
+        ax[1].bar(x + off, vals, w, color=c, label=lb)
+        for i, v in enumerate(vals):
+            ax[1].annotate(f"{v:+.2f}" if v else "0", (i + off, v), xytext=(0, 2 if v >= 0 else -2), textcoords="offset points",
+                           ha="center", va="bottom" if v >= 0 else "top", fontsize=7.5, color=INK2)
+    ax[1].axhline(0, color=MUTED, lw=0.8); ax[1].set_ylim(-0.2, 0.08)
+    ax[1].set_xticks(x, nm); ax[1].legend(loc="lower left"); ax[1].set_ylabel("Δ 本塊新視角 PSNR（dB，相對對照）")
+    ax[1].set_title("PSNR：−0.15～+0.02 dB", fontsize=9.5)
+    barlabels(ax[2], ax[2].bar(x - w / 2, lp6, w, color=C1, label="b6"), "{:.4f}")
+    barlabels(ax[2], ax[2].bar(x + w / 2, lp12, w, color=C2, label="b12"), "{:.4f}")
+    ax[2].set_ylim(0.110, 0.120); ax[2].set_xticks(x, nm); ax[2].legend(loc="upper right"); ax[2].set_ylabel("LPIPS（越低越好；y 軸從 0.110 起）")
+    ax[2].set_title("LPIPS：遮罩變好（b12 .1166 -> .1133）", fontsize=9.5)
+    barlabels(ax[3], ax[3].bar(x - w / 2, tm, w, color=C3, label="時間（分）"), "{:.1f}")
+    a3 = ax[3].twinx(); a3.bar(x + w / 2, pk, w, color=C4, label="峰值 VRAM（GB）")
     for i, v in enumerate(pk):
         a3.annotate(f"{v:.2f}", (i + w / 2, v), xytext=(0, 2), textcoords="offset points", ha="center", fontsize=7.5, color=INK2)
-    ax[2].set_xticks(x, nm); ax[2].set_ylabel("每塊訓練時間（分）"); a3.set_ylabel("峰值 VRAM（GB）"); a3.grid(False)
-    h1, l1 = ax[2].get_legend_handles_labels(); h2, l2 = a3.get_legend_handles_labels()
+    ax[3].set_xticks(x, nm); ax[3].set_ylabel("每塊訓練時間（分）"); a3.set_ylabel("峰值 VRAM（GB）"); a3.grid(False)
+    h1, l1 = ax[3].get_legend_handles_labels(); h2, l2 = a3.get_legend_handles_labels()
     a3.legend(h1 + h2, l1 + l2, loc="lower left", fontsize=7.5, framealpha=0.9, frameon=True)
-    ax[2].set_title("資源：cap 1.2M 版 N 1.08M、時間 −42%、VRAM 減半", fontsize=9.5)
+    ax[3].set_title("資源：cap 1.2M 版 N 1.08M、時間 −42%、VRAM 減半", fontsize=9.5)
     save(fig, d, "n17_mask.png")
 
 
 def n18_road(d):
     """馬路靠地底面元撐的比例（暗柏油像素中，渲染第一表面在本塊地面下 1 m 以上），與地底顆粒佔實際混合貢獻。"""
-    nm = ["15k＋SH1", "best1\n60k", "SH1\n60k", "單目深度\n60k", "normal＋深度\n60k", "dist100\n60k", "SH1＋dist100\n60k", "SH1＋dist100\n30k", "15k＋SH1\n＋dist100", "官方\nrelease"]
+    nm = ["15k＋SH1", "best1\n60k", "SH1\n60k", "單目深度\n60k", "normal＋深度\n60k", "dist100\n60k", "SH1＋dist100\n60k", "SH1＋dist100\n30k", "15k＋SH1\n＋dist100", "CityGS\nrelease"]
     r6 = [52.9, 37.7, 44.5, 34.0, 30.5, 26.3, 33.9, 40.3, 50.0, 16.3]
     r12 = [54.7, 52.4, 67.7, 54.9, 25.8, 40.2, 56.5, 54.4, 53.4, 38.5]
     v6 = [5.7, 4.6, 4.4, 3.3, 4.5, 1.6, 2.3, 4.1, 5.9, 2.0]; v12 = [12.0, 6.4, 10.3, 5.0, 4.7, 1.9, 2.2, 4.5, 7.1, 1.9]
@@ -1287,7 +1315,7 @@ def n18_road(d):
     barlabels(ax[1], ax[1].bar(x - w / 2, v6, w, color=C1, label="b6"), "{:.1f}")
     barlabels(ax[1], ax[1].bar(x + w / 2, v12, w, color=C2, label="b12"), "{:.1f}")
     ax[1].set_xticks(x, nm, fontsize=8); ax[1].legend(); ax[1].set_ylabel("地面下 10 m 以上顆粒佔實際混合貢獻 %")
-    ax[1].set_title("深度失真正則 100（60k）把地底貢獻壓到官方水準；15k 下無效（沒有收割期可以拉正）", fontsize=9.5)
+    ax[1].set_title("深度失真正則 100（60k）把地底貢獻壓到 CityGS 水準；15k 下無效（沒有收割期可以拉正）", fontsize=9.5)
     save(fig, d, "n18_road.png")
 
 
@@ -1354,7 +1382,7 @@ N19_SUSPECT = {(6, "遮罩＋dist", 2.5, 40), (12, "遮罩", 2.5, 30)}   # 時�
 
 
 def n19_fact(d):
-    """全因子：區塊 F1 對每塊訓練時間（顏色＝臂、形狀＝cap、旁註＝步數）；水平線＝best1 60k 與官方 release。"""
+    """全因子：區塊 F1 對每塊訓練時間（顏色＝臂、形狀＝cap、旁註＝步數）；水平線＝best1 60k 與 CityGS release。"""
     fig, axs = plt.subplots(1, 2, figsize=(17, 5.6))
     for ax, b in zip(axs, (6, 12)):
         ref = N19_REF[b]
@@ -1368,7 +1396,7 @@ def n19_fact(d):
         ax.scatter(b1[3], b1[2], marker="*", s=260, color="k", zorder=4)
         ax.annotate("best1 60k", (b1[3], b1[2]), xytext=(6, 4), textcoords="offset points", fontsize=8.5, fontweight="bold")
         ax.axhline(ref["off_f1"], color="k", ls="--", lw=1)
-        ax.text(98, ref["off_f1"] + 0.003, f"官方 release {ref['off_f1']:.3f}（每塊 4~6 小時）", ha="right", fontsize=8)
+        ax.text(98, ref["off_f1"] + 0.003, f"CityGS release {ref['off_f1']:.3f}（每塊 4~6 小時）", ha="right", fontsize=8)
         ax.set_xlim(10, 100); ax.set_xlabel("每塊訓練時間（分；台帳 START→DONE，lab 3090 [solo]）"); ax.set_ylabel("區塊幾何 F1")
         ax.set_title(f"b{b}：粗框＝遮罩＋dist100 30k（2.5M／1M）；⚠＝時間可能被外部佔卡拖慢", fontsize=9.5)
     from matplotlib.lines import Line2D
@@ -1383,7 +1411,7 @@ def n19_road(d):
     """30k 的馬路地底比例與部署大小（盒內顆數）：遮罩把容量留在本塊。"""
     fig, axs = plt.subplots(1, 2, figsize=(17, 4.6), gridspec_kw={"width_ratios": [1.4, 1]})
     sel = [("無遮罩", 2.5), ("無遮罩＋dist", 2.5), ("遮罩", 1.0), ("遮罩＋dist", 1.0), ("遮罩", 2.5), ("遮罩＋dist", 2.5)]
-    nm = [f"{a}\n{c:g}M 30k" for a, c in sel] + ["best1\n60k", "官方\nrelease"]
+    nm = [f"{a}\n{c:g}M 30k" for a, c in sel] + ["best1\n60k", "CityGS\nrelease"]
     def road(b, a, c):
         return next(r[7] for r in N19[b] if r[0] == a and r[1] == c and r[2] == 30)
     r6 = [road(6, a, c) for a, c in sel] + [N19_REF[6]["best1"][4], N19_REF[6]["off_road"]]
@@ -1392,10 +1420,10 @@ def n19_road(d):
     barlabels(ax, ax.bar(x - w / 2, r6, w, color=C1, label="b6"), "{:.0f}")
     barlabels(ax, ax.bar(x + w / 2, r12, w, color=C2, label="b12"), "{:.0f}")
     ax.set_xticks(x, nm, fontsize=8); ax.legend(fontsize=8); ax.set_ylabel("暗柏油中渲染表面在地底的 %")
-    ax.set_title("馬路靠地底面元撐的比例（`18` 的量法）：遮罩＋dist 2.5M 兩塊都低於官方", fontsize=9.5)
+    ax.set_title("馬路靠地底面元撐的比例（`18` 的量法）：遮罩＋dist 2.5M 兩塊都低於 CityGS", fontsize=9.5)
     ax = axs[1]
-    # 盒內顆數（百萬）＝合併時保留、部署的大小；官方 release 盒內 105.3 萬／93.6 萬（`16` §3）
-    inb = {"best1 60k": (0.435, 0.648), "遮罩＋dist 1M 30k": (0.654, 0.757), "遮罩＋dist 2.5M 30k": (1.566, 1.885), "官方 release": (1.053, 0.936)}
+    # 盒內顆數（百萬）＝合併時保留、部署的大小；CityGS release 盒內 105.3 萬／93.6 萬（`16` §3）
+    inb = {"best1 60k": (0.435, 0.648), "遮罩＋dist 1M 30k": (0.654, 0.757), "遮罩＋dist 2.5M 30k": (1.566, 1.885), "CityGS release": (1.053, 0.936)}
     x = np.arange(len(inb))
     barlabels(ax, ax.bar(x - w / 2, [v[0] for v in inb.values()], w, color=C1, label="b6"), "{:.2f}")
     barlabels(ax, ax.bar(x + w / 2, [v[1] for v in inb.values()], w, color=C2, label="b12"), "{:.2f}")
@@ -1404,7 +1432,7 @@ def n19_road(d):
     save(fig, d, "n19_road.png")
 
 
-# 20：遮罩臂全場景回退（10-23）。逐塊＝官方 741 幀依相機位置歸塊（labrun/perblock_1023.py），Δ 相對 full44_best
+# 20：遮罩臂全場景回退（10-23）。逐塊＝MatrixCity test 741 幀依相機位置歸塊（labrun/perblock_1023.py），Δ 相對 full44_best
 N20_BLK = {"遮罩 2.5M（現行 opacity）": [-0.533, -0.206, -0.129, -0.142, -0.299, -0.046, -0.079, -0.094, -0.103, -0.044, -0.063, -0.033, -0.120, +0.043, -0.032, -0.106],
            "遮罩 1M（現行 opacity）": [-0.586, -0.318, -0.218, -0.177, -0.421, -0.234, -0.190, -0.189, -0.339, -0.238, -0.217, -0.165, -0.324, -0.200, -0.294, -0.377],
            # 10-24 ed10b4 全場景（熵只往 0 推、10k 後切回雙向 ×4；labrun/perblock_1024.py）
@@ -1422,7 +1450,7 @@ N20_LAYER = [("2.5M 現行", 69, 1.00), ("2.5M o", 0, 1.00), ("2.5M ne", 0, 0.91
 
 
 def n20_blocks(d):
-    """全場景逐塊 Δ（官方 741 幀依相機位置歸塊）：2.5M 的損失集中在 b0／b4／b1，1M 是全面小輸。"""
+    """全場景逐塊 Δ（MatrixCity test 741 幀依相機位置歸塊）：2.5M 的損失集中在 b0／b4／b1，1M 是全面小輸。"""
     fig, ax = plt.subplots(figsize=(17, 4.4))
     x = np.arange(16); k = len(N20_BLK); w = 0.8 / k
     for j, (nm, v) in enumerate(N20_BLK.items()):
@@ -1430,7 +1458,7 @@ def n20_blocks(d):
     ax.axhline(0, color="k", lw=0.8)
     ax.set_xticks(x, [f"b{b}" for b in range(16)]); ax.set_ylabel("PSNR Δ（dB，相對 full44_best 60k）")
     ax.legend(fontsize=8, loc="lower right")
-    ax.set_title("4x4 全場景、官方 741 幀依相機位置歸塊：遮罩 2.5M 輸在 b0（−0.53，水面）／b4／b1；1M 每塊都小輸（容量）；10-24 ed10b4 16 塊全贏", fontsize=9.5)
+    ax.set_title("4x4 全場景、MatrixCity test 741 幀依相機位置歸塊：遮罩 2.5M 輸在 b0（−0.53，水面）／b4／b1；1M 每塊都小輸（容量）；10-24 ed10b4 16 塊全贏", fontsize=9.5)
     save(fig, d, "n20_blocks.png")
 
 
@@ -1460,7 +1488,7 @@ def n20_swap(d):
     save(fig, d, "n20_swap.png")
 
 
-# 21：配方 A 全場景（10-24～10-26）。全場景＝官方 741 幀；逐塊＝labrun/perblock_1027.py（相機位置歸塊、可重疊）；單塊＝換塊評測＋區塊 F1
+# 21：配方 A 全場景（10-24～10-26）。全場景＝MatrixCity test 741 幀；逐塊＝labrun/perblock_1027.py（相機位置歸塊、可重疊）；單塊＝換塊評測＋區塊 F1
 # (名稱, PSNR, LPIPS, 合併 N（百萬）, 16 塊純訓練 h, 顏色)
 N21_FULL = [("full44 舊最佳（60k）", 27.739, .1293, 17.63, 30.7, MUTED), ("ed10b4", 27.868, .1153, 27.83, 7.32, C4),
             ("★ 配方 A", 28.048, .1143, 27.93, 5.90, C1), ("★ A＋dist 每 4 步", 28.058, .1142, 27.75, 5.04, "#123f7a"),
@@ -1478,7 +1506,7 @@ N21_SINGLE = [("ed10b4", 0.057, 0.521, -0.040, 0.758), ("配方 A", 0.215, 0.529
 
 
 def n21_full(d):
-    """全場景：PSNR 對 16 塊純訓練時間（點大小＝合併 N），官方 release 畫成水平線。"""
+    """全場景：PSNR 對 16 塊純訓練時間（點大小＝合併 N），CityGS release 畫成水平線。"""
     fig, ax = plt.subplots(figsize=(10, 4.2))
     for nm, p, lp, n, h, c in N21_FULL:
         ax.scatter(h, p, s=n * 22, color=c, alpha=0.85, edgecolor="white", lw=1, zorder=3)
@@ -1486,10 +1514,10 @@ def n21_full(d):
                       "★ A cap 1.5M": (-14, -20, "right")}.get(nm, (12, -4, "left"))
         ax.annotate(f"{nm}\n{p:.3f}／LPIPS {lp:.4f}／{n:.1f}M", (h, p), xytext=(dx, dy), ha=ha,
                     textcoords="offset points", fontsize=7.5, color=INK2)
-    ax.axhline(27.261, color=MUTED, ls="--", lw=1); ax.text(12, 27.275, "官方 release 27.261（24.48M；b0~9 就要 40.3 h）", fontsize=7.5, color=INK2)
+    ax.axhline(27.261, color=MUTED, ls="--", lw=1); ax.text(12, 27.275, "CityGS release 27.261（24.48M；b0~9 就要 40.3 h）", fontsize=7.5, color=INK2)
     ax.set_xscale("log"); ax.set_xticks([4, 5, 6, 8, 12, 20, 30]); ax.set_xticklabels(["4", "5", "6", "8", "12", "20", "30"])
     ax.set_xlim(2.6, 60); ax.set_ylim(27.2, 28.2)
-    ax.set_xlabel("16 塊純訓練時間（h，對數；[solo]）"); ax.set_ylabel("官方 741 幀 PSNR")
+    ax.set_xlabel("16 塊純訓練時間（h，對數；[solo]）"); ax.set_ylabel("MatrixCity test 741 幀 PSNR")
     ax.set_title("4x4 全場景：配方 A 28.048（5.90 h）、＋dist 每 4 步 28.058（5.04 h）；cap 1.5M 用舊最佳的顆數贏它", fontsize=9.5)
     save(fig, d, "n21_full.png")
 
@@ -1503,7 +1531,7 @@ def n21_blocks(d):
     ax.axhline(0, color="k", lw=0.8)
     ax.set_xticks(x, [f"b{b}" for b in range(16)]); ax.set_ylabel("PSNR Δ（dB，相對 ed10b4）")
     ax.legend(fontsize=8, ncol=5, loc="lower center")
-    ax.set_title("官方 741 幀逐塊：配方 A 全贏 ed10b4（+0.14～+0.24）；＋dist 每 4 步 與 A 差 −0.01～+0.04＝平行重跑同級（−0.01～+0.02）；1M 輸在 b0／b1／b15", fontsize=9.5)
+    ax.set_title("MatrixCity test 741 幀逐塊：配方 A 全贏 ed10b4（+0.14～+0.24）；＋dist 每 4 步 與 A 差 −0.01～+0.04＝平行重跑同級（−0.01～+0.02）；1M 輸在 b0／b1／b15", fontsize=9.5)
     save(fig, d, "n21_blocks.png")
 
 
@@ -1524,6 +1552,113 @@ def n21_single(d):
     save(fig, d, "n21_single.png")
 
 
+# 22：viewer 看出的新視角缺陷（10-28～10-29）。浮塊＝盒內 o>0.2 且高出 SfM 包絡面（2 cm 格、5x5 鄰域最大；無 SfM 的格＝海）0.1 以上
+#   v2（b12）＝面元頂端（中心＋3 sigma 垂直延伸，labrun/float2_blk_1029.py）；v1（b0）＝只看中心（labrun/float_blk_1029.py）
+# (名稱, 日期, 海上, 陸上)
+N22_B12 = [("CityGS release", "", 1651, 222), ("full44_best 舊最佳（opacity L1 0.002，60k）", "10-05", 1126, 185),
+           ("best0（拿掉 opacity L1）", "10-10", 22143, 3954), ("best0＋二元熵＋V/C", "10-14", 99733, 16363),
+           ("best1（＋兩個加速＝10-14 基底）", "10-14", 105028, 18048), ("best1＋dist100", "10-16", 84718, 12845),
+           ("best1＋法向＋深度正則", "10-16", 95478, 15165), ("15k＋SH1", "10-17", 26795, 3878),
+           ("遮罩＋dist＋30k（10-22 全場景臂）", "10-22", 215172, 36151), ("ed10b4（熵只往 0 推、10k 後雙向 ×4）", "10-24", 106012, 16032),
+           ("★ A＋dist4（現行最佳）", "10-26", 128793, 21701)]
+# (名稱, 浮塊顆數, 組)；b0、30k cap 2.5M 遮罩臂（opacity 變體，20 §6）與配方 A 家族
+N22_B0 = [("full44_best 舊最佳（60k）", 829, 0), ("oe：L1 0.002＋熵關", 8530, 0), ("ed：熵只往 0 推", 28700, 0), ("ed15：15k 後雙向", 33806, 0),
+          ("o：L1 0.002＋熵雙向", 43600, 0), ("ed10", 53700, 0), ("ed10b4（全場景採用）", 61700, 0), ("ne：L1 0、熵關", 76783, 0),
+          ("o05：L1 0.0005＋熵", 153000, 0), ("遮罩臂 rf：L1 0＋熵雙向", 214644, 0),
+          ("配方 A", 64000, 1), ("A＋深度補點初始化", 24000, 1), ("A＋撒點（依誤差）", 91000, 1), ("A＋撒點（均勻）", 108000, 1),
+          ("★ A＋dist4", 50000, 1), ("A＋dist4＋撒點（均勻）", 102000, 1)]
+# 面元朝向一致度（labrun/orient_blk_1029.py）：盒內 o>0.5、8 近鄰 |n_i . n_j| 中位；亂向＝<0.7 的比例；(名稱, 一致度, 亂向 %, 顆數 M, 長軸中位 cm)
+N22_OR = {3: [("CityGS release", 0.928, 11.8, 0.594, 0.72), ("full44_best 舊最佳", 0.802, 30.1, 0.380, 0.69),
+              ("遮罩＋dist＋30k（10-22）", 0.708, 48.4, 1.776, 0.15), ("ed10b4", 0.770, 36.4, 1.710, 0.26),
+              ("配方 A", 0.764, 37.3, 1.734, 0.28), ("★ A＋dist4", 0.765, 37.1, 1.756, 0.27), ("A cap 1M", 0.773, 35.3, 0.723, 0.51)],
+          12: [("CityGS release", 0.908, 14.6, 0.352, 0.63), ("full44_best 舊最佳", 0.797, 31.1, 0.275, 0.46),
+               ("best1", 0.801, 30.0, 0.631, 0.42), ("best1＋dist100", 0.803, 29.9, 0.608, 0.43),
+               ("best1＋法向（λ 0.0125）", 0.951, 14.1, 0.643, 0.43), ("best1＋法向＋深度", 0.957, 12.0, 0.633, 0.44),
+               ("15k＋SH1", 0.688, 52.4, 0.680, 0.33), ("ed10b4", 0.786, 32.7, 1.561, 0.23), ("★ A＋dist4", 0.782, 33.4, 1.597, 0.24)]}
+
+
+def n22_b12hist(d):
+    """b12 歷代跑次的海上／陸上浮塊（v2，面元頂端）：退步從 10-10 拿掉 opacity L1 開始。"""
+    fig, ax = plt.subplots(figsize=(14, 4.9))
+    y = np.arange(len(N22_B12)); h = 0.4
+    sea = [r[2] for r in N22_B12]; land = [r[3] for r in N22_B12]
+    cs = [MUTED if r[0].startswith("CityGS") else ("#123f7a" if "★" in r[0] else C1) for r in N22_B12]
+    ax.barh(y - h / 2, sea, h, color=cs, label="海上（無 SfM 的格）")
+    ax.barh(y + h / 2, land, h, color=C2, alpha=0.8, label="陸上")
+    for i, (v1, v2) in enumerate(zip(sea, land)):
+        ax.text(v1 * 1.08, i - h / 2, f"{v1 / 1000:.1f}k", va="center", fontsize=7.5, color=INK2)
+        ax.text(v2 * 1.08, i + h / 2, f"{v2 / 1000:.2f}k", va="center", fontsize=7, color=INK2)
+    ax.set_xscale("log"); ax.set_xlim(100, 6e5)
+    ax.set_yticks(y, [f"{r[0]}{'（' + r[1] + '）' if r[1] else ''}" for r in N22_B12], fontsize=8.5); ax.invert_yaxis()
+    ax.annotate("×20：拿掉 opacity L1", xy=(22143, 2 - h / 2), xytext=(1.8e5, 1.6), fontsize=8.5, color="#c0392b",
+                arrowprops=dict(arrowstyle="->", color="#c0392b", lw=0.9))
+    ax.annotate("×4.5：＋二元熵＋V/C", xy=(99733, 3 - h / 2), xytext=(2.6e5, 3.4), fontsize=8.5, color="#c0392b",
+                arrowprops=dict(arrowstyle="->", color="#c0392b", lw=0.9))
+    from matplotlib.patches import Patch
+    ax.legend(handles=[Patch(color=C1, label="海上（無 SfM 的格；灰＝CityGS、深藍＝現行）"), Patch(color=C2, alpha=0.8, label="陸上")],
+              fontsize=8, loc="lower right")
+    ax.set_xlabel("浮塊顆數（對數；盒內 o>0.2、面元頂端高出 SfM 包絡面 0.1 以上）")
+    ax.set_title("b12 浮塊歷代：舊最佳與 CityGS 都只有 1～2 千顆；10-10 拿掉 opacity L1 後 ×20、熵＋V/C 再 ×4.5；現行 A＋dist4 海上 12.9 萬顆\n"
+                 "（MatrixCity test 741 幀全是空拍高度 => test PSNR 量不到；法向＋深度正則只減 9%）", fontsize=9.5)
+    save(fig, d, "n22_b12hist.png")
+
+
+def n22_b0var(d):
+    """b0 浮塊（v1，只看中心）：opacity 變體（遮罩臂 30k 2.5M）與配方 A 家族（深度補點、撒點、dist4）。"""
+    fig, axs = plt.subplots(1, 2, figsize=(16, 4.6), gridspec_kw={"width_ratios": [1.25, 1]})
+    for ax, g, title in zip(axs, (0, 1), ("opacity 變體（b0、遮罩＋dist＋30k 2.5M；20 §6 的臂）：只有 L1 能把浮塊壓到 1 萬以下，但 [solo] 訓練 +49%",
+                                           "配方 A 家族（b0）：深度補點初始化 −62%；撒點讓浮塊加倍")):
+        R = [r for r in N22_B0 if r[2] == g]
+        y = np.arange(len(R))
+        cs = [MUTED if "舊最佳" in r[0] else ("#123f7a" if "★" in r[0] or "採用" in r[0] else (C3 if "補點" in r[0] else (C2 if "撒點" in r[0] else C1))) for r in R]
+        ax.barh(y, [r[1] for r in R], 0.62, color=cs)
+        for i, r in enumerate(R):
+            ax.text(r[1] * 1.08, i, f"{r[1] / 1000:.1f}k" if r[1] >= 1000 else f"{r[1]}", va="center", fontsize=8, color=INK2)
+        ax.set_xscale("log"); ax.set_xlim(300 if g == 0 else 8000, 8e5)
+        ax.set_yticks(y, [r[0] for r in R], fontsize=8.5); ax.invert_yaxis()
+        ax.set_xlabel("浮塊顆數（對數；v1＝只看中心高出 SfM 包絡 0.1）"); ax.set_title(title, fontsize=9.2)
+    save(fig, d, "n22_b0var.png")
+
+
+def n22_orient(d):
+    """面元朝向一致度：立面「毛邊」＝朝向亂＋小面元多；法向正則把 b12 拉到 0.95（勝 CityGS），但每塊 +63% 時間。"""
+    fig, axs = plt.subplots(1, 2, figsize=(17, 4.8), gridspec_kw={"width_ratios": [1, 1.25]})
+    for ax, b in zip(axs, (3, 12)):
+        R = N22_OR[b]; x = np.arange(len(R))
+        cs = [MUTED if r[0].startswith("CityGS") else ("#123f7a" if "★" in r[0] else (C3 if "法向" in r[0] else C1)) for r in R]
+        bars = ax.bar(x, [r[1] for r in R], 0.62, color=cs)
+        for b_, r in zip(bars, R):
+            ax.text(b_.get_x() + b_.get_width() / 2, r[1] + 0.004, f"{r[1]:.3f}\n亂向 {r[2]:.0f}%\n{r[3]:.2f}M／{r[4]:.2f} cm", ha="center", fontsize=6.8, color=INK2)
+        ax.set_ylim(0.6, 1.02); ax.set_xticks(x, [r[0].replace("（", "\n（").replace("＋", "\n＋", 1) for r in R], fontsize=7.3)
+        ax.set_ylabel("8 近鄰朝向一致度中位（|n_i . n_j|）")
+        ax.set_title({3: "b3（使用者看到毛邊的塊）：現行 0.765 vs 舊最佳 0.802、CityGS 0.928；不透明面元是舊最佳的 4.6 倍、長軸一半",
+                      12: "b12：渲染式法向正則 0.80 → 0.95（勝 CityGS 0.908）、F1 0.727 → 0.739；但不減浮塊（沿法向平移不變）"}[b], fontsize=9)
+    fig.suptitle("盒內 o>0.5 的面元：標註＝亂向比例（一致度 < 0.7）、顆數／長軸中位", fontsize=9.5)
+    save(fig, d, "n22_orient.png")
+
+
+def n22_road_roof(d):
+    """左：馬路靠地底面元的比例（18 的同一支工具）從 ed10b4 起退步；右：高樓區在 MatrixCity test 視角的 PSNR 與 CityGS 同級。"""
+    fig, axs = plt.subplots(1, 2, figsize=(16, 4.2), gridspec_kw={"width_ratios": [1.3, 1]})
+    ax = axs[0]
+    nm = ["best1\n60k（10-14）", "遮罩＋dist100\n30k（10-22）", "ed10b4\n（10-24）", "★ A＋dist4\n（10-26）", "CityGS\nrelease"]
+    r6 = [37.7, 8.5, 21.3, 24.5, 16.3]; r12 = [52.4, 31.4, 46.2, 55.2, 38.5]
+    x = np.arange(len(nm)); w = 0.38
+    barlabels(ax, ax.bar(x - w / 2, r6, w, color=C1, label="b6"), "{:.1f}")
+    barlabels(ax, ax.bar(x + w / 2, r12, w, color=C2, label="b12"), "{:.1f}")
+    ax.set_xticks(x, nm, fontsize=8); ax.legend(fontsize=8); ax.set_ylabel("暗柏油中渲染表面在地底的 %")
+    ax.set_title("馬路地底面元（新視角變透明的原因，`18`）：10-22 遮罩＋dist100 壓到 CityGS 以下，ed10b4／A＋dist4 又退回\n（b12 的地面估計受水面影響，看相對值）", fontsize=9.2)
+    ax = axs[1]
+    labs = ["b3（高樓 SfM 點最多的 8 幀）", "b2（同）"]; v = {"★ A＋dist4": [24.54, 23.61], "A＋dist4＋撒點（均勻）": [24.68, 23.82], "CityGS release": [24.92, 23.63]}
+    x = np.arange(2); w = 0.26
+    for k, (lb, vv) in enumerate(v.items()):
+        barlabels(ax, ax.bar(x + (k - 1) * w, vv, w, color=("#123f7a", C2, MUTED)[k], label=lb), "{:.2f}")
+    ax.set_ylim(20, 27); ax.set_xticks(x, labs); ax.set_ylabel("高樓區 PSNR（dB）")
+    ax.legend(fontsize=8, loc="upper right", ncol=3)
+    ax.set_title("高樓頂樓在 MatrixCity test 視角：與 CityGS 同級（b3 −0.38、b2 −0.02）\n=> viewer 看到的「整個糊掉」是新視角（低角度）問題，三個模型都有", fontsize=9.2)
+    save(fig, d, "n22_road_roof.png")
+
+
 DOCS = {
     "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -1531,7 +1666,7 @@ DOCS = {
     "04_外接盒與binning成本": ["cc1_quality_delta", "n04_time", "n04_load", "cc4_proxy_decoupled", "n04_load3"],
     "05_成本品質前緣": ["n05_main4x4", "n05_official"],
     "08_初始化": ["n08_init20k", "f4_init60k", "n08_init60k"],
-    "09_官方參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_merged_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "n06_prune3", "n09_blockf1"],
+    "09_CityGS參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_merged_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "n06_prune3", "n09_blockf1"],
     "10_速度優化_lean與kernel拆解": ["n10_kernels"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout", "n12_fail3"],
     "13_trim判準VC與opacity二元熵": ["n13_race", "n13_swap"],
@@ -1542,6 +1677,7 @@ DOCS = {
     "19_全因子消融_遮罩dist_cap步數": ["n19_fact", "n19_road"],
     "20_全場景遮罩回退與opacity": ["n20_blocks", "n20_swap"],
     "21_配方A全場景_加速cap與撒點": ["n21_full", "n21_blocks", "n21_single"],
+    "22_新視角缺陷_海面浮塊立面毛邊與幾何閘門": ["n22_b12hist", "n22_b0var", "n22_orient", "n22_road_roof"],
 }
 
 
@@ -1580,7 +1716,7 @@ def main():
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
-              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single):
+              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]

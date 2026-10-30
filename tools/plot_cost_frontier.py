@@ -199,9 +199,9 @@ def fig6():
     save(fig, "f6_prune_finetune.png")
 
 
-# ── 圖 7：官方配方 trim 真的執行時（官方 block 3）──────────────────────────────────
+# ── 圖 7：CityGS 配方 trim 真的執行時（CityGS block 3）──────────────────────────────────
 def fig7():
-    names = ["官方原版\n（trim 從未執行）", "官方＋一行修正\n（trim 執行）", "我方程式碼跑官方配方\n（trim 執行）"]
+    names = ["CityGS 原版\n（trim 從未執行）", "CityGS＋一行修正\n（trim 執行）", "我方程式碼跑 CityGS 配方\n（trim 執行）"]
     N = [5.23, 0.91, 0.93]; ps = [31.69, 30.87, 30.91]; wall = [3.31, 2.29, None]; vr = [7.30, 2.75, 2.59]
     fig, axs = plt.subplots(1, 3, figsize=(13, 3.8))
     for ax, vals, t, fmt in ((axs[0], N, "終點顆數 N（百萬）", "{:.2f}M"), (axs[1], ps, "val PSNR（dB）", "{:.2f}"),
@@ -213,8 +213,8 @@ def fig7():
         ax.set_xticks(range(3)); ax.set_xticklabels(names, fontsize=7.5); ax.set_title(t, fontsize=10)
         ax.grid(axis="x", visible=False)
     axs[1].set_ylim(29.5, 32.2)
-    fig.suptitle("圖 7　官方 block 3：讓 trim 真的執行，顆數少 5.7 倍、峰值 VRAM 少 62%，val 只低 0.8 dB（val⊂train）；\n"
-                 "我方程式碼與官方＋修正的結果一致（30.91 vs 30.87、0.93M vs 0.91M）=> 我方能重現官方的 trim 行為", fontsize=10.5, y=1.05)
+    fig.suptitle("圖 7　CityGS block 3：讓 trim 真的執行，顆數少 5.7 倍、峰值 VRAM 少 62%，val 只低 0.8 dB（val⊂train）；\n"
+                 "我方程式碼與 CityGS＋修正的結果一致（30.91 vs 30.87、0.93M vs 0.91M）=> 我方能重現 CityGS 的 trim 行為", fontsize=10.5, y=1.05)
     save(fig, "f7_official_trim.png")
 
 
@@ -251,7 +251,7 @@ def fig4():
     save(fig, "f4_init60k.png")
 
 
-# ── 圖 5：官方模型的 opacity 剪枝曲線（held-out 741 幀）────────────────────
+# ── 圖 5：CityGS 模型的 opacity 剪枝曲線（held-out 741 幀）────────────────────
 def fig5():
     kept = [100, 90, 75, 50, 25]
     n = [24.48, 22.03, 18.36, 12.24, 6.12]
@@ -262,7 +262,7 @@ def fig5():
         lab(ax, a, b, f"留 {k}%（{a:.1f}M）\n{b:.2f}", dx=6, dy=(8 if k == 100 else (-28 if k in (90, 75) else 4)))
     ax.set_ylim(18.5, 26.6)
     ax.set_xlabel("保留顆數 N（百萬）"); ax.set_ylabel("held-out PSNR（dB）")
-    ax.set_title("官方 release 依 opacity 剪枝（官方評分工具，含暗幀偏差 → 絕對值偏低約 1.5 dB，只看形狀）：前 25%（≈610 萬顆）幾乎白付；我方同類曲線待量（09g）", fontsize=10.5)
+    ax.set_title("CityGS release 依 opacity 剪枝（CityGS 評分工具，含暗幀偏差 → 絕對值偏低約 1.5 dB，只看形狀）：前 25%（≈610 萬顆）幾乎白付；我方同類曲線待量（09g）", fontsize=10.5)
     ax.invert_xaxis()
     save(fig, "f5_official_prune.png")
 

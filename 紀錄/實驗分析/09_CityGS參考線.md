@@ -1,6 +1,6 @@
 # 09 官方參考線（CityGaussianV2 在當前資料上）
 
-> **圖**：`09_官方參考線.png`（同名，7 個面板）　｜　**年代**：新年代；**held-out＝官方 741 幀 test**（唯一可對外比的數字）
+> **圖**：`09_CityGS參考線.png`（同名，7 個面板）　｜　**年代**：新年代；**held-out＝官方 741 幀 test**（唯一可對外比的數字）
 > **資料**：lab `cityGS_origin`（未修改原始碼）＋ `gspl_official`（照官方 requirements 建的環境）；`scripts/lab/task_citygs_origin.sh`；
 > 資源 `logs/citygs_official_resources.tsv`、逐塊現況 `logs/citygs_official_status_*.txt`、剪枝 `logs/citygs_official_prune.tsv`（lab）
 > 我方 4x4：lab `outputs/lab/full44_best`（`logs/full44_test_1005_0432.log`、`full44_res_1005_0452.log`、各塊 `chart_data/`）；官方逐段計時 `logs/citygs_official_stepprof_{orig,paper}_b6.txt`
@@ -11,7 +11,7 @@
 
 | 面板 | 內容 | 對應本文 |
 |---|---|---|
-| (a) | ★ 合併模型・官方 741 幀 held-out：我方 4x4 vs 官方 release vs 官方論文設定（同一支工具）＋N／FPS | §0.1 |
+| (a) | ★ 合併模型・MatrixCity test 741 幀 held-out：**10-30 起＝現行 A＋dist4、cap 1.5M**、full44 舊最佳 vs CityGS release vs CityGS 論文設定（同一支工具）＋N／FPS | §0.1 |
 | (b) | 逐塊（4x4 共 16 塊）：同塊 held-out PSNR、訓練峰值實佔（只畫點）、訓練時間（⚠ 論文設定各塊都有外部佔卡 => 時間不可引用；乾淨重跑 3 塊已排） | §0.2 |
 | (c) | ★ 同一批塊視角：單塊模型 vs 合併模型（我方 − 官方 release，逐塊）；b12 單塊 −3.84、合併 +0.73 | §0.2b |
 | (d) | 同 N 附近的每步逐段時間：我方 vs 官方 release vs 論文設定（b6） | §0.3 |
