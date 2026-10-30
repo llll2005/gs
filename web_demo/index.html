@@ -116,7 +116,9 @@
     <input id="filePicker" type="file" accept=".ply,.ckpt" style="display:none"
            onchange="handleFileInput(this)">
   </label>
-  <div id="hint">拖曳 .ply 或 .ckpt 到視窗任意位置</div>
+  <span class="btn" onclick="goHome()">重新置中（F）</span>
+  <label style="font-size:12px;margin-left:6px"><input id="autoFrame" type="checkbox" checked> 載入時自動置中</label>
+  <div id="hint">拖曳 .ply 或 .ckpt 到視窗任意位置<br>雙擊：以該點為旋轉中心並拉近；滾輪：朝游標縮放</div>
 </div>
 
 <div id="status">就緒</div>
@@ -140,6 +142,9 @@ import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 // ── Scene ─────────────────────────────────────────────────────────────────
 const scene    = new THREE.Scene();
 const camera   = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 5000);
+// 10-30：MatrixCity 的上方向是世界 +z（地面 z≈0）。OrbitControls 在建構時讀 camera.up => 要在建 controls 之前設，
+//   這樣左右拖曳是繞鉛直軸轉、地平線保持水平（原本 +y 朝上時一轉就歪）。
+camera.up.set(0, 0, 1);
 camera.position.set(0, -30, 80);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -153,6 +158,12 @@ scene.add(spark);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
+// 10-30 使用者「放大一定要有上限嗎、放越大越難調整」：沒有設上限（minDistance 0）。難調是因為滾輪縮放是「朝旋轉中心
+//   按距離比例前進」，中心原本固定在原點、不在模型上（b6 離原點遠）=> 怎麼滾都靠不近。改成：縮放朝游標指的地方、
+//   雙擊把旋轉中心移到點到的表面（見下方 dblclick）、載入時中心放在模型上（frameModel）。
+controls.zoomToCursor = true;
+controls.minDistance = 0;
+controls.maxDistance = Infinity;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const sel          = document.getElementById("sel");
@@ -206,13 +217,86 @@ async function loadSplat(url, label) {
     const splat = new SplatMesh({ url });
     scene.add(splat);
     currentSplat = splat;
-    await splat.waitUntilReady?.();
+    // 10-30：Spark 2.x 沒有 waitUntilReady（原本那行是 no-op）；initialized 才是載完的 Promise
+    await (splat.initialized ?? splat.waitUntilReady?.());
+    // 取消勾選＝換模型時保留目前視角（同一塊比較不同跑次時用）；範圍仍會更新給「重新置中」
+    await frameModel(url, splat, document.getElementById("autoFrame").checked || !homeView);
     setProgress(100, label, "done");
   } catch (e) {
     setProgress(100, `錯誤：${e.message}`, "error");
     throw e;
   }
 }
+
+// ── 自動置中＋縮放到合適大小（10-30 使用者：CityGS 單塊較小、b6 離鏡頭遠 => 根本放不大） ──────────
+// 範圍由伺服器算（/bounds.json：不透明顆粒的分位數，不被離群點與海面浮塊撐爆）；拿不到時退回 Spark 的中心點外接盒。
+// 相機放在範圍中心的南方斜上 45°，距離＝讓外接球剛好塞進畫面（直、橫兩個方向取大的）。按 F 或「重新置中」回到這個視角。
+let homeView = null;
+async function frameModel(url, splat, move = true) {
+  let lo = null, hi = null;
+  if (!url.startsWith("blob:")) {
+    try {
+      const b = await fetch(`/bounds.json?file=${encodeURIComponent(url)}`).then(r => r.json());
+      if (b.ok) { lo = new THREE.Vector3(...b.lo); hi = new THREE.Vector3(...b.hi); }
+    } catch (_) {}
+  }
+  if (!lo) {
+    // 退路（serve.py 是舊行程、沒有 /bounds.json 時）：⚠ 不能用 Spark 的 getBoundingBox —— 那是 min/max，
+    //   會被盒外／海面／地底離群點撐爆（full44 塊內 b3 的 x 到 23.8、z 到 -21.3）=> 模型縮成一點。改成在瀏覽器裡抽樣算分位數（同伺服器的判準）。
+    statusEl.textContent = "伺服器沒有 /bounds.json（重開 web_demo/serve.py 會比較快）=> 在瀏覽器抽樣算範圍…";
+    try {
+      const n = splat.numSplats ?? splat.packedSplats?.numSplats ?? 0;
+      const step = Math.max(1, Math.floor(n / 300000));
+      const xs = [], ys = [], zs = [];
+      splat.forEachSplat((i, c, _s, _q, o) => {
+        if (i % step === 0 && o > 0.5 && Number.isFinite(c.x + c.y + c.z)) { xs.push(c.x); ys.push(c.y); zs.push(c.z); }
+      });
+      if (xs.length > 100) {
+        const q = (a, t) => { a.sort((u, v) => u - v); return a[Math.min(a.length - 1, Math.floor(t * a.length))]; };
+        lo = new THREE.Vector3(q(xs, 0.05), q(ys, 0.05), q(zs, 0.02));
+        hi = new THREE.Vector3(q(xs, 0.95), q(ys, 0.95), q(zs, 0.99));
+      }
+    } catch (_) {}
+  }
+  if (!lo) return;
+  const c = lo.clone().add(hi).multiplyScalar(0.5);
+  const r = Math.max(hi.clone().sub(lo).length() / 2, 1e-3);
+  const vfov = THREE.MathUtils.degToRad(camera.fov);
+  const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
+  const d = 0.9 * r / Math.sin(Math.min(vfov, hfov) / 2);   // 外接球偏保守（45° 斜看時投影比球小）=> 0.9 讓模型大致填滿畫面
+  homeView = { target: c.clone(), pos: c.clone().addScaledVector(new THREE.Vector3(0, -1, 1).normalize(), d), d };
+  if (move) goHome();
+}
+function goHome() {
+  if (!homeView) return;
+  controls.target.copy(homeView.target);
+  camera.position.copy(homeView.pos);
+  camera.near = Math.max(homeView.d * 1e-4, 1e-6);   // 拉到很近（貼著立面）也不會被近平面切掉
+  camera.far  = homeView.d * 200;
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+window.goHome = goHome;
+window.addEventListener("keydown", e => {
+  if ((e.key === "f" || e.key === "F") && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement)) goHome();
+});
+
+// 雙擊：把旋轉中心移到點到的表面（Spark 的 SplatMesh 支援 three.js Raycaster），同時拉近一半
+//   => 之後滾輪縮放、旋轉都繞著那一點，想看哪裡就雙擊哪裡，不再需要放大上限。點到空白處就用目前中心深度上的那一點。
+const _ray = new THREE.Raycaster();
+renderer.domElement.addEventListener("dblclick", e => {
+  const ndc = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  _ray.setFromCamera(ndc, camera);
+  let p = null;
+  if (currentSplat) {
+    try { const hit = _ray.intersectObject(currentSplat, false); if (hit.length) p = hit[0].point.clone(); } catch (_) {}
+  }
+  if (!p) p = _ray.ray.at(camera.position.distanceTo(controls.target), new THREE.Vector3());
+  const off = camera.position.clone().sub(controls.target).multiplyScalar(0.5);
+  controls.target.copy(p);
+  camera.position.copy(p).add(off);
+  controls.update();
+});
 
 // ── Load from server-side filename ────────────────────────────────────────
 window.loadByName = async function(filename) {

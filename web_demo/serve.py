@@ -6,6 +6,7 @@ Endpoints:
   GET  /ckpts.json    -> local checkpoints under outputs/**/{checkpoints,deploy}/ (newest first) — no upload needed
   POST /convert_local -> body {"path": "outputs/.../x.ckpt"}, converts IN PLACE on the server
   GET  /current.json  -> {"file": "block_9.ply", "ts": 1234567890}
+  GET  /bounds.json?file=x.ply -> 穩健範圍 {"ok": true, "lo": [...], "hi": [...], "n": N}（viewer 自動置中／縮放用；快取在 x.ply.bounds.json）
   POST /select        -> body {"file": "xxx.ply"}, updates current and ts
   POST /convert       -> body: raw .ckpt bytes, header X-Filename: name.ckpt
                          returns {"ok": true, "file": "name.ply"} or {"ok": false, "error": "..."}
@@ -24,6 +25,75 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 PORT      = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 SERVE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+_PLY_TYPES = {"float": "f4", "float32": "f4", "double": "f8", "float64": "f8", "uchar": "u1", "uint8": "u1",
+              "char": "i1", "int8": "i1", "short": "i2", "int16": "i2", "ushort": "u2", "uint16": "u2",
+              "int": "i4", "int32": "i4", "uint": "u4", "uint32": "u4"}
+
+
+def ply_bounds(path, n_sample=2_000_000):
+    """10-30 使用者：viewer 預設把模型放在畫面中間、大小合適。
+    min/max 會被離群點撐爆（SfM 有 z 到 -461 的點、海面浮塊、單塊模型 7 成顆粒在盒外）=> 用分位數：
+    只取不透明顆粒（sigmoid(opacity) > 0.5），xy 取 5~95 百分位、z 取 2~99（高樓頂不要被切掉）。
+    （外圈塊的塊內顆粒一路延伸到場景邊：full44 塊內 b3 的 x 最大 23.8、z 最小 -21.3；合併模型 x -72.8、z -82.8）
+    只讀 x/y/z/opacity 欄（memmap、最多抽 200 萬顆）；結果快取在 <ply>.bounds.json（檔案大小／mtime 變了就重算）。"""
+    import numpy as np
+    st = os.stat(path)
+    cache = path + ".bounds.json"
+    if os.path.exists(cache):
+        try:
+            c = json.load(open(cache))
+            if c.get("v") == 2 and c.get("size") == st.st_size and c.get("mtime") == int(st.st_mtime):
+                return c
+        except Exception:
+            pass
+    with open(path, "rb") as f:
+        if f.readline().strip() != b"ply":
+            raise ValueError("不是 PLY")
+        fmt, n, props, in_vertex = None, 0, [], False
+        while True:
+            ln = f.readline()
+            if not ln:
+                raise ValueError("PLY 標頭沒有 end_header")
+            w = ln.decode("ascii", "replace").split()
+            if not w:
+                continue
+            if w[0] == "format":
+                fmt = w[1]
+            elif w[0] == "element":
+                in_vertex = w[1] == "vertex"
+                if in_vertex:
+                    n = int(w[2])
+            elif w[0] == "property" and in_vertex:
+                if w[1] == "list":
+                    raise ValueError("vertex 有 list 屬性，不支援")
+                props.append((w[2], "<" + _PLY_TYPES[w[1]]))
+            elif w[0] == "end_header":
+                off = f.tell()
+                break
+    if fmt != "binary_little_endian":
+        raise ValueError(f"只支援 binary_little_endian（這個是 {fmt}）")
+    arr = np.memmap(path, dtype=np.dtype(props), mode="r", offset=off, shape=(n,))
+    idx = np.linspace(0, n - 1, min(n, n_sample)).astype(np.int64)
+    sub = arr[idx]
+    X = np.stack([sub["x"], sub["y"], sub["z"]], 1).astype(np.float64)
+    ok = np.all(np.isfinite(X), 1)
+    if "opacity" in [p[0] for p in props]:
+        o = 1 / (1 + np.exp(-np.clip(sub["opacity"].astype(np.float64), -60, 60)))   # 3DGS PLY 存的是 logit
+        if (ok & (o > 0.5)).sum() >= 1000:
+            ok &= o > 0.5
+    X = X[ok]
+    if len(X) == 0:
+        raise ValueError("沒有有限座標的顆粒")
+    lo = [float(np.percentile(X[:, 0], 5)), float(np.percentile(X[:, 1], 5)), float(np.percentile(X[:, 2], 2))]
+    hi = [float(np.percentile(X[:, 0], 95)), float(np.percentile(X[:, 1], 95)), float(np.percentile(X[:, 2], 99))]
+    out = {"ok": True, "v": 2, "lo": lo, "hi": hi, "n": int(n), "size": st.st_size, "mtime": int(st.st_mtime)}
+    try:
+        json.dump(out, open(cache, "w"))
+    except OSError:
+        pass
+    return out
+
 
 _state      = {"file": None, "ts": 0}
 _lock       = threading.Lock()
@@ -65,6 +135,13 @@ class Handler(SimpleHTTPRequestHandler):
         elif self.path == "/current.json":
             with _lock:
                 self._json(_state.copy())
+        elif self.path.startswith("/bounds.json"):
+            from urllib.parse import urlparse, parse_qs
+            name = os.path.basename(parse_qs(urlparse(self.path).query).get("file", [""])[0])
+            try:
+                self._json(ply_bounds(os.path.join(SERVE_DIR, name)))
+            except Exception as e:
+                self._json({"ok": False, "error": str(e)})
         else:
             super().do_GET()
 
