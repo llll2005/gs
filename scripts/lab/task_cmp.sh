@@ -2,7 +2,7 @@
 # ★★★★★★★ 對比實驗的**標準骨架**（使用者 2026-09-13 定調：一律以 2 萬多步為基準長度）
 # 用法：bash scripts/lab/task_cmp.sh <塊> <臂> [額外 CLI 覆寫...]（最後者勝；臂清單見 --help）
 #   環境變數：STEPS（全長）／CITYGS_FAMILY（家族前綴，預設 cs_；60k 用 cs60_ 且 STEPS=60000）／CITYGS_LEAN=1（lean_train）／
-#             CITYGS_CAP（cap_max）／CITYGS_SAVE_ITERS（中間存檔步數，預設 []＝只存最終）／CITYGS_DUP44（4x4 的 dup 份數，覆寫 logs/full44_init.tsv）／CITYGS_RUN_NAME（覆寫跑次名）／CITYGS_DRY=1（只印指令不執行）
+#             CITYGS_INIT_PLY（best 系列 init PLY 覆寫，全域跑次用）／CITYGS_CAP（cap_max）／CITYGS_SAVE_ITERS（中間存檔步數，預設 []＝只存最終）／CITYGS_DUP44（4x4 的 dup 份數，覆寫 logs/full44_init.tsv）／CITYGS_RUN_NAME（覆寫跑次名）／CITYGS_DRY=1（只印指令不執行）
 #
 # ## 為什麼是「2 萬多步」而不是 60k
 # 60k 一趟 7.6h（lab）/ 8.8h（本機）。而判準是**四個指標的正負號模式**
@@ -105,6 +105,8 @@ echo "block $BLK：$NCAM 台相機 / val 每 $PERIOD 步 => 全長 $STEPS 步、
 CASEARM=$ARM; OREG0=0; B1=0
 case "$ARM" in best0*) OREG0=1; CASEARM="best${ARM#best0}" ;; best1*) OREG0=1; B1=1; CASEARM="best${ARM#best1}" ;; esac
 _bestply () {   # 回傳 best 系列的 init PLY（5x5＝sfmfill_sweep/dup4；4x4＝sfmfill_sweep44/dup$K44）
+  # ★ 10-31 全域（不分塊）跑次：CITYGS_INIT_PLY=<相對 block_all 的 PLY> 直接指定（例：coarse_init/sfm_sub2880k.ply）
+  if [ -n "${CITYGS_INIT_PLY:-}" ]; then echo "$CITYGS_INIT_PLY"; return; fi
   if [ "$GRID" = 44 ]; then echo "sfmfill_sweep44/dup$K44/block_${BLK}.ply"; else echo "sfmfill_sweep/dup4/block_${BLK}.ply"; fi; }
 case "$CASEARM" in
   bestcdu100|bestcdu75|bestcdu25|bestnogate|bestsh2|bestsh1|bestsh0|bestdist100|bestdist1000|bestnotrim|bestfast|bestnormal|bestdepth|bestgeo|bestexpo|bestrun|bestsoft|bestsoft10|bestsoft1|bestmask|bestrbg|bestsh1dist100|bestsh1distr300|bestsh1distr1000|bestsh1softm1|bestmaskdist100|bestmaskpt|bestrunfa|bestrunsa|bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15|bestmaskdistrfed10b4)
