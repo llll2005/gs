@@ -358,6 +358,16 @@ class MCMC2DGSDensityController(MCMCDensityController):
     relocate_protect_absgrad: float = 0.0
     """★ 2026-10-31 重要性保護（使用者：|g| 當重要性訊號）：這段 densify 間隔累積的 |g| > 此值 x 全體平均的顆粒，
     就算 opacity 掉到死亡線以下也不在這次被 MCMC 回收（給它時間被光度梯度拉回來；0＝關）。需要 |g| 有在累積（absgrad_densify > 0）。"""
+    merge_interval: int = 0
+    """★ 2026-10-31 訓練中合併（使用者 10-30 的合併機制；`merge_ops.merge_step`）：增生期每這麼多步（要是 densification_interval 的倍數）
+    做一次「互為最佳」兩兩合併（同平面、相鄰、不透明），合併結果寫回 i、j 併進 dead_mask 由 relocation 搬走（N 不變）。0＝關。"""
+    merge_from_iter: int = 3000
+    merge_max_frac: float = 0.02
+    """每次最多合併的對數（佔 N 的比例）"""
+    merge_color_tol: float = 1.0
+    """顏色（SH DC→RGB）L1 差門檻；1.0＝不看顏色（讓窗戶與窗框併成實牆，細節交給後續訓練）"""
+    merge_k: int = 12
+
 
 
     absgrad_densify: float = 0.0
@@ -810,6 +820,20 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 if self._max_radii2D is not None:
                     self._max_radii2D = None
                     self._max_tiles2D = None      # N 變了，舊視窗長度對不上
+            _merge_dead = None
+            _mi = int(getattr(self.config, "merge_interval", 0) or 0)
+            if _mi > 0 and global_step >= int(getattr(self.config, "merge_from_iter", 3000)) and global_step % _mi == 0:
+                from .merge_ops import merge_step
+                _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=float(self.config.merge_max_frac),
+                                              color_tol=float(self.config.merge_color_tol))
+                if _mI.numel() > 0:
+                    self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)      # 合併後的 i 重設 Adam 狀態
+                    _merge_dead = torch.zeros(gaussian_model.n_gaussians, dtype=torch.bool, device=_mJ.device)
+                    _merge_dead[_mJ] = True
+                print(f"[merge] {'✅ 首次觸發' if not getattr(self, '_merge_announced', False) else '　'} step {global_step}："
+                      f"合併 {_minfo.get('pairs', 0):,} 對（立面 {100 * _minfo.get('facade', 0):.0f}%；長軸中位 {_minfo.get('len_before', 0):.4f} -> "
+                      f"{_minfo.get('len_after', 0):.4f}），j 交給 relocation 搬走", flush=True)
+                self._merge_announced = True
             death_line = self._current_min_opacity(global_step)
             dead_mask = (gaussian_model.get_opacities() <= death_line).squeeze(-1)
             _kp = float(getattr(self.config, "relocate_protect_absgrad", 0.0) or 0.0)
@@ -913,6 +937,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 _nf_idx = _nf.nonzero(as_tuple=True)[0]
                 dead_mask = dead_mask | _nf
                 print(f"[nonfinite] ⚠⚠ step {global_step}: {_nf_idx.numel():,} 顆參數非有限 => 併入死亡搬家、清 Adam 狀態", flush=True)
+            if _merge_dead is not None:
+                dead_mask = dead_mask | _merge_dead             # 合併掉的 j：不受 relocate_protect 保護、一定搬走
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
             if _nf_idx is not None:
                 self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_nf_idx)
