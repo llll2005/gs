@@ -137,6 +137,11 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_support_delta_front: float = 0.05
     depth_support_delta_back: float = 0.05
     depth_support_window: int = 400
+    depth_support_sfm_radius: float = 0.0
+    """★ 2026-11-01 >0 時：離 SfM 點 r 內（體素近似，最遠約 3.5r）的顆粒不受深度支撐判定（永遠算有支撐）；SfM 點讀 <data.path>/sparse/0/points3D.bin。
+    b3 現行模型上量：r=0.03 塔頂（z 3～4）被豁免 87%、浮塊候選（o>0.2、高出 SfM 包絡 0.1）0.3%；r=0.05 => 95%／4%。
+    使用者 11-01 目視 b3 超高塔頂變煙；量到深度支撐單獨就讓 z 3～4 的不透明顆粒 7.26 萬 → 1.58 萬
+    （單目深度在細高塔上不可靠，塔頂被判「一直在前方」）。SfM 點是多視角三角化過的，比單目可信；海面沒有 SfM 點，浮塊照樣被判。"""
     depth_see_through_reg: float = 0.0
     """★ 2026-10-31 單側「不能看穿表面」（使用者 10-30：離開空拍視角立面透空——窗戶被學成洞，從空拍看不出來）。
     只在塊外遮罩的 A 像素（第一表面在本塊）上：(1−α)＋relu(1/(1+margin) − z_單目／z_渲染)（後者只算 α>0.5 的像素）。
@@ -159,6 +164,19 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
     # ── 逐影像曝光補償（config.exposure_comp） ──
     def setup(self, stage: str, pl_module):
         super().setup(stage, pl_module)
+        self._sfm_xyz = None
+        if float(getattr(self.config, "depth_support_sfm_radius", 0.0)) > 0:
+            # ⚠ 不用 datamodule.point_cloud：task_cmp 的 best1 系列走 points_from ply => 那是 init PLY（SfM＋補點，補點也撒在海面上方的空中），
+            #   拿它豁免會連浮塊一起放過。直接讀 COLMAP 的 points3D.bin（只有三角化過的點）。
+            import os
+            from internal.dataparsers.colmap_dataparser import ColmapDataParser
+            root = pl_module.trainer.datamodule.hparams["path"]
+            cands = [os.path.join(root, "sparse", "0", "points3D.bin"), os.path.join(root, "sparse", "points3D.bin")]
+            f = next((x for x in cands if os.path.isfile(x)), None)
+            if f is not None:
+                self._sfm_xyz = ColmapDataParser.read_points3D_binary(f)[0]
+            print(f"[depth-support] SfM 豁免：半徑 {self.config.depth_support_sfm_radius:g}、"
+                  f"{f'{len(self._sfm_xyz):,} 個 SfM 點（{f}）' if f else f'⚠⚠ 找不到 points3D.bin（{cands}）=> 不會生效'}", flush=True)
         if not getattr(self.config, "exposure_comp", False):
             return
         n = len(pl_module.trainer.datamodule.dataparser_outputs.train_set)
@@ -312,9 +330,19 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             else:
                 cam = batch[0]
                 done = ds.update(step, xyz, cam.world_to_camera, cam.fx, cam.fy, cam.cx, cam.cy, int(cam.width), int(cam.height), inv.to(xyz.device))
+                exempt = ""
+                if done and getattr(self, "_sfm_xyz", None) is not None and ds.support is not None and ds.support.shape[0] == n:
+                    from .geom_gate import SfMVoxels
+                    if getattr(self, "_sfm_vox", None) is None:
+                        self._sfm_vox = SfMVoxels(self._sfm_xyz, float(c.depth_support_sfm_radius), xyz.device)
+                    near = self._sfm_vox.near(xyz.detach())
+                    k_ex = int((near & ~ds.support).sum())
+                    ds.support |= near
+                    exempt = f"、SfM 豁免 {k_ex:,} 顆（離 SfM 點近的 {100 * float(near.float().mean()):.1f}%）"
                 if done and (not getattr(self, "_ds_announced", False) or step % 2000 < int(c.depth_support_window)):
                     print(f"[depth-support] {'✅ 首次判定' if not getattr(self, '_ds_announced', False) else '　'} step={step}："
-                          f"視窗內看過 >=3 次 {100 * ds.last['seen']:.1f}%、一直在前方 {100 * ds.last['front']:.2f}%、從未貼面 {100 * ds.last['never']:.2f}%", flush=True)
+                          f"視窗內看過 >=3 次 {100 * ds.last['seen']:.1f}%、一直在前方 {100 * ds.last['front']:.2f}%、從未貼面 {100 * ds.last['never']:.2f}%"
+                          f"{exempt}", flush=True)
                     self._ds_announced = True
                 if ds.support is not None and ds.support.shape[0] == n:
                     gate &= ds.support

@@ -161,3 +161,38 @@ class DepthSupport:
             self.sum.zero_(); self.cnt.zero_(); self.mn.fill_(float("inf")); self.t0 = step
             return True
         return False
+
+
+class SfMVoxels:
+    """SfM 點的體素集合（體素邊長 r），查詢「顆粒附近有沒有 SfM 點」（2026-11-01：深度支撐的 SfM 豁免）。
+    查自己與 26 個鄰格 => r 內的一定算到、最遠約 2√3·r（≈3.5r）也會算到。"""
+
+    def __init__(self, points, r: float, device):
+        P = torch.as_tensor(points, dtype=torch.float32, device=device).reshape(-1, 3)
+        P = P[torch.isfinite(P).all(dim=-1)]
+        self.r = float(r)
+        self.n_points = int(P.shape[0])
+        self.lo = P.min(dim=0).values - 2 * self.r
+        self.keys = torch.unique(self._key(self._cell(P)))
+
+    def _cell(self, X):
+        return torch.floor((X.float() - self.lo) / self.r).long()
+
+    @staticmethod
+    def _key(c):
+        return (c[:, 0] << 42) | (c[:, 1] << 21) | c[:, 2]
+
+    @torch.no_grad()
+    def near(self, X: torch.Tensor) -> torch.Tensor:
+        c0 = self._cell(X)
+        out = torch.zeros(X.shape[0], dtype=torch.bool, device=X.device)
+        nk = self.keys.shape[0]
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    c = c0 + torch.tensor([dx, dy, dz], device=X.device)
+                    ok = ((c >= 0) & (c <= _M21)).all(dim=-1)
+                    q = self._key(c.clamp(0, _M21))
+                    i = torch.searchsorted(self.keys, q).clamp_max(nk - 1)
+                    out |= ok & (self.keys[i] == q)
+        return out

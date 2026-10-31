@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from internal.metrics.geom_gate import morton_neighbors, quat_normals, plane_q, plane_loss, DepthSupport
+from internal.metrics.geom_gate import morton_neighbors, quat_normals, plane_q, plane_loss, DepthSupport, SfMVoxels
 
 
 def _axis_quat(axis, ang):
@@ -118,6 +118,16 @@ class MetricGateTest(unittest.TestCase):
         self.assertIs(model._geom_gate, gate)
         metrics["loss"].backward()
         self.assertIsNotNone(q.grad)
+
+    def test_sfm_voxels_near(self):
+        """2026-11-01 深度支撐的 SfM 豁免：r 內一定算到、超過 2√3·r 一定不算。"""
+        g = torch.Generator().manual_seed(0)
+        P = torch.rand(3000, 3, generator=g) * 3
+        X = torch.rand(50000, 3, generator=g) * 3.4 - 0.2
+        near = SfMVoxels(P.numpy(), 0.05, "cpu").near(X)
+        d = torch.cdist(X, P).min(dim=1).values
+        self.assertTrue(bool(near[d <= 0.05].all()))
+        self.assertFalse(bool(near[d > 2 * math.sqrt(3) * 0.05 + 1e-6].any()))
 
     def test_gate_off_by_default(self):
         from internal.metrics.mcmc_citygsv2_metrics import MCMCCityGSV2Metrics
