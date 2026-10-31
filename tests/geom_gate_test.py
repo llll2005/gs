@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from internal.metrics.geom_gate import morton_neighbors, quat_normals, plane_q, plane_loss, DepthSupport, SfMVoxels
+from internal.metrics.geom_gate import morton_neighbors, quat_normals, plane_q, plane_loss, DepthSupport, SfMVoxels, sym3_eig, surf_planes, surf_loss
 
 
 def _axis_quat(axis, ang):
@@ -128,6 +128,52 @@ class MetricGateTest(unittest.TestCase):
         d = torch.cdist(X, P).min(dim=1).values
         self.assertTrue(bool(near[d <= 0.05].all()))
         self.assertFalse(bool(near[d > 2 * math.sqrt(3) * 0.05 + 1e-6].any()))
+
+    def test_sym3_eig_matches_eigh(self):
+        g = torch.Generator().manual_seed(1)
+        A = torch.randn(2000, 3, 3, generator=g); C = A @ A.transpose(1, 2)
+        e1, e2, e3, v = sym3_eig(C)
+        ev, evec = torch.linalg.eigh(C)
+        self.assertTrue(torch.allclose(torch.stack([e3, e2, e1], 1), ev, rtol=1e-3, atol=1e-3))
+        self.assertGreater(float((v * evec[:, :, 0]).sum(-1).abs().min()), 0.99)
+
+    def _surf_scene(self):
+        # z=0 平面上的隨機點（不透明；格點會讓 Morton 近鄰排成一直線）＋ 第 0 顆抬高 0.003、第 1 顆抬高 0.5（真結構／浮塊，要被截斷）
+        g = torch.Generator().manual_seed(2)
+        X = torch.cat([torch.rand(3000, 2, generator=g) * 0.3, torch.zeros(3000, 1)], 1)
+        X[0] = torch.tensor([0.15, 0.15, 0.003]); X[1] = torch.tensor([0.151, 0.15, 0.5]); X[2] = torch.tensor([0.05, 0.05, 0.0])
+        return X, torch.full((X.shape[0],), 0.9)
+
+    def test_surf_planes_and_truncated_loss(self):
+        """2026-11-01 鄰域平面約束：平面上的點法向是 z、有效；稍微偏離的被拉回（梯度沿 -z）；偏離 > tau 的梯度 0。"""
+        X, O = self._surf_scene()
+        C, NH, R, F, W = surf_planes(X, O, morton_neighbors(X, 6), 2.0)
+        self.assertGreater(float(NH[2, 2].abs()), 0.99)
+        self.assertLess(float(F[2]), 0.1)
+        self.assertGreater(float(NH[0, 2].abs()), 0.99)                     # 抬高那顆的平面由鄰居決定（不含自己）
+        self.assertGreater(float(F[0]), -1)                                   # 有算到（不是 nan）
+        Xg = X.clone().requires_grad_(True)
+        nrm = torch.tensor([[0.0, 0, 1]]).repeat(2, 1)
+        lp, lo, trunc = surf_loss(Xg[:2], nrm, C[:2], NH[:2], R[:2], tau=2.0)
+        lp.backward()
+        self.assertGreater(float(Xg.grad[0, 2]), 0)                          # 在平面上方 => 梯度 +z => 梯度下降往下拉回平面
+        self.assertEqual(float(Xg.grad[1].abs().sum()), 0.0)                 # 抬高 50 格 => 截斷、不拉
+        self.assertAlmostEqual(trunc, 0.5)
+        self.assertLess(float(lo), 1e-6)                                      # 法向和平面一致 => 朝向項 0
+
+    def test_surf_step_ramp_and_interval(self):
+        from internal.metrics.mcmc_citygsv2_metrics import MCMCCityGSV2Metrics
+        X, O = self._surf_scene()
+        m = MCMCCityGSV2Metrics(surf_reg=0.01, surf_from_iter=1000, surf_ramp_until=3000, surf_interval=4, surf_orient=1.0).instantiate()
+        q = torch.tensor([[1.0, 0, 0, 0]]).repeat(X.shape[0], 1).requires_grad_(True)
+        Xg = X.clone().requires_grad_(True)
+        model = SimpleNamespace(get_xyz=Xg, get_rotations=lambda: q)
+        for step, expect in ((999, False), (1001, False), (2000, True)):
+            metrics = {"loss": torch.zeros(())}
+            m._surf_step(model, step, metrics, {}, O)
+            self.assertEqual("surf" in metrics, expect, step)
+        metrics["loss"].backward()
+        self.assertIsNotNone(Xg.grad)
 
     def test_gate_off_by_default(self):
         from internal.metrics.mcmc_citygsv2_metrics import MCMCCityGSV2Metrics

@@ -196,3 +196,62 @@ class SfMVoxels:
                     i = torch.searchsorted(self.keys, q).clamp_max(nk - 1)
                     out |= ok & (self.keys[i] == q)
         return out
+
+
+def sym3_eig(C: torch.Tensor):
+    """[M,3,3] 對稱矩陣 => 特徵值 e1>=e2>=e3 與 e3 的特徵向量（解析式 Smith 1961，逐元素運算、不叫 cusolver）。
+    幾乎等向（p≈0）時特徵向量任意 => 呼叫端用 e3/e2 判平坦會把它濾掉。"""
+    a00, a11, a22 = C[:, 0, 0], C[:, 1, 1], C[:, 2, 2]
+    a01, a02, a12 = C[:, 0, 1], C[:, 0, 2], C[:, 1, 2]
+    q = (a00 + a11 + a22) / 3
+    p = torch.sqrt((((a00 - q) ** 2 + (a11 - q) ** 2 + (a22 - q) ** 2 + 2 * (a01 ** 2 + a02 ** 2 + a12 ** 2)) / 6).clamp_min(1e-30))
+    b00, b11, b22 = (a00 - q) / p, (a11 - q) / p, (a22 - q) / p
+    b01, b02, b12 = a01 / p, a02 / p, a12 / p
+    det = b00 * (b11 * b22 - b12 * b12) - b01 * (b01 * b22 - b12 * b02) + b02 * (b01 * b12 - b11 * b02)
+    phi = torch.acos((det / 2).clamp(-1.0, 1.0)) / 3
+    e1 = q + 2 * p * torch.cos(phi)
+    e3 = q + 2 * p * torch.cos(phi + 2.0943951023931953)
+    e2 = 3 * q - e1 - e3
+    r0 = torch.stack([a00 - e3, a01, a02], -1)
+    r1 = torch.stack([a01, a11 - e3, a12], -1)
+    r2 = torch.stack([a02, a12, a22 - e3], -1)
+    cs = torch.stack([torch.cross(r0, r1, dim=-1), torch.cross(r0, r2, dim=-1), torch.cross(r1, r2, dim=-1)], 1)   # [M,3,3]
+    nn = cs.norm(dim=-1)
+    v = cs.gather(1, nn.argmax(dim=1)[:, None, None].expand(-1, 1, 3))[:, 0]
+    v = v / v.norm(dim=-1, keepdim=True).clamp_min(1e-30)
+    return e1, e2, e3, v
+
+
+@torch.no_grad()
+def surf_planes(xyz, op, nbr, rad_mult: float = 2.0, chunk: int = 1 << 19):
+    """2026-11-01 鄰域平面約束（使用者 11-01：不渲染、用周遭高斯讓深度一致的表面平滑）。
+    每顆 i：鄰居（不含自己、距離 <= rad_mult×鄰居距離中位）以 opacity 加權的 PCA 平面
+    => 中心 c、法向 nh、面內尺度 r＝sqrt(e1)、平坦度 e3/e2、權重和 w（約等於「有幾顆不透明鄰居」）。"""
+    n = xyz.shape[0]
+    dev = xyz.device
+    C = torch.empty(n, 3, device=dev); NH = torch.empty(n, 3, device=dev)
+    R = torch.empty(n, device=dev); F = torch.empty(n, device=dev); W = torch.empty(n, device=dev)
+    for c0 in range(0, n, chunk):
+        ii = torch.arange(c0, min(c0 + chunk, n), device=dev)
+        nb = nbr[c0:c0 + chunk]
+        P = xyz[nb].float()
+        d = (P - xyz[ii].float()[:, None]).norm(dim=-1)
+        w = op[nb].float() * (nb != ii[:, None]) * (d <= rad_mult * d.median(dim=1, keepdim=True).values)
+        ws = w.sum(dim=1)
+        c = (w[..., None] * P).sum(dim=1) / ws.clamp_min(1e-12)[:, None]
+        D = P - c[:, None]
+        cov = torch.einsum("mk,mki,mkj->mij", w, D, D) / ws.clamp_min(1e-12)[:, None, None]
+        e1, e2, e3, v = sym3_eig(cov)
+        C[ii], NH[ii], W[ii] = c, v, ws
+        R[ii] = torch.sqrt(e1.clamp_min(0))
+        F[ii] = e3.clamp_min(0) / e2.clamp_min(1e-30)
+    return C, NH, R, F, W
+
+
+def surf_loss(xyz_i, nrm_i, c_i, nh_i, r_i, tau: float):
+    """離鄰域平面的距離（以面內尺度 r 為單位）取截斷絕對值 min(d, tau)：tau 以上當真結構、梯度 0（不抹細節）；
+    朝向項 1 − |n_i . nh|（|cos|：90 度附近梯度最大）。回傳 (位置項, 朝向項, 被截斷比例)。"""
+    d = ((xyz_i - c_i) * nh_i).sum(dim=-1).abs() / r_i.clamp_min(1e-8)
+    lp = d.clamp(max=tau).mean()
+    lo = (1 - (nrm_i * nh_i).sum(dim=-1).abs()).mean()
+    return lp, lo, float((d.detach() >= tau).float().mean())

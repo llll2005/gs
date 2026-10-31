@@ -150,6 +150,27 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_see_through_interval: int = 4
     """每 k 步算一次、權重乘 k（與 lambda_normal_interval 同一套規則）。"""
     depth_see_through_from_iter: int = 1000
+    surf_reg: float = 0.0
+    """★ 2026-11-01 鄰域平面約束（使用者 11-01：不增加計算、從 0 漸增到定值、用周遭高斯讓深度一致的表面平滑、取絕對值免得抹掉細節）。0＝關。
+    不渲染：每 surf_every 步用 Morton 近鄰算每顆的鄰域平面（opacity 加權 PCA，`geom_gate.surf_planes`），只對平坦鄰域（e3/e2 < surf_flat）
+    且有足夠不透明鄰居（權重和 >= surf_min_w）的顆粒施加；loss＝min(離平面距離／面內尺度, surf_tau)（截斷絕對值：超過 tau 當真結構、梯度 0）
+    ＋ surf_orient ×（1 − |n_i . 平面法向|）。每 surf_interval 步算一次（權重乘 k），每次抽 surf_frac 的有效顆粒；
+    權重在 surf_from_iter → surf_ramp_until 線性從 0 升到 surf_reg。出處：🟨 鄰域 PCA 平面是點雲處理常見做法、截斷 L1 是常見穩健懲罰；
+    拿來約束 2DGS 面元 ⚠ 未查證是否已有人做。"""
+    surf_from_iter: int = 1000
+    surf_ramp_until: int = 10000
+    surf_interval: int = 4
+    surf_every: int = 100
+    """每幾步重算近鄰與平面（顆數一變就立刻重算）；兩次之間平面固定、不帶梯度。"""
+    surf_frac: float = 0.1
+    surf_k: int = 6
+    """Morton 近鄰數（兩種軸序各前後 k/2 => 2k 個候選）。"""
+    surf_radius: float = 2.0
+    """只用距離 <= 這個倍數 × 鄰居距離中位的鄰居（Morton 近似會混進遠點）。"""
+    surf_flat: float = 0.1
+    surf_min_w: float = 3.0
+    surf_tau: float = 2.0
+    surf_orient: float = 0.0
     rgb_l2_weight: float = 0.0
     """★ 2026-10-31 L1 混 L2（使用者：少數視角的強證據被 L1 的「每像素只投正負 1 票」稀釋）：
     loss 另加 (1−λ_dssim)×w×mean((I_hat−I)²)。誤差 e 的像素梯度＝sign(e)＋2we —— w=2 時 e≈0.25 的像素是純 L1 的 2 倍。"""
@@ -351,6 +372,43 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         pbar["gate_off"] = False
         return gate
 
+    def _surf_step(self, gaussian_model, step, metrics, pbar, opacities):
+        """鄰域平面約束（config.surf_*）；沒開、還沒到起始步、不是第 k 步 => 不動 loss。"""
+        c = self.config
+        lam = float(getattr(c, "surf_reg", 0.0))
+        k = int(getattr(c, "surf_interval", 1) or 1)
+        if lam <= 0 or step < int(c.surf_from_iter) or (k > 1 and step % k != 0):
+            return
+        from .geom_gate import morton_neighbors, quat_normals, surf_planes, surf_loss
+        xyz = gaussian_model.get_xyz
+        n = xyz.shape[0]
+        st = getattr(self, "_surf_state", None)
+        if st is None or st["n"] != n or step - st["step"] >= int(c.surf_every):
+            with torch.no_grad():
+                nbr = morton_neighbors(xyz.detach(), int(c.surf_k))
+                C, NH, R, F, W = surf_planes(xyz.detach(), opacities.detach(), nbr, float(c.surf_radius))
+                del nbr
+                valid = (F < float(c.surf_flat)) & (W >= float(c.surf_min_w)) & (R > 0)
+                st = self._surf_state = {"n": n, "step": step, "C": C, "NH": NH, "R": R, "idx": valid.nonzero(as_tuple=True)[0]}
+        ramp = 1.0
+        if int(c.surf_ramp_until) > int(c.surf_from_iter):
+            ramp = min(1.0, (step - int(c.surf_from_iter)) / float(int(c.surf_ramp_until) - int(c.surf_from_iter)))
+        vidx = st["idx"]
+        if vidx.numel() == 0:
+            return
+        idx = vidx[torch.randint(0, vidx.numel(), (max(1, int(n * float(c.surf_frac))),), device=vidx.device)]
+        nrm = quat_normals(gaussian_model.get_rotations()[idx])
+        lp, lo, trunc = surf_loss(xyz[idx], nrm, st["C"][idx], st["NH"][idx], st["R"][idx], float(c.surf_tau))
+        loss = lp + float(c.surf_orient) * lo
+        metrics["loss"] = metrics["loss"] + lam * ramp * k * loss
+        metrics["surf"] = loss.detach()
+        pbar["surf"] = False
+        if not getattr(self, "_surf_announced", False) or (st["step"] == step and step % 2000 < int(c.surf_every)):
+            print(f"[surf] {'✅ 首次觸發' if not getattr(self, '_surf_announced', False) else '　'} step={step} N={n:,}："
+                  f"有效（平坦且有不透明鄰居）{100 * vidx.numel() / n:.1f}%、本步抽 {idx.numel():,}、位置項 {float(lp):.3f}、"
+                  f"被截斷（> tau）{100 * trunc:.1f}%、朝向項 {float(lo):.3f}、權重 {lam * ramp:g}（漸增 {100 * ramp:.0f}%）", flush=True)
+            self._surf_announced = True
+
     def _see_through_step(self, step, batch, outputs, metrics, pbar):
         """單側「不能看穿表面」（config.depth_see_through_*）；條件不符就不動 loss。"""
         c = self.config
@@ -426,6 +484,8 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             metrics["loss"] = metrics["loss"] + float(self.config.geom_gate_down_reg) * _dn
             metrics["gate_dn"] = _dn.detach()
             pbar["gate_dn"] = False
+
+        self._surf_step(gaussian_model, step, metrics, pbar, opacities)
 
         _ew = float(getattr(self.config, "opacity_entropy_reg", 0.0))
         if _ew > 0 and step >= int(getattr(self.config, "opacity_entropy_from_iter", 0)):
