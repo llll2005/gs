@@ -145,6 +145,9 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_see_through_interval: int = 4
     """每 k 步算一次、權重乘 k（與 lambda_normal_interval 同一套規則）。"""
     depth_see_through_from_iter: int = 1000
+    rgb_l2_weight: float = 0.0
+    """★ 2026-10-31 L1 混 L2（使用者：少數視角的強證據被 L1 的「每像素只投正負 1 票」稀釋）：
+    loss 另加 (1−λ_dssim)×w×mean((I_hat−I)²)。誤差 e 的像素梯度＝sign(e)＋2we —— w=2 時 e≈0.25 的像素是純 L1 的 2 倍。"""
 
     def instantiate(self, *args, **kwargs) -> "MCMCCityGSV2MetricsModule":
         return MCMCCityGSV2MetricsModule(self)
@@ -354,6 +357,17 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             outputs = self._exposure_apply(step, batch, outputs)
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
         self._see_through_step(step, batch, outputs, metrics, pbar)
+        _w2 = float(getattr(self.config, "rgb_l2_weight", 0.0) or 0.0)
+        if _w2 > 0:
+            _gt = batch[1][1]
+            _gt = _gt if _gt.is_floating_point() else _gt.float() / 255.0
+            _l2 = ((outputs["render"] - _gt) ** 2).mean()        # 遮罩 C 像素兩邊都是 detach 的渲染 => 差 0
+            metrics["loss"] = metrics["loss"] + (1.0 - self.config.lambda_dssim) * _w2 * _l2
+            metrics["l2"] = _l2.detach()
+            pbar["l2"] = False
+            if not getattr(self, "_l2_announced", False):
+                self._l2_announced = True
+                print(f"[rgb-l2] ✅ 首次觸發 step={step}：L1 之外加 (1−λ)×{_w2}×L2，本步 L2 {float(_l2):.5f}", flush=True)
         if getattr(self.config, "exposure_comp", False) and step >= self.config.exposure_from_iter:
             with torch.no_grad():
                 la = self.ex_logit - self.ex_logit.mean()

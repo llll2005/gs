@@ -44,6 +44,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             bwd_reduce: bool = False,
             bwd_pair_bit: bool = False,
             trim_running_vc: bool = False,
+            trim_protect_vc: float = -1.0,
             trim_soft_rho: float = 0.0,
             trim_schedule: str = "",
             trim_by_mean_contribution: bool = False,
@@ -107,6 +108,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #                    支撐外的在 loss 加 rho/2·mean((o+λ)²)（λ 每次投影累加 o）把 opacity 拉向 0、由 MCMC 回收；
         #                    增生期最後一次 trim 把仍在支撐外的硬剪掉。出處：GaussianSpa（ADMM 稀疏化）＋判準換成我方 V/C。
         self.trim_running_vc = trim_running_vc
+        # ★ 2026-10-31 最大貢獻保護（使用者：少數視角才有的資訊被「所有視角加總」的 V/C 稀釋 => b2 超高塔頂被剪）：
+        #   累加期間記錄逐顆「單一視角的平均貢獻 ta/cn」的最大值 M；M >= trim_protect_vc 的顆粒這輪不剪（-1＝關）。
+        self.trim_protect_vc = trim_protect_vc
         # ★ 2026-10-24 SH 分開存放／SH 的 Adam 融進 backward（紀錄/加速論文對照.md A5、B2；光柵器 cuda_rasterizer/sh_adam.h）
         #   sh_split             訓練步把 shs_dc (N,1,3) 與 shs_rest (N,15,3) 分開交給光柵器，不再每步 torch.cat 成 (N,16,3)
         #                        （本機 4050、1.29M 顆：cat 的 forward＋backward 9.1 ms／步）。渲染逐位元相同。
@@ -650,6 +654,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
             st = self._trim_state(pc)
             st["V"] += ta.float()
             st["C"] += cn.float()
+            if float(getattr(self, "trim_protect_vc", -1.0) or -1.0) > 0:
+                mt = self._trim_state(pc, ("M",))["M"]
+                torch.maximum(mt, torch.where(cn > 0, ta.float() / cn.float().clamp_min(1.0), torch.zeros_like(mt)), out=mt)
             st["views"] = int(st.get("views", 0)) + 1
         if not getattr(self, "_acc_announced", False):
             self._acc_announced = True
@@ -667,6 +674,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
         k_cut = int(self.prune_ratio * pc.get_xyz.shape[0])
         thr = torch.kthvalue(score.float().cpu(), max(1, min(k_cut, n_seen))).values.to(score.device) if n_seen > 0 and k_cut > 0 else None
         low = (score <= thr) & seen if thr is not None else torch.zeros_like(seen)
+        _ptau = float(getattr(self, "trim_protect_vc", -1.0) or -1.0)
+        _prot_msg = ""
+        if _ptau > 0 and "M" in st and st["M"].shape[0] == low.shape[0]:
+            _prot = low & (st["M"] >= _ptau)
+            low = low & ~_prot
+            _prot_msg = f"｜最大貢獻保護（單一視角平均貢獻 >= {_ptau:g}）免剪 {int(_prot.sum()):,} 顆"
+            if not getattr(self, "_prot_announced", False):
+                self._prot_announced = True
+                print(f"[trim-protect] ✅ 首次觸發 step {step}：本輪候選中 {int(_prot.sum()):,} 顆因某一視角的平均貢獻 >= {_ptau:g} 免剪", flush=True)
         rho = float(getattr(self, "trim_soft_rho", 0.0))
         tag = "trim-soft" if rho != 0 else "trim-running"
         if rho != 0 and step < until:   # ★ 10-18 rho<0＝反向（把支撐外的 opacity 往 1 推；使用者要的對照）
@@ -693,11 +709,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if rho != 0:
                 pc._trim_state.pop("lam", None); pc._trim_state.pop("off", None); pc._trim_state.pop("off_n", None)
         print(f"[{tag}] step {step}：{n_views} 個訓練視角累加、看到 {n_seen:,}／{seen.numel():,} 顆、未觀測 {seen.numel() - n_seen:,} 顆不剪；"
-              f"門檻 V/C {float(thr) if thr is not None else float('nan'):.3e}｜{msg}", flush=True)
+              f"門檻 V/C {float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}", flush=True)
         # 重設累加器（剪枝後 N 變了 => 以新 N 重建）
         pc._trim_state["V"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         pc._trim_state["C"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         pc._trim_state["views"] = 0
+        if "M" in pc._trim_state:
+            pc._trim_state["M"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         if step >= until:
             self._acc_stop = True          # 增生期結束 => 不再累加（省 forward 的那點開銷）
         elif int(getattr(self, "reseed_views", 0) or 0) > 0 and rho == 0:

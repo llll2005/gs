@@ -355,6 +355,10 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 2026-10-09（使用者的定額 MCMC 構想）：>0 時 relocate 抽宿主也乘上 AbsGS 權重
     `probs = o * (1 + w * |g|/mean|g|)`（原本 relocate 只按 opacity 抽，absgrad 只作用在 add_new_gs）。
     不增生（add_ratio 1.0）時 absgrad 只能透過這裡起作用。需要 |g| 有在累積（absgrad_densify 或 absgrad_report > 0）。"""
+    relocate_protect_absgrad: float = 0.0
+    """★ 2026-10-31 重要性保護（使用者：|g| 當重要性訊號）：這段 densify 間隔累積的 |g| > 此值 x 全體平均的顆粒，
+    就算 opacity 掉到死亡線以下也不在這次被 MCMC 回收（給它時間被光度梯度拉回來；0＝關）。需要 |g| 有在累積（absgrad_densify > 0）。"""
+
 
     absgrad_densify: float = 0.0
     """>0 時把 AbsGS 的 `|g|` 當**增生取樣權重**：`probs *= (1 + w * |g|/mean|g|)`。
@@ -808,6 +812,19 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     self._max_tiles2D = None      # N 變了，舊視窗長度對不上
             death_line = self._current_min_opacity(global_step)
             dead_mask = (gaussian_model.get_opacities() <= death_line).squeeze(-1)
+            _kp = float(getattr(self.config, "relocate_protect_absgrad", 0.0) or 0.0)
+            if _kp > 0:
+                _g = getattr(self, "_absgrad_accum", None)
+                if _g is not None and _g.shape[0] == dead_mask.shape[0] and float(_g.sum()) > 0:
+                    _prot = dead_mask & (_g > _kp * _g.mean())
+                    dead_mask = dead_mask & ~_prot
+                    if not getattr(self, "_reloc_prot_announced", False) or global_step % 3000 == 0:
+                        self._reloc_prot_announced = True
+                        print(f"[relocate-protect] {'✅' if global_step < 3000 else '　'} step {global_step}：死亡 {int(dead_mask.sum()) + int(_prot.sum()):,} 顆中 "
+                              f"{int(_prot.sum()):,} 顆 |g| > {_kp:g}x 平均 => 這次不回收", flush=True)
+                elif not getattr(self, "_reloc_prot_warned", False):
+                    self._reloc_prot_warned = True
+                    print("⚠⚠ [relocate-protect] 拿不到 |g|（absgrad_densify 沒開或長度不符）=> 這次不保護", flush=True)
             if self.config.min_opacity_final > 0 and global_step % 1500 == 0:
                 print(f"[death-line] step {global_step}: min_opacity {death_line:.4f}, dead {int(dead_mask.sum())}")
             # value-per-cost channel: render-grounded value (multi-view alpha-blending
