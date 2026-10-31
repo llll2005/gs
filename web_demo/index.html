@@ -100,12 +100,8 @@
 <div id="ui">
   <h2>CityGaussian Demo</h2>
   <div style="color:#aaa;font-size:11px">MatrixCity aerial · 2DGS · RTG-SLAM init</div>
-  <div style="margin-top:8px">
-    <select id="sel" onchange="loadByName(this.value)">
-      <option disabled selected>— 尚無 .ply 檔案 —</option>
-    </select>
-  </div>
-  <div class="pane-ctl" style="display:flex;gap:4px;align-items:center">
+  <!-- 11-01 使用者：上面那個「伺服器上的 ply」選單很難用（檔名看不出跑次、跟 ckpt 選單對不上）=> 拿掉，只留本機 ckpt -->
+  <div class="pane-ctl" style="display:flex;gap:4px;align-items:center;margin-top:8px">
     <span class="tag">本機 ckpt</span>
     <select id="ckptSel" style="max-width:32em">
       <option disabled selected>— 載入中 —</option>
@@ -166,7 +162,6 @@ controls.minDistance = 0;
 controls.maxDistance = Infinity;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
-const sel          = document.getElementById("sel");
 const statusEl     = document.getElementById("status");
 const progTrack    = document.getElementById("prog-track");
 const progBar      = document.getElementById("prog-bar");
@@ -313,8 +308,6 @@ async function uploadToServer(file, endpoint, plyName, stageLabel) {
   const cached = await fetch("/files.json").then(r => r.json()).catch(() => []);
   if (cached.includes(plyName)) {
     setProgress(100, `已有快取：${plyName}`, "done");
-    await refreshFileList();
-    sel.value = plyName;
     currentFile = null;
     await loadSplat(plyName, plyName);
     return;
@@ -338,8 +331,6 @@ async function uploadToServer(file, endpoint, plyName, stageLabel) {
         setProgress(100, `失敗：${res.error}`, "error");
         return reject(new Error(res.error));
       }
-      await refreshFileList();
-      sel.value = res.file;
       currentFile = null;
       await loadSplat(res.file, res.file).then(resolve).catch(reject);
     };
@@ -418,8 +409,16 @@ document.addEventListener("drop", e => {
 // 檔案本來就在同一台機器上（60k 的 ckpt 是 1.6 GB），走瀏覽器上傳是繞遠路，
 // 而且在這台機器上 Wayland 的拖放送不出 dataTransfer（types 全空）=> 這條完全繞開兩者。
 const ckptSel = document.getElementById("ckptSel");
+// 11-01：清單原本只在開頁時抓一次 => 之後下載的 ckpt 不會出現（使用者以為載入不了）。改成每 10 秒重抓，
+//   只有清單真的變了才重建（重建會把正打開的下拉收起來），並保留目前選的那個。
+let ckptKey = null;
 async function refreshCkptList() {
-  const cks = await fetch("/ckpts.json").then(r => r.json()).catch(() => []);
+  const cks = await fetch("/ckpts.json").then(r => r.json()).catch(() => null);
+  if (!cks) return;
+  const key = cks.map(c => c.path).join("\n");
+  if (key === ckptKey) return;
+  ckptKey = key;
+  const keep = ckptSel.value;
   ckptSel.innerHTML = "";
   if (!cks.length) {
     ckptSel.innerHTML = '<option disabled selected>— 找不到 outputs/**/{checkpoints,deploy}/*.ckpt —</option>';
@@ -435,6 +434,7 @@ async function refreshCkptList() {
     o.textContent = `${c.path.replace(/^outputs\//, "")}  (${c.mb} MB)`;
     ckptSel.appendChild(o);
   }
+  if (keep && cks.some(c => c.path === keep)) ckptSel.value = keep;
 }
 ckptSel.addEventListener("change", async () => {
   const path = ckptSel.value;
@@ -447,8 +447,6 @@ ckptSel.addEventListener("change", async () => {
     }).then(r => r.json());
     if (!r.ok) { setProgress(100, `轉檔失敗：${r.error}`, "error"); return; }
     setProgress(100, r.cached ? `已有快取：${r.file}` : `轉檔完成：${r.file}`, "done");
-    await refreshFileList();
-    sel.value = r.file;
     currentFile = null;
     await loadSplat(r.file, r.file);
   } catch (e) {
@@ -456,26 +454,12 @@ ckptSel.addEventListener("change", async () => {
   }
 });
 
-// ── Server file list ──────────────────────────────────────────────────────
-async function refreshFileList() {
-  const files = await fetch("/files.json").then(r => r.json()).catch(() => []);
-  const prev  = [...sel.options].map(o => o.value);
-  const added = files.filter(f => !prev.includes(f));
-  for (const f of added) {
-    const opt = document.createElement("option");
-    opt.value = opt.textContent = f;
-    sel.appendChild(opt);
-  }
-  if (files.length > 0 && sel.options[0]?.disabled) sel.remove(0);
-}
-
+// 外部用 POST /select 指定要顯示的 ply 時照樣載入（沒有 ply 選單了，直接載）
 async function pollCurrent() {
   try {
     const data = await fetch("/current.json").then(r => r.json());
     if (data.ts > lastTs && data.file) {
       lastTs = data.ts;
-      await refreshFileList();
-      sel.value = data.file;
       currentFile = null;
       await loadSplat(data.file, data.file);
     }
@@ -483,16 +467,12 @@ async function pollCurrent() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────
-await refreshFileList();
-refreshCkptList();          // 不 await：掃 outputs/ 不該擋住第一個檔的顯示
-if (sel.options.length && !sel.options[0].disabled) {
-  await loadByName(sel.options[0].value);
-} else {
-  statusEl.textContent = "拖曳 .ply 或 .ckpt 進來開始";
-}
+// 開頁不再自動載入 ply 清單的第一個（照檔名排序的第一個是無關的舊檔）
+refreshCkptList();
+statusEl.textContent = "從「本機 ckpt」選一個（或拖曳 .ply／.ckpt 進來）";
 
-setInterval(pollCurrent,     1500);
-setInterval(refreshFileList, 5000);
+setInterval(pollCurrent,      1500);
+setInterval(refreshCkptList, 10000);
 
 // ── Resize ────────────────────────────────────────────────────────────────
 window.addEventListener("resize", () => {
