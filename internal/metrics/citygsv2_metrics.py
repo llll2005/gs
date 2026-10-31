@@ -58,6 +58,8 @@ class CityGSV2Metrics(GS2DMetrics):
 
     lambda_normal_interval: int = 1     # ★ 2026-10-29 normal 每 k 步算一次、權重乘 k（說明見 GS2DMetrics）
 
+    depth_loss_interval: int = 1        # ★ 2026-10-31 單目深度 loss 每 k 步算一次、權重乘 k；該步渲染器走完整路徑取 surf_depth（同 normal）
+
     depth_loss_type: Literal["l1", "l1+ssim", "l2", "kl"] = "l1"
 
     depth_loss_ssim_weight: float = 0.2
@@ -206,6 +208,12 @@ class CityGSV2MetricsModule(GS2DMetricsImpl):
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
 
         d_reg_weight = self.get_weight(step)
+        _dli = int(getattr(self.config, "depth_loss_interval", 1) or 1)
+        if _dli > 1 and d_reg_weight > 0:
+            d_reg_weight = d_reg_weight * _dli if step % _dli == 0 else 0.0
+            if d_reg_weight > 0 and step < 10 ** 8 and not getattr(self, "_depth_interval_announced", False):   # sanity check 用假步數，排除
+                self._depth_interval_announced = True
+                print(f"[depth-interval] ✅ 首次觸發 step={step}：單目深度 loss 每 {_dli} 步算一次、權重 {d_reg_weight:.4g}（＝{_dli} 倍）", flush=True)
         # 2026-08-26：權重為 0 時**跳過計算**。`get_inverse_depth_metric` 是全幅逐像素
         # （1/depth、resize、正規化、L1、**外加一個 SSIM 窗積分**）且帶 grad 進 loss
         # ⇒ backward 也走一遍。現行配方 `depth_loss_weight.init = 0.0` ⇒ 全是純浪費。

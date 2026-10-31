@@ -80,6 +80,8 @@ def main():
     ap.add_argument("--far", type=float, default=50.0, help="射線不打地面時的延伸距離（x 第一表面深度）")
     ap.add_argument("--out", default=None)
     ap.add_argument("--depth_dir", default="estimated_depths")
+    ap.add_argument("--depth_raw", action="store_true",
+                    help="★ 10-31 深度檔已是場景單位的逆深度（例：已訓練模型渲染的 1/z，0＝無效），不套 estimated_depth_scales.json")
     ap.add_argument("--max_views", type=int, default=0)
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--overlay", type=int, default=0, help="存幾張疊圖")
@@ -145,10 +147,12 @@ def main():
         t_start = time.time(); n_ov = 0; miss = 0
         for i, nm in enumerate(names):
             im = by_name.get(nm); npy = os.path.join(D, a.depth_dir, nm + ".npy")
-            if im is None or nm not in scales or not os.path.exists(npy):
+            if im is None or (nm not in scales and not a.depth_raw) or not os.path.exists(npy):
                 miss += 1; continue
             cam = cams[im.camera_id]; fx, fy, cx, cy = cam.params[:4]
-            inv = np.load(npy).astype(np.float64) * scales[nm]["scale"] + scales[nm]["offset"]
+            inv = np.load(npy).astype(np.float64)
+            if not a.depth_raw:
+                inv = inv * scales[nm]["scale"] + scales[nm]["offset"]
             H, W = inv.shape
             sx, sy = W / cam.width, H / cam.height          # 深度圖解析度 vs COLMAP 相機
             R = qvec2rotmat(im.qvec); C = -R.T @ im.tvec

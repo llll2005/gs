@@ -23,6 +23,30 @@ import torch
 from .citygsv2_metrics import CityGSV2Metrics, CityGSV2MetricsModule
 
 
+def see_through_loss(alpha, surf_depth, inv_gt, A, margin: float):
+    """單側「不能看穿表面」（10-31）。A＝第一表面在本塊的像素（塊外遮罩 1）；inv_gt＝單目逆深度（已縮放到場景單位，<=0＝無效）。
+    回傳 (loss, 統計)：loss＝[Σ_A (1−α) ＋ Σ_{A, α>0.5, 有效} relu(1/(1+margin) − z_gt/z_render)] / |A|。
+    比單目淺（z_render < z_gt）時第二項是 0 => 只懲罰「看穿到更深處」與「沒蓋滿」。"""
+    a = alpha.reshape(alpha.shape[-2:])
+    z = surf_depth.reshape(surf_depth.shape[-2:])
+    g = inv_gt.reshape(inv_gt.shape[-2:]).to(z.dtype)
+    if g.shape != z.shape:
+        g = torch.nn.functional.interpolate(g[None, None], size=z.shape, mode="nearest")[0, 0]
+    A = A.reshape(A.shape[-2:])
+    if A.shape != z.shape:
+        A = torch.nn.functional.interpolate(A[None, None].float(), size=z.shape, mode="nearest")[0, 0] > 0.5
+    nA = A.sum().clamp_min(1)
+    hole = (1 - a) * A
+    valid = A & (g > 1e-6) & (a.detach() > 0.5)
+    r = (g * z.clamp_min(1e-4))                       # = z_render / z_gt（g＝1/z_gt）
+    deeper = torch.relu(1.0 / (1.0 + margin) - 1.0 / r.clamp_min(1e-6)) * valid
+    loss = (hole.sum() + deeper.sum()) / nA
+    with torch.no_grad():
+        st = {"A": float(A.float().mean()), "holes": float(((a < 0.5) & A).sum() / nA),
+              "deeper": float(((r > 1.0 + margin) & valid).sum() / nA)}
+    return loss, st
+
+
 @dataclass
 class MCMCCityGSV2Metrics(CityGSV2Metrics):
     opacity_reg: float = 0.01
@@ -113,6 +137,14 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_support_delta_front: float = 0.05
     depth_support_delta_back: float = 0.05
     depth_support_window: int = 400
+    depth_see_through_reg: float = 0.0
+    """★ 2026-10-31 單側「不能看穿表面」（使用者 10-30：離開空拍視角立面透空——窗戶被學成洞，從空拍看不出來）。
+    只在塊外遮罩的 A 像素（第一表面在本塊）上：(1−α)＋relu(1/(1+margin) − z_單目／z_渲染)（後者只算 α>0.5 的像素）。
+    比單目深度淺不罰（不和細節拉扯）、看穿到更深處或沒蓋滿才罰。需要 block_mask_dir 與單目深度；該步渲染器走完整路徑（同 normal 每 k 步）。"""
+    depth_see_through_margin: float = 0.1
+    depth_see_through_interval: int = 4
+    """每 k 步算一次、權重乘 k（與 lambda_normal_interval 同一套規則）。"""
+    depth_see_through_from_iter: int = 1000
 
     def instantiate(self, *args, **kwargs) -> "MCMCCityGSV2MetricsModule":
         return MCMCCityGSV2MetricsModule(self)
@@ -204,6 +236,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             m = torch.nn.functional.interpolate(t, size=tuple(gt.shape[-2:]), mode="nearest")[0, 0].to(torch.uint8)
             cache[key] = m
         m = m.to(gt.device, non_blocking=True)
+        self._bm_cur = m      # 10-31：本步的遮罩（單側「不能看穿」只在 A 像素上算）
         bg = getattr(pl_module, "_last_bg", None)
         if bg is None:
             raise RuntimeError("block_mask_dir 需要 GaussianSplatting._last_bg（本步背景色）")
@@ -287,12 +320,40 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         pbar["gate_off"] = False
         return gate
 
+    def _see_through_step(self, step, batch, outputs, metrics, pbar):
+        """單側「不能看穿表面」（config.depth_see_through_*）；條件不符就不動 loss。"""
+        c = self.config
+        w = float(getattr(c, "depth_see_through_reg", 0.0))
+        k = int(getattr(c, "depth_see_through_interval", 1) or 1)
+        if w <= 0 or step < int(getattr(c, "depth_see_through_from_iter", 0)) or (k > 1 and step % k != 0):
+            return
+        m = getattr(self, "_bm_cur", None)
+        inv = batch[2] if len(batch) > 2 else None
+        if isinstance(inv, tuple):
+            inv = inv[0]
+        if m is None or inv is None or "surf_depth" not in outputs or "rend_alpha" not in outputs:
+            if not getattr(self, "_st_warned", False):
+                self._st_warned = True
+                print(f"⚠⚠ [see-through] 拿不到 {'遮罩' if m is None else '單目深度' if inv is None else '完整路徑的 surf_depth／rend_alpha'}"
+                      f" => 這一步不算（step={step}）", flush=True)
+            return
+        loss, st = see_through_loss(outputs["rend_alpha"], outputs["surf_depth"], inv.to(m.device), m == 1, float(c.depth_see_through_margin))
+        metrics["loss"] = metrics["loss"] + w * k * loss
+        metrics["see_thru"] = loss.detach()
+        pbar["see_thru"] = False
+        if not getattr(self, "_st_announced", False) or step % 2000 == 0:
+            print(f"[see-through] {'✅ 首次觸發' if not getattr(self, '_st_announced', False) else '　'} step={step}：A 像素 {st['A']:.3f}、"
+                  f"其中 α<0.5 {st['holes']:.3f}、看穿（深於單目 {1 + c.depth_see_through_margin:.2f} 倍）{st['deeper']:.3f}；loss {float(loss):.4f}（權重 {w}×{k}）", flush=True)
+            self._st_announced = True
+
     def get_train_metrics(self, pl_module, gaussian_model, step: int, batch, outputs) -> Tuple[Dict[str, Any], Dict[str, bool]]:
+        self._bm_cur = None
         if getattr(self.config, "block_mask_dir", ""):
             batch, outputs = self._block_mask_apply(pl_module, step, batch, outputs)
         if getattr(self.config, "exposure_comp", False):
             outputs = self._exposure_apply(step, batch, outputs)
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
+        self._see_through_step(step, batch, outputs, metrics, pbar)
         if getattr(self.config, "exposure_comp", False) and step >= self.config.exposure_from_iter:
             with torch.no_grad():
                 la = self.ex_logit - self.ex_logit.mean()

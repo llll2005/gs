@@ -532,6 +532,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
             nfr = int(getattr(mcfg, "normal_regularization_from_iter", 0) or 0)
             _ni = int(getattr(mcfg, "lambda_normal_interval", 1) or 1)
             kwargs["_geo"] = ln > 0 and (step + 1) > nfr and (_ni <= 1 or (step + 1) % _ni == 0)
+            # ★ 2026-10-31 單目深度 loss（depth_loss_interval）與單側「不能看穿」（depth_see_through_*）有作用的步也要 surf_depth => 不走 lean
+            _dw = getattr(mcfg, "depth_loss_weight", None)
+            if _dw is not None and float(getattr(_dw, "init", 0.0) or 0.0) > 0:
+                _dli = int(getattr(mcfg, "depth_loss_interval", 1) or 1)
+                kwargs["_geo"] = kwargs["_geo"] or _dli <= 1 or (step + 1) % _dli == 0
+            if float(getattr(mcfg, "depth_see_through_reg", 0.0) or 0.0) > 0:
+                _sti = int(getattr(mcfg, "depth_see_through_interval", 1) or 1)
+                kwargs["_geo"] = kwargs["_geo"] or ((step + 1) >= int(getattr(mcfg, "depth_see_through_from_iter", 0) or 0)
+                                                    and (_sti <= 1 or (step + 1) % _sti == 0))
             if kwargs["_geo"] and not getattr(self, "_geo_announced", False):
                 self._geo_announced = True
                 print(f"[normal-geo] ✅ 首次觸發 step={step}：這一步光柵器不走 lean、算 surf_normal（normal 每 {_ni} 步）", flush=True)
