@@ -24,9 +24,23 @@ def _qmat(q):
 
 
 def _mat2q(R):
-    t = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
-    w = torch.sqrt((1 + t).clamp_min(1e-12)) / 2
-    q = torch.stack([w, (R[:, 2, 1] - R[:, 1, 2]) / (4 * w), (R[:, 0, 2] - R[:, 2, 0]) / (4 * w), (R[:, 1, 0] - R[:, 0, 1]) / (4 * w)], -1)
+    """旋轉矩陣 => (w, x, y, z)。Shepperd：依 trace 與三個對角項中最大者分四種情況（只用 trace 的公式在轉角近 180° 時 w→0、
+    分母爆掉 => 方向是雜訊；2026-11-02 補洞面元朝下（R＝繞軸 180°）時抓到，訓練中合併寫回的朝向也受影響）。"""
+    m00, m11, m22 = R[:, 0, 0], R[:, 1, 1], R[:, 2, 2]
+    r21, r12, r02, r20, r10, r01 = R[:, 2, 1], R[:, 1, 2], R[:, 0, 2], R[:, 2, 0], R[:, 1, 0], R[:, 0, 1]
+    t = m00 + m11 + m22
+    s0 = torch.sqrt((1 + t).clamp_min(1e-12)) * 2
+    s1 = torch.sqrt((1 + m00 - m11 - m22).clamp_min(1e-12)) * 2
+    s2 = torch.sqrt((1 + m11 - m00 - m22).clamp_min(1e-12)) * 2
+    s3 = torch.sqrt((1 + m22 - m00 - m11).clamp_min(1e-12)) * 2
+    c = torch.stack([
+        torch.stack([s0 / 4, (r21 - r12) / s0, (r02 - r20) / s0, (r10 - r01) / s0], -1),
+        torch.stack([(r21 - r12) / s1, s1 / 4, (r01 + r10) / s1, (r02 + r20) / s1], -1),
+        torch.stack([(r02 - r20) / s2, (r01 + r10) / s2, s2 / 4, (r12 + r21) / s2], -1),
+        torch.stack([(r10 - r01) / s3, (r02 + r20) / s3, (r12 + r21) / s3, s3 / 4], -1)], 1)      # [n, 4 種, 4]
+    k = torch.stack([t, m00, m11, m22], -1).argmax(-1)
+    q = c.gather(1, k[:, None, None].expand(-1, 1, 4))[:, 0]
+    q = q * torch.where(q[:, :1] < 0, -1.0, 1.0)                                                 # w >= 0（同一個旋轉）
     return q / q.norm(dim=-1, keepdim=True).clamp_min(1e-12)
 
 

@@ -36,6 +36,54 @@ from .density_controller import DensityControllerImpl, Utils
 from .mcmc_density_controller import MCMCDensityController, MCMCDensityControllerImpl
 
 
+def hole_candidates(alpha, z, inv, A, margin: float):
+    """★ 2026-11-02 MCMC 補洞放點的像素：A（第一表面在本塊）且單目有效（inv>0），
+    α<0.5（洞）或 α>=0.5 但渲染深度比單目深 1+margin 倍（看穿）。全部 [H, W]；回傳 (洞, 看穿) 兩個 bool 圖。"""
+    ok = A & (inv > 1e-6)
+    zm = 1.0 / inv.clamp_min(1e-6)
+    holes = ok & (alpha < 0.5)
+    deeper = ok & (alpha >= 0.5) & (z > zm * (1.0 + margin))
+    return holes, deeper
+
+
+def backproject(u, v, z, fx, fy, cx, cy, w2c):
+    """像素中心 (u, v)（已含 +0.5）＋相機 z => 世界座標；w2c 是 gspl 的 world_to_camera（列向量版：[p,1] @ w2c）。
+    與 geom_gate.DepthSupport.update 的投影 u = fx·x/z + cx 互逆。"""
+    pc = torch.stack([(u - cx) / fx * z, (v - cy) / fy * z, z, torch.ones_like(z)], -1)
+    return (pc @ torch.linalg.inv(w2c))[:, :3]
+
+
+def mono_normals(zm, rows, cols, fx, fy, cx, cy, w2c, cam_center):
+    """單目深度圖在 (rows, cols) 的表面法向（右鄰、下鄰差分的叉積；朝向相機）。鄰居無效時退回「面向相機」。"""
+    H, W = zm.shape
+    r1 = (rows + 1).clamp_max(H - 1); c1 = (cols + 1).clamp_max(W - 1)
+    def P(r, c):
+        return backproject(c.float() + 0.5, r.float() + 0.5, zm[r, c], fx, fy, cx, cy, w2c)
+    p0, px, py = P(rows, cols), P(rows, c1), P(r1, cols)
+    n = torch.cross(px - p0, py - p0, dim=-1)
+    view = cam_center[None] - p0
+    view = view / view.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    nn_ = n.norm(dim=-1, keepdim=True)
+    good = (nn_[:, 0] > 1e-12) & (c1 != cols) & (r1 != rows) & torch.isfinite(nn_[:, 0])
+    n = torch.where(good[:, None], n / nn_.clamp_min(1e-12), view)
+    return n * torch.sign((n * view).sum(-1, keepdim=True) + 1e-12)
+
+
+def frame_from_normal(n):
+    """法向 => 面元旋轉矩陣（欄＝t1, t2, n）。"""
+    ref = torch.where(n[:, 2:3].abs() < 0.9, torch.tensor([[0., 0., 1.]], device=n.device), torch.tensor([[1., 0., 0.]], device=n.device))
+    t1 = torch.cross(n, ref, dim=-1); t1 = t1 / t1.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    t2 = torch.cross(n, t1, dim=-1)
+    return torch.stack([t1, t2, n], -1)
+
+
+def ramp(step: int, a: int, b: int) -> float:
+    """a 步之前 0、b 步之後 1、中間線性。"""
+    if step <= a:
+        return 0.0
+    return 1.0 if step >= b else (step - a) / max(b - a, 1)
+
+
 @dataclass
 class MCMC2DGSDensityController(MCMCDensityController):
     """MCMC density controller for 2D Gaussian surfels. Same config as the 3DGS MCMC
@@ -369,6 +417,25 @@ class MCMC2DGSDensityController(MCMCDensityController):
     merge_k: int = 12
     merge_until_iter: int = -1
     """>0 時合併只在 [merge_from_iter, merge_until_iter] 內做；<=0＝不設上限（relocate 模式本來就只在增生期）。"""
+    hole_fill_frac: float = 0.0
+    """★ 2026-11-02 MCMC 補洞放點（使用者「排 1」：把單側不能看穿改成 MCMC 機制）。>0 時每個增生事件（densify 期、hole_fill_from_iter 之後）：
+    用該步訓練視角（強制完整渲染路徑）找 A 像素（第一表面在本塊；要 metric.block_mask_dir）裡的洞（α<0.5）與看穿（渲染比單目深 1+margin 倍），
+    隨機挑最多 frac×N 個，沿視線放在**單目深度**那一點：用本次的死顆粒（不夠再用 opacity<0.05 的），面元朝單目表面法向、
+    大小 hole_fill_scale_px 個像素、opacity hole_fill_opacity、顏色＝GT 像素（SH 高階 0）、Adam 歸零。0＝關。
+    相對梯度版（depth_see_through_*）：不拉大舊面元去蓋洞（11-02 拆項：補洞項讓海上大面元加倍、b12 低角度透空 3.3% → 8.1%），只在增生事件算（約 1% 的步）。"""
+    hole_fill_from_iter: int = 1000
+    hole_fill_margin: float = 0.1
+    hole_fill_scale_px: float = 2.0
+    hole_fill_opacity: float = 0.5
+    inplane_offset: float = 0.0
+    """★ 2026-11-02 增生方向限制（使用者「排 2」：在牆面複製，新點只能在牆面上）。>0 時 MCMC 的新點（增生的、搬家的）
+    不再疊在母點同一位置，而是在母點的面元平面內隨機方向錯開 inplane_offset × 長軸 × 漸增係數。0＝關（原 MCMC：同一點）。"""
+    inplane_hold: int = 0
+    """>0 時新點出生後這麼多步內，位置梯度去掉法向分量的 漸增係數 倍（只能在自己的平面內移動；Adam 動量約 10 步內跟著消失）。0＝關。
+    漸增係數：inplane_ramp_from 之前 0（前期面元朝向還是亂的，鎖平面＝鎖錯方向）、inplane_ramp_until 之後 1。
+    （2DGS 的 MCMC 雜訊本來就只在面元平面內：共變異法向那軸是 0；跑出牆面的是光度梯度。）"""
+    inplane_ramp_from: int = 1000
+    inplane_ramp_until: int = 10000
     merge_prune: bool = False
     """★ 2026-11-02（使用者：合併完就減少點數）：True＝合併掉的 j 直接刪掉（N 減少），不交給 relocation 搬走；
     增生期同時把 cap 扣掉同樣顆數（`_cap_cut`），否則 MCMC 增生會在下幾個事件補回來。
@@ -665,6 +732,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 pl_module.on_train_batch_end_hooks.append(self._dar_cost_decay)
 
     def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
+        self._ip_step = global_step                     # relocate_gs／add_new_gs 的平面錯開要用（漸增係數）
+        if int(getattr(self.config, "inplane_hold", 0) or 0) > 0:
+            self._inplane_project(gaussian_model, global_step)
         # Same event gating as the parent, plus optional screen-size recycling (see the
         # config docstring). The max-radii buffer is a plain tensor that self-heals on any
         # topology change (trim/relocate/add all shift N), like the gg controller's grad buffer.
@@ -944,6 +1014,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 print(f"[nonfinite] ⚠⚠ step {global_step}: {_nf_idx.numel():,} 顆參數非有限 => 併入死亡搬家、清 Adam 狀態", flush=True)
             if _merge_dead is not None:
                 dead_mask = dead_mask | _merge_dead             # 合併掉的 j：不受 relocate_protect 保護、一定搬走
+            if float(getattr(self.config, "hole_fill_frac", 0.0) or 0.0) > 0 and global_step >= int(getattr(self.config, "hole_fill_from_iter", 1000)):
+                dead_mask = self._hole_fill(gaussian_model, optimizers, outputs, batch, pl_module, dead_mask, global_step)
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
             if _nf_idx is not None:
                 self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_nf_idx)
@@ -985,6 +1057,170 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if _mi > 0 and (global_step % _mi == 0
                             or global_step + self.config.densification_interval >= self.config.densify_until_iter):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
+
+    # ────────── 增生方向限制（inplane_*）
+    def _inplane_ramp(self, step: int) -> float:
+        c = self.config
+        return ramp(int(step), int(getattr(c, "inplane_ramp_from", 1000)), int(getattr(c, "inplane_ramp_until", 10000)))
+
+    def _inplane_on(self) -> bool:
+        return float(getattr(self.config, "inplane_offset", 0.0) or 0.0) > 0 or int(getattr(self.config, "inplane_hold", 0) or 0) > 0
+
+    def _inplane_birth(self, gaussian_model, idx: torch.Tensor) -> None:
+        """idx＝剛出生的新點（已是母點的複本：同位置、同朝向）：記出生步數；inplane_offset>0 時在自己的平面內錯開。"""
+        if idx.numel() == 0:
+            return
+        n = gaussian_model.n_gaussians
+        step = int(getattr(self, "_ip_step", 0))
+        b = getattr(self, "_birth", None)
+        if b is None or b.shape[0] != n:
+            if b is not None and not getattr(self, "_birth_reset_warned", False):
+                self._birth_reset_warned = True
+                print(f"⚠⚠ [inplane] 出生紀錄長度 {b.shape[0]:,} ≠ N {n:,} => 重設（之前出生的新點不再受限）", flush=True)
+            b = torch.full((n,), -1, dtype=torch.long, device=idx.device)
+        b[idx] = step
+        self._birth = b
+        r = self._inplane_ramp(step)
+        off = float(getattr(self.config, "inplane_offset", 0.0) or 0.0) * r
+        if off > 0:
+            from .merge_ops import _qmat
+            g = gaussian_model.gaussians
+            R = _qmat(g["rotations"][idx].float())
+            smax = torch.exp(g["scales"][idx].float()).max(dim=-1).values
+            th = torch.rand(idx.numel(), device=idx.device) * (2 * math.pi)
+            d = torch.cos(th)[:, None] * R[:, :, 0] + torch.sin(th)[:, None] * R[:, :, 1]
+            g["means"][idx] = (g["means"][idx].float() + off * smax[:, None] * d).to(g["means"].dtype)
+        if not getattr(self, "_inplane_announced", False) and r > 0:
+            self._inplane_announced = True
+            print(f"[inplane] ✅ 首次觸發 step {step}：本次出生 {idx.numel():,} 顆；平面內錯開 {off:.2f}×長軸、"
+                  f"梯度限制 {int(getattr(self.config, 'inplane_hold', 0) or 0)} 步（漸增 {100 * r:.0f}%）", flush=True)
+
+    def _inplane_project(self, gaussian_model, step: int) -> None:
+        """出生 inplane_hold 步內的新點：位置梯度去掉 漸增係數 × 法向分量。"""
+        b = getattr(self, "_birth", None)
+        g = gaussian_model.gaussians["means"].grad
+        if b is None or g is None or b.shape[0] != g.shape[0]:
+            return
+        r = self._inplane_ramp(step)
+        if r <= 0:
+            return
+        sel = torch.nonzero((b >= 0) & (step - b < int(self.config.inplane_hold)), as_tuple=True)[0]
+        if sel.numel() == 0:
+            return
+        from internal.metrics.geom_gate import quat_normals
+        with torch.no_grad():
+            n = quat_normals(gaussian_model.gaussians["rotations"][sel].float())
+            gs = g[sel].float()
+            g[sel] = (gs - r * (gs * n).sum(-1, keepdim=True) * n).to(g.dtype)
+        if step % 2000 == 0:
+            print(f"[inplane] step {step}：限制中的新點 {sel.numel():,}／{b.shape[0]:,}（漸增 {100 * r:.0f}%）", flush=True)
+
+    def relocate_gs(self, gaussian_model, optimizers, dead_mask) -> None:
+        super().relocate_gs(gaussian_model, optimizers, dead_mask)
+        if self._inplane_on() and bool(dead_mask.any()):
+            with torch.no_grad():
+                self._inplane_birth(gaussian_model, dead_mask.nonzero(as_tuple=True)[0])   # 搬家的＝新點（宿主留在原地）
+
+    def add_new_gs(self, gaussian_model, optimizers):
+        n0 = gaussian_model.n_gaussians
+        out = super().add_new_gs(gaussian_model, optimizers)
+        n1 = gaussian_model.n_gaussians
+        if self._inplane_on() and n1 > n0:
+            b = getattr(self, "_birth", None)
+            if b is not None and b.shape[0] == n0:
+                self._birth = torch.cat([b, torch.full((n1 - n0,), -1, dtype=b.dtype, device=b.device)])
+            with torch.no_grad():
+                self._inplane_birth(gaussian_model, torch.arange(n0, n1, device=gaussian_model.gaussians["means"].device))
+        return out
+
+    # ────────── MCMC 補洞放點（hole_fill_*）
+    def _hole_fill(self, gaussian_model, optimizers, outputs, batch, pl_module, dead_mask, global_step: int):
+        c = self.config
+        a, z = outputs.get("rend_alpha"), outputs.get("surf_depth")
+        m = getattr(getattr(pl_module, "metric", None), "_bm_cur", None)
+        inv = batch[2] if len(batch) > 2 else None
+        if isinstance(inv, (tuple, list)):
+            inv = inv[0]
+        cam = batch[0]
+        why = ("完整路徑的 rend_alpha／surf_depth" if a is None or z is None else "塊外遮罩（metric.block_mask_dir）" if m is None
+               else "單目深度" if inv is None else "")
+        if why:
+            if not getattr(self, "_hf_warned", False):
+                self._hf_warned = True
+                print(f"⚠⚠ [hole-fill] step {global_step}：拿不到{why} => 這次不補（之後不再提醒）", flush=True)
+            return dead_mask
+        a = a.reshape(a.shape[-2:]).detach(); z = z.reshape(z.shape[-2:]).detach()
+        H, W = a.shape
+        if int(cam.width) != W or int(cam.height) != H:
+            if not getattr(self, "_hf_size_warned", False):
+                self._hf_size_warned = True
+                print(f"⚠⚠ [hole-fill] 渲染 {W}x{H} ≠ 相機 {int(cam.width)}x{int(cam.height)}（條帶？）=> 不補", flush=True)
+            return dead_mask
+        dev = a.device
+        def fit(x):
+            x = x.reshape(x.shape[-2:]).to(dev).float()
+            return x if x.shape == (H, W) else torch.nn.functional.interpolate(x[None, None], size=(H, W), mode="nearest")[0, 0]
+        inv = fit(inv); A = fit(m) == 1
+        holes, deeper = hole_candidates(a, z, inv, A, float(c.hole_fill_margin))
+        pix = torch.nonzero((holes | deeper).reshape(-1), as_tuple=True)[0]
+        N = gaussian_model.n_gaussians
+        K = min(int(pix.numel()), int(float(c.hole_fill_frac) * N))
+        if K <= 0:
+            return dead_mask
+        o = gaussian_model.get_opacities().reshape(-1)
+        slots = dead_mask.nonzero(as_tuple=True)[0]
+        n_dead = int(slots.numel())
+        if n_dead < K:
+            low = torch.nonzero((~dead_mask) & (o < 0.05), as_tuple=True)[0]
+            low = low[torch.argsort(o[low])][: K - n_dead]
+            slots = torch.cat([slots, low])
+        else:
+            slots = slots[torch.randperm(n_dead, device=dev)[:K]]
+        K = int(slots.numel())
+        if K == 0:
+            return dead_mask
+        pix = pix[torch.randperm(pix.numel(), device=dev)[:K]]
+        rows, cols = pix // W, pix % W
+        zm = 1.0 / inv.clamp_min(1e-6)
+        fx, fy, cx, cy = (float(cam.fx), float(cam.fy), float(cam.cx), float(cam.cy))
+        w2c = cam.world_to_camera.float()
+        zk = zm[rows, cols]
+        P = backproject(cols.float() + 0.5, rows.float() + 0.5, zk, fx, fy, cx, cy, w2c)
+        Rn = frame_from_normal(mono_normals(zm, rows, cols, fx, fy, cx, cy, w2c, cam.camera_center.float()))
+        from .merge_ops import _mat2q, _C0
+        gt = batch[1][1]
+        gt = (gt if gt.is_floating_point() else gt.float() / 255.0).to(dev)
+        if tuple(gt.shape[-2:]) != (H, W):
+            gt = torch.nn.functional.interpolate(gt[None].float(), size=(H, W), mode="bilinear", align_corners=False)[0]
+        rgb = gt[:3, rows, cols].T.clamp(0, 1)                                    # [K, 3]
+        s = (float(c.hole_fill_scale_px) * zk / fx).clamp_min(1e-6)
+        g = gaussian_model.gaussians
+        with torch.no_grad():
+            g["means"][slots] = P.to(g["means"].dtype)
+            g["rotations"][slots] = _mat2q(Rn).to(g["rotations"].dtype)
+            g["scales"][slots] = torch.log(s)[:, None].expand(-1, g["scales"].shape[-1]).to(g["scales"].dtype)
+            op = torch.full((K,), float(c.hole_fill_opacity), device=dev).clamp(1e-4, 1 - 1e-4)
+            g["opacities"][slots] = torch.log(op / (1 - op)).reshape(-1, *g["opacities"].shape[1:]).to(g["opacities"].dtype)
+            g["shs_dc"][slots] = ((rgb - 0.5) / _C0).reshape(K, *g["shs_dc"].shape[1:]).to(g["shs_dc"].dtype)
+            g["shs_rest"][slots] = 0
+        self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=slots)    # 新點 Adam 歸零
+        _st = getattr(gaussian_model, "_trim_state", None)
+        if _st:
+            for _k, _t in _st.items():
+                if torch.is_tensor(_t) and _t.shape[0] == N:
+                    _t[slots] = 0
+        for _nm in ("_max_radii2D", "_max_tiles2D", "_absgrad_accum"):
+            _t = getattr(self, _nm, None)
+            if torch.is_tensor(_t) and _t.shape[0] == N:
+                _t[slots] = 0
+        dead_mask = dead_mask.clone(); dead_mask[slots] = False                   # 用掉的死顆粒不再交給 relocation
+        if not getattr(self, "_hf_announced", False) or global_step % 2000 == 0:
+            fac = float((Rn[:, 2, 2].abs() < 0.3).float().mean())
+            print(f"[hole-fill] {'✅ 首次觸發' if not getattr(self, '_hf_announced', False) else '　'} step {global_step}："
+                  f"A 像素 {float(A.float().mean()):.3f}、洞 {int(holes.sum()):,}、看穿 {int(deeper.sum()):,} => 放 {K:,} 顆"
+                  f"（死顆粒 {min(n_dead, K):,}、低 opacity 改用 {max(K - n_dead, 0):,}）；大小中位 {float(s.median()):.4f}、立面 {100 * fac:.0f}%", flush=True)
+            self._hf_announced = True
+        return dead_mask
 
     def _merge_window(self, global_step: int) -> bool:
         c = self.config
@@ -1078,6 +1314,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             else:
                 moved.append(k)
             st[k] = t[perm]
+        b = getattr(self, "_birth", None)
+        if b is not None:
+            self._birth = b[perm] if b.shape[0] == n else None
         g = getattr(self, "_absgrad_accum", None)
         if g is not None:
             if g.shape[0] == n:
@@ -1730,6 +1969,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # `mask`: True = prune.
         valid = ~mask
         gaussian_model.properties = Utils.prune_properties(valid, gaussian_model, optimizers)
+        _b = getattr(self, "_birth", None)
+        if _b is not None:
+            self._birth = _b[valid] if _b.shape[0] == valid.shape[0] else None   # 增生方向限制的出生步數跟著剪
         # ★ 2026-10-16 逐顆的 trim 替代狀態（訓練中累加的 V／C、軟投影的 λ 與支撐外遮罩；renderer 掛在模型上）跟著剪
         _st = getattr(gaussian_model, "_trim_state", None)
         if _st:

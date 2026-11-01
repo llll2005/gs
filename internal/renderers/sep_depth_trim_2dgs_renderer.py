@@ -545,6 +545,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 _sti = int(getattr(mcfg, "depth_see_through_interval", 1) or 1)
                 kwargs["_geo"] = kwargs["_geo"] or ((step + 1) >= int(getattr(mcfg, "depth_see_through_from_iter", 0) or 0)
                                                     and (_sti <= 1 or (step + 1) % _sti == 0))
+            # ★ 2026-11-02 MCMC 補洞放點（density hole_fill_frac）：增生事件那一步要 rend_alpha／surf_depth（與 density controller 同一規則：它的 step＝這裡的 step + 1）
+            _dc = getattr(getattr(module, "density_controller", None), "config", None)
+            if float(getattr(_dc, "hole_fill_frac", 0.0) or 0.0) > 0:
+                _s1 = step + 1
+                kwargs["_geo"] = kwargs["_geo"] or (_s1 % int(getattr(_dc, "densification_interval", 100) or 100) == 0
+                                                    and _s1 >= int(getattr(_dc, "hole_fill_from_iter", 1000) or 0)
+                                                    and _s1 < int(getattr(_dc, "densify_until_iter", 0) or 0))
             if kwargs["_geo"] and not getattr(self, "_geo_announced", False):
                 self._geo_announced = True
                 print(f"[normal-geo] ✅ 首次觸發 step={step}：這一步光柵器不走 lean、算 surf_normal（normal 每 {_ni} 步）", flush=True)
