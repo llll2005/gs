@@ -13,7 +13,10 @@
 #   [cpu]  bash scripts/lab/task_fullscene.sh maskplan <STEPS> <cap...>
 #          ★ 10-22 遮罩臂的 4x4 全場景（使用者：遮罩＋dist100＋30k 的 2.5M 與 1M，各加融合 Adam＋累加式 trim，都跑 4x4）：
 #          補產缺的塊外遮罩（tools/block_mask44.py，CPU 每塊約 3 分）＋逐塊 init 跟 cap 走（scripts/lab/pick_dup.sh <塊> <cap> 1）
-#          => 每個 cap 16 塊＋merge＋test 插到佇列最前；臂＝MASKPLAN_ARM（預設 best1maskdistrf）、跑次 g44s<k>km<cap/1e5>_<臂>
+#          => 每個 cap 16 塊＋merge＋test 插到佇列最前；臂＝MASKPLAN_ARM（預設 best1maskdistrf）
+#          ★ 11-02 使用者「自適應顆數設為預設」：<cap> 是**平均** cap，每塊 cap＝cap x configs/cap_alloc_g44.json 的權重（Σcap 不變；
+#            10-31 價格分配，平均 1M 全場景 27.828 勝均勻 27.805）=> 跑次 g44s<k>ka<cap/1e5>_<臂>；MASKPLAN_UNIFORM=1 => 每塊一樣、跑次 g44s<k>km<cap/1e5>_<臂>
+#            （單變數臂 task_cmp.sh 單塊不受影響：照 CITYGS_CAP，維持與基準可比）
 #          佇列註解：MASKPLAN_NOTE（訓練行）／MASKPLAN_TAG（合併、測試行）
 #          多個 cap 一次給（同一個行程依序做，避免兩個前處理同時產遮罩／搶 make_sfm_fill_init 的鎖）
 #   環境變數：FULLSCENE_ARM（預設 best1run）、FULLSCENE_FLAGS（每塊額外旗標；預設 record_reduce＋absgrad_gate，與單變數臂相同）
@@ -134,14 +137,20 @@ EOF
     fi
     for b in $(seq 0 15); do [ -f "$D/block_masks44/block_$b/stats.json" ] || { echo "⛔ block $b 沒有遮罩"; exit 2; }; done
     INS=logs/maskplan_ins_$$.txt; : > "$INS"
+    ALLOC=${MASKPLAN_ALLOC:-configs/cap_alloc_g44.json}
+    if [ "${MASKPLAN_UNIFORM:-0}" != 1 ] && [ ! -f "$ALLOC" ]; then echo "⛔ 找不到自適應權重 $ALLOC（或設 MASKPLAN_UNIFORM=1）"; rm -f "$INS"; exit 2; fi
     for CAP in "$@"; do
-      CM=$(python3 -c "print(f'{int(round($CAP / 1e5)):02d}')"); FAM="g44s${K}km${CM}_"; RN="${FAM}${A}"
+      CM=$(python3 -c "print(f'{int(round($CAP / 1e5)):02d}')")
+      if [ "${MASKPLAN_UNIFORM:-0}" = 1 ]; then FAM="g44s${K}km${CM}_"; else FAM="g44s${K}ka${CM}_"; fi
+      RN="${FAM}${A}"
       for b in $(seq 0 15); do
-        k=$(bash scripts/lab/pick_dup.sh "$b" "$CAP" 1 | tail -1)
-        case "$k" in ''|*[!0-9]*) echo "⛔ block $b cap $CAP 算不出 dup（$k）"; rm -f "$INS"; exit 2 ;; esac
-        echo "  cap $CAP block $b => 裁盒 dup$k"
-        echo "# ★★★★★★ ${MASKPLAN_NOTE:-使用者 10-22：遮罩＋dist100＋融合 Adam＋累加式 trim} ${K}k cap $CAP 全場景 b$b dup$k" >> "$INS"
-        echo "[solo] CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=$ST CITYGS_CAP=$CAP CITYGS_DUP44=$k CITYGS_FAMILY=$FAM bash scripts/lab/task_cmp.sh $b $A $FLAGS" >> "$INS"
+        if [ "${MASKPLAN_UNIFORM:-0}" = 1 ]; then bc=$CAP
+        else bc=$(python3 -c "import json;print(int(round($CAP * json.load(open('$ALLOC'))['weights']['$b'])))"); fi
+        k=$(bash scripts/lab/pick_dup.sh "$b" "$bc" 1 | tail -1)
+        case "$k" in ''|*[!0-9]*) echo "⛔ block $b cap $bc 算不出 dup（$k）"; rm -f "$INS"; exit 2 ;; esac
+        echo "  平均 cap $CAP block $b => cap $bc、裁盒 dup$k"
+        echo "# ★★★★★★ ${MASKPLAN_NOTE:-使用者 10-22：遮罩＋dist100＋融合 Adam＋累加式 trim} ${K}k 平均 cap $CAP（$([ "${MASKPLAN_UNIFORM:-0}" = 1 ] && echo 均勻 || echo 自適應)）全場景 b$b cap $bc dup$k" >> "$INS"
+        echo "[solo] CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=$ST CITYGS_CAP=$bc CITYGS_DUP44=$k CITYGS_FAMILY=$FAM bash scripts/lab/task_cmp.sh $b $A $FLAGS" >> "$INS"
       done
       printf '# ★★★★★★ %s：合併 %s\n[solo] bash scripts/lab/task_fullscene.sh merge %s\n# ★★★★★★ %s：官方 741 幀 %s\n[solo] bash scripts/lab/task_fullscene.sh test %s\n' "${MASKPLAN_TAG:-使用者 10-22}" "$RN" "$RN" "${MASKPLAN_TAG:-使用者 10-22}" "$RN" "$RN" >> "$INS"
     done

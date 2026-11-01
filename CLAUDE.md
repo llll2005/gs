@@ -233,6 +233,9 @@ python utils/depth_init_blocks.py data/matrix_city/aerial/train/block_all --bloc
 conda run -n gspl python -u main.py fit --config configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml --model.initialize_from data/matrix_city/aerial/train/block_all/depth_init/block_12.ply --data.parser.block_id 12 --model.density.init_args.cap_max 2600000 -n <run_name>
 ```
 Don't hand-type the recipe flags. Look commands up with `bash scripts/help.sh` / `<script> --help` (generated from the scripts themselves: arm/mode lists, per-arm overrides, env vars); `CITYGS_DRY=1 bash scripts/lab/task_cmp.sh <blk> <arm>` prints the full resolved training command. Base recipe: `CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=60000 CITYGS_FAMILY=g44_ bash scripts/lab/task_cmp.sh <blk> best1` (task_cmp saves only the final ckpt by default since 10-18; `CITYGS_SAVE_ITERS` to keep intermediates).
+**Full-scene runs default to adaptive per-block caps (user, 2026-11-02)**: `task_fullscene.sh maskplan <STEPS> <avg cap>` sets each block's cap to
+avg x `configs/cap_alloc_g44.json` weight (10-31 price allocation; same Σcap; family `g44s<k>ka<cap/1e5>_`); `MASKPLAN_UNIFORM=1` = old uniform `km`.
+Single-block arms (`task_cmp.sh` alone) still use `CITYGS_CAP` as given, so they stay comparable to their baselines.
 ⚠ **`down_sample_factor: 1.2` 是全域設定，而且一直都是。** 影像以全解析度存在
 `input/`，1.2 倍是 **dataparser 載入時**算的（`configs/mcmc_2dgs_60k_sh3_aggr17_aerial.yaml`
 的 `image_dir: input` + `down_sample_factor: 1.2`）；`images_1.2` 只是 `-> input` 的別名

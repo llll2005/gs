@@ -334,7 +334,8 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         return probs * (g.to(probs.dtype) + 1e-3)
 
     def add_new_gs(self, gaussian_model, optimizers):
-        cap_max = self.config.cap_max
+        # 2026-11-02：`_cap_cut`＝訓練中合併（merge_prune）已刪掉的顆數 => 增生不補回（預設 0＝原行為）
+        cap_max = self.config.cap_max - int(getattr(self, "_cap_cut", 0) or 0)
 
         """
         gradually increase the number of live Gaussians by 5% until the maximum desired number of Gaussians is met

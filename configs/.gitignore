@@ -12,6 +12,7 @@
 !*.yaml
 !*.yml
 !*.md
+!cap_alloc_*.json
 !ddp.yaml
 !ddp_not_find_unused.yaml
 !image_on_gpu.yaml

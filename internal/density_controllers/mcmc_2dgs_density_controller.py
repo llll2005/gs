@@ -367,6 +367,12 @@ class MCMC2DGSDensityController(MCMCDensityController):
     merge_color_tol: float = 1.0
     """顏色（SH DC→RGB）L1 差門檻；1.0＝不看顏色（讓窗戶與窗框併成實牆，細節交給後續訓練）"""
     merge_k: int = 12
+    merge_until_iter: int = -1
+    """>0 時合併只在 [merge_from_iter, merge_until_iter] 內做；<=0＝不設上限（relocate 模式本來就只在增生期）。"""
+    merge_prune: bool = False
+    """★ 2026-11-02（使用者：合併完就減少點數）：True＝合併掉的 j 直接刪掉（N 減少），不交給 relocation 搬走；
+    增生期同時把 cap 扣掉同樣顆數（`_cap_cut`），否則 MCMC 增生會在下幾個事件補回來。
+    True 時增生期結束後（收割期）也照 merge_interval 合併（實驗「只在後半合併」用 merge_from_iter > densify_until_iter）。"""
 
 
 
@@ -755,6 +761,15 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             gaussian_model.gaussians["opacities"].grad = None
 
         if global_step >= self.config.densify_until_iter:
+            _mi = int(getattr(self.config, "merge_interval", 0) or 0)
+            if _mi > 0 and global_step % _mi == 0 and self._merge_window(global_step):
+                if bool(getattr(self.config, "merge_prune", False)):
+                    with torch.no_grad():
+                        self._merge_event(gaussian_model, optimizers, global_step, prune=True)
+                elif not getattr(self, "_merge_harvest_warned", False):
+                    self._merge_harvest_warned = True
+                    print(f"⚠⚠ [merge] step {global_step}：增生期已結束，relocate 模式（merge_prune false）沒有 relocation 可交 => 不合併；"
+                          "要在後半合併請開 merge_prune", flush=True)
             # ★ 收割期回收（使用者 2026-09-01 提案）：densify 停了，但 opacity 兩極化持續
             # 製造死粒子（判死 3.77% -> 15.03%，§11.62），而回收路徑在這裡 early-return
             # ⇒ 那些粒子躺到結束，什麼也不做。本旗標讓 relocation 繼續，**但不成長**
@@ -822,18 +837,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     self._max_tiles2D = None      # N 變了，舊視窗長度對不上
             _merge_dead = None
             _mi = int(getattr(self.config, "merge_interval", 0) or 0)
-            if _mi > 0 and global_step >= int(getattr(self.config, "merge_from_iter", 3000)) and global_step % _mi == 0:
-                from .merge_ops import merge_step
-                _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=float(self.config.merge_max_frac),
-                                              color_tol=float(self.config.merge_color_tol))
-                if _mI.numel() > 0:
-                    self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)      # 合併後的 i 重設 Adam 狀態
-                    _merge_dead = torch.zeros(gaussian_model.n_gaussians, dtype=torch.bool, device=_mJ.device)
-                    _merge_dead[_mJ] = True
-                print(f"[merge] {'✅ 首次觸發' if not getattr(self, '_merge_announced', False) else '　'} step {global_step}："
-                      f"合併 {_minfo.get('pairs', 0):,} 對（立面 {100 * _minfo.get('facade', 0):.0f}%；長軸中位 {_minfo.get('len_before', 0):.4f} -> "
-                      f"{_minfo.get('len_after', 0):.4f}），j 交給 relocation 搬走", flush=True)
-                self._merge_announced = True
+            if _mi > 0 and self._merge_window(global_step) and global_step % _mi == 0:
+                _merge_dead = self._merge_event(gaussian_model, optimizers, global_step, prune=bool(getattr(self.config, "merge_prune", False)))
             death_line = self._current_min_opacity(global_step)
             dead_mask = (gaussian_model.get_opacities() <= death_line).squeeze(-1)
             _kp = float(getattr(self.config, "relocate_protect_absgrad", 0.0) or 0.0)
@@ -980,6 +985,42 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if _mi > 0 and (global_step % _mi == 0
                             or global_step + self.config.densification_interval >= self.config.densify_until_iter):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
+
+    def _merge_window(self, global_step: int) -> bool:
+        c = self.config
+        hi = int(getattr(c, "merge_until_iter", -1) or -1)
+        return global_step >= int(getattr(c, "merge_from_iter", 3000)) and (hi <= 0 or global_step <= hi)
+
+    def _merge_event(self, gaussian_model, optimizers, global_step: int, prune: bool):
+        """一次訓練中合併（`merge_ops.merge_step`）。合併結果寫回 i、i 的 Adam 狀態重設。
+        prune=False：回傳 j 的遮罩（呼叫端併進 dead_mask 交給 relocation；N 不變）。
+        prune=True：直接刪 j（N 減少）、`_cap_cut` 加上刪掉的顆數（增生不補回）、清掉長度跟 N 走的視窗；回傳 None。"""
+        from .merge_ops import merge_step
+        n0 = gaussian_model.n_gaussians
+        _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=float(self.config.merge_max_frac),
+                                      color_tol=float(self.config.merge_color_tol))
+        out = None
+        if _mI.numel() > 0:
+            self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)          # 合併後的 i 重設 Adam 狀態
+            dead = torch.zeros(n0, dtype=torch.bool, device=_mJ.device)
+            dead[_mJ] = True
+            if prune:
+                self._prune_points(dead, gaussian_model, optimizers)
+                _acc = getattr(self, "_absgrad_accum", None)
+                if _acc is not None and _acc.shape[0] == n0:
+                    self._absgrad_accum = _acc[~dead]                                        # 這個區間的 |g| 跟著剪（增生取樣還要用）
+                self._cap_cut = int(getattr(self, "_cap_cut", 0) or 0) + int(_mJ.numel())
+                self._max_radii2D = None
+                self._max_tiles2D = None                                                     # N 變了，舊視窗長度對不上
+            else:
+                out = dead
+        tail = (f"j 刪掉 => N {n0:,} -> {gaussian_model.n_gaussians:,}；cap 累計扣 {int(getattr(self, '_cap_cut', 0) or 0):,}"
+                if prune else "j 交給 relocation 搬走")
+        print(f"[merge] {'✅ 首次觸發' if not getattr(self, '_merge_announced', False) else '　'} step {global_step}："
+              f"合併 {_minfo.get('pairs', 0):,} 對（立面 {100 * _minfo.get('facade', 0):.0f}%；長軸中位 {_minfo.get('len_before', 0):.4f} -> "
+              f"{_minfo.get('len_after', 0):.4f}），{tail}", flush=True)
+        self._merge_announced = True
+        return out
 
     @staticmethod
     def _morton_code(xyz: torch.Tensor) -> torch.Tensor:
