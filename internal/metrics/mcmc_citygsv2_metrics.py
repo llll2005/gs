@@ -23,10 +23,11 @@ import torch
 from .citygsv2_metrics import CityGSV2Metrics, CityGSV2MetricsModule
 
 
-def see_through_loss(alpha, surf_depth, inv_gt, A, margin: float):
+def see_through_loss(alpha, surf_depth, inv_gt, A, margin: float, w_hole: float = 1.0, w_deep: float = 1.0):
     """單側「不能看穿表面」（10-31）。A＝第一表面在本塊的像素（塊外遮罩 1）；inv_gt＝單目逆深度（已縮放到場景單位，<=0＝無效）。
-    回傳 (loss, 統計)：loss＝[Σ_A (1−α) ＋ Σ_{A, α>0.5, 有效} relu(1/(1+margin) − z_gt/z_render)] / |A|。
-    比單目淺（z_render < z_gt）時第二項是 0 => 只懲罰「看穿到更深處」與「沒蓋滿」。"""
+    回傳 (loss, 統計)：loss＝[w_hole·Σ_A (1−α) ＋ w_deep·Σ_{A, α>0.5, 有效} relu(1/(1+margin) − z_gt/z_render)] / |A|。
+    比單目淺（z_render < z_gt）時第二項是 0 => 只懲罰「看穿到更深處」與「沒蓋滿」。
+    w_hole／w_deep（11-02）：拆開兩項看 b12 低角度透空是哪一項造成的；統計照常兩項都算。"""
     a = alpha.reshape(alpha.shape[-2:])
     z = surf_depth.reshape(surf_depth.shape[-2:])
     g = inv_gt.reshape(inv_gt.shape[-2:]).to(z.dtype)
@@ -40,7 +41,7 @@ def see_through_loss(alpha, surf_depth, inv_gt, A, margin: float):
     valid = A & (g > 1e-6) & (a.detach() > 0.5)
     r = (g * z.clamp_min(1e-4))                       # = z_render / z_gt（g＝1/z_gt）
     deeper = torch.relu(1.0 / (1.0 + margin) - 1.0 / r.clamp_min(1e-6)) * valid
-    loss = (hole.sum() + deeper.sum()) / nA
+    loss = (w_hole * hole.sum() + w_deep * deeper.sum()) / nA
     with torch.no_grad():
         st = {"A": float(A.float().mean()), "holes": float(((a < 0.5) & A).sum() / nA),
               "deeper": float(((r > 1.0 + margin) & valid).sum() / nA)}
@@ -150,6 +151,10 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_see_through_interval: int = 4
     """每 k 步算一次、權重乘 k（與 lambda_normal_interval 同一套規則）。"""
     depth_see_through_from_iter: int = 1000
+    depth_see_through_hole: float = 1.0
+    """補洞項 Σ(1−α) 的相對權重（11-02 拆項：0＝只留「比單目深就罰」）。"""
+    depth_see_through_deeper: float = 1.0
+    """「比單目深 1+margin 倍就罰」那一項的相對權重（11-02 拆項：0＝只留補洞項）。"""
     surf_reg: float = 0.0
     """★ 2026-11-01 鄰域平面約束（使用者 11-01：不增加計算、從 0 漸增到定值、用周遭高斯讓深度一致的表面平滑、取絕對值免得抹掉細節）。0＝關。
     不渲染：每 surf_every 步用 Morton 近鄰算每顆的鄰域平面（opacity 加權 PCA，`geom_gate.surf_planes`），只對平坦鄰域（e3/e2 < surf_flat）
@@ -428,13 +433,15 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 print(f"⚠⚠ [see-through] 拿不到 {'遮罩' if m is None else '單目深度' if inv is None else '完整路徑的 surf_depth／rend_alpha'}"
                       f" => 這一步不算（step={step}）", flush=True)
             return
-        loss, st = see_through_loss(outputs["rend_alpha"], outputs["surf_depth"], inv.to(m.device), m == 1, float(c.depth_see_through_margin))
+        loss, st = see_through_loss(outputs["rend_alpha"], outputs["surf_depth"], inv.to(m.device), m == 1, float(c.depth_see_through_margin),
+                                    float(getattr(c, "depth_see_through_hole", 1.0)), float(getattr(c, "depth_see_through_deeper", 1.0)))
         metrics["loss"] = metrics["loss"] + w * k * loss
         metrics["see_thru"] = loss.detach()
         pbar["see_thru"] = False
         if not getattr(self, "_st_announced", False) or step % 2000 == 0:
             print(f"[see-through] {'✅ 首次觸發' if not getattr(self, '_st_announced', False) else '　'} step={step}：A 像素 {st['A']:.3f}、"
-                  f"其中 α<0.5 {st['holes']:.3f}、看穿（深於單目 {1 + c.depth_see_through_margin:.2f} 倍）{st['deeper']:.3f}；loss {float(loss):.4f}（權重 {w}×{k}）", flush=True)
+                  f"其中 α<0.5 {st['holes']:.3f}、看穿（深於單目 {1 + c.depth_see_through_margin:.2f} 倍）{st['deeper']:.3f}；loss {float(loss):.4f}（權重 {w}×{k}"
+                  f"；補洞項 ×{getattr(c, 'depth_see_through_hole', 1.0)}、看穿項 ×{getattr(c, 'depth_see_through_deeper', 1.0)}）", flush=True)
             self._st_announced = True
 
     def get_train_metrics(self, pl_module, gaussian_model, step: int, batch, outputs) -> Tuple[Dict[str, Any], Dict[str, bool]]:
