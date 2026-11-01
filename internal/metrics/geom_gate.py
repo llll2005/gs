@@ -200,7 +200,12 @@ class SfMVoxels:
 
 def sym3_eig(C: torch.Tensor):
     """[M,3,3] 對稱矩陣 => 特徵值 e1>=e2>=e3 與 e3 的特徵向量（解析式 Smith 1961，逐元素運算、不叫 cusolver）。
-    幾乎等向（p≈0）時特徵向量任意 => 呼叫端用 e3/e2 判平坦會把它濾掉。"""
+    幾乎等向（p≈0）時特徵向量任意 => 呼叫端用 e3/e2 判平坦會把它濾掉。
+    11-01 修：叉積改用除過 p 的 (B − β3 I)（無因次、O(1)）。原本用 (A − e3 I) 直接叉積，鄰居幾乎重疊（MCMC 搬移／dup 初始化
+    放在同一點）時 cov ~1e-11，叉積平方在 float32 下溢成 0 => 除以 clamp 1e-30 後 |v| 到 3.5e7（lab 朝向項 −221）。
+    現在 |v| <= 1；退化（e2≈e3、叉積近 0）時 |v| < 0.5，呼叫端據此排除。入口先除以每個矩陣的最大元素（p 本身在 1e-20 也會下溢）。"""
+    sc = C.abs().amax(dim=(1, 2)).clamp_min(1e-38)
+    C = C / sc[:, None, None]
     a00, a11, a22 = C[:, 0, 0], C[:, 1, 1], C[:, 2, 2]
     a01, a02, a12 = C[:, 0, 1], C[:, 0, 2], C[:, 1, 2]
     q = (a00 + a11 + a22) / 3
@@ -209,24 +214,27 @@ def sym3_eig(C: torch.Tensor):
     b01, b02, b12 = a01 / p, a02 / p, a12 / p
     det = b00 * (b11 * b22 - b12 * b12) - b01 * (b01 * b22 - b12 * b02) + b02 * (b01 * b12 - b11 * b02)
     phi = torch.acos((det / 2).clamp(-1.0, 1.0)) / 3
+    b3 = 2 * torch.cos(phi + 2.0943951023931953)
     e1 = q + 2 * p * torch.cos(phi)
-    e3 = q + 2 * p * torch.cos(phi + 2.0943951023931953)
+    e3 = q + p * b3
     e2 = 3 * q - e1 - e3
-    r0 = torch.stack([a00 - e3, a01, a02], -1)
-    r1 = torch.stack([a01, a11 - e3, a12], -1)
-    r2 = torch.stack([a02, a12, a22 - e3], -1)
+    r0 = torch.stack([b00 - b3, b01, b02], -1)
+    r1 = torch.stack([b01, b11 - b3, b12], -1)
+    r2 = torch.stack([b02, b12, b22 - b3], -1)
     cs = torch.stack([torch.cross(r0, r1, dim=-1), torch.cross(r0, r2, dim=-1), torch.cross(r1, r2, dim=-1)], 1)   # [M,3,3]
     nn = cs.norm(dim=-1)
     v = cs.gather(1, nn.argmax(dim=1)[:, None, None].expand(-1, 1, 3))[:, 0]
-    v = v / v.norm(dim=-1, keepdim=True).clamp_min(1e-30)
-    return e1, e2, e3, v
+    nv = v.norm(dim=-1, keepdim=True)
+    v = torch.where(nv > 1e-6, v / nv.clamp_min(1e-12), torch.zeros_like(v))
+    return e1 * sc, e2 * sc, e3 * sc, v
 
 
 @torch.no_grad()
 def surf_planes(xyz, op, nbr, rad_mult: float = 2.0, chunk: int = 1 << 19):
     """2026-11-01 鄰域平面約束（使用者 11-01：不渲染、用周遭高斯讓深度一致的表面平滑）。
     每顆 i：鄰居（不含自己、距離 <= rad_mult×鄰居距離中位）以 opacity 加權的 PCA 平面
-    => 中心 c、法向 nh、面內尺度 r＝sqrt(e1)、平坦度 e3/e2、權重和 w（約等於「有幾顆不透明鄰居」）。"""
+    => 中心 c、法向 nh、面內尺度 r＝sqrt(e1)、平坦度 e3/e2、權重和 w（約等於「有幾顆不透明鄰居」）。
+    退化鄰域（法向求不出來，或面內尺度 r 不到中位的 1%：鄰居幾乎疊在同一點，平面只是數值雜訊）平坦度記成 inf => 呼叫端的平坦門檻會排除。"""
     n = xyz.shape[0]
     dev = xyz.device
     C = torch.empty(n, 3, device=dev); NH = torch.empty(n, 3, device=dev)
@@ -243,8 +251,10 @@ def surf_planes(xyz, op, nbr, rad_mult: float = 2.0, chunk: int = 1 << 19):
         cov = torch.einsum("mk,mki,mkj->mij", w, D, D) / ws.clamp_min(1e-12)[:, None, None]
         e1, e2, e3, v = sym3_eig(cov)
         C[ii], NH[ii], W[ii] = c, v, ws
-        R[ii] = torch.sqrt(e1.clamp_min(0))
-        F[ii] = e3.clamp_min(0) / e2.clamp_min(1e-30)
+        r = torch.sqrt(e1.clamp_min(0))
+        R[ii] = r
+        good = (v.norm(dim=-1) > 0.5) & (r >= 0.01 * r.median())
+        F[ii] = torch.where(good, e3.clamp_min(0) / e2.clamp_min(1e-30), torch.full_like(r, float("inf")))
     return C, NH, R, F, W
 
 

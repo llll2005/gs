@@ -389,7 +389,8 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 C, NH, R, F, W = surf_planes(xyz.detach(), opacities.detach(), nbr, float(c.surf_radius))
                 del nbr
                 valid = (F < float(c.surf_flat)) & (W >= float(c.surf_min_w)) & (R > 0)
-                st = self._surf_state = {"n": n, "step": step, "C": C, "NH": NH, "R": R, "idx": valid.nonzero(as_tuple=True)[0]}
+                deg = float((torch.isinf(F) & (W >= float(c.surf_min_w))).float().mean())   # 11-01 修正後排除的退化鄰域
+                st = self._surf_state = {"n": n, "step": step, "C": C, "NH": NH, "R": R, "idx": valid.nonzero(as_tuple=True)[0], "deg": deg}
         ramp = 1.0
         if int(c.surf_ramp_until) > int(c.surf_from_iter):
             ramp = min(1.0, (step - int(c.surf_from_iter)) / float(int(c.surf_ramp_until) - int(c.surf_from_iter)))
@@ -403,9 +404,10 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         metrics["loss"] = metrics["loss"] + lam * ramp * k * loss
         metrics["surf"] = loss.detach()
         pbar["surf"] = False
-        if not getattr(self, "_surf_announced", False) or (st["step"] == step and step % 2000 < int(c.surf_every)):
-            print(f"[surf] {'✅ 首次觸發' if not getattr(self, '_surf_announced', False) else '　'} step={step} N={n:,}："
-                  f"有效（平坦且有不透明鄰居）{100 * vidx.numel() / n:.1f}%、本步抽 {idx.numel():,}、位置項 {float(lp):.3f}、"
+        bad = not (-1e-3 <= float(lo) <= 1 + 1e-3)   # 1 − |cos| 只可能在 [0, 1]；超出 => 法向沒正規化（11-01 的 bug）
+        if bad or not getattr(self, "_surf_announced", False) or (st["step"] == step and step % 2000 < int(c.surf_every)):
+            print(f"[surf] {'⚠⚠ 朝向項超出 [0,1]' if bad else ('✅ 首次觸發' if not getattr(self, '_surf_announced', False) else '　')} step={step} N={n:,}："
+                  f"有效（平坦且有不透明鄰居）{100 * vidx.numel() / n:.1f}%、退化排除 {100 * st['deg']:.2f}%、本步抽 {idx.numel():,}、位置項 {float(lp):.3f}、"
                   f"被截斷（> tau）{100 * trunc:.1f}%、朝向項 {float(lo):.3f}、權重 {lam * ramp:g}（漸增 {100 * ramp:.0f}%）", flush=True)
             self._surf_announced = True
 

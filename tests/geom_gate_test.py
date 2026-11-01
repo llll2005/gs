@@ -137,6 +137,28 @@ class MetricGateTest(unittest.TestCase):
         self.assertTrue(torch.allclose(torch.stack([e3, e2, e1], 1), ev, rtol=1e-3, atol=1e-3))
         self.assertGreater(float((v * evec[:, :, 0]).sum(-1).abs().min()), 0.99)
 
+    def test_sym3_eig_tiny_scale_stays_unit(self):
+        """11-01 bug：cov ~1e-11（鄰居幾乎重疊）時舊版叉積平方下溢 => |v| 到 3.5e7（lab 朝向項 −221）。修正後任何尺度都是單位向量且方向對。"""
+        g = torch.Generator().manual_seed(3)
+        Q, _ = torch.linalg.qr(torch.randn(256, 3, 3, generator=g, dtype=torch.float64))
+        A = Q @ torch.diag(torch.tensor([1.0, 0.5, 0.01], dtype=torch.float64)) @ Q.transpose(1, 2)
+        for s in (1.0, 1e-8, 1e-11, 1e-12, 1e-14, 1e-20):
+            e1, e2, e3, v = sym3_eig((A * s).float())
+            self.assertLess(float((v.norm(dim=-1) - 1).abs().max()), 1e-4, f"scale {s:g}")
+            self.assertGreater(float((v.double() * Q[:, :, 2]).sum(-1).abs().min()), 0.99, f"scale {s:g}")
+
+    def test_surf_planes_excludes_collapsed_cluster(self):
+        """鄰居幾乎疊在同一點（MCMC 搬移後的複本）=> 平面是雜訊 => 平坦度 inf、被排除；其他點不受影響、法向長度 <= 1。"""
+        X, O = self._surf_scene()
+        X = X.clone(); X[2000:2010] = X[2000] + 1e-7 * torch.randn(10, 3, generator=torch.Generator().manual_seed(4))
+        nbr = morton_neighbors(X, 6)
+        C, NH, R, F, W = surf_planes(X, O, nbr, 2.0)
+        self.assertLessEqual(float(NH.norm(dim=-1).max()), 1 + 1e-5)
+        collapsed = (R < 1e-5)
+        self.assertGreater(int(collapsed.sum()), 0)
+        self.assertTrue(bool(torch.isinf(F[collapsed]).all()))
+        self.assertLess(float(F[2]), 0.1)
+
     def _surf_scene(self):
         # z=0 平面上的隨機點（不透明；格點會讓 Morton 近鄰排成一直線）＋ 第 0 顆抬高 0.003、第 1 顆抬高 0.5（真結構／浮塊，要被截斷）
         g = torch.Generator().manual_seed(2)
