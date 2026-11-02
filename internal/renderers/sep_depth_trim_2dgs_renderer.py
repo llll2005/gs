@@ -47,6 +47,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_protect_vc: float = -1.0,
             trim_merge_first: bool = False,
             trim_merge_color_tol: float = 0.1,
+            trim_running_score: str = "vc",
             trim_soft_rho: float = 0.0,
             trim_schedule: str = "",
             trim_by_mean_contribution: bool = False,
@@ -118,6 +119,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   但表面上的低價值顆粒是被吸收、不是被挖掉。顏色差 >= trim_merge_color_tol 的不併。只支援累加式 trim（trim_running_vc）。
         self.trim_merge_first = trim_merge_first
         self.trim_merge_color_tol = trim_merge_color_tol
+        # ★ 2026-11-03 累加式 trim 的判準（使用者 11-03：viewer 對照 CityGS，我方是大量小而不透明的圓片；V/C 偏好留小足跡）：
+        #   vc     剪 V/C 最低的（現行：單位覆蓋像素貢獻最少的＝大而淡的先剪 => 留下小而實的）
+        #   v      剪 V 最低的（總貢獻；不除以成本 => 不偏好小足跡）
+        #   inv_vc 剪 V/C 最高的（使用者「vpc 的判準反過來跑」：小而實的先剪，留下大而淡的筆觸）
+        if trim_running_score not in ("vc", "v", "inv_vc"):
+            raise ValueError(f"trim_running_score 只能是 vc／v／inv_vc（收到 {trim_running_score!r}）")
+        self.trim_running_score = trim_running_score
         if trim_merge_first and not trim_running_vc:
             print("⚠⚠ [trim-merge-first] 只接在累加式 trim（trim_running_vc）上；現在沒開 => 合併優先不會生效", flush=True)
         # ★ 2026-10-24 SH 分開存放／SH 的 Adam 融進 backward（紀錄/加速論文對照.md A5、B2；光柵器 cuda_rasterizer/sh_adam.h）
@@ -688,7 +696,14 @@ class SepDepthTrim2DGSRenderer(Renderer):
         n_views = int(st.get("views", 0))
         V, C = st["V"], st["C"]
         seen = C > 0
-        score = torch.where(seen, V / torch.clamp_min(C, 1.0), torch.full_like(V, float("inf")))   # 沒被看到 => 這輪不剪
+        _rs = str(getattr(self, "trim_running_score", "vc") or "vc")
+        _base = V if _rs == "v" else V / torch.clamp_min(C, 1.0)
+        if _rs == "inv_vc":
+            _base = -_base                                                                   # 剪 V/C 最高的
+        score = torch.where(seen, _base, torch.full_like(V, float("inf")))   # 沒被看到 => 這輪不剪
+        if _rs != "vc" and not getattr(self, "_rs_announced", False):
+            self._rs_announced = True
+            print(f"[trim-running] ✅ 判準 {_rs}（{'只看總貢獻 V' if _rs == 'v' else '反過來：剪 V/C 最高的'}）", flush=True)
         n_seen = int(seen.sum())
         k_cut = int(self.prune_ratio * pc.get_xyz.shape[0])
         thr = torch.kthvalue(score.float().cpu(), max(1, min(k_cut, n_seen))).values.to(score.device) if n_seen > 0 and k_cut > 0 else None
@@ -740,7 +755,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if rho != 0:
                 pc._trim_state.pop("lam", None); pc._trim_state.pop("off", None); pc._trim_state.pop("off_n", None)
         print(f"[{tag}] step {step}：{n_views} 個訓練視角累加、看到 {n_seen:,}／{seen.numel():,} 顆、未觀測 {seen.numel() - n_seen:,} 顆不剪；"
-              f"門檻 V/C {float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}", flush=True)
+              f"門檻（{_rs}）{float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}", flush=True)
         # 重設累加器（剪枝後 N 變了 => 以新 N 重建）
         pc._trim_state["V"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         pc._trim_state["C"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
