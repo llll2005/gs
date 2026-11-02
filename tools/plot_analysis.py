@@ -1659,6 +1659,177 @@ def n22_road_roof(d):
     save(fig, d, "n22_road_roof.png")
 
 
+# ───────────── 23（10-30～10-31）：cap 劑量、熵拆開、塔頂、幾何約束臂
+N23_DOSE = {  # cap(M): (b3 本塊, b3 幾何, b12 本塊, b12 幾何)；換塊 Δ 相對 full44；b3 貼牆度；每塊分鐘
+    2.5: (0.22, 0.41, 0.07, 0.18, 0.76, 20), 1.0: (0.26, 0.48, 0.03, 0.10, 0.88, 13),
+    0.5: (0.12, 0.21, -0.08, -0.09, 0.93, 9.5), 0.2: (-0.36, -0.62, -0.37, -0.59, 0.96, 7.5)}
+N23_ARMS = [  # 臂, 時間 %（b3／b12）, b12 F1, 說明
+    ("現行 A＋dist4", 0, 0, 0.601, ""), ("深度支撐閘門（ds）", 8, 8, 0.60, "海上浮塊 −85～95%"),
+    ("單側不能看穿（st4）", 9, 0, 0.694, "F1 +0.09；b12 低角度 3.3 → 7.3%"), ("CityGS 式單目深度每 4 步（dl4）", 22, 22, 0.61, "PSNR +0.03"),
+    ("逐顆共面（pl）", 43, 43, None, "朝向 0.987"), ("前期 L1（l1e）", 36, 36, 0.43, "浮塊 −90% 但塊內顆粒 ÷5")]
+N23_TOWER = [(99, 0.50), (999, 0.28), (2999, 0.04), (4999, 0.007)]
+N23_TOWER30K = [("現行", 0.0), ("拿掉熵", 0.0), ("trim 最大貢獻保護", 0.0), ("MCMC |g| 保護", 0.0), ("L1 混 L2（w2）", 0.94)]
+
+
+def n23_dose(d):
+    """cap 劑量：b3 在 1M 最好、b12 要 2.5M；貼牆度隨 cap 降而變好；每塊時間 20 → 7.5 分。"""
+    fig, axs = plt.subplots(1, 2, figsize=(16, 4.3))
+    caps = sorted(N23_DOSE)
+    ax = axs[0]
+    for k, (lab, c, ls) in enumerate((("b3 本塊", C1, "-"), ("b3 幾何區域", C1, "--"), ("b12 本塊", C2, "-"), ("b12 幾何區域", C2, "--"))):
+        ax.plot(caps, [N23_DOSE[c_][k] for c_ in caps], ls, marker="o", color=c, label=lab)
+    ax.axhline(0, color=MUTED, lw=0.8); ax.set_xscale("log"); ax.set_xticks(caps, [f"{c}M" for c in caps])
+    ax.set_xlabel("每塊 cap"); ax.set_ylabel("換塊評測 Δ PSNR（相對 full44，dB）"); ax.legend(fontsize=8)
+    ax.set_title("cap 劑量（A＋dist4、30k）：b3 在 1M 最好、b12 要 2.5M => 兩塊最佳顆數不同（自適應 cap 的依據）", fontsize=9.2)
+    ax = axs[1]
+    adh = [N23_DOSE[c][4] for c in caps]; tm = [N23_DOSE[c][5] for c in caps]
+    ax.plot(caps, adh, marker="o", color=C3, label="b3 立面貼牆度（CityGS 0.97）")
+    ax.set_xscale("log"); ax.set_xticks(caps, [f"{c}M" for c in caps]); ax.set_ylabel("貼牆度中位"); ax.set_ylim(0.7, 1.0)
+    ax2 = ax.twinx(); ax2.plot(caps, tm, marker="s", color=C4, label="每塊訓練分鐘"); ax2.set_ylabel("分鐘"); ax2.grid(False)
+    for c, t in zip(caps, tm):
+        ax2.text(c, t + 0.6, f"{t:g} 分", ha="center", fontsize=8, color=C4)
+    h1, l1 = ax.get_legend_handles_labels(); h2, l2 = ax2.get_legend_handles_labels(); ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="center right")
+    ax.set_title("顆數少 => 貼牆度變好、每塊時間 20 → 7.5 分；但 LPIPS 與 F1 單調變差（b3 F1 0.378 → 0.270、b12 0.601 → 0.478）", fontsize=9.2)
+    save(fig, d, "n23_dose.png")
+
+
+def n23_arms(d):
+    """幾何約束臂（10-30～31，A＋dist4 上，b3／b12）：時間代價與 b12 F1。"""
+    fig, axs = plt.subplots(1, 2, figsize=(16, 4.2), gridspec_kw={"width_ratios": [1.2, 1]})
+    R = N23_ARMS; y = np.arange(len(R)); h = 0.38
+    ax = axs[0]
+    ax.barh(y - h / 2, [r[1] for r in R], h, color=C1, label="b3"); ax.barh(y + h / 2, [r[2] for r in R], h, color=C2, label="b12")
+    for i, r in enumerate(R):
+        ax.text(max(r[1], r[2]) + 1, i, r[4], va="center", fontsize=7.8, color=INK2)
+    ax.set_yticks(y, [r[0] for r in R], fontsize=8.5); ax.invert_yaxis(); ax.set_xlim(0, 75)
+    ax.set_xlabel("每塊純訓練時間增加 %（相對現行）"); ax.legend(fontsize=8, loc="lower right")
+    ax.set_title("時間代價：閘門 +8%、單側不能看穿 +9%（b3）；單目深度 loss、逐顆共面、前期 L1 都太貴", fontsize=9.2)
+    ax = axs[1]
+    RR = [r for r in R if r[3] is not None]
+    bars = ax.bar(np.arange(len(RR)), [r[3] for r in RR], 0.6, color=["#123f7a"] + [C1] * (len(RR) - 1))
+    for b_, r in zip(bars, RR):       # ds／dl4 當時只記「不變」「+0.01」=> 標 ≈
+        ax.text(b_.get_x() + b_.get_width() / 2, r[3] + 0.004, (f"≈{r[3]:.2f}" if r[0].endswith(("（ds）", "（dl4）")) else f"{r[3]:.3f}"),
+                ha="center", fontsize=7.5, color=INK2)
+    ax.set_xticks(np.arange(len(RR)), [r[0].replace("（", "\n（") for r in RR], fontsize=7.5); ax.set_ylim(0.3, 0.75)
+    ax.axhline(0.727, color=MUTED, ls="--", lw=0.8); ax.text(len(RR) - 0.5, 0.732, "g44_best1 60k 0.727", fontsize=7.5, color=INK2, ha="right")
+    ax.set_ylabel("b12 區塊 F1"); ax.set_title("b12 幾何 F1：單側不能看穿 0.601 → 0.694（之後拆項：全部來自補洞項）", fontsize=9.2)
+    save(fig, d, "n23_arms.png")
+
+
+def n23_tower(d):
+    """b2 超高塔頂（0244 幀）：opacity 一路被推到 0、5k～8k 步消失；只有 L1 混 L2 救得回來。"""
+    fig, axs = plt.subplots(1, 2, figsize=(16, 4.0), gridspec_kw={"width_ratios": [1.2, 1]})
+    ax = axs[0]
+    st = [s for s, _ in N23_TOWER]; ov = [o for _, o in N23_TOWER]
+    ax.plot(st, ov, marker="o", color=C2); ax.set_yscale("log"); ax.set_xscale("log")
+    for s, o in N23_TOWER:
+        ax.text(s, o * 1.25, f"{o:g}", ha="center", fontsize=8, color=INK2)
+    ax.axvspan(5000, 8000, color="#f1e3a6", alpha=0.5, lw=0); ax.text(6200, 0.012, "5k～8k 步\n塔頂消失", ha="center", fontsize=8)
+    ax.set_xlabel("訓練步（對數）"); ax.set_ylabel("塔頂附近顆粒 opacity 中位（對數）")
+    ax.set_title("現行 A＋dist4 的 b2 超高塔頂：opacity 從第 99 步起一路被往下推（少數視角才看得到 => L1 每像素只投 ±1 票）", fontsize=9.2)
+    ax = axs[1]
+    bars = ax.bar(np.arange(len(N23_TOWER30K)), [v for _, v in N23_TOWER30K], 0.6, color=[MUTED] * 4 + ["#123f7a"])
+    barlabels(ax, bars, "{:.2f}")
+    ax.set_xticks(np.arange(len(N23_TOWER30K)), [n for n, _ in N23_TOWER30K], fontsize=8); ax.set_ylim(0, 1.05)
+    ax.set_ylabel("30k 時塔頂 SfM 點 5 cm 內有 o>0.5 顆粒的比例")
+    ax.set_title("對策（b2，30k）：拿掉熵、trim 保護、|g| 保護都在 8k～12k 步歸零；只有 L1 混 L2 留住（opacity 中位 1.0）", fontsize=9.2)
+    save(fig, d, "n23_tower.png")
+
+
+# ───────────── 24（11-01）：法向／SfM 豁免／鄰域平面／合併／單目深度診斷／全場景 1M
+N24_ARMS = [  # 臂, (b3 本塊 Δ, b3 F1, b3 海上浮塊k, b3 朝向, b3 低角度%, b3 秒), (b12 同)
+    ("現行 A＋dist4", (0.223, .378, 51.6, .765, 5.2, 1195), (0.065, .601, 126.3, .782, 3.3, 1215)),
+    ("L1 混 L2（w2）", (0.277, .388, 48.0, None, 3.9, 1170), (0.062, .611, 93.0, .767, 5.8, 1206)),
+    ("法向每 2 步", (0.247, .404, 65.2, .935, 2.9, 1380), (0.130, .614, 128.2, .946, 6.2, 1440)),
+    ("法向每 4 步", (0.239, .395, 66.0, .931, 2.7, 1260), (0.126, .619, 140.0, .943, 4.7, 1320)),
+    ("法向每 8 步", (0.208, .391, 68.9, .930, 2.7, 1200), (0.162, .620, 136.1, .941, 4.2, 1260)),
+    ("閘門＋不能看穿（dsst4）", (0.19, .416, 9.9, .748, 3.8, 1381), (0.15, .684, 8.5, .752, 6.4, 1352)),
+    ("＋SfM 豁免（dsxst4）", (0.218, .420, 10.8, .747, 4.7, 1368), (0.137, .694, 8.6, .753, 7.8, 1350)),
+    ("＋L2＋法向每 4 步（完整組合）", (0.080, .442, 12.3, .935, 2.4, 1382), (0.194, .691, 9.1, .942, 5.8, 1373)),
+    ("鄰域平面：位置項", (0.258, .365, 47.6, .753, 4.7, 1318), (0.075, .600, 99.7, .767, 2.6, 1318)),
+    ("鄰域平面：位置＋朝向", (0.208, .362, 40.2, .907, 2.4, 1314), (0.096, .605, 96.1, .872, 3.4, 1277)),
+    ("訓練中合併（搬走、只併同色）", (0.242, .374, 49.2, .757, 3.9, 1219), (0.066, .602, 114.6, .770, 4.4, 1230)),
+]
+N24_MONO = {  # 高度帶: (①現行, ②每張真深度, ③每 60 px 真深度, ④每 120 px SfM) 判前方 %
+    "全部": (14.6, 9.7, 0.4, 5.8), "z<0.05 地面": (9.3, 2.7, 0.1, 4.5), "z 0.05~1": (12.8, 10.4, 0.5, 3.6),
+    "z 1~2": (37.2, 27.2, 1.3, 18.5), "z 2~3": (46.6, 37.7, 1.6, 21.3), "z≥3 超高塔頂": (68.3, 50.7, 1.9, 32.1)}
+N24_FULL = [  # 名稱, PSNR, SSIM, LPIPS, N(M), 16 塊純訓練 h, FPS
+    ("CityGS release", 27.261, .8671, .1540, 24.48, None, 21.9), ("★ A＋dist4 每塊 2.5M", 28.058, .8824, .1142, 27.75, 5.04, 40.6),
+    ("A＋dist4 每塊 1M", 27.805, .8709, .1443, 11.57, 3.23, 57.7), ("A＋dist4 自適應 平均 1M", 27.828, .8725, .1406, 11.64, 3.19, 57.7)]
+
+
+def n24_swap(d):
+    """11-01 單塊臂（A＋dist4 上）：換塊本塊 Δ 與 F1。"""
+    fig, axs = plt.subplots(1, 2, figsize=(17, 5.4))
+    R = N24_ARMS; y = np.arange(len(R))
+    for ax, k, b in zip(axs, (1, 2), (3, 12)):
+        v = [r[k][0] for r in R]; f1 = [r[k][1] for r in R]
+        cs = ["#123f7a" if i == 0 else (C3 if "法向" in r[0] or "平面" in r[0] else (C2 if "閘門" in r[0] or "SfM" in r[0] or "組合" in r[0] else C1)) for i, r in enumerate(R)]
+        ax.barh(y, v, 0.62, color=cs)
+        for i, (a, f) in enumerate(zip(v, f1)):
+            ax.text(max(a, 0) + 0.005, i, f"{a:+.3f}｜F1 {f:.3f}｜{R[i][k][5] / 60:.0f} 分", va="center", fontsize=7.6, color=INK2)
+        ax.axvline(R[0][k][0], color=MUTED, ls="--", lw=0.8)
+        ax.set_yticks(y, [r[0] for r in R], fontsize=8.3); ax.invert_yaxis(); ax.set_xlim(0, 0.42)
+        ax.set_xlabel("換塊評測 本塊區域 Δ PSNR（相對 full44，dB）")
+        ax.set_title({3: "b3：完整組合本塊掉到 +0.080（塊內 >0.3 帶 +0.13 → −0.13）；其餘在雜訊內（單塊約 ±0.1）",
+                      12: "b12：閘門類 +0.07～0.13、F1 0.68～0.69；法向每 8 步 +0.16"}[b], fontsize=9.2)
+    fig.suptitle("11-01 單塊臂（A＋dist4 30k；標註＝F1｜純訓練分鐘；現行 b3 20 分、b12 20 分）", fontsize=9.6)
+    save(fig, d, "n24_swap.png")
+
+
+def n24_geom(d):
+    """同一批臂的幾何：海上浮塊、朝向一致度、低角度透空。"""
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5.2))
+    R = N24_ARMS; y = np.arange(len(R)); h = 0.38
+    spec = [(2, "海上浮塊（千顆，盒內 o>0.2 中心高出 SfM 包絡 0.1）", "{:.1f}k"), (3, "朝向一致度（8 近鄰 |n_i·n_j| 中位）", "{:.3f}"),
+            (4, "合成低角度透空率 %（CityGS 實心像素上）", "{:.1f}%")]
+    for ax, (j, lab, fmt) in zip(axs, spec):
+        for k, (b, c) in enumerate(((1, C1), (2, C2))):
+            vals = [r[b][j] if r[b][j] is not None else np.nan for r in R]
+            bars = ax.barh(y + (k - 0.5) * h, vals, h, color=c, label=f"b{3 if b == 1 else 12}")
+            for i, v in enumerate(vals):
+                if not np.isnan(v):
+                    ax.text(v * 1.02 if j != 3 else v + 0.003, i + (k - 0.5) * h, fmt.format(v), va="center", fontsize=6.6, color=INK2)
+        ax.set_yticks(y, [r[0] for r in R] if j == 2 else [""] * len(R), fontsize=8.3); ax.invert_yaxis(); ax.set_xlabel(lab, fontsize=8.5)
+        if j == 3:
+            ax.set_xlim(0.7, 1.0)
+        ax.legend(fontsize=8, loc="lower right")
+    axs[0].set_title("閘門類壓到 1 萬左右；法向反而 +26～33%", fontsize=9.2)
+    axs[1].set_title("法向與「位置＋朝向」把朝向拉到 0.87～0.95", fontsize=9.2)
+    axs[2].set_title("b12 低角度：閘門＋不能看穿 7.8% 最差；位置項 2.6% 最好", fontsize=9.2)
+    save(fig, d, "n24_geom.png")
+
+
+def n24_mono(d):
+    """單目深度誤差診斷（5,606 張、MatrixCity 真深度只診斷）：真表面被判「在前方」的比例，依高度、四種對齊。"""
+    fig, ax = plt.subplots(figsize=(15, 4.4))
+    keys = list(N24_MONO); x = np.arange(len(keys)); w = 0.2
+    labs = ["① 現行（每張一組、SfM 擬合）", "② 每張一組（真深度擬合）", "③ 每 60 px 一組（真深度擬合）", "④ 每 120 px 一組（SfM 擬合）"]
+    for k, (lb, c) in enumerate(zip(labs, (C2, MUTED, C3, C1))):
+        barlabels(ax, ax.bar(x + (k - 1.5) * w, [N24_MONO[kk][k] for kk in keys], w, color=c, label=lb), "{:.1f}", size=7)
+    ax.set_xticks(x, keys); ax.set_ylabel("判前方 %（e < −5%）"); ax.legend(fontsize=8, ncol=2)
+    ax.set_title("單目深度把高樓「壓扁」：越高越被說成更遠（塔頂 68%）；每張重擬合救不了、小範圍擬合幾乎全救 => 大範圍低頻扭曲；"
+                 "SfM 豁免已蓋住 92.7% 的表面", fontsize=9.2)
+    save(fig, d, "n24_mono.png")
+
+
+def n24_full(d):
+    """全場景（MatrixCity test 741 幀）：每塊 1M 兩版 vs 2.5M vs CityGS。"""
+    fig, axs = plt.subplots(1, 4, figsize=(18, 3.9))
+    R = N24_FULL; x = np.arange(len(R)); cs = [MUTED, "#123f7a", C1, C3]
+    for ax, j, lab, fmt in zip(axs, (1, 3, 4, 5), ("PSNR（dB）", "LPIPS（越低越好）", "合併顆數（M）", "16 塊純訓練（h）"), ("{:.3f}", "{:.4f}", "{:.2f}", "{:.2f}")):
+        vals = [r[j] if r[j] is not None else 0 for r in R]
+        bars = ax.bar(x, vals, 0.62, color=cs)
+        for b_, r in zip(bars, R):
+            ax.text(b_.get_x() + b_.get_width() / 2, b_.get_height(), fmt.format(r[j]) if r[j] is not None else "未量",
+                    ha="center", va="bottom", fontsize=7.5, color=INK2)
+        ax.set_xticks(x, [r[0].replace("A＋dist4 ", "A＋dist4\n") for r in R], fontsize=7.2); ax.set_title(lab, fontsize=9.2)
+        if j == 1:
+            ax.set_ylim(27, 28.2)
+    fig.suptitle("全場景：自適應 cap 平均 1M 以同顆數贏均勻 1M（+0.023 dB、LPIPS −2.6%；全場景雜訊 0.002）；1M 對 2.5M 時間 −36%、顆數 −58%、FPS +42%，PSNR −0.23", fontsize=9.6)
+    save(fig, d, "n24_full.png")
+
+
 DOCS = {
     "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -1678,6 +1849,8 @@ DOCS = {
     "20_全場景遮罩回退與opacity": ["n20_blocks", "n20_swap"],
     "21_配方A全場景_加速cap與撒點": ["n21_full", "n21_blocks", "n21_single"],
     "22_新視角缺陷_海面浮塊立面毛邊與幾何閘門": ["n22_b12hist", "n22_b0var", "n22_orient", "n22_road_roof"],
+    "23_cap劑量熵拆開塔頂與幾何約束臂": ["n23_dose", "n23_arms", "n23_tower"],
+    "24_法向SfM豁免鄰域平面合併與單目深度診斷": ["n24_swap", "n24_geom", "n24_mono", "n24_full"],
 }
 
 
@@ -1716,7 +1889,8 @@ def main():
     for f in (n02_current, n05_cap60k, n07_sampling, n08_init20k, n08_init60k, n09_official_blocks, n09_full44_merged, n09_full44_blocks, n09_merged_blocks, n09_stepprof, n09_evalgap, n05_arms60k, n09_trim,
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
-              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof):
+              n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof,
+              n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]

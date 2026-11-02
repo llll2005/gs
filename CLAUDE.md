@@ -47,6 +47,13 @@ pre-reduction (= every adopted speed-up; `task_cmp.sh` prefix `best1*`; referenc
 VRAM are all neighbour-independent (only wall time and it/s are, and those have dedicated `[solo]` tools).
 The laptop = absolute verification: re-run the stage winner there to claim the envelope.**
 
+**★★★★ Current recipe (2026-11-02) — read `紀錄/完整Pipeline數學詳解.md` (rewritten 11-02) before changing anything:**
+A＋dist4 = 4x4, 30k steps/block, arm `best1maskdistrfed10b4` (out-of-block A/B/C mask + random background + cropped dup init,
+dist 100 every 4 steps, opacity binary entropy one-sided until STEPS/3 then both ×4, accumulative V/C trim, FusedAdam) + flags
+`record_reduce absgrad_gate fused_ssim sh_rest_interval 16 lambda_dist_interval 4`, cap 2.5M => full scene 28.058/.8824/.1142,
+27.75M, 5.04 h (CityGS release 27.261). Light version: adaptive cap avg 1M 27.828, 3.19 h. Status/candidates: `紀錄/研究總覽.md` §0;
+analyses up to `紀錄/實驗分析/24` (25 pending). The block below is older history.
+
 **★★★ Current state of the proposition (2026-09-17, with 2026-10-03/10-09 additions; lab, blocks b6/b12/b13; authority = `紀錄/研究總覽.md` §0):**
 ```
 2026-10-03       current best = cs60_sfmdup4 (conic exact AABB is the default + task_cmp.sh common flags + dup4 init):
