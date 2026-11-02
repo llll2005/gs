@@ -45,6 +45,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             bwd_pair_bit: bool = False,
             trim_running_vc: bool = False,
             trim_protect_vc: float = -1.0,
+            trim_merge_first: bool = False,
+            trim_merge_color_tol: float = 0.1,
             trim_soft_rho: float = 0.0,
             trim_schedule: str = "",
             trim_by_mean_contribution: bool = False,
@@ -111,6 +113,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ★ 2026-10-31 最大貢獻保護（使用者：少數視角才有的資訊被「所有視角加總」的 V/C 稀釋 => b2 超高塔頂被剪）：
         #   累加期間記錄逐顆「單一視角的平均貢獻 ta/cn」的最大值 M；M >= trim_protect_vc 的顆粒這輪不剪（-1＝關）。
         self.trim_protect_vc = trim_protect_vc
+        # ★ 2026-11-02 合併優先的 trim（使用者：把 trim 判準結合進合併）：累加式 trim 選出的低 V/C 顆粒，旁邊有同平面鄰居的
+        #   先併進最佳鄰居（merge_ops.absorb_step；保留它的面積與顏色），再照常整批剪掉 => 剪掉的顆數與原 trim 相同（速度不變），
+        #   但表面上的低價值顆粒是被吸收、不是被挖掉。顏色差 >= trim_merge_color_tol 的不併。只支援累加式 trim（trim_running_vc）。
+        self.trim_merge_first = trim_merge_first
+        self.trim_merge_color_tol = trim_merge_color_tol
+        if trim_merge_first and not trim_running_vc:
+            print("⚠⚠ [trim-merge-first] 只接在累加式 trim（trim_running_vc）上；現在沒開 => 合併優先不會生效", flush=True)
         # ★ 2026-10-24 SH 分開存放／SH 的 Adam 融進 backward（紀錄/加速論文對照.md A5、B2；光柵器 cuda_rasterizer/sh_adam.h）
         #   sh_split             訓練步把 shs_dc (N,1,3) 與 shs_rest (N,15,3) 分開交給光柵器，不再每步 torch.cat 成 (N,16,3)
         #                        （本機 4050、1.29M 顆：cat 的 forward＋backward 9.1 ms／步）。渲染逐位元相同。
@@ -714,8 +723,20 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if rho != 0:   # 增生期最後一次：把仍在支撐外的硬剪掉
                 ss = self._trim_state(pc, ("V", "C", "lam", "off"))
                 low = low | ss["off"]
+            _mf_msg = ""
+            if bool(getattr(self, "trim_merge_first", False)) and bool(low.any()):
+                from internal.density_controllers.merge_ops import absorb_step
+                _I, _J, _inf = absorb_step(pc, low, color_tol=float(getattr(self, "trim_merge_color_tol", 0.1)))
+                if _I.numel() > 0:
+                    module.density_controller.replace_tensors_to_optimizers(pc, module.gaussian_optimizers, inds=_I)   # 吸收者 Adam 重設
+                _mf_msg = (f"（其中 {_J.numel():,} 顆先併進同平面鄰居：立面 {100 * _inf.get('facade', 0):.0f}%、"
+                           f"吸收者長軸中位 {_inf.get('len_before', 0):.4f} -> {_inf.get('len_after', 0):.4f}）" if _J.numel() > 0
+                           else "（合併優先：沒有可併的同平面鄰居）")
+                if not getattr(self, "_mf_announced", False):
+                    self._mf_announced = True
+                    print(f"[trim-merge-first] ✅ 首次觸發 step {step}：本輪剪 {int(low.sum()):,} 顆，其中 {_J.numel():,} 顆先併進鄰居", flush=True)
             module.density_controller._prune_points(low, pc, module.gaussian_optimizers)
-            msg = f"剪 {int(low.sum()):,} 顆"
+            msg = f"剪 {int(low.sum()):,} 顆{_mf_msg}"
             if rho != 0:
                 pc._trim_state.pop("lam", None); pc._trim_state.pop("off", None); pc._trim_state.pop("off_n", None)
         print(f"[{tag}] step {step}：{n_views} 個訓練視角累加、看到 {n_seen:,}／{seen.numel():,} 顆、未觀測 {seen.numel() - n_seen:,} 顆不剪；"

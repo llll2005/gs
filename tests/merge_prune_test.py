@@ -113,5 +113,47 @@ class MergePruneTest(unittest.TestCase):
         self.assertTrue(_impl(merge_from_iter=3000, merge_until_iter=-1)._merge_window(29000))
 
 
+class AbsorbStepTest(unittest.TestCase):
+    """merge_ops.absorb_step（合併優先的 trim）與重構後的 merge_step。"""
+
+    def test_merge_step_pair_goes_to_midpoint(self):
+        from internal.density_controllers.merge_ops import merge_step
+        gm, _ = _plane()
+        X0 = gm.gaussians["means"].detach().clone()
+        I, J, info = merge_step(gm, k=12, max_frac=0.2, color_tol=1.0)
+        self.assertGreater(I.numel(), 0)
+        mid = 0.5 * (X0[I] + X0[J])                                      # 同 opacity、同大小 => 權重相等
+        self.assertTrue(torch.allclose(gm.gaussians["means"].detach()[I], mid, atol=1e-6))
+
+    def test_absorb_into_coplanar_neighbors_only(self):
+        from internal.density_controllers.merge_ops import absorb_step
+        gm, _ = _plane()
+        n = gm.n_gaussians
+        g = gm.gaussians
+        with torch.no_grad():
+            g["means"][399] = torch.tensor([5.0, 5.0, 5.0])               # 孤立在平面外
+            g["opacities"][398] = math.log(0.02 / 0.98)                     # 幾乎透明 => 不併
+        src = torch.zeros(n, dtype=torch.bool)
+        src[::7] = True
+        src[398] = True; src[399] = True
+        X0 = g["means"].detach().clone()
+        I, J, info = absorb_step(gm, src, k=12, color_tol=0.1)
+        self.assertGreater(J.numel(), 0)
+        self.assertTrue(bool(src[J].all()))                               # 被吸收的都是 trim 候選
+        self.assertFalse(bool(src[I].any()))                              # 吸收者都不是候選（會留下來）
+        self.assertEqual(int(torch.unique(I).numel()), int(I.numel()))   # 每個鄰居最多吸收一顆
+        self.assertNotIn(399, J.tolist())
+        self.assertNotIn(398, J.tolist())
+        self.assertTrue(torch.allclose(g["means"].detach()[I], 0.5 * (X0[I] + X0[J]), atol=1e-6))
+        self.assertTrue(torch.equal(g["means"].detach()[J], X0[J]))      # 候選本身不動（呼叫端照常剪掉）
+
+    def test_absorb_nothing_when_no_candidates(self):
+        from internal.density_controllers.merge_ops import absorb_step
+        gm, _ = _plane()
+        I, J, info = absorb_step(gm, torch.zeros(gm.n_gaussians, dtype=torch.bool))
+        self.assertEqual(I.numel(), 0)
+        self.assertEqual(J.numel(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

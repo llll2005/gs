@@ -94,6 +94,16 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
         pi, pj = pi[keep], pj[keep]
     if pi.numel() == 0:
         return empty, empty, {"pairs": 0}
+    return _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, pi, pj)
+
+
+@torch.no_grad()
+def _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, pi, pj):
+    """把 cand[pj] 併進 cand[pi]（質量守恆矩匹配；寫回 cand[pi] 的原始參數）。pi／pj 是 cand 內的局部索引、一一配對、互不重複。
+    merge_step（互為最佳的兩兩合併）與 absorb_step（trim 候選併進最佳鄰居）共用。回傳 (留下的全域索引, 併掉的全域索引, 統計)。"""
+    X, raw_s, raw_q, raw_o = g["means"], g["scales"], g["rotations"], g["opacities"]
+    dc, rest = g["shs_dc"], g["shs_rest"]
+    dev = X.device
     I, J = cand[pi], cand[pj]
     oi, oj = O[I], O[J]
     wi = oi * S[pi, 0] * S[pi, 1]; wj = oj * S[pj, 0] * S[pj, 1]; ws = (wi + wj).clamp_min(1e-20)
@@ -124,3 +134,65 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
     rest[I] = (fi * rest[I].float() + fj * rest[J].float()).to(rest.dtype)
     fac = (nn[:, 2].abs() < 0.3).float().mean()
     return I, J, {"pairs": int(pi.numel()), "facade": float(fac), "len_before": float(smax[pi].median()), "len_after": float(sc[:, 0].median())}
+
+
+@torch.no_grad()
+def absorb_step(gm, src, k: int = 12, color_tol: float = 0.1, flat_tol: float = 0.1, min_opacity_dst: float = 0.5,
+                min_opacity_src: float = 0.05, chunk: int = 1 << 19):
+    """★ 2026-11-02 合併優先的 trim（使用者：結合 trim 判準與合併）：src（bool [N]，本輪 trim 要剪的低 V/C 顆粒）裡，
+    旁邊有同平面鄰居（同 merge_step 的平面／相鄰／顏色條件；鄰居不在 src、opacity > min_opacity_dst）的，併進最佳的那一個鄰居
+    （每個鄰居一輪最多吸收一顆，取代價最小的）；opacity <= min_opacity_src 的不併（併了也幾乎沒貢獻）。
+    只改「留下的鄰居」的參數，src 本身由呼叫端照常剪掉（N 的減少量與 trim 相同）。回傳 (吸收者, 被吸收者, 統計)，皆為全域索引。"""
+    g = gm.gaussians
+    X, raw_s, raw_q, raw_o = g["means"], g["scales"], g["rotations"], g["opacities"]
+    dc = g["shs_dc"]
+    dev = X.device
+    O = torch.sigmoid(raw_o).reshape(-1)
+    empty = torch.empty(0, dtype=torch.long, device=dev)
+    cand = torch.nonzero(O > min_opacity_src, as_tuple=True)[0]
+    if cand.numel() < 100 or not bool(src[cand].any()):
+        return empty, empty, {"pairs": 0}
+    is_src = src[cand]
+    ok_dst = (~is_src) & (O[cand] > min_opacity_dst)
+    Xc = X[cand].float()
+    S = torch.exp(raw_s[cand].float())
+    R = _qmat(raw_q[cand].float())
+    t1, t2 = R[:, :, 0], R[:, :, 1]
+    smax = S.max(dim=-1).values
+    rgb = dc[cand, 0, :].float() * _C0 + 0.5
+    nb = morton_neighbors(Xc, k).long()
+    n = Xc.shape[0]
+    nrm = torch.empty(n, 3, device=dev); flat = torch.empty(n, device=dev)
+    for c0 in range(0, n, chunk):
+        P = Xc[nb[c0:c0 + chunk]]; P = P - P.mean(1, keepdim=True)
+        ev, evec = torch.linalg.eigh(torch.einsum("nki,nkj->nij", P, P))
+        nrm[c0:c0 + chunk] = evec[:, :, 0]; flat[c0:c0 + chunk] = ev[:, 0] / ev[:, 1].clamp_min(1e-18)
+    srcl = torch.nonzero(is_src, as_tuple=True)[0]
+    best = torch.full((srcl.numel(),), -1, dtype=torch.long, device=dev); bestc = torch.full((srcl.numel(),), float("inf"), device=dev)
+    for c0 in range(0, srcl.numel(), chunk):
+        ii = srcl[c0:c0 + chunk]
+        jj = nb[ii]
+        d = Xc[jj] - Xc[ii][:, None]
+        ni, nj = nrm[ii][:, None].expand_as(d), nrm[jj]
+        off = (d * ni).sum(-1).abs(); inpl = (d - (d * ni).sum(-1, keepdim=True) * ni).norm(dim=-1)
+        ssum = smax[ii][:, None] + smax[jj]
+        dcol = (rgb[ii][:, None] - rgb[jj]).abs().mean(-1)
+        ok = (jj != ii[:, None]) & ok_dst[jj] & (flat[ii][:, None] < flat_tol) & (flat[jj] < flat_tol) & ((ni * nj).sum(-1).abs() > 0.9) \
+            & (off < 0.5 * ssum) & (inpl < 1.5 * ssum) & (dcol < color_tol)
+        cost = torch.where(ok, inpl / ssum + dcol, torch.full_like(inpl, float("inf")))
+        cb, ci = cost.min(dim=1)
+        best[c0:c0 + ii.numel()] = torch.where(torch.isfinite(cb), jj.gather(1, ci[:, None])[:, 0], torch.full_like(ci, -1))
+        bestc[c0:c0 + ii.numel()] = cb
+    has = best >= 0
+    if not bool(has.any()):
+        return empty, empty, {"pairs": 0, "src": int(srcl.numel())}
+    s_loc, d_loc, cst = srcl[has], best[has], bestc[has]
+    perm = torch.argsort(cst)                                          # 每個鄰居只吸收代價最小的一顆
+    d_sorted = d_loc[perm]
+    uniq, inv = torch.unique(d_sorted, return_inverse=True)
+    first = torch.full((uniq.numel(),), d_sorted.numel(), dtype=torch.long, device=dev)
+    first = first.scatter_reduce(0, inv, torch.arange(d_sorted.numel(), device=dev), reduce="amin")
+    keep = perm[first]
+    I, J, info = _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, d_loc[keep], s_loc[keep])
+    info["src"] = int(srcl.numel())
+    return I, J, info
