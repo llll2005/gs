@@ -105,11 +105,17 @@ def plane_loss(xyz, nrm, s1, op, nbr, idx, sig=0.5, rad=3.0, w_min=0.05):
 
 
 class DepthSupport:
-    """逐顆累積「中心投到當前相機、對單目深度的相對殘差」；視窗結束時更新支撐。顆數變了：增加＝補在尾端，減少＝整個重來。"""
+    """逐顆累積「中心投到當前相機、對單目深度的相對殘差」；視窗結束時更新支撐。顆數變了：增加＝補在尾端，減少＝整個重來。
+    rule："mean"＝視窗內殘差平均 < −delta_front 判「一直在前方」（原行為）；"vote"＝超過一半的觀測 < −delta_front（＝殘差中位數 < −delta_front）。
+    （2026-11-02 全域共識量測：平均會被少數錯很大的視角拉走——遠離 SfM 誤判 37.5% vs 中位 15.3%、海面 20.8% vs 5.1%。）
+    update 不做 nonzero／布林索引（2026-11-02：拿掉每步的 GPU 同步點；對全部 N 顆用遮罩累加，數學與舊版相同）。"""
 
-    def __init__(self, delta_front=0.05, delta_back=0.05, window=400, min_count=3, near=0.2):
+    def __init__(self, delta_front=0.05, delta_back=0.05, window=400, min_count=3, near=0.2, rule="mean"):
         self.df, self.db, self.window, self.cmin, self.near = delta_front, delta_back, window, min_count, near
-        self.sum = self.cnt = self.mn = self.support = None
+        if rule not in ("mean", "vote"):
+            raise ValueError(f"depth_support_rule 只能是 mean／vote（收到 {rule!r}）")
+        self.rule = rule
+        self.sum = self.cnt = self.mn = self.vote = self.support = None
         self.t0 = None
         self.last = {}
 
@@ -117,6 +123,7 @@ class DepthSupport:
         if self.sum is None or self.sum.shape[0] > n:
             self.sum = torch.zeros(n, device=device)
             self.cnt = torch.zeros(n, device=device)
+            self.vote = torch.zeros(n, device=device)
             self.mn = torch.full((n,), float("inf"), device=device)
             self.support = torch.ones(n, dtype=torch.bool, device=device)
             self.t0 = None
@@ -124,6 +131,7 @@ class DepthSupport:
             m = n - self.sum.shape[0]
             self.sum = torch.cat([self.sum, torch.zeros(m, device=device)])
             self.cnt = torch.cat([self.cnt, torch.zeros(m, device=device)])
+            self.vote = torch.cat([self.vote, torch.zeros(m, device=device)])
             self.mn = torch.cat([self.mn, torch.full((m,), float("inf"), device=device)])
             self.support = torch.cat([self.support, torch.ones(m, dtype=torch.bool, device=device)])
 
@@ -142,23 +150,25 @@ class DepthSupport:
         ud = (u * (wd / float(width))).floor().long()
         vd = (v * (hd / float(height))).floor().long()
         ok &= (ud >= 0) & (ud < wd) & (vd >= 0) & (vd < hd)
-        idx = ok.nonzero(as_tuple=True)[0]
-        dinv = inv_depth.reshape(hd, wd)[vd[idx], ud[idx]]
-        good = dinv > 1e-6
-        idx, dinv = idx[good], dinv[good]
-        zm = 1.0 / dinv
-        r = (z[idx] - zm) / zm
-        self.sum.index_add_(0, idx, r)
-        self.cnt.index_add_(0, idx, torch.ones_like(r))
-        self.mn[idx] = torch.minimum(self.mn[idx], r.abs())
+        dinv = inv_depth.reshape(hd, wd)[vd.clamp(0, hd - 1), ud.clamp(0, wd - 1)]
+        ok &= dinv > 1e-6
+        zm = 1.0 / dinv.clamp_min(1e-6)
+        r = torch.where(ok, (z - zm) / zm, torch.zeros_like(z))
+        self.sum += r
+        self.cnt += ok.to(self.cnt.dtype)
+        self.vote += (ok & (r < -self.df)).to(self.vote.dtype)
+        self.mn = torch.where(ok, torch.minimum(self.mn, r.abs()), self.mn)
         if step - self.t0 >= self.window:
             seen = self.cnt >= self.cmin
-            front = seen & (self.sum / self.cnt.clamp_min(1) < -self.df)
+            if self.rule == "vote":
+                front = seen & (self.vote > 0.5 * self.cnt)
+            else:
+                front = seen & (self.sum / self.cnt.clamp_min(1) < -self.df)
             never = seen & (self.mn > self.db)
             self.support = ~(front | never)
             self.last = {"seen": float(seen.float().mean()), "front": float(front.float().mean()),
                          "never": float(never.float().mean())}
-            self.sum.zero_(); self.cnt.zero_(); self.mn.fill_(float("inf")); self.t0 = step
+            self.sum.zero_(); self.cnt.zero_(); self.vote.zero_(); self.mn.fill_(float("inf")); self.t0 = step
             return True
         return False
 

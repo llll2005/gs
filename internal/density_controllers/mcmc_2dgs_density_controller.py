@@ -436,6 +436,14 @@ class MCMC2DGSDensityController(MCMCDensityController):
     （2DGS 的 MCMC 雜訊本來就只在面元平面內：共變異法向那軸是 0；跑出牆面的是光度梯度。）"""
     inplane_ramp_from: int = 1000
     inplane_ramp_until: int = 10000
+    occl_recycle_min: int = 0
+    """★ 2026-11-02 遮擋回收（使用者「延後的都排」：地底塊）。>0 時每個增生事件（densify 期、occl_from_iter 之後）用該步訓練視角（完整路徑）看每顆中心：
+    在不透明表面（該像素 α>0.95）後方超過 occl_margin（相對深度）記「被擋」；其餘看得到的情況（在表面上、前方、或在半透明表面後方＝可能透出來）記「可見」。
+    被擋 >= 此值、且從沒「可見」過的顆粒併進 dead_mask 交給 relocation（搬去需要的地方；開了 hole_fill 就先拿去補洞）。
+    用模型自己的深度：這是遮擋判斷，不是浮塊判斷，不會循環。0＝關。
+    （實驗分析 18：馬路一半靠地底面元撐、拿掉就透明 => 地底塊是因為路面有洞才被看到；要先補洞，路面不透明後它們才會被判「被擋」。）"""
+    occl_margin: float = 0.03
+    occl_from_iter: int = 3000
     merge_prune: bool = False
     """★ 2026-11-02（使用者：合併完就減少點數）：True＝合併掉的 j 直接刪掉（N 減少），不交給 relocation 搬走；
     增生期同時把 cap 扣掉同樣顆數（`_cap_cut`），否則 MCMC 增生會在下幾個事件補回來。
@@ -1014,6 +1022,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 print(f"[nonfinite] ⚠⚠ step {global_step}: {_nf_idx.numel():,} 顆參數非有限 => 併入死亡搬家、清 Adam 狀態", flush=True)
             if _merge_dead is not None:
                 dead_mask = dead_mask | _merge_dead             # 合併掉的 j：不受 relocate_protect 保護、一定搬走
+            if int(getattr(self.config, "occl_recycle_min", 0) or 0) > 0 and global_step >= int(getattr(self.config, "occl_from_iter", 3000)):
+                dead_mask = self._occl_step(gaussian_model, outputs, batch, dead_mask, global_step)
             if float(getattr(self.config, "hole_fill_frac", 0.0) or 0.0) > 0 and global_step >= int(getattr(self.config, "hole_fill_from_iter", 1000)):
                 dead_mask = self._hole_fill(gaussian_model, optimizers, outputs, batch, pl_module, dead_mask, global_step)
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
@@ -1057,6 +1067,14 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if _mi > 0 and (global_step % _mi == 0
                             or global_step + self.config.densification_interval >= self.config.densify_until_iter):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
+
+    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0}     # 跟著 N 走的逐顆狀態 => 新增時補的值
+
+    def _per_particle_extend(self, n0: int, n1: int) -> None:
+        for k, fill in self._PER_PARTICLE.items():
+            t = getattr(self, k, None)
+            if t is not None:
+                setattr(self, k, torch.cat([t, torch.full((n1 - n0,), fill, dtype=t.dtype, device=t.device)]) if t.shape[0] == n0 else None)
 
     # ────────── 增生方向限制（inplane_*）
     def _inplane_ramp(self, step: int) -> float:
@@ -1117,6 +1135,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     def relocate_gs(self, gaussian_model, optimizers, dead_mask) -> None:
         super().relocate_gs(gaussian_model, optimizers, dead_mask)
+        for k in ("_occ_n", "_see_n"):                                 # 搬家的＝新位置 => 遮擋計數重來
+            t = getattr(self, k, None)
+            if t is not None and t.shape[0] == dead_mask.shape[0]:
+                t[dead_mask] = 0
         if self._inplane_on() and bool(dead_mask.any()):
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, dead_mask.nonzero(as_tuple=True)[0])   # 搬家的＝新點（宿主留在原地）
@@ -1125,12 +1147,53 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         n0 = gaussian_model.n_gaussians
         out = super().add_new_gs(gaussian_model, optimizers)
         n1 = gaussian_model.n_gaussians
+        if n1 > n0:
+            self._per_particle_extend(n0, n1)
         if self._inplane_on() and n1 > n0:
-            b = getattr(self, "_birth", None)
-            if b is not None and b.shape[0] == n0:
-                self._birth = torch.cat([b, torch.full((n1 - n0,), -1, dtype=b.dtype, device=b.device)])
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, torch.arange(n0, n1, device=gaussian_model.gaussians["means"].device))
+        return out
+
+    # ────────── 遮擋回收（occl_*）
+    def _occl_step(self, gaussian_model, outputs, batch, dead_mask, global_step: int):
+        c = self.config
+        a, z = outputs.get("rend_alpha"), outputs.get("surf_depth")
+        if a is None or z is None:
+            if not getattr(self, "_oc_warned", False):
+                self._oc_warned = True
+                print(f"⚠⚠ [occl] step {global_step}：拿不到完整路徑的 rend_alpha／surf_depth => 不判（之後不再提醒）", flush=True)
+            return dead_mask
+        a = a.reshape(a.shape[-2:]).detach(); z = z.reshape(z.shape[-2:]).detach()
+        H, W = a.shape
+        cam = batch[0]
+        N = gaussian_model.n_gaussians
+        dev = a.device
+        for k in ("_occ_n", "_see_n"):
+            t = getattr(self, k, None)
+            if t is None or t.shape[0] != N:
+                setattr(self, k, torch.zeros(N, device=dev))
+        with torch.no_grad():
+            X = gaussian_model.gaussians["means"].detach().float()
+            p = torch.cat([X, torch.ones_like(X[:, :1])], 1) @ cam.world_to_camera.float()
+            zc = p[:, 2]
+            u = float(cam.fx) * p[:, 0] / zc.clamp_min(1e-6) + float(cam.cx)
+            v = float(cam.fy) * p[:, 1] / zc.clamp_min(1e-6) + float(cam.cy)
+            ui = (u * (W / float(cam.width))).floor().long(); vi = (v * (H / float(cam.height))).floor().long()
+            ok = (zc > 0.2) & (ui >= 0) & (ui < W) & (vi >= 0) & (vi < H)
+            ui, vi = ui.clamp(0, W - 1), vi.clamp(0, H - 1)
+            zs, aa = z[vi, ui], a[vi, ui]
+            occ = ok & (zs > 0) & (aa > 0.95) & (zc > zs * (1.0 + float(c.occl_margin)))
+            self._occ_n += occ.float()
+            self._see_n += (ok & ~occ).float()
+            rec = (self._occ_n >= int(c.occl_recycle_min)) & (self._see_n == 0)
+            n_rec = int(rec.sum())
+            if n_rec:
+                self._occ_n[rec] = 0
+            out = dead_mask | rec
+        if not getattr(self, "_oc_announced", False) or global_step % 2000 == 0:
+            print(f"[occl] {'✅ 首次觸發' if not getattr(self, '_oc_announced', False) else '　'} step {global_step}：這個視角被擋 {int(occ.sum()):,}／看得到 {int((ok & ~occ).sum()):,}；"
+                  f"累計被擋 >= {int(c.occl_recycle_min)} 且從沒看得到 => 回收 {n_rec:,} 顆（N {N:,}）", flush=True)
+            self._oc_announced = True
         return out
 
     # ────────── MCMC 補洞放點（hole_fill_*）
@@ -1209,7 +1272,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             for _k, _t in _st.items():
                 if torch.is_tensor(_t) and _t.shape[0] == N:
                     _t[slots] = 0
-        for _nm in ("_max_radii2D", "_max_tiles2D", "_absgrad_accum"):
+        for _nm in ("_max_radii2D", "_max_tiles2D", "_absgrad_accum", "_occ_n", "_see_n"):
             _t = getattr(self, _nm, None)
             if torch.is_tensor(_t) and _t.shape[0] == N:
                 _t[slots] = 0
@@ -1314,9 +1377,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             else:
                 moved.append(k)
             st[k] = t[perm]
-        b = getattr(self, "_birth", None)
-        if b is not None:
-            self._birth = b[perm] if b.shape[0] == n else None
+        for _k in self._PER_PARTICLE:
+            _t = getattr(self, _k, None)
+            if _t is not None:
+                setattr(self, _k, _t[perm] if _t.shape[0] == n else None)
         g = getattr(self, "_absgrad_accum", None)
         if g is not None:
             if g.shape[0] == n:
@@ -1969,9 +2033,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # `mask`: True = prune.
         valid = ~mask
         gaussian_model.properties = Utils.prune_properties(valid, gaussian_model, optimizers)
-        _b = getattr(self, "_birth", None)
-        if _b is not None:
-            self._birth = _b[valid] if _b.shape[0] == valid.shape[0] else None   # 增生方向限制的出生步數跟著剪
+        for _k in self._PER_PARTICLE:                                  # 出生步數、遮擋計數跟著剪
+            _t = getattr(self, _k, None)
+            if _t is not None:
+                setattr(self, _k, _t[valid] if _t.shape[0] == valid.shape[0] else None)
         # ★ 2026-10-16 逐顆的 trim 替代狀態（訓練中累加的 V／C、軟投影的 λ 與支撐外遮罩；renderer 掛在模型上）跟著剪
         _st = getattr(gaussian_model, "_trim_state", None)
         if _st:

@@ -139,6 +139,11 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_support_delta_back: float = 0.05
     depth_support_window: int = 400
     depth_support_sfm_radius: float = 0.0
+    depth_support_interval: int = 1
+    """★ 2026-11-02（使用者「延後的都排」：閘門讓每塊 +8%）每 k 步才把顆粒投到當前相機累積一次；視窗長度（步）不變 => 每顆的觀測數約為 1/k。"""
+    depth_support_rule: str = "mean"
+    """mean＝視窗內殘差平均 < −delta_front 判「一直在前方」（原行為）；vote＝超過一半的觀測 < −delta_front（＝中位數）。
+    11-02 全域共識量測（真深度配對的上限）：遠離 SfM（豁免蓋不到）誤判 平均 37.5% vs 中位 15.3%、海面 20.8% vs 5.1%。"""
     """★ 2026-11-01 >0 時：離 SfM 點 r 內（體素近似，最遠約 3.5r）的顆粒不受深度支撐判定（永遠算有支撐）；SfM 點讀 <data.path>/sparse/0/points3D.bin。
     b3 現行模型上量：r=0.03 塔頂（z 3～4）被豁免 87%、浮塊候選（o>0.2、高出 SfM 包絡 0.1）0.3%；r=0.05 => 95%／4%。
     使用者 11-01 目視 b3 超高塔頂變煙；量到深度支撐單獨就讓 z 3～4 的不透明顆粒 7.26 萬 → 1.58 萬
@@ -345,7 +350,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         if use_ds:
             ds = getattr(self, "_depth_support", None)
             if ds is None:
-                ds = self._depth_support = DepthSupport(c.depth_support_delta_front, c.depth_support_delta_back, int(c.depth_support_window))
+                ds = self._depth_support = DepthSupport(c.depth_support_delta_front, c.depth_support_delta_back, int(c.depth_support_window),
+                                                        rule=str(getattr(c, "depth_support_rule", "mean") or "mean"))
+                print(f"[depth-support] 規則 {ds.rule}、每 {int(getattr(c, 'depth_support_interval', 1) or 1)} 步累積一次、視窗 {int(c.depth_support_window)} 步", flush=True)
             inv = batch[2] if len(batch) > 2 else None
             if isinstance(inv, tuple):
                 inv = inv[0]
@@ -355,7 +362,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                     print("⚠⚠ [depth-support] 拿不到單目深度（batch[2] 是 None：skip_unused_depth 跳過了？）=> 深度支撐不會生效", flush=True)
             else:
                 cam = batch[0]
-                done = ds.update(step, xyz, cam.world_to_camera, cam.fx, cam.fy, cam.cx, cam.cy, int(cam.width), int(cam.height), inv.to(xyz.device))
+                _k = int(getattr(c, "depth_support_interval", 1) or 1)
+                done = (ds.update(step, xyz, cam.world_to_camera, cam.fx, cam.fy, cam.cx, cam.cy, int(cam.width), int(cam.height), inv.to(xyz.device))
+                        if _k <= 1 or step % _k == 0 else False)
                 exempt = ""
                 if done and getattr(self, "_sfm_xyz", None) is not None and ds.support is not None and ds.support.shape[0] == n:
                     from .geom_gate import SfMVoxels
