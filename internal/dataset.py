@@ -589,6 +589,12 @@ class DataModule(LightningDataModule):
         if float(getattr(getattr(m, "config", None), "depth_see_through_reg", 0.0) or 0.0) > 0:
             print("[depth] skip_unused_depth：metric 開了 depth_see_through（單側「不能看穿」要讀單目深度）=> 照常載入", flush=True)
             return
+        # 2026-11-03：補洞放點在 density controller，也要讀單目深度（找洞與看穿、放點深度）。
+        #   沒這條時「只開補洞、不開閘門」會被清掉深度 => _hole_fill 只印一次 ⚠⚠ 然後整個跑次都不補。
+        _dc = getattr(self.trainer.lightning_module, "density_controller", None)
+        if float(getattr(getattr(_dc, "config", None), "hole_fill_frac", 0.0) or 0.0) > 0:
+            print("[depth] skip_unused_depth：density 開了補洞放點（要讀單目深度）=> 照常載入", flush=True)
+            return
         n = 0
         for name in ("train_set", "val_set", "test_set"):
             s = getattr(self.dataparser_outputs, name, None)

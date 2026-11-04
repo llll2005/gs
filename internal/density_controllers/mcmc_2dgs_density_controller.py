@@ -415,6 +415,9 @@ class MCMC2DGSDensityController(MCMCDensityController):
     merge_color_tol: float = 1.0
     """顏色（SH DC→RGB）L1 差門檻；1.0＝不看顏色（讓窗戶與窗框併成實牆，細節交給後續訓練）"""
     merge_k: int = 12
+    merge_chunk: int = 1 << 19
+    """merge_step 每批處理幾顆（鄰域平面擬合的批次 eigh 工作區約 4 KB／顆 => 預設 52 萬顆一批約 2 GiB）。
+    結果與批次大小無關（逐顆的 3x3 eigh）；6 GB 卡用 65536（2026-11-03 本機 1M 在第一次合併 OOM）。"""
     merge_until_iter: int = -1
     """>0 時合併只在 [merge_from_iter, merge_until_iter] 內做；<=0＝不設上限（relocate 模式本來就只在增生期）。"""
     hole_fill_frac: float = 0.0
@@ -1297,7 +1300,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         from .merge_ops import merge_step
         n0 = gaussian_model.n_gaussians
         _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=float(self.config.merge_max_frac),
-                                      color_tol=float(self.config.merge_color_tol))
+                                      color_tol=float(self.config.merge_color_tol),
+                                      chunk=int(getattr(self.config, "merge_chunk", 1 << 19)))
         out = None
         if _mI.numel() > 0:
             self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)          # 合併後的 i 重設 Adam 狀態
