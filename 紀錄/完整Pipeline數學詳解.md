@@ -168,8 +168,23 @@ MatrixCity 影像＋GT 姿態 ─┬─ COLMAP（GT 姿態）=> SfM 點 ──�
 | 合併後刪除（density `merge_prune`、`merge_*`） | 互為最佳的同平面同色鄰居矩匹配合併，被併的刪掉、cap 同步扣 | 後半合併：顆數 −16%、PSNR 平、浮塊 −24～41% | −3～7% | **輕量化候選**；全程／更積極版排在 lab |
 | 合併優先的 trim（renderer `trim_merge_first`） | trim 候選先併進同平面鄰居再剪 | 11-02 排在 lab | — | 實驗中 |
 | 每塊 cap 1M／自適應 | 少顆數 | 全場景 −0.23 dB、時間 −36%；自適應 +0.023 | −36% | 輕量版 |
+| ★ V/C 累加 warp 先加總（renderer `trim_running_warp`） | 訓練 forward 累加 V/C 時，每個配對先在 warp 內加總（ballot＋shuffle）再寫 shared | 無損（覆蓋數逐位元相同、渲染逐位元相同）（`28` §4） | 增生期 −8.5% | **可進配方**（11-05） |
+| 零梯度像素略過（renderer `bwd_zero_grad_skip`） | backward 不處理上游梯度全 0 的像素（塊外遮罩 C 區） | 無損（梯度只差加總順序）（`28` §3） | −1.7%（dist 步 ±0） | **可進配方**（11-05） |
+| 不計分像素略過（renderer `skip_unscored_pixels`） | lean 訓練 forward 也略過 C 區 | 非 C 區渲染逐位元相同；C 區不再算 dist／V/C；held-out −0.011（待換塊評測） | 再 −0.7%（dist 步 −3.4%） | 待定 |
+| train log 開關（`train_log_interval`） | 0＝訓練中不記 train/*、k＝每 k 步 | 只影響紀錄 | 約 −2%（log＋同步） | 量總時間時用 |
+| SfM 錨點／增生限制（density `sfm_lock`、`sfm_birth_*`、`sfm_merge_eps`） | 鎖住與 SfM 重合的初始顆粒；離 SfM > r 的母點抽樣 ×ε | 只限增生：地下覆蓋 2.32 → 1.04 層、離 SfM 遠 −63%、PSNR 平、LPIPS +0.003；一般高樓上半部變薄（`27` §6） | −2～10%（本機） | 實驗中 |
+| 零成本 SfM 顆數分配（`tools/sfm_cap_alloc.py`） | 每塊 cap ∝ 塊內可靠 SfM 點數（取代要探針的 10-31 分配） | 與探針權重相關 0.69（`29` §2） | 0 | lab 全場景已排 |
+| 定價自決容量 v1（density `price_*`） | 每塊用自己的 V/C 對固定 λ 決定 cap | 失敗：b3 顆數壓到 0.15M、LPIPS +0.019（`29` §4） | — | 關閉（v2 待議） |
+| 採樣控制器（`cap_ctrl_*`） | 留出 1.5% 安全相機當驗證視角（15k 後放回）；6k 起每 1500 步看塊內誤差／透空率加減 cap 10% | 測試中（`29` §5） | — | 實驗中 |
 
 已關閉的（含理由與重開條件）：`new_archived/已關閉的線.md`。
 
 ## 13. 時間組成
-（待 11-02 的計時跑次 `g44s30km25fssh16di4prof_` b3 的 `step_cost.txt`；上一次拆解是 10 月初的 best1，`實驗分析/01`、`10`。）
+lab 3090、現行配方（A＋dist4、b3、N 2.25M；`g44s30km25fssh16di4prof_` 的 `step_cost.txt`；詳表與硬體上限 => `實驗分析/28` §1～2）：
+```
+一步 39.25 ms（25.5 it/s；30k＝19.6 分）
+  backward 19.66（50%）  forward 11.92（30%）  CPU 側（載入／Lightning／log／hook）約 4.3（11%）
+  loss 1.81（融合 SSIM）  Adam 1.05（融合；已在頻寬極限）  MCMC 事件 0.45  累加式 trim 0.05
+```
+- 光柵化的兩個逐像素混合 kernel 佔 80%；前處理、排序、binning 合計約 2%。
+- 11-05 無損加速：V/C warp 先加總（增生期 −8.5%）、零梯度略過（−1.7%）。上一次拆解是 10 月初的 best1（`實驗分析/01`、`10`）。

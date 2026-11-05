@@ -52,9 +52,14 @@ A＋dist4 = 4x4, 30k steps/block, arm `best1maskdistrfed10b4` (out-of-block A/B/
 dist 100 every 4 steps, opacity binary entropy one-sided until STEPS/3 then both ×4, accumulative V/C trim, FusedAdam) + flags
 `record_reduce absgrad_gate fused_ssim sh_rest_interval 16 lambda_dist_interval 4`, cap 2.5M => full scene 28.058/.8824/.1142,
 27.75M, 5.04 h (CityGS release 27.261). Light version: adaptive cap avg 1M 27.828, 3.19 h. Status/candidates: `紀錄/研究總覽.md` §0;
-analyses up to `紀錄/實驗分析/26` (25 pending: lab 11-02 batch not yet pulled). 11-04: strongest candidate = normal consistency every 8 steps
+analyses up to `紀錄/實驗分析/29` (25's figure still pending). 11-04: strongest candidate = normal consistency every 8 steps
 (`lambda_normal 0.0125 lambda_normal_interval 8`); main open problem = road surfaces live underground (5–9 coverage layers below SfM ground),
 mono depth (±10%) too coarse to detect it => SfM-depth see-through is the next mechanism. Judge by goals, not resemblance to CityGS (user 11-04).
+**11-05** (`紀錄/實驗分析/27`–`29`): lossless speed flags `trim_running_warp` (growth phase −8.5%/step) and `bwd_zero_grad_skip` (−1.7%) — rasterizer rebuilt
+(commit `74b77ce`, local env + lab) => turn them on in new arms; `skip_unscored_pixels` / pair bit still need quality runs. SfM birth restriction
+(`sfm_birth_radius 0.05 sfm_birth_eps 0.01`) cuts b3 underground layers 2.32 → 1.04 but thins SfM-sparse tall buildings. The 10-31 adaptive cap needs a
+2.5M probe run (not general, user 11-05) => zero-cost `tools/sfm_cap_alloc.py` (r 0.69 with the probe weights; lab full scene queued). `price_*` v1 failed;
+the sampling controller (`--model.cap_ctrl true`, held-out safe views) is under test. Next after count/speed: the tall-building problem (user 11-05).
 The block below is older history.
 
 **★★★ Current state of the proposition (2026-09-17, with 2026-10-03/10-09 additions; lab, blocks b6/b12/b13; authority = `紀錄/研究總覽.md` §0):**

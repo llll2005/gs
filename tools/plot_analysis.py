@@ -23,6 +23,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DST = os.path.join(ROOT, "紀錄", "實驗分析")
+# ★ 2026-11-05 紀錄整理（使用者）：實驗分析/ 只留開啟的線；定案與過程文件移到 new_archived/ 下 => 每張圖寫到「同名 .md 所在的資料夾」
+DOC_DIRS = [DST, os.path.join(ROOT, "紀錄", "new_archived", "實驗分析_定案"), os.path.join(ROOT, "紀錄", "new_archived", "實驗分析_過程")]
+
+
+def doc_dir(doc):
+    for d in DOC_DIRS:
+        if os.path.exists(os.path.join(d, doc + ".md")):
+            return d
+    raise SystemExit(f"⛔ 找不到 {doc}.md（找過 {DOC_DIRS}）")
 try:
     FONT_FILE = subprocess.run(["fc-match", "-f", "%{file}", "Noto Sans CJK TC"],
                                capture_output=True, text=True).stdout.strip()
@@ -1944,6 +1953,183 @@ def n26_mono(d):
     save(fig, d, "n26_mono.png")
 
 
+# ══════════════ 27／28／29（11-05 本機 b3 1M、lab 計時跑次）══════════════
+N27_ARMS = [  # 臂: (PSNR, LPIPS, 不透明離 SfM >5 m %, 地下覆蓋 層, 海面上方浮塊, 低角度破洞 %)
+    ("組合臂", 11.662, .7667, 10.7, 2.32, 121, 2.6), ("只追蹤（重跑）", 11.663, .7670, 10.7, 2.27, 114, 1.7),
+    ("只鎖", 11.666, .7693, 8.8, 1.88, 80, 2.6), ("★ 只限增生", 11.669, .7694, 4.0, 1.04, 35, 1.9),
+    ("全開", 11.662, .7712, 3.4, 0.81, 18, 1.5), ("全開、增生 ×0.1", 11.667, .7699, 4.4, 1.07, 19, 1.5),
+    ("CityGS", np.nan, np.nan, 9.7, 1.08, 10, 0.0)]
+N27_FATE = [  # step: (存活, trim, 搬家, 補洞) 錨點 229,695
+    (1500, 211314, 17906, 206, 269), (3000, 157764, 62164, 8212, 1555), (4500, 107575, 101004, 18821, 2248),
+    (6000, 72077, 128826, 25843, 2841), (9000, 40913, 154467, 30629, 3447), (12000, 24728, 168817, 32101, 3748),
+    (15000, 15621, 177841, 32122, 3791), (30000, 14500, 178887, 32122, 3791)]
+N27_TIME = [  # step: (離 SfM >5 m %, 地下覆蓋 層, 海面上方浮塊, 不透明 千顆)
+    (3000, 11.6, 3.08, 73, 362), (6000, 15.7, 3.68, 187, 423), (9000, 15.4, 3.81, 199, 508), (12000, 14.3, 4.25, 336, 705),
+    (15000, 13.8, 4.35, 409, 716), (20000, 11.7, 2.78, 221, 584), (30000, 10.7, 2.27, 114, 517)]
+N27_TOWER = {  # 棟: 各臂 100～150 m 對 CityGS 表面的破洞 %（組合臂, 只鎖, 只限增生, 全開）
+    "棟 1（246 m）": (15, 25, 25, 34), "棟 2（340 m）": (23, 31, 22, 28), "棟 3 玻璃塔（347 m）": (11, 13, 10, 11),
+    "棟 4（352 m）": (15, 21, 23, 29), "棟 5（221 m）": (21, 33, 23, 30), "棟 6（209 m）": (10, 14, 26, 29)}
+
+
+def n27_arms(d):
+    """SfM 五臂：幾何（地下覆蓋、離 SfM 遠、海面浮塊、低角度破洞）與畫質。"""
+    fig, axs = plt.subplots(1, 4, figsize=(20, 4.8))
+    R = N27_ARMS; y = np.arange(len(R)); names = [r[0] for r in R]
+    cols = [MUTED if r[0] == "CityGS" else (C3 if r[0].startswith("★") else C1) for r in R]
+    for ax, j, lab, fmt in zip(axs, (4, 3, 5, 6), ("地下覆蓋（層）", "不透明顆粒離可靠 SfM > 5 m（%）", "海面上方浮塊（顆）", "低角度玻璃塔破洞（%）"),
+                               ("{:.2f}", "{:.1f}%", "{:.0f}", "{:.1f}%")):
+        v = [r[j] for r in R]
+        ax.barh(y, v, color=cols)
+        for i, x in enumerate(v):
+            ax.text(x, i, " " + fmt.format(x), va="center", fontsize=7.4, color=INK2)
+        ax.set_yticks(y, names if ax is axs[0] else [""] * len(R), fontsize=8.3); ax.invert_yaxis(); ax.set_title(lab, fontsize=9.2)
+    fig.suptitle("SfM 五臂（本機 b3 1M、底＝組合臂）：只限增生把地下覆蓋 2.32 → 1.04 層（CityGS 1.08）、離 SfM 遠 10.7 → 4.0%；"
+                 "held-out PSNR 11.662～11.669 持平、LPIPS .7667 → .7694～.7712（小幅變差）", fontsize=9.6)
+    save(fig, d, "n27_arms.png")
+
+
+def n27_fate(d):
+    """錨點（與可靠 SfM 重合的初始顆粒）去向＋時間軸。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.8))
+    ax = axs[0]; F = N27_FATE; x = [r[0] / 1000 for r in F]
+    ax.stackplot(x, [r[1] for r in F], [r[2] for r in F], [r[3] for r in F], [r[4] for r in F],
+                 labels=["存活", "trim 剪掉", "死掉被搬家", "補洞拿去"], colors=[C3, C2, C4, MUTED], alpha=0.85)
+    ax.set_xlabel("step（千）"); ax.set_ylabel("顆（共 229,695）"); ax.legend(fontsize=8, loc="center right")
+    ax.set_title("SfM 點是被 trim 剪掉（77.9%），不是漂走：活到最後 6.3%、位移中位 1.47 m；鎖住的話 53% 變近乎透明", fontsize=9.2)
+    ax = axs[1]; T = N27_TIME; x = [r[0] / 1000 for r in T]
+    ax.plot(x, [r[2] for r in T], "o-", color=C2, label="地下覆蓋（層）"); ax.set_ylabel("地下覆蓋（層）", color=C2)
+    ax2 = ax.twinx(); ax2.plot(x, [r[1] for r in T], "s--", color=C1, label="離 SfM > 5 m 的不透明 %"); ax2.set_ylabel("離 SfM > 5 m（%）", color=C1)
+    ax2.grid(False)
+    for xi, r in zip(x, T):
+        ax.text(xi, r[2] + 0.06, f"{r[2]:.2f}", fontsize=7, color=C2, ha="center")
+    ax.axvline(15, color=MUTED, ls=":", lw=0.9); ax.text(15.2, 2.4, "增生結束", fontsize=7.5, color=MUTED)
+    ax.set_xlabel("step（千）"); ax.set_title("地下層與離 SfM 遠的顆粒都在增生期長出來、收割期才減 => 要擋就擋在增生", fontsize=9.2)
+    save(fig, d, "n27_fate.png")
+
+
+def n27_tower(d):
+    """高樓 100～150 m 對 CityGS 表面的破洞：SfM 限制的代價在一般高樓，玻璃塔沒變。"""
+    fig, ax = plt.subplots(figsize=(18, 4.2))
+    ks = list(N27_TOWER); x = np.arange(len(ks)); w = 0.2
+    for k, (lab, c) in enumerate(zip(("組合臂", "只鎖", "只限增生", "全開"), (C1, C4, C3, C2))):
+        barlabels(ax, ax.bar(x + (k - 1.5) * w, [N27_TOWER[b][k] for b in ks], w, color=c, label=lab), "{:.0f}", size=7)
+    ax.set_xticks(x, ks); ax.set_ylabel("100～150 m 破洞 %"); ax.legend(fontsize=8, ncol=4)
+    ax.set_title("代價：SfM 很稀的一般高樓上半部變薄（全開 10～23% → 28～34%）；玻璃塔（棟 3）各臂都沒變", fontsize=9.4)
+    save(fig, d, "n27_tower.png")
+
+
+N28_STEP = [("backward", 19.66), ("forward", 11.92), ("迴圈外（載入／Lightning）", 2.61), ("loss（L1＋融合 SSIM）", 1.81),
+            ("Adam（融合）", 1.05), ("log_metrics", 0.81), ("其他 hook／scheduler", 0.85), ("MCMC 事件", 0.45), ("週期 trim", 0.05)]
+N28_FLAGS = [  # 設定: 一般步 %, dist 步 %, 增生期（累加 V/C）%
+    ("零梯度略過", -1.7, 0.2, np.nan), ("＋C 區 forward 略過", -2.4, -3.4, np.nan), ("V/C warp 先加總", np.nan, np.nan, -8.5),
+    ("V/C warp＋C 區", np.nan, np.nan, -10.9), ("配對 bit", -2.7, np.nan, np.nan), ("配對 bit＋C 區", -5.0, np.nan, np.nan)]
+
+
+def n28_steps(d):
+    """lab 3090 現行配方每步逐段（b3 2.25M）。"""
+    fig, ax = plt.subplots(figsize=(18, 4.2))
+    R = N28_STEP; y = np.arange(len(R))
+    ax.barh(y, [r[1] for r in R], color=[C2, C2, MUTED, C1, C3, MUTED, MUTED, C4, C4])
+    for i, r in enumerate(R):
+        ax.text(r[1], i, f" {r[1]:.2f} ms（{100 * r[1] / 39.25:.1f}%）", va="center", fontsize=7.6, color=INK2)
+    ax.set_yticks(y, [r[0] for r in R], fontsize=8.5); ax.invert_yaxis(); ax.set_xlabel("ms／步（一步 39.25 ms＝25.5 it/s；30k＝19.6 分）")
+    ax.set_title("lab 3090 現行配方（A＋dist4、b3 2.25M）：光柵化 80%、CPU 側約 11%（GPU 空等）、Adam 1.05 ms 已在頻寬極限", fontsize=9.4)
+    save(fig, d, "n28_steps.png")
+
+
+def n28_flags(d):
+    """本機 b3 組合臂 ckpt：各旗標每步光柵化＋loss 時間變化。"""
+    fig, ax = plt.subplots(figsize=(18, 4.2))
+    R = N28_FLAGS; x = np.arange(len(R)); w = 0.26
+    for k, (lab, c) in enumerate(zip(("一般步", "dist 步（每 4 步一次）", "增生期（累加 V/C 開）"), (C1, C4, C3))):
+        v = [r[1 + k] for r in R]
+        bars = ax.bar(x + (k - 1) * w, v, w, color=c, label=lab)
+        for b_, vv in zip(bars, v):
+            if not np.isnan(vv):
+                ax.text(b_.get_x() + b_.get_width() / 2, vv, f"{vv:+.1f}%", ha="center", va="top" if vv < 0 else "bottom", fontsize=7.4, color=INK2)
+    ax.axhline(0, color=MUTED, lw=0.8); ax.set_xticks(x, [r[0] for r in R], fontsize=8.5); ax.set_ylabel("每步時間變化 %"); ax.legend(fontsize=8)
+    ax.set_title("無損：V/C warp 先加總 −8.5%（forward −17.6%）、零梯度略過 −1.7%；C 區 forward 略過、配對 bit 會改梯度 => 待品質", fontsize=9.4)
+    save(fig, d, "n28_flags.png")
+
+
+def n28_sync(d):
+    """tile 同步損失（稽核 kernel 的逐像素迴圈次數當代理）＋C 區代理 vs 實測。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.2), gridspec_kw={"width_ratios": [1.3, 1]})
+    ax = axs[0]
+    parts = [("真的要跑", 0.755, C3), ("warp 內閒置（SIMT）", 0.155, MUTED), ("整塊同步損失", 0.089, C2)]
+    left = 0
+    for lab, v, c in parts:
+        ax.barh([0], [v], left=left, color=c, label=lab); ax.text(left + v / 2, 0, f"{lab}\n{v:.3f}", ha="center", va="center", fontsize=8, color="white")
+        left += v
+    ax.set_yticks([]); ax.set_xlim(0, 1); ax.set_xlabel("以「整塊一起走」的工作量為 1（24 個訓練視角）")
+    ax.set_title("改成 warp 各走各的，上限只省 8.9%（逐視角 6～12%）；逐像素迴圈只有 27% 真的混合", fontsize=9.2)
+    ax = axs[1]
+    barlabels(ax, ax.bar([0, 1], [8.7, 2.4], color=[MUTED, C1]), "{:.1f}%", size=8)
+    ax.set_xticks([0, 1], ["工作量代理估的", "實測（一般步）"]); ax.set_ylabel("C 區略過省下 %")
+    ax.set_title("C 區略過：代理估 8.7%、實測 2.4% => C 區的 tile 本來就便宜", fontsize=9.2)
+    save(fig, d, "n28_sync.png")
+
+
+N29_W = {  # 塊: (探針權重, SfM 權重)
+    0: (0.902, 0.619), 1: (1.043, 1.196), 2: (1.324, 1.146), 3: (1.022, 1.041), 4: (1.329, 1.530), 5: (0.828, 0.832), 6: (0.962, 0.644),
+    7: (0.831, 1.008), 8: (0.922, 1.064), 9: (0.801, 0.907), 10: (1.035, 0.928), 11: (0.866, 1.145), 12: (0.686, 0.682),
+    13: (1.336, 1.061), 14: (1.328, 1.331), 15: (0.786, 0.866)}
+N29_PROBE = [(3, 471, 281, 129), (6, 551, 357, 177), (9, 663, 429, 194), (12, 831, 555, 230), (15, 900, 629, 226), (20, 760, 554, 207), (30, 658, 471, 180)]
+N29_N = [(3, 0.82), (6, 1.00), (9, 0.97), (12, 0.93), (15, 0.90), (20, 0.74), (30, 0.67)]   # b3 時間軸實際 N（百萬）
+N29_HOLD = {"b3": (1.47, 0.63), "b12": (3.02, 0.73)}   # 留 16 台：從 >=3 掉到 <3 的點 %（隨機, 挑安全相機）
+
+
+def n29_pred(d):
+    """訓練前訊號 vs 10-31 探針權重。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.6), gridspec_kw={"width_ratios": [1, 1.2]})
+    ax = axs[0]; xs = [v[1] for v in N29_W.values()]; ys = [v[0] for v in N29_W.values()]
+    ax.scatter(xs, ys, color=C1, s=28)
+    for b, (p, s) in N29_W.items():
+        ax.text(s, p, f" b{b}", fontsize=7.5, color=INK2)
+    ax.plot([0.55, 1.6], [0.55, 1.6], ls=":", color=MUTED, lw=0.9)
+    ax.set_xlabel("SfM 權重（塊內可靠 SfM 點數 / 平均；訓練前就有）"); ax.set_ylabel("10-31 探針權重（要先跑 2.5M 全場景）")
+    ax.set_title("相關 0.69（Spearman 0.68）；b3／b12 幾乎一樣（1.04／0.68 vs 1.02／0.69）", fontsize=9.2)
+    ax = axs[1]
+    R = [("可靠 SfM 點數", 0.69, 0.68), ("全部 SfM 點數", 0.71, 0.67), ("塊內視野和", 0.31, 0.26), ("相機數", 0.15, 0.09), ("高度差", 0.14, 0.11), ("平均 track", -0.22, -0.17)]
+    x = np.arange(len(R)); w = 0.38
+    barlabels(ax, ax.bar(x - w / 2, [r[1] for r in R], w, color=C1, label="Pearson"), "{:+.2f}", size=7.2)
+    barlabels(ax, ax.bar(x + w / 2, [r[2] for r in R], w, color=C4, label="Spearman"), "{:+.2f}", size=7.2)
+    ax.axhline(0, color=MUTED, lw=0.8); ax.set_xticks(x, [r[0] for r in R], fontsize=8.3); ax.legend(fontsize=8)
+    ax.set_title("訓練前的逐塊訊號與探針權重的相關", fontsize=9.2)
+    save(fig, d, "n29_pred.png")
+
+
+def n29_price(d):
+    """定價自決 v1：離線各 λ 給的容量 vs 實際 N；訓練結果。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.6))
+    ax = axs[0]; x = [r[0] for r in N29_PROBE]
+    for k, (lab, c) in enumerate(zip(("λ 0.0021", "λ 0.00415（v1 用的）", "λ 0.0083"), (C3, C2, C4))):
+        ax.plot(x, [r[1 + k] / 1000 for r in N29_PROBE], "o-", color=c, label=lab)
+    ax.plot([r[0] for r in N29_N], [r[1] for r in N29_N], "s--", color=MUTED, label="組合臂實際 N")
+    ax.set_xlabel("step（千）"); ax.set_ylabel("百萬顆"); ax.legend(fontsize=8)
+    ax.set_title("V/C 早期偏低 => 固定 λ 在 3k 只給 0.28M；各時點變動 8～29%、沒有收斂點", fontsize=9.2)
+    ax = axs[1]
+    R = [("b3 組合臂", 0.673, .7667), ("b3 價格 v1", 0.151, .7858), ("b3 價格＋提早結束", 0.150, .7867), ("b12 組合臂", 0.665, .8078), ("b12 價格＋提早結束", 0.184, .8247)]
+    y = np.arange(len(R))
+    ax.barh(y, [r[1] for r in R], color=[C1, C2, C2, C1, C2])
+    for i, r in enumerate(R):
+        ax.text(r[1], i, f" {r[1]:.2f}M｜LPIPS {r[2]:.4f}", va="center", fontsize=7.6, color=INK2)
+    ax.set_yticks(y, [r[0] for r in R], fontsize=8.5); ax.invert_yaxis(); ax.set_xlim(0, 0.95); ax.set_xlabel("終點顆數（百萬）")
+    ax.set_title("v1 失敗：顆數壓垮到 0.15～0.18M、LPIPS +0.017～0.019（被剪的不算合格 => cap 只降不升）", fontsize=9.2)
+    save(fig, d, "n29_price.png")
+
+
+def n29_holdout(d):
+    """採樣控制器：留出 16 台驗證視角的觀測損失（SfM 觀測紀錄模擬）。"""
+    fig, ax = plt.subplots(figsize=(18, 3.8))
+    x = np.arange(2); w = 0.36
+    barlabels(ax, ax.bar(x - w / 2, [N29_HOLD[b][0] for b in ("b3", "b12")], w, color=MUTED, label="隨機挑"), "{:.2f}%", size=8)
+    barlabels(ax, ax.bar(x + w / 2, [N29_HOLD[b][1] for b in ("b3", "b12")], w, color=C3, label="挑安全相機（看到的點別人也看得到）"), "{:.2f}%", size=8)
+    ax.set_xticks(x, ["b3（899 台）", "b12（516 台）"]); ax.set_ylabel("SfM 點從 ≥3 台觀測掉到 <3 台（%）"); ax.legend(fontsize=8)
+    ax.set_title("留出驗證視角的代價：每點中位只被 5 台塊內相機看到；挑安全相機把損失降到 1/2～1/4，控制期結束（15k）後再放回訓練", fontsize=9.2)
+    save(fig, d, "n29_holdout.png")
+
+
 DOCS = {
     "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -1966,6 +2152,10 @@ DOCS = {
     "23_cap劑量熵拆開塔頂與幾何約束臂": ["n23_dose", "n23_arms", "n23_tower"],
     "24_法向SfM豁免鄰域平面合併與單目深度診斷": ["n24_swap", "n24_geom", "n24_mono", "n24_full"],
     "26_本機1M_小圓片拆解地下層厚度與法向": ["n26_arms", "n26_ground", "n26_thick", "n26_mono"],
+    "27_b3海面高樓SfM距離與組合臂": ["n27_arms", "n27_fate", "n27_tower"],
+    "28_時間組成硬體上限與光柵器加速旗標": ["n28_steps", "n28_flags", "n28_sync"],
+    "29_每塊顆數_探針分配SfM分配定價自決與採樣控制": ["n29_pred", "n29_price", "n29_holdout"],
+    "30_現行前緣": ["n21_full", "n24_full", "n23_dose"],
 }
 
 
@@ -2005,15 +2195,17 @@ def main():
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
               n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof,
-              n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full, n26_arms, n26_ground, n26_thick, n26_mono):
+              n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full, n26_arms, n26_ground, n26_thick, n26_mono,
+              n27_arms, n27_fate, n27_tower, n28_steps, n28_flags, n28_sync, n29_pred, n29_price, n29_holdout):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
         miss = [p for p in paths if not os.path.exists(p)]
         if miss:
             raise SystemExit(f"⛔ {doc} 缺面板：{miss}")
-        compose(paths, os.path.join(DST, doc + ".png"))
-        print(f"  -> 紀錄/實驗分析/{doc}.png（{len(panels)} 個面板）")
+        out = doc_dir(doc)
+        compose(paths, os.path.join(out, doc + ".png"))
+        print(f"  -> {os.path.relpath(out, ROOT)}/{doc}.png（{len(panels)} 個面板）")
 
 
 if __name__ == "__main__":
