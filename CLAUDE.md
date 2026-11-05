@@ -29,6 +29,13 @@ every closed line + reopen condition => `紀錄/new_archived/已關閉的線.md`
 retired manual sections => `紀錄/new_archived/完整指令手冊_退役段落_至2026-10-19.md`. New analyses 16 (steps/SH), 17 (out-of-block mask), 18 (road underground splats).
 `_ctx.md`, the indexes, the survival list and the speed Q&A are also in `new_archived/` (one-line reason per file).
 Read those before proposing mechanisms — this section is a summary and goes stale.**
+**2026-11-05 reorganisation (user) — filing rules:** `紀錄/實驗分析/` holds ONLY open lines, one doc per line (28 speed, 29 per-block
+count, 30 current frontier [permanent], 31 underground, 32 sea floaters, 33 tall buildings, 34 next-recipe candidates); settled results go into
+`研究總覽.md` §1–§8 (one-line conclusion + key numbers; index §8.1) with the original doc+figure moved to `new_archived/實驗分析_定案/`;
+date-batch docs that were split into lines are in `new_archived/實驗分析_過程/`; old number -> new location table = `實驗分析/README.md`.
+Unnumbered references: `參考_CityGS參考線.md` (was 09), `理論_ADMM統一框架.md` (was 14), `機制出處.md` (was 15 §4).
+`已關閉的線.md` takes only direction-level closures with strong evidence; single-arm results stay in their line doc; ideas never run go to
+§9 / `加速論文對照.md` as 延後／不做＋理由; a failed v1 with a planned v2 keeps the line open. Pre-reorg overview => `研究總覽_v5_至2026-11-05.md`.
 
 **⛔⛔ 2026-09-13 third era boundary: images and poses were misaligned.** Every *local* training score in
 `outputs/` — including the speed3 / SfM-init / sched30 / absgrad numbers further down this file — is
@@ -52,10 +59,10 @@ A＋dist4 = 4x4, 30k steps/block, arm `best1maskdistrfed10b4` (out-of-block A/B/
 dist 100 every 4 steps, opacity binary entropy one-sided until STEPS/3 then both ×4, accumulative V/C trim, FusedAdam) + flags
 `record_reduce absgrad_gate fused_ssim sh_rest_interval 16 lambda_dist_interval 4`, cap 2.5M => full scene 28.058/.8824/.1142,
 27.75M, 5.04 h (CityGS release 27.261). Light version: adaptive cap avg 1M 27.828, 3.19 h. Status/candidates: `紀錄/研究總覽.md` §0;
-analyses up to `紀錄/實驗分析/29` (25's figure still pending). 11-04: strongest candidate = normal consistency every 8 steps
+open lines `紀錄/實驗分析/28`–`34` (settled/process docs 01–27 archived 11-05, see the filing rules above). 11-04: strongest candidate = normal consistency every 8 steps
 (`lambda_normal 0.0125 lambda_normal_interval 8`); main open problem = road surfaces live underground (5–9 coverage layers below SfM ground),
 mono depth (±10%) too coarse to detect it => SfM-depth see-through is the next mechanism. Judge by goals, not resemblance to CityGS (user 11-04).
-**11-05** (`紀錄/實驗分析/27`–`29`): lossless speed flags `trim_running_warp` (growth phase −8.5%/step) and `bwd_zero_grad_skip` (−1.7%) — rasterizer rebuilt
+**11-05** (`紀錄/實驗分析/28`–`29`; SfM five arms in 31–33): lossless speed flags `trim_running_warp` (growth phase −8.5%/step) and `bwd_zero_grad_skip` (−1.7%) — rasterizer rebuilt
 (commit `74b77ce`, local env + lab) => turn them on in new arms; `skip_unscored_pixels` / pair bit still need quality runs. SfM birth restriction
 (`sfm_birth_radius 0.05 sfm_birth_eps 0.01`) cuts b3 underground layers 2.32 → 1.04 but thins SfM-sparse tall buildings. The 10-31 adaptive cap needs a
 2.5M probe run (not general, user 11-05) => zero-cost `tools/sfm_cap_alloc.py` (r 0.69 with the probe weights; lab full scene queued). `price_*` v1 failed;

@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DST = os.path.join(ROOT, "紀錄", "實驗分析")
 # ★ 2026-11-05 紀錄整理（使用者）：實驗分析/ 只留開啟的線；定案與過程文件移到 new_archived/ 下 => 每張圖寫到「同名 .md 所在的資料夾」
-DOC_DIRS = [DST, os.path.join(ROOT, "紀錄", "new_archived", "實驗分析_定案"), os.path.join(ROOT, "紀錄", "new_archived", "實驗分析_過程")]
+DOC_DIRS = [DST, os.path.join(ROOT, "紀錄"), os.path.join(ROOT, "紀錄", "new_archived", "實驗分析_定案"), os.path.join(ROOT, "紀錄", "new_archived", "實驗分析_過程")]
 
 
 def doc_dir(doc):
@@ -2130,6 +2130,43 @@ def n29_holdout(d):
     save(fig, d, "n29_holdout.png")
 
 
+N25_ARMS = [  # 原 25 §1（lab 2.5M、對 A＋dist4）：臂, 換塊 Δ (b3, b12), 海上浮塊 千顆 (b3, b12), 低角度透空 % (b3, b12), 時間 % (b3, b12)
+    ("基準 A＋dist4", (0, 0), (51.6, 126), (5.2, 3.3), (0, 0)),
+    ("閘門 平均、每步", (0.03, 0.02), (6.4, 5.7), (4.8, 4.3), (16, 14)),
+    ("閘門 投票、每步", (0.03, 0.04), (6.3, 4.9), (4.8, 3.5), (12, 14)),
+    ("★ 閘門 投票、每 8 步", (0.12, 0.01), (8.7, 7.9), (4.5, 2.6), (0, 4)),
+    ("閘門＋MCMC 補洞放點", (-0.06, 0.05), (6.6, 8.6), (3.7, 3.0), (18, 14)),
+    ("補洞＋遮擋回收", (0.08, 0.05), (6.8, 10.7), (4.5, 3.6), (6, 15)),
+    ("法向每 8 步", (-0.02, 0.13), (68.9, 136), (2.7, 4.2), (0, 1)),
+    ("★ 法向 8＋投票 8＋補洞", (0.07, 0.18), (9.5, 13.0), (2.5, 6.1), (19, 14)),
+    ("合併後刪除 前半", (0.05, 0.03), (41.2, 108), (5.4, 4.2), (-1, -1)),
+    ("合併後刪除 後半", (0.08, -0.04), (30.2, 96.1), (4.2, 4.4), (-7, -3)),
+    ("★ 合併後刪除 全程", (0.02, -0.01), (26.0, 82.1), (4.4, 4.1), (-4, -2)),
+    ("合併後刪除 後半更積極", (0.03, -0.03), (28.4, 88.9), (4.5, 4.8), (-8, -4)),
+    ("合併優先的 trim", (0.06, 0.01), (46.5, 112), (3.9, 4.5), (3, 2)),
+    ("★ 增生方向限制", (-0.05, -0.02), (58.3, 130), (4.9, 2.1), (-2, -3)),
+]
+
+
+def n25_arms(d):
+    """lab 11-02～03 批次（2.5M、A＋dist4 底）：換塊、海上浮塊、低角度透空、時間（原 25 §1）。"""
+    fig, axs = plt.subplots(1, 4, figsize=(20, 5.6))
+    R = N25_ARMS; y = np.arange(len(R)); h = 0.38
+    spec = [(1, "換塊 Δ（本塊幾何區域 PSNR，對 A＋dist4；雜訊 ±0.03）", "{:+.2f}"), (2, "海上浮塊（千顆）", "{:.1f}"),
+            (3, "低角度透空（%）", "{:.1f}"), (4, "訓練時間 Δ%", "{:+.0f}%")]
+    for ax, (j, lab, fmt) in zip(axs, spec):
+        for k, c in enumerate((C1, C2)):
+            v = [r[j][k] for r in R]
+            ax.barh(y + (k - 0.5) * h, v, h, color=c, label="b3" if k == 0 else "b12")
+            for i, x in enumerate(v):
+                ax.text(x, i + (k - 0.5) * h, " " + fmt.format(x), va="center", fontsize=6.6, color=INK2, ha="left" if x >= 0 else "right")
+        ax.axvline(0, color=MUTED, lw=0.8)
+        ax.set_yticks(y, [r[0] for r in R] if ax is axs[0] else [""] * len(R), fontsize=8.2); ax.invert_yaxis()
+        ax.set_title(lab, fontsize=9.0); ax.legend(fontsize=7.5, loc="lower right")
+    fig.suptitle("lab 11-02～03（2.5M、對 A＋dist4）：閘門投票每 8 步浮塊 −83～94%、時間 +0～4%（最划算）；法向 8＋投票 8＋補洞換塊最好但 +14～19%；合併後刪除全程 N −21～24% 品質平", fontsize=9.6)
+    save(fig, d, "n25_arms.png")
+
+
 DOCS = {
     "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -2137,7 +2174,7 @@ DOCS = {
     "04_外接盒與binning成本": ["cc1_quality_delta", "n04_time", "n04_load", "cc4_proxy_decoupled", "n04_load3"],
     "05_成本品質前緣": ["n05_main4x4", "n05_official"],
     "08_初始化": ["n08_init20k", "f4_init60k", "n08_init60k"],
-    "09_CityGS參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_merged_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "n06_prune3", "n09_blockf1"],
+    "參考_CityGS參考線": ["n09_full44_merged", "n09_full44_blocks", "n09_merged_blocks", "n09_stepprof", "n09_evalgap", "n09_official_blocks", "n09_trim", "n06_prune3", "n09_blockf1"],
     "10_速度優化_lean與kernel拆解": ["n10_kernels"],
     "12_新年代重測_幾何floater失敗區": ["n12_recheck", "n12_heldout", "n12_fail3"],
     "13_trim判準VC與opacity二元熵": ["n13_race", "n13_swap"],
@@ -2156,6 +2193,11 @@ DOCS = {
     "28_時間組成硬體上限與光柵器加速旗標": ["n28_steps", "n28_flags", "n28_sync"],
     "29_每塊顆數_探針分配SfM分配定價自決與採樣控制": ["n29_pred", "n29_price", "n29_holdout"],
     "30_現行前緣": ["n21_full", "n24_full", "n23_dose"],
+    "25_lab1102批次_閘門補洞合併增生方向與拆項": ["n25_arms"],
+    "31_地下層_路面在地底": ["n18_road", "n26_ground", "n26_mono", "n27_fate", "n27_arms"],
+    "32_海面浮塊": ["n22_b12hist", "n22_b0var", "n24_geom", "n25_arms", "n27_arms"],
+    "33_高樓_塔頂玻璃塔與上半部": ["n23_tower", "n24_mono", "n27_tower", "n22_orient"],
+    "34_下一版配方候選元件": ["n25_arms", "n24_swap", "n26_arms", "n27_arms"],
 }
 
 
@@ -2196,7 +2238,7 @@ def main():
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
               n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof,
               n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full, n26_arms, n26_ground, n26_thick, n26_mono,
-              n27_arms, n27_fate, n27_tower, n28_steps, n28_flags, n28_sync, n29_pred, n29_price, n29_holdout):
+              n27_arms, n27_fate, n27_tower, n28_steps, n28_flags, n28_sync, n29_pred, n29_price, n29_holdout, n25_arms):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
