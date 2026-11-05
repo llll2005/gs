@@ -46,6 +46,37 @@ def hole_candidates(alpha, z, inv, A, margin: float):
     return holes, deeper
 
 
+@torch.no_grad()
+def sfm_vis_votes(X, R, T, fx, fy, cx, cy, W, H, dmin, dmax, cell: int, k_px: float):
+    """★ 2026-11-05 SfM 視線一致性（使用者：取代「離 SfM 多遠」——那會把『沒有證據』當成『有證據說是空的』，誤傷少 SfM 的高樓）。
+    每個 SfM 觀測代表「相機到點的連線上是空的、點的後面被它擋住」。對 K 台相機（R [K,3,3]、T [K,3]：x_cam = R x + T，COLMAP 慣例；
+    fx..cy [K]；W、H 像素），dmin／dmax [K, Hc, Wc]＝該相機觀測到的可靠 SfM 點在每個 cell x cell 像素格裡的最近／最遠深度（沒有點＝nan）。
+    顆粒 X [N,3] 投影到每台相機，容差 tol＝k_px x 深度 / fx（像素足跡，不用場景單位常數）：
+      free  ＝ 落在有 SfM 的格、而且比該格最近的 SfM 點還近 tol 以上（在相機到觀測點的視線上 => 空區，例如海面上方的浮塊）
+      behind＝ 落在有 SfM 的格、而且比該格最遠的 SfM 點還遠 tol 以上（被觀測到的表面擋住，例如路面下方）
+      cover ＝ 落在有 SfM 的格（有證據的相機數）
+      inview＝ 在相機視野內（不論格裡有沒有 SfM）
+    回傳四個 [N] int 計數。"""
+    N = X.shape[0]
+    free = torch.zeros(N, dtype=torch.int32, device=X.device)
+    behind = torch.zeros_like(free); cover = torch.zeros_like(free); inview = torch.zeros_like(free)
+    Hc, Wc = dmin.shape[1], dmin.shape[2]
+    for k in range(R.shape[0]):
+        Xc = X @ R[k].T + T[k]
+        z = Xc[:, 2]
+        zs = z.clamp_min(1e-6)
+        u = fx[k] * Xc[:, 0] / zs + cx[k]; v = fy[k] * Xc[:, 1] / zs + cy[k]
+        ok = (z > 1e-6) & (u >= 0) & (v >= 0) & (u < W[k]) & (v < H[k])
+        cu = (u / cell).long().clamp(0, Wc - 1); cv = (v / cell).long().clamp(0, Hc - 1)
+        dm = dmin[k][cv, cu].float(); dM = dmax[k][cv, cu].float()
+        has = ok & torch.isfinite(dm)
+        tol = k_px * z / fx[k]
+        free += (has & (z < dm - tol)).int()
+        behind += (has & (z > dM + tol)).int()
+        cover += has.int(); inview += ok.int()
+    return free, behind, cover, inview
+
+
 def backproject(u, v, z, fx, fy, cx, cy, w2c):
     """像素中心 (u, v)（已含 +0.5）＋相機 z => 世界座標；w2c 是 gspl 的 world_to_camera（列向量版：[p,1] @ w2c）。
     與 geom_gate.DepthSupport.update 的投影 u = fx·x/z + cx 互逆。"""
@@ -459,6 +490,27 @@ class MCMC2DGSDensityController(MCMCDensityController):
     sfm_merge_eps: float = 1.0
     """★ 2026-11-05（使用者「合併也乘」）<1 時，訓練中合併的候選對裡有一顆離 SfM 超過 sfm_birth_radius 的，配對成本 × 此值
     => 每次的合併額度（merge_max_frac）先給偏離 SfM 的。只改「先併哪些」，不放寬同平面／相鄰／同色的條件。1＝關。"""
+    sfm_vis: bool = False
+    """★ 2026-11-05 SfM 視線一致性的增生限制（取代 sfm_birth_radius 的「離 SfM 多遠」；見 sfm_vis_votes）。True 時 MCMC 抽母點
+    （增生與搬家）時，每個增生事件隨機抽 sfm_vis_cams 台本塊訓練相機投影：空區票 >= sfm_vis_free_min（在觀測視線上 => 浮塊），
+    或有證據的相機 >= sfm_vis_behind_min 台且被擋比例 >= sfm_vis_behind_frac（一直躲在觀測到的表面後面 => 地下／內部）的母點，
+    抽樣機率 × sfm_vis_eps。沒有 SfM 證據的地方（玻璃、高處立面）不受影響。容差＝sfm_vis_px 個像素足跡，沒有公尺常數。"""
+    sfm_vis_px: float = 8.0
+    sfm_vis_cell: int = 8
+    sfm_vis_cams: int = 32
+    """每個增生事件投票用幾台相機（隨機抽）；<=0＝本塊全部訓練相機（11-06：32 台證據太稀，b3／b12 地下層與海面浮塊幾乎沒動）。"""
+    sfm_vis_free_min: int = 2
+    sfm_vis_free_frac: float = 0.0
+    """★ 11-06 v4：空區票另要求 >= 此比例 x 有證據的相機數（0＝只看 sfm_vis_free_min，＝v1～v3）。b3 實測（tools/probe/sfm_vis_diag_1106.py）：
+    只要 2 票時 CityGS 模型的一般表面也有 35% 被判浮塊（899 台裡 2 台說空＝雜訊）；要求過半 => 3%。"""
+    sfm_vis_rep: float = 0.0
+    """★ 11-06 v4：地下票另要求「有證據的相機 >= 此比例 x 視野內相機」（證據要有代表性；0＝不要求，＝v1～v3）。
+    少 SfM 的表面（玻璃、高樓立面）只有被別棟擋住的視角才有證據 => 被擋比例必然高；b3 實測 CityGS 高樓 50～200 m 有 55% 被 v3 判地下，
+    它們的證據／視野中位 0.08～0.09，路面下方 0.20～0.22。"""
+    sfm_vis_behind_min: int = 3
+    sfm_vis_behind_frac: float = 0.9
+    sfm_vis_eps: float = 0.01
+    """視線一致性判成浮塊／地下的母點的抽樣倍率；1.0＝不改抽樣、只印統計。範圍同 sfm_birth_from_iter／until_iter。"""
     sfm_dist_voxel: float = 0.01
     """SfM 距離場的體素邊長（場景單位；0.01＝1 m）。塊太大時自動放大到總體素 <= 1.5 億。"""
     sfm_report_interval: int = 1500
@@ -1237,7 +1289,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     def _sfm_on(self) -> bool:
         c = self.config
-        return self._anchors_wanted() or float(getattr(c, "sfm_birth_radius", 0.0) or 0.0) > 0
+        return self._anchors_wanted() or float(getattr(c, "sfm_birth_radius", 0.0) or 0.0) > 0 or bool(getattr(c, "sfm_vis", False))
 
     def _anchors_wanted(self) -> bool:
         return bool(getattr(self.config, "sfm_lock", False)) or bool(getattr(self.config, "sfm_track", False))
@@ -1318,6 +1370,58 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             print(f"⚠⚠ [sfm] 找不到 points3D.bin（{cands}）=> sfm_* 不會生效", flush=True)
             return
         self._sfm_build(self._reliable_sfm(f), gaussian_model.gaussians["means"])
+        if bool(getattr(self.config, "sfm_vis", False)):
+            self._sfm_vis_build(os.path.dirname(f), pl_module, gaussian_model.gaussians["means"].device)
+
+    def _sfm_vis_build(self, sparse_dir: str, pl_module, dev) -> None:
+        """每台本塊訓練相機：它觀測到的可靠 SfM 點（track>=3、誤差<1.5）投影，存每 cell 格的最近／最遠深度（float16，沒點＝nan）。
+        相機用 COLMAP 原始 images.bin／cameras.bin（原解析度、x_cam = R x + t），與 dataparser 的降採樣無關（容差是像素比例）。"""
+        import os
+        import numpy as np
+        from internal.utils.colmap import read_points3D_binary, read_images_binary, read_cameras_binary, qvec2rotmat
+        c = self.config
+        g = int(getattr(c, "sfm_vis_cell", 8) or 8)
+        pts = read_points3D_binary(os.path.join(sparse_dir, "points3D.bin"))
+        good = {pid: p.xyz for pid, p in pts.items() if len(p.image_ids) >= 3 and p.error < 1.5}
+        ims = read_images_binary(os.path.join(sparse_dir, "images.bin"))
+        cams = read_cameras_binary(os.path.join(sparse_dir, "cameras.bin"))
+        names = None
+        try:
+            names = set(pl_module.trainer.datamodule.dataparser_outputs.train_set.image_names)
+        except Exception:
+            pass
+        sel = [im for im in ims.values() if names is None or im.name in names]
+        if not sel:
+            print("⚠⚠ [sfm-vis] 本塊訓練相機在 images.bin 裡一台都對不到 => sfm_vis 不會生效", flush=True)
+            return
+        Hmax = max(cams[im.camera_id].height for im in sel); Wmax = max(cams[im.camera_id].width for im in sel)
+        Hc, Wc = (Hmax + g - 1) // g, (Wmax + g - 1) // g
+        K = len(sel)
+        dmin = np.full((K, Hc, Wc), np.inf, dtype=np.float32); dmax = np.full((K, Hc, Wc), -np.inf, dtype=np.float32)
+        R = np.zeros((K, 3, 3), np.float32); T = np.zeros((K, 3), np.float32); intr = np.zeros((K, 6), np.float32)
+        n_obs = 0
+        for k, im in enumerate(sel):
+            cam = cams[im.camera_id]; pr = cam.params
+            fx, fy, cx, cy = (pr[0], pr[0], pr[1], pr[2]) if cam.model in ("SIMPLE_PINHOLE", "SIMPLE_RADIAL") else (pr[0], pr[1], pr[2], pr[3])
+            Rk = qvec2rotmat(im.qvec); R[k] = Rk; T[k] = im.tvec; intr[k] = (fx, fy, cx, cy, cam.width, cam.height)
+            ids = [int(i) for i in im.point3D_ids if int(i) in good]
+            if not ids:
+                continue
+            P = np.array([good[i] for i in ids]) @ Rk.T + im.tvec
+            z = P[:, 2]; m = z > 1e-6
+            u = fx * P[m, 0] / z[m] + cx; v = fy * P[m, 1] / z[m] + cy; zz = z[m]
+            inn = (u >= 0) & (v >= 0) & (u < cam.width) & (v < cam.height)
+            cu = (u[inn] // g).astype(int); cv = (v[inn] // g).astype(int); zz = zz[inn]
+            np.minimum.at(dmin[k], (cv, cu), zz); np.maximum.at(dmax[k], (cv, cu), zz)
+            n_obs += len(zz)
+        empty = ~np.isfinite(dmin)
+        dmin[empty] = np.nan; dmax[empty] = np.nan
+        t = lambda a: torch.from_numpy(a).to(dev)
+        self._vis = {"dmin": t(dmin.astype(np.float16)), "dmax": t(dmax.astype(np.float16)), "R": t(R), "T": t(T),
+                     "fx": t(intr[:, 0]), "fy": t(intr[:, 1]), "cx": t(intr[:, 2]), "cy": t(intr[:, 3]), "W": t(intr[:, 4]), "H": t(intr[:, 5]),
+                     "cell": g, "step": -1}
+        print(f"[sfm-vis] ✅ 首次觸發：{K} 台本塊訓練相機、{n_obs:,} 個可靠 SfM 觀測、深度格 {Hc}x{Wc}（{g} px）、"
+              f"有 SfM 的格 {100 * float((~empty).mean()):.1f}%；容差 {float(getattr(c, 'sfm_vis_px', 8.0)):g} 個像素足跡", flush=True)
 
     @torch.no_grad()
     def _sfm_dist(self, X: torch.Tensor) -> torch.Tensor:
@@ -1365,6 +1469,53 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     def _geom_gate_probs(self, gaussian_model, probs, indices=None):
         probs = super()._geom_gate_probs(gaussian_model, probs, indices)
+        probs = self._sfm_birth_probs(gaussian_model, probs, indices)
+        return self._sfm_vis_probs(gaussian_model, probs, indices)
+
+    @torch.no_grad()
+    def _sfm_vis_probs(self, gaussian_model, probs, indices=None):
+        c = self.config
+        vis = getattr(self, "_vis", None)
+        if not bool(getattr(c, "sfm_vis", False)) or vis is None:
+            return probs
+        step = int(getattr(self, "_ip_step", 0))
+        hi = int(getattr(c, "sfm_birth_until_iter", -1) or -1)
+        if step < int(getattr(c, "sfm_birth_from_iter", 0) or 0) or (hi > 0 and step > hi):
+            return probs
+        X = gaussian_model.gaussians["means"]
+        if vis["step"] != step or vis.get("n") != X.shape[0]:      # 同一步的增生與搬家共用一次投票
+            K = vis["R"].shape[0]; kk = int(getattr(c, "sfm_vis_cams", 32) or 0)
+            pick = torch.arange(K, device=X.device) if kk <= 0 or kk >= K else torch.randperm(K, device=X.device)[:kk]   # <=0＝全部相機
+            import time as _t
+            _t0 = _t.time()
+            f, b, cv, iv = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
+                                     vis["cy"][pick], vis["W"][pick], vis["H"][pick], vis["dmin"][pick], vis["dmax"][pick],
+                                     vis["cell"], float(getattr(c, "sfm_vis_px", 8.0)))
+            floater = (f >= int(getattr(c, "sfm_vis_free_min", 2))) & (f.float() >= float(getattr(c, "sfm_vis_free_frac", 0.0) or 0.0) * cv.float())
+            under = (cv >= int(getattr(c, "sfm_vis_behind_min", 3))) & (b.float() >= float(getattr(c, "sfm_vis_behind_frac", 0.9)) * cv.float()) \
+                & (cv.float() >= float(getattr(c, "sfm_vis_rep", 0.0) or 0.0) * iv.float())
+            vis["bad"] = floater | under; vis["fl"] = floater; vis["un"] = under; vis["cv"] = cv
+            vis["step"] = step; vis["n"] = X.shape[0]; vis["ncam"] = int(pick.numel())
+            if step // 1500 != getattr(self, "_sfm_vis_last", -1):
+                torch.cuda.synchronize(); vis["ms"] = (_t.time() - _t0) * 1000
+        bad = vis["bad"] if indices is None else vis["bad"][indices]
+        if bad.shape[0] != probs.shape[0]:
+            return probs
+        eps = float(getattr(c, "sfm_vis_eps", 0.01))
+        tot = probs.sum().clamp_min(1e-30)
+        m0 = float(probs[bad].sum() / tot)
+        out = probs * torch.where(bad, torch.full_like(probs, eps), torch.ones_like(probs))
+        m1 = float(out[bad].sum() / out.sum().clamp_min(1e-30))
+        first = not getattr(self, "_sfm_vis_announced", False)
+        if first or step // 1500 != getattr(self, "_sfm_vis_last", -1):
+            self._sfm_vis_announced = True; self._sfm_vis_last = step // 1500
+            n = vis["bad"].shape[0]
+            print(f"[sfm-vis] {'✅ 首次觸發' if first else '　'} step {step}：{'搬家' if indices is not None else '增生'}抽母點｜"
+                  f"浮塊（空區票）{int(vis['fl'].sum()):,}、地下（一直被擋）{int(vis['un'].sum()):,}、沒有 SfM 證據 {int((vis['cv'] == 0).sum()):,}／{n:,} 顆；"
+                  f"機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）｜投票 {vis.get('ncam', 0)} 台相機、{vis.get('ms', 0):.0f} ms", flush=True)
+        return out
+
+    def _sfm_birth_probs(self, gaussian_model, probs, indices=None):
         c = self.config
         r = float(getattr(c, "sfm_birth_radius", 0.0) or 0.0)
         if r <= 0 or getattr(self, "_sfm_grid", None) is None:
