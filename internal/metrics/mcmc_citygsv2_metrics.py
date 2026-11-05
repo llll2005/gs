@@ -267,14 +267,18 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             pbar["psnr_ex"] = True
         return metrics, pbar
 
-    def _block_mask_apply(self, pl_module, step, batch, outputs):
+    def _block_mask_get(self, name, hw, device):
+        """本影像的三值遮罩（device 上的 uint8 [H, W]）；沒有遮罩檔 => None（該影像照常計分）。
+        CPU 快取以（影像名, 解析度）為鍵；上一次搬上 device 的那張留著（11-05：渲染前取不計分像素與 loss 共用同一張）。"""
         import os
         import numpy as np
         from PIL import Image
-        name, gt = batch[1][0], batch[1][1]
         cache = self.__dict__.setdefault("_bm_cache", {})
         # 鍵含解析度（10-24）：train_res_schedule 降解析度時 GT 會變小，只按影像名快取會把低解析度遮罩帶到全解析度
-        key = (name, tuple(gt.shape[-2:]))
+        key = (name, tuple(hw))
+        last = getattr(self, "_bm_dev", None)
+        if last is not None and last[0] == key and last[1].device == device:
+            return last[1]
         m = cache.get(key)
         if m is None:
             p = os.path.join(self.config.block_mask_dir, os.path.basename(str(name)))
@@ -283,11 +287,29 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 if not miss:
                     print(f"⚠⚠ [block-mask] 找不到遮罩 {p}（該影像照常計分；之後只計數）", flush=True)
                 miss.add(name)
-                return batch, outputs
+                return None
             t = torch.from_numpy(np.array(Image.open(p)))[None, None].float()
-            m = torch.nn.functional.interpolate(t, size=tuple(gt.shape[-2:]), mode="nearest")[0, 0].to(torch.uint8)
+            m = torch.nn.functional.interpolate(t, size=tuple(hw), mode="nearest")[0, 0].to(torch.uint8)
             cache[key] = m
-        m = m.to(gt.device, non_blocking=True)
+        m = m.to(device, non_blocking=True)
+        self._bm_dev = (key, m)
+        return m
+
+    def block_mask_skip(self, name, hw, device):
+        """★ 2026-11-05 renderer `skip_unscored_pixels`：本影像的不計分像素（C 區）=> uint8 [H*W]，1＝光柵器略過。
+        沒開塊外遮罩或找不到遮罩檔 => None（照常渲染）。"""
+        if not getattr(self.config, "block_mask_dir", ""):
+            return None
+        m = self._block_mask_get(name, hw, device)
+        if m is None:
+            return None
+        return (m == 0).to(torch.uint8).contiguous().view(-1)
+
+    def _block_mask_apply(self, pl_module, step, batch, outputs):
+        name, gt = batch[1][0], batch[1][1]
+        m = self._block_mask_get(name, tuple(gt.shape[-2:]), gt.device)
+        if m is None:
+            return batch, outputs
         self._bm_cur = m      # 10-31：本步的遮罩（單側「不能看穿」只在 A 像素上算）
         bg = getattr(pl_module, "_last_bg", None)
         if bg is None:

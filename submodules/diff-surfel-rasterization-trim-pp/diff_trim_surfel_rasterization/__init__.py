@@ -9,7 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 import torch.nn as nn
 import torch
 from . import _C
@@ -100,8 +100,13 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-10-16 bit5 = 訓練中累加 V/C（lean 訓練 forward 順便填 transmittance＝Σ T·α、num_covered＝覆蓋數）
                 | (32 if getattr(raster_settings, "train_record", False) else 0)
                 # ★ 2026-10-19 bit6 = dist 版 lean（訓練 forward 多算 distortion 通道；forward.cu MODE 5）
-                | (64 if getattr(raster_settings, "lean_dist", False) else 0)),
+                | (64 if getattr(raster_settings, "lean_dist", False) else 0)
+                # ★ 2026-11-05 bit7 = 訓練中累加 V/C 走 warp 先加總（forward.cu WACC；需 train_record）
+                | (128 if getattr(raster_settings, "train_record_warp", False) else 0)),
             sh_rest,
+            # ★ 2026-11-05 逐像素不計分遮罩（uint8 H*W，1＝略過；只在 lean 訓練 forward 生效）；None＝空張量＝不略過
+            (getattr(raster_settings, "pix_skip", None) if getattr(raster_settings, "pix_skip", None) is not None
+             else _empty_u8_dev(means3D)),
         )
 
         # Invoke C++/CUDA rasterizer
@@ -220,7 +225,9 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-10-16 bit4 = 用 forward 記的配對貢獻 bit 擠掉無貢獻配對（只在 lean／geom 關時生效）
                 | (16 if getattr(raster_settings, "bwd_pair_bit", False) else 0)
                 # ★ 2026-10-19 bit5 = dist 版 lean 的 distortion 梯度（backward.cu renderCUDA_opt<DST=true>）
-                | (32 if dst_grad else 0),
+                | (32 if dst_grad else 0)
+                # ★ 2026-11-05 bit6 = 上游梯度全 0 的像素不處理（只在 lean／geom 關時生效，backward.cu renderCUDA_opt）
+                | (64 if getattr(raster_settings, "bwd_zero_skip", False) else 0),
                 sh_rest, a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp)
 
         # Compute gradients for relevant tensors by invoking backward method
@@ -285,6 +292,9 @@ class GaussianRasterizationSettings(NamedTuple):
     train_record : bool = False   # ★ 2026-10-16 lean 訓練 forward 順便累加逐顆 Σ T·α 與覆蓋數（取代 trim 的全相機 record pass）
     lean_dist : bool = False      # ★ 2026-10-19 dist 版 lean：lean forward 多算 distortion、backward 加它的梯度（需 lean_render）
     absgrad : bool = True   # ★ 2026-10-09：False => backward 不做 absgrad 的 atomicAdd（只有 dL_dmean2D.z 變 0）
+    train_record_warp : bool = False  # ★ 2026-11-05 訓練中累加 V/C 先在 warp 內加總（覆蓋數逐位元相同、V 只差加總順序）
+    bwd_zero_skip : bool = False  # ★ 2026-11-05 backward 不處理上游梯度全 0 的像素（塊外遮罩 C 區；梯度只差浮點加總順序）
+    pix_skip : Optional[torch.Tensor] = None  # ★ 2026-11-05 lean 訓練 forward 略過的像素（uint8 H*W，1＝略過；C 區）
     # ★ 2026-10-02：剃除沒人用的計算（見 forward.cu 的 MODE 與 backward.cu 的 GEOM）。
     #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。
     #   預設 False => 與舊行為完全相同（舊 kernel 的原始碼一字未動，只是多了模板參數）。
@@ -363,6 +373,20 @@ def _empty_like_dev(t):
     if e is None:
         e = _EMPTY_DEV[t.device] = torch.empty(0, dtype=torch.float32, device=t.device)
     return e
+
+
+_EMPTY_U8 = {}
+
+
+def _empty_u8_dev(t):
+    e = _EMPTY_U8.get(t.device)
+    if e is None:
+        e = _EMPTY_U8[t.device] = torch.empty(0, dtype=torch.uint8, device=t.device)
+    return e
+
+
+# ★ 2026-11-05 呼叫端用它判斷這份光柵器支不支援 pix_skip／bwd_zero_skip（沒重編 => 屬性不存在 => 當場報錯）
+PIX_SKIP_SUPPORTED = True
 
 
 # ★ 2026-10-19 融合／稀疏 Adam（rasterize_points.cu FusedAdamCUDA；呼叫端＝internal/optimizers.py FusedAdam）

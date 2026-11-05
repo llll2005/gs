@@ -46,13 +46,18 @@ def _mat2q(R):
 
 @torch.no_grad()
 def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, flat_tol: float = 0.1,
-               min_opacity: float = 0.5, chunk: int = 1 << 19):
+               min_opacity: float = 0.5, chunk: int = 1 << 19, exclude=None, prio=None):
+    """exclude（[N] bool，可省）：不參與合併的顆粒（SfM 錨點）。prio（[N] float，可省）：每顆的成本倍率，
+    配對取兩顆中較小的；只在候選對超過 max_frac 額度時改變「先併哪些」（2026-11-05 sfm_merge_eps）。兩者省略＝原行為。"""
     g = gm.gaussians
     X, raw_s, raw_q, raw_o = g["means"], g["scales"], g["rotations"], g["opacities"]
     dc, rest = g["shs_dc"], g["shs_rest"]
     dev = X.device
     O = torch.sigmoid(raw_o).reshape(-1)
-    cand = torch.nonzero(O > min_opacity, as_tuple=True)[0]
+    ok_c = O > min_opacity
+    if exclude is not None and exclude.shape[0] == O.shape[0]:
+        ok_c = ok_c & ~exclude
+    cand = torch.nonzero(ok_c, as_tuple=True)[0]
     empty = torch.empty(0, dtype=torch.long, device=dev)
     if cand.numel() < 100:
         return empty, empty, {"pairs": 0}
@@ -90,7 +95,10 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
     pi = torch.nonzero(mutual, as_tuple=True)[0]; pj = best[pi]
     lim = int(max_frac * X.shape[0])
     if pi.numel() > lim:
-        keep = torch.topk(bestc[pi], lim, largest=False).indices
+        key = bestc[pi]
+        if prio is not None and prio.shape[0] == O.shape[0]:
+            key = key * torch.minimum(prio[cand[pi]], prio[cand[pj]]).to(key.dtype)
+        keep = torch.topk(key, lim, largest=False).indices
         pi, pj = pi[keep], pj[keep]
     if pi.numel() == 0:
         return empty, empty, {"pairs": 0}

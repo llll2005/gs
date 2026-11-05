@@ -65,7 +65,8 @@ RasterizeGaussiansCUDA(
 	const bool debug,
 	const bool exact_conic_aabb,
 	const int lean,
-	const torch::Tensor& sh_rest)
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& pix_skip)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
 	AT_ERROR("means3D must have dimensions (num_points, 3)");
@@ -132,6 +133,12 @@ RasterizeGaussiansCUDA(
 		TORCH_CHECK(sh.is_contiguous() && sh_rest.is_contiguous(), "SH 分開存放：sh／sh_rest 必須 contiguous");
 		M = 1 + sh_rest.size(1);
 	  }
+	  // ★ 2026-11-05 不計分像素遮罩：uint8、連續、H*W 個（1＝略過）
+	  const bool skip = pix_skip.numel() > 0;
+	  if (skip) {
+		TORCH_CHECK(pix_skip.is_cuda() && pix_skip.scalar_type() == at::kByte && pix_skip.is_contiguous() && pix_skip.numel() == (int64_t)H * W,
+		            "pix_skip 必須是 CUDA 上連續的 uint8、元素數 = H*W");
+	  }
 
 	  rendered = CudaRasterizer::Rasterizer::forward(
 		geomFunc,
@@ -165,7 +172,8 @@ RasterizeGaussiansCUDA(
 		tiles.contiguous().data<int>(),
 		exact_conic_aabb,
 		lean,
-		split ? sh_rest.data_ptr<float>() : nullptr);
+		split ? sh_rest.data_ptr<float>() : nullptr,
+		skip ? pix_skip.data_ptr<uint8_t>() : nullptr);
   }
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_occluder, tiles);
 }

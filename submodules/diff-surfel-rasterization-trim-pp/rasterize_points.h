@@ -41,7 +41,8 @@ RasterizeGaussiansCUDA(
 	const bool debug,
 	const bool exact_conic_aabb,
 	const int lean,
-	const torch::Tensor& sh_rest);
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& pix_skip);   // ★ 2026-11-05 逐像素不計分遮罩（uint8 H*W；空張量＝不略過）
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(

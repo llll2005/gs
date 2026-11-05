@@ -1830,6 +1830,120 @@ def n24_full(d):
     save(fig, d, "n24_full.png")
 
 
+N26_ARMS = [  # 臂, b3 (held-out PSNR, LPIPS, 牆鐘 Δ%（fit 起訖秒數算）, 離線 Load M), b12 同（None＝沒跑）；本機筆電 1M、對同機基準
+    ("基準 A＋dist4 1M", (11.642, .7671, 0.0, 1.742), (11.782, .8137, 0.0, 1.388)),
+    ("反向 V/C", (11.296, .8397, 28.6, 8.243), None),
+    ("trim 只看 V", (11.640, .7682, 20.1, 3.387), None),
+    ("拿掉二元熵", (11.652, .7657, -0.1, 1.638), (11.805, .8112, -1.4, 1.315)),
+    ("scale 正則 0", (11.667, .7660, 4.6, 2.123), (11.802, .8120, 5.9, 1.966)),
+    ("全部（熵關＋sr0＋只看 V＋合併）", (11.671, .7705, 21.8, 4.133), (11.824, .8138, 17.0, 2.989)),
+    ("補洞加嚴 A（margin 0.02）", (11.640, .7672, 5.4, 1.857), None),
+    ("補洞加嚴 B（margin 0.01）", (11.633, .7666, -2.7, 1.718), None),
+    ("★ 法向每 8 步", (11.672, .7658, 5.4, 1.940), (11.894, .8065, 6.9, 1.409)),
+]
+N26_GROUND = {  # 模型: (貼地覆蓋, 蓋滿格 %, 貼地躺平 %, 地下覆蓋)
+    "b3": [("CityGS", 1.12, 43.4, 90.9, 1.08), ("lab 現行 2.5M", 0.58, 19.2, 35.3, 8.37), ("lab 完整組合", 0.91, 32.7, 89.9, 7.96),
+           ("lab 鄰域平面", 0.65, 21.4, 88.2, 7.67), ("本機基準 1M", 0.54, 18.4, 44.7, 4.92), ("拿掉熵", 0.55, 18.3, 45.3, 4.58),
+           ("scale 正則 0", 0.67, 23.3, 67.3, 4.52), ("全部", 0.60, 18.4, 78.0, 6.36), ("補洞加嚴 A", 0.54, 18.2, 47.2, 4.64),
+           ("補洞加嚴 B", 0.55, 18.3, 47.6, 5.16), ("★ 法向每 8 步", 0.62, 21.9, 79.2, 5.25)],
+    "b12": [("CityGS", 1.25, 41.6, 83.0, 1.14), ("本機基準 1M", 0.73, 26.3, 57.7, 9.00), ("拿掉熵", 0.70, 26.2, 52.4, 7.33),
+            ("scale 正則 0", 0.80, 29.7, 68.9, 8.96), ("全部", 0.70, 25.4, 71.7, 10.51), ("★ 法向每 8 步", 0.79, 30.8, 87.8, 8.94)],
+}
+N26_THICK = {  # 模型: [(厚度 cm, 低角度透空 %, 前方遮擋 %, 空拍改動 >2/255 %)]
+    "CityGS": [(0, 0.00, 0.00, 0.0), (2, 0.08, 0.07, 0.67), (5, 0.20, 0.29, 5.02), (10, 0.39, 0.75, 15.98), (20, 0.81, 1.72, 34.08), (50, 2.20, 4.64, 56.06)],
+    "本機 1M": [(0, 5.84, 34.97, 0.0), (2, 5.83, 35.01, 1.37), (5, 5.63, 35.08, 3.59), (10, 5.23, 35.30, 10.83), (20, 4.61, 35.96, 25.01), (50, 4.03, 38.21, 47.11)],
+    "lab 2.5M": [(0, 6.18, 35.86, 0.0), (2, 6.37, 37.95, 4.27), (5, 6.03, 38.30, 7.74), (10, 5.46, 38.68, 15.83), (20, 4.62, 39.46, 29.57), (50, 4.23, 41.81, 51.53)],
+}
+N26_MONO = {  # 模型: (深 >1/2/5/10 %), (淺 >1/2/5/10 %)
+    "CityGS": ((32.1, 26.4, 15.8, 9.8), (44.6, 35.6, 25.0, 15.3)),
+    "本機 1M": ((40.2, 33.9, 20.9, 11.0), (42.9, 38.4, 29.9, 19.2)),
+    "法向每 8 步": ((41.5, 35.6, 21.7, 11.2), (42.5, 38.0, 29.6, 19.2)),
+}
+N26_UNDER = [("SfM（track≥3）", 0.9, 8.8), ("SfM（全部）", 3.1, 12.5), ("初始化 PLY", 3.8, 21.3), ("本機 1M 訓練後", 10.0, 27.1), ("CityGS", 1.1, 16.5)]  # 低於地面 3 m／0.5 m 的 %
+
+
+def n26_arms(d):
+    """11-03～04 本機 1M 各臂：held-out Δ、牆鐘 Δ%、離線 Load Δ%（對同機同塊基準）。"""
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5.4))
+    R = N26_ARMS; y = np.arange(len(R)); h = 0.38
+    spec = [(lambda r, b: r[0] - b[0], "held-out PSNR Δ（dB；整張畫面，只比差）", "{:+.3f}"),
+            (lambda r, b: r[2], "訓練牆鐘 Δ%（本機；反向 V/C、只看 V 那兩次有干擾）", "{:+.1f}%"),
+            (lambda r, b: 100 * (r[3] / b[3] - 1), "離線渲染 Load Δ%（精確 Σtiles 每視角平均）", "{:+.1f}%")]
+    for ax, (fn, lab, fmt) in zip(axs, spec):
+        for k, (bi, c) in enumerate(((1, C1), (2, C2))):
+            base = R[0][bi]
+            vals = [fn(r[bi], base) if r[bi] is not None else np.nan for r in R]
+            ax.barh(y + (k - 0.5) * h, vals, h, color=c, label="b3" if bi == 1 else "b12")
+            for i, v in enumerate(vals):
+                if not np.isnan(v) and i > 0:
+                    ax.text(v, i + (k - 0.5) * h, " " + fmt.format(v), va="center", fontsize=6.8, color=INK2,
+                            ha="left" if v >= 0 else "right")
+        ax.axvline(0, color=MUTED, lw=0.8)
+        ax.set_yticks(y, [r[0] for r in R] if ax is axs[0] else [""] * len(R), fontsize=8.3); ax.invert_yaxis()
+        ax.set_xlabel(lab, fontsize=8.5); ax.legend(fontsize=8, loc="lower right")
+    axs[2].set_xscale("symlog", linthresh=50)
+    axs[0].set_title("法向每 8 步兩塊都升（b3 +0.03、b12 +0.11）；反向 V/C −0.35", fontsize=9.2)
+    axs[1].set_title("「全部」+17～22%；拿掉熵 ±1%；法向 +5～7%", fontsize=9.2)
+    axs[2].set_title("Load：反向 V/C ×4.7、只看 V ×1.9、全部 ×2.2～2.4；拿掉熵 −5～6%", fontsize=9.2)
+    fig.suptitle("11-03～04 本機筆電 1M（A＋dist4、無閘門；對同機同塊基準 b3 37.6 分／1.74M、b12 35.0 分／1.39M）", fontsize=9.6)
+    save(fig, d, "n26_arms.png")
+
+
+def n26_ground(d):
+    """地面格（SfM）上：貼地覆蓋、蓋滿格、地下覆蓋（Σ o·2π·su·sv ÷ 地面格面積）。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 5.6), gridspec_kw={"width_ratios": [1.6, 1]})
+    for ax, blk in zip(axs, ("b3", "b12")):
+        R = N26_GROUND[blk]; y = np.arange(len(R)); h = 0.38
+        cs_near = [MUTED if r[0] == "CityGS" else C1 for r in R]
+        ax.barh(y - h / 2, [r[1] for r in R], h, color=cs_near)
+        ax.barh([np.nan], [np.nan], h, color=C1, label="貼地覆蓋（±0.5 m，層；灰＝CityGS）")
+        ax.barh(y + h / 2, [r[4] for r in R], h, color=C2, label="地面下覆蓋（層）")
+        for i, r in enumerate(R):
+            ax.text(r[1] + 0.05, i - h / 2, f"{r[1]:.2f}｜蓋滿 {r[2]:.0f}%｜躺平 {r[3]:.0f}%", va="center", fontsize=6.8, color=INK2)
+            ax.text(r[4] + 0.05, i + h / 2, f"{r[4]:.2f}", va="center", fontsize=6.8, color=INK2)
+        ax.set_yticks(y, [r[0] for r in R], fontsize=8.3); ax.invert_yaxis(); ax.set_xlim(0, 11.5)
+        ax.set_xlabel("覆蓋（層；不算遮擋）", fontsize=8.5); ax.legend(fontsize=8, loc="lower right")
+    axs[0].set_title("b3：我們的路面主要在地下（4.5～8.4 層，93% 不透明）、正確高度只有 0.5～0.9 層；CityGS 地下 1.1 層。熵／scale 正則／補洞／法向都沒碰到它", fontsize=9.0)
+    axs[1].set_title("b12：地下 7.3～10.5 層（拿掉熵最少）；法向把貼地躺平 58 → 88%", fontsize=9.0)
+    save(fig, d, "n26_ground.png")
+
+
+def n26_thick(d):
+    """固定厚度（渲染端）：低角度透空、前方遮擋、空拍被改動的像素 vs 厚度。"""
+    fig, axs = plt.subplots(1, 3, figsize=(18, 4.6))
+    cs = {"CityGS": MUTED, "本機 1M": C1, "lab 2.5M": C2}
+    for ax, j, lab in zip(axs, (1, 2, 3), ("低角度透空率 %", "前方遮擋 %（比 CityGS 表面近 20% 以上）", "空拍改動 >2/255 的像素 %")):
+        for m, rows in N26_THICK.items():
+            x = [r[0] for r in rows]; v = [r[j] for r in rows]
+            ax.plot(x, v, "o-", color=cs[m], label=m, lw=1.6, ms=4)
+            ax.text(x[-1], v[-1], f" {v[-1]:.1f}", fontsize=7, color=cs[m], va="center")
+        ax.set_xscale("symlog", linthresh=2); ax.set_xticks([0, 2, 5, 10, 20, 50], ["0", "2", "5", "10", "20", "50"])
+        ax.set_xlabel("固定厚度（cm）", fontsize=8.5); ax.set_title(lab, fontsize=9.2); ax.legend(fontsize=8)
+    axs[1].axhline(27.37, color=C3, ls="--", lw=0.9); axs[1].text(0.2, 28.2, "法向每 8 步（厚度 0）27.4%", fontsize=7.4, color=C3)
+    fig.suptitle("固定厚度（渲染端，不重訓）：10 cm 透空 5.84 → 5.23%，但空拍 11～16% 像素被改動、前方遮擋不降 => 沒有奇效；低角度最大的缺陷是巨大不透明面元擋在前面（35%）", fontsize=9.4)
+    save(fig, d, "n26_thick.png")
+
+
+def n26_mono(d):
+    """單目看穿判準校準（CityGS 當地面在正確高度的對照）＋地下層從哪來。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.6), gridspec_kw={"width_ratios": [1.6, 1]})
+    ax = axs[0]; ms = ("1%", "2%", "5%", "10%"); x = np.arange(len(ms)); w = 0.13
+    cs = {"CityGS": MUTED, "本機 1M": C1, "法向每 8 步": C3}
+    for k, (m, (deep, shal)) in enumerate(N26_MONO.items()):
+        barlabels(ax, ax.bar(x + (k - 2.5) * w, deep, w, color=cs[m], label=f"{m} 比單目深"), "{:.1f}", size=6.5)
+        barlabels(ax, ax.bar(x + (k + 0.5) * w, shal, w, color=cs[m], alpha=0.45, label=f"{m} 比單目淺"), "{:.1f}", size=6.5)
+    ax.set_xticks(x, [f"門檻 {m}" for m in ms]); ax.set_ylabel("像素 %（三個模型都實心、單目有效）"); ax.legend(fontsize=7, ncol=2)
+    ax.set_title("單目誤差約 ±10%：連 CityGS 都有 26% 像素「比單目深 >2%」；我們只多 5～8 個百分點 => 1～2% 的看穿判準大多是雜訊", fontsize=9.0)
+    ax = axs[1]; R = N26_UNDER; y = np.arange(len(R)); h = 0.38
+    barlabels_h = lambda bars, vals: [ax.text(v + 0.3, b_.get_y() + b_.get_height() / 2, f"{v:.1f}%", va="center", fontsize=7, color=INK2) for b_, v in zip(bars, vals)]
+    barlabels_h(ax.barh(y - h / 2, [r[1] for r in R], h, color=C2, label="低於地面 3 m"), [r[1] for r in R])
+    barlabels_h(ax.barh(y + h / 2, [r[2] for r in R], h, color=C1, alpha=0.6, label="低於地面 0.5 m"), [r[2] for r in R])
+    ax.set_yticks(y, [r[0] for r in R], fontsize=8.3); ax.invert_yaxis(); ax.legend(fontsize=8, loc="lower right")
+    ax.set_xlabel("b3 地面格上的點 %（相對該格 SfM 中位高度）", fontsize=8.5)
+    ax.set_title("SfM 是對的（±1 m）；初始化 3.8% => 訓練後 10%：是訓練推下去的", fontsize=9.0)
+    save(fig, d, "n26_mono.png")
+
+
 DOCS = {
     "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -1851,6 +1965,7 @@ DOCS = {
     "22_新視角缺陷_海面浮塊立面毛邊與幾何閘門": ["n22_b12hist", "n22_b0var", "n22_orient", "n22_road_roof"],
     "23_cap劑量熵拆開塔頂與幾何約束臂": ["n23_dose", "n23_arms", "n23_tower"],
     "24_法向SfM豁免鄰域平面合併與單目深度診斷": ["n24_swap", "n24_geom", "n24_mono", "n24_full"],
+    "26_本機1M_小圓片拆解地下層厚度與法向": ["n26_arms", "n26_ground", "n26_thick", "n26_mono"],
 }
 
 
@@ -1890,7 +2005,7 @@ def main():
               n01_steps, n01_scaling, n01_maxsplit, n02_segments, n02_value, n05_main, n05_official, n05_frontier60k, n04_time, n04_load,
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
               n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof,
-              n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full):
+              n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full, n26_arms, n26_ground, n26_thick, n26_mono):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]

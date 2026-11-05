@@ -378,7 +378,12 @@ class TrainConsole(ProgressBar):
             its = (step - self._step_last) / (now - self._t_last)
         if now - (self._t_last or now) >= 1.0:
             self._t_last, self._step_last = now, step
-        loss = trainer.callback_metrics.get("train/loss")
+        # ★ 2026-11-05 train_log_interval != 1（量總時間用）：float(loss) 每步都會讓 CPU 等 GPU（同步）=> 改成最多每秒讀一次
+        _li = int(getattr(pl_module, "hparams", {}).get("train_log_interval", 1) or 0)
+        if _li == 1 or now - getattr(self, "_loss_t", 0.0) >= 1.0:
+            loss = trainer.callback_metrics.get("train/loss")
+            self._loss_v, self._loss_t = (float(loss) if loss is not None else None), now
+        loss = getattr(self, "_loss_v", None)
         used, tot, alloc = self._vram()
         try:
             n = pl_module.gaussian_model.n_gaussians

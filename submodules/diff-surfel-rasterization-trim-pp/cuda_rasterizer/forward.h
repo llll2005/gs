@@ -73,7 +73,9 @@ namespace FORWARD
 		int* num_covered_pixels,
 		bool record_transmittance,
 		int mode = 0,
-		uint8_t* pair_used = nullptr);   // ★ 2026-10-16 配對貢獻 bit（只在 mode 1 寫）
+		uint8_t* pair_used = nullptr,   // ★ 2026-10-16 配對貢獻 bit（只在 mode 1 寫）
+		const uint8_t* pix_skip = nullptr,   // ★ 2026-11-05 逐像素不計分遮罩（只在 mode 1／5 讀）
+		bool wacc = false);   // ★ 2026-11-05 訓練中累加 V/C 走 warp 先加總（只在 mode 1／5 且有累加時）
 }
 
 

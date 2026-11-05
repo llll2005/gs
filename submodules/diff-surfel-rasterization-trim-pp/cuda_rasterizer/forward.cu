@@ -473,7 +473,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 //   三者的 T 序列、early-out（done）與 record 的計數條件完全相同（都只依賴 alpha 與 T）。
 //   MODE 5  ★ 2026-10-19 dist 版 lean：MODE 1 ＋ 深度失真（distortion）通道與它的兩個累積量（dist1／dist2 存 final_T），
 //           算式與 MODE 0 逐字相同；法線／深度／中位深度照樣不算。給 lambda_dist > 0 但其他幾何 loss 為 0 的訓練步（使用者 10-19）。
-template <uint32_t CHANNELS, int MODE>
+template <uint32_t CHANNELS, int MODE, bool WACC = false>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -493,8 +493,12 @@ renderCUDA(
 	float* __restrict__ transmittance,
 	int* __restrict__ num_covered_pixels,
 	bool record_transmittance,
-	uint8_t* __restrict__ pair_used)
+	uint8_t* __restrict__ pair_used,
+	const uint8_t* __restrict__ pix_skip)
 {
+	// ★ 2026-11-05 pix_skip（只在 lean 訓練 MODE 1／5 且非 nullptr 時讀）：逐像素 1＝不計分（塊外遮罩的 C 區）
+	//   => 該像素從一開始就 done：不混合任何顆粒、輸出背景色、T=1、最後貢獻者 0（backward 自然不處理它）。
+	//   整個 tile 都是 C 時第一輪的 __syncthreads_count 就整塊結束。V/C 累加也不算這些像素。
 	// ★ 2026-10-16 pair_used（只在 MODE 1 且非 nullptr 時寫）：本批每個配對是否被本 tile 任一像素「混合」
 	//   （alpha>=1/255、未飽和、未提早結束 => 與 backward 的 valid 條件逐條相同）。沒輪到的配對維持呼叫端 memset 的 0。
 	// Identify current tile and associated min/max pixel range.
@@ -508,8 +512,9 @@ renderCUDA(
 
 	// Check if this thread is associated with a valid pixel or outside.
 	bool inside = pix.x < W&& pix.y < H;
+	constexpr bool LEANLIKE = (MODE == 1 || MODE == 5);   // 訓練用的 lean forward（MODE 5 多算 distortion）
 	// Done threads can help with fetching, but don't rasterize
-	bool done = !inside;
+	bool done = !inside || (LEANLIKE && pix_skip != nullptr && pix_skip[pix_id] != 0);
 
 	// Load start/end range of IDs to process in bit sorted list.
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
@@ -524,7 +529,6 @@ renderCUDA(
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
 	__shared__ uint8_t s_used[(MODE == 1) ? BLOCK_SIZE : 1];
-	constexpr bool LEANLIKE = (MODE == 1 || MODE == 5);   // 訓練用的 lean forward（MODE 5 多算 distortion）
 	const bool rec_pair = (MODE == 1) && (pair_used != nullptr);
 	// ★ 2026-10-16 訓練中累加 V/C（取代 trim 的 record pass）：MODE 1 且 record_transmittance=true（rasterizer_impl 在 bit 32 時這樣傳）
 	//   => 在與 record pass 完全相同的位置（近平面／power 檢查之後、alpha<1/255 之前）累加 T*alpha 與覆蓋數；
@@ -578,6 +582,132 @@ renderCUDA(
 		block.sync();
 
 		// Iterate over current batch
+		if (WACC && rec_acc) {
+			// ★ 2026-11-05 WACC（使用者 11-05「V/C 累加直接對 forward 作看看」）：訓練中累加 V/C 改成先在 warp 內加總。
+			//   原本每個被評估的 (像素, 顆粒) 做兩次 shared atomicAdd，而同一 warp 的 32 條執行緒同時處理同一個 j
+			//   => 32 路打同一個位址、整個排隊（10-24 量：增生期 forward 13.0 ms 裡 3.7 ms）。
+			//   這裡每個 j 每個 warp：覆蓋數用 ballot＋popc（整數，逐位元相同）、T*alpha 用 5 次 shuffle 加總，只有 lane 0 寫 shared。
+			//   為了讓整個 warp 都走到加總點：迴圈不再因單一執行緒 done 而離開（整個 warp 都 done 才離開），原本的 continue 改成跳出 do-while。
+			//   混合的算式與順序一字不動 => 渲染應逐位元相同；V 只差浮點加總順序（同 record_reduce）。
+			const int nbj = min(BLOCK_SIZE, toDo);
+			const int lane = block.thread_rank() & 31;
+			for (int j = 0; j < nbj; j++)
+			{
+				if (__all_sync(0xffffffffu, done)) break;
+				float acc_ta = 0.f;
+				bool acc_hit = false;
+				if (!done) do {
+					// Keep track of current position in range
+					contributor++;
+
+					// Fisrt compute two homogeneous planes, See Eq. (8)
+					float3 Tu = collected_Tu[j];
+					float3 Tv = collected_Tv[j];
+					float3 Tw = collected_Tw[j];
+					float3 k = {-Tu.x + pixf.x * Tw.x, -Tu.y + pixf.x * Tw.y, -Tu.z + pixf.x * Tw.z};
+					float3 l = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
+					// cross product of two planes is a line (i.e., homogeneous point), See Eq. (10)
+					float3 p = crossProduct(k, l);
+		#if BACKFACE_CULL
+					// May hanle this by replacing a low pass filter,
+					// but this case is extremely rare.
+					if (p.z == 0.0) break; // there is not intersection
+		#endif
+					// 3d homogeneous point to 2d point on the splat
+					float2 s = {p.x / p.z, p.y / p.z};
+					// 3d distance. Compute Mahalanobis distance in the canonical splat' space
+					float rho3d = (s.x * s.x + s.y * s.y);
+
+					// Add low pass filter according to Botsch et al. [2005],
+					// see Eq. (11) from 2DGS paper.
+					float2 xy = collected_xy[j];
+					float2 d = {xy.x - pixf.x, xy.y - pixf.y};
+					// 2d screen distance
+					float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+					float rho = min(rho3d, rho2d);
+
+					float depth = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z; // splat depth
+					if ((s.x * Tw.x + s.y * Tw.y) + Tw.z < NEAR_PLANE) break;
+					float4 nor_o = collected_normal_opacity[j];
+					float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
+					float power = -0.5f * rho;
+					// power = -0.5f * 100.f * max(rho - 1, 0.0f);
+					if (power > 0.0f)
+						break;
+
+					// Eq. (2) from 3D Gaussian splatting paper.
+					// Obtain alpha by multiplying with Gaussian opacity
+					// and its exponential falloff from mean.
+					// Avoid numerical instabilities (see paper appendix).
+					float alpha = min(0.99f, nor_o.w * exp(power));
+					if (MODE == 2 || (MODE == 0 && record_transmittance)){
+						atomicAdd(&transmittance[collected_id[j]], T * alpha);
+						atomicAdd(&num_covered_pixels[collected_id[j]], 1);
+					}
+					acc_ta = T * alpha; acc_hit = true;   // 原本：兩個 shared atomic（整個 warp 打同一個位址）
+					if (alpha < 1.0f / 255.0f)
+						break;
+					float test_T = T * (1 - alpha);
+					if (test_T < 0.0001f)
+					{
+						done = true;
+						break;
+					}
+
+
+		#if RENDER_AXUTILITY
+					if (MODE == 0) {
+					// Render depth distortion map
+					// Efficient implementation of distortion loss, see 2DGS' paper appendix.
+					float A = 1-T;
+					float mapped_depth = (FAR_PLANE * depth - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * depth);
+					float error = mapped_depth * mapped_depth * A + dist2 - 2 * mapped_depth * dist1;
+					distortion += error * alpha * T;
+
+					if (T > 0.5) {
+						median_depth = depth;
+						median_weight = alpha * T;
+						median_contributor = contributor;
+					}
+					// Render normal map
+					for (int ch=0; ch<3; ch++) N[ch] += normal[ch] * alpha * T;
+
+					// Render depth map
+					D += depth * alpha * T;
+					// Efficient implementation of distortion loss, see 2DGS' paper appendix.
+					dist1 += mapped_depth * alpha * T;
+					dist2 += mapped_depth * mapped_depth * alpha * T;
+					}
+					if (MODE == 5) {
+					// ★ 2026-10-19 與 MODE 0 的 distortion 算式逐字相同（只拿掉 median／法線／深度）
+					float A = 1-T;
+					float mapped_depth = (FAR_PLANE * depth - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * depth);
+					float error = mapped_depth * mapped_depth * A + dist2 - 2 * mapped_depth * dist1;
+					distortion += error * alpha * T;
+					dist1 += mapped_depth * alpha * T;
+					dist2 += mapped_depth * mapped_depth * alpha * T;
+					}
+		#endif
+
+					// Eq. (3) from 3D Gaussian splatting paper.
+					if (MODE != 2)
+					for (int ch = 0; ch < CHANNELS; ch++)
+						C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+					T = test_T;
+
+					// Keep track of last range entry to update this
+					// pixel.
+					last_contributor = contributor;
+					if (rec_pair) s_used[j] = 1;   // 多個像素同時寫 1 => 良性競爭
+				} while (0);
+				const unsigned hm = __ballot_sync(0xffffffffu, acc_hit);
+				if (hm) {
+					float v = acc_ta;
+					for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+					if (lane == 0) { atomicAdd(&s_ta1[j], v); atomicAdd(&s_cn1[j], (int)__popc(hm)); }
+				}
+			}
+		} else
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
 			// Keep track of current position in range
@@ -978,17 +1108,20 @@ void FORWARD::render(
 	int* num_covered_pixels,
 	bool record_transmittance,
 	int mode,
-	uint8_t* pair_used)
+	uint8_t* pair_used,
+	const uint8_t* pix_skip,
+	bool wacc)
 {
 #define _RENDER_ARGS ranges, point_list, W, H, focal_x, focal_y, means2D, colors, transMats, depths, \
-		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance, pair_used
+		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance, pair_used, pix_skip
 	if (mode == 3) { auditCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
 		out_others, transmittance, num_covered_pixels); return; }
 	if (mode == 4) { recordReduceCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
 		transmittance, num_covered_pixels); return; }
-	if (mode == 1) { renderCUDA<NUM_CHANNELS, 1> << <grid, block >> > (_RENDER_ARGS); return; }
+	// ★ 2026-11-05 wacc：訓練中累加 V/C 走 warp 先加總的版本（只在 mode 1／5 且有累加時；見 renderCUDA 的 WACC）
+	if (mode == 1) { if (wacc) renderCUDA<NUM_CHANNELS, 1, true> << <grid, block >> > (_RENDER_ARGS); else renderCUDA<NUM_CHANNELS, 1> << <grid, block >> > (_RENDER_ARGS); return; }
 	if (mode == 2) { renderCUDA<NUM_CHANNELS, 2> << <grid, block >> > (_RENDER_ARGS); return; }
-	if (mode == 5) { renderCUDA<NUM_CHANNELS, 5> << <grid, block >> > (_RENDER_ARGS); return; }   // ★ 2026-10-19 dist 版 lean
+	if (mode == 5) { if (wacc) renderCUDA<NUM_CHANNELS, 5, true> << <grid, block >> > (_RENDER_ARGS); else renderCUDA<NUM_CHANNELS, 5> << <grid, block >> > (_RENDER_ARGS); return; }   // ★ 2026-10-19 dist 版 lean
 #undef _RENDER_ARGS
 	renderCUDA<NUM_CHANNELS, 0> << <grid, block >> > (
 		ranges,
@@ -1008,6 +1141,7 @@ void FORWARD::render(
 		transmittance,
 		num_covered_pixels,
 		record_transmittance,
+		nullptr,
 		nullptr);
 }
 

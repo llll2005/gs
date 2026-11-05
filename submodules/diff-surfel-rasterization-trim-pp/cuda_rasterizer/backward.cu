@@ -631,8 +631,14 @@ renderCUDA_opt(
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dcolors,
 	const uint8_t* __restrict__ pair_used,
-	const float* __restrict__ dL_depths)
+	const float* __restrict__ dL_depths,
+	const bool zskip)
 {
+	// ★ 2026-11-05 ZSKIP（zskip=true）：上游梯度全為 0 的像素（顏色 3 通道、DST 時再加 distortion）整個不處理——
+	//   它對每個配對的 16 個梯度量都恰為 0（dL_dalpha 的每一項都乘到 dL_dpixel 或 dL_dreg），原本只是算完再丟。
+	//   做法＝把它的最後貢獻者當成 0：valid 恆為 false、也不參與 SAT 的 tile 內最大值 => 整塊都是零梯度的 tile 直接結束。
+	//   主要對象：塊外遮罩的 C 區（metric 把 C 像素的 render 換成 detach => 梯度恰為 0）。
+	//   梯度只差浮點加總順序（warp 內有效 lane 變少時 __popc(m) >= 3 的分支可能改走逐 lane atomic），與 RED 同級。
 	// ★ 2026-10-16 PB（pair_used != nullptr）：配對貢獻 bit。forward 記下「這個 (tile,顆粒) 配對有沒有被任一像素混合」；
 	//   沒被混合的配對對每個像素都是 valid=false（條件逐條相同：contributor<last、NEAR_PLANE、power、alpha>=1/255）=> 梯度恆 0。
 	//   每批載入時用 warp ballot＋前綴和把 bit=1 的依原順序擠到 shared 前段，只迭代這些 => 處理的有效配對與順序完全相同。
@@ -645,7 +651,13 @@ renderCUDA_opt(
 	const float2 pixf = { (float)pix.x + 0.5, (float)pix.y + 0.5};
 	const bool inside = pix.x < W && pix.y < H;
 	const uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
-	const int last_contributor = inside ? n_contrib[pix_id] : 0;
+	bool zg = false;
+	if (zskip && inside) {
+		zg = true;
+		for (int i = 0; i < C; i++) zg = zg && (dL_dpixels[i * H * W + pix_id] == 0.f);
+		if (DST) zg = zg && (dL_depths[DISTORTION_OFFSET * H * W + pix_id] == 0.f);
+	}
+	const int last_contributor = (inside && !zg) ? n_contrib[pix_id] : 0;
 
 	int span = range.y - range.x;
 	__shared__ int s_max;
@@ -1309,8 +1321,9 @@ void BACKWARD::render(
 	const bool red = (flags & 8) != 0;
 	const bool pbit = (flags & 16) != 0 && pair_used != nullptr;   // ★ 2026-10-16 配對貢獻 bit
 	const bool dst = (flags & 32) != 0;                              // ★ 2026-10-19 dist 版 lean（只在 geom 關時；forward 要是 MODE 5）
-	if (!geom && (sat || red || pbit || dst)) {
-#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr), (dst ? dL_depths : nullptr)
+	const bool zskip = (flags & 64) != 0;                            // ★ 2026-11-05 上游梯度全 0 的像素不處理（只在 renderCUDA_opt）
+	if (!geom && (sat || red || pbit || dst || zskip)) {
+#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr), (dst ? dL_depths : nullptr), zskip
 #define OPT_L(A, S, R, D) renderCUDA_opt<NUM_CHANNELS, A, S, R, D> << <grid, block >> >(OPT_ARGS)
 #define OPT_SR(A, D) { if (sat && red) OPT_L(A, true, true, D); else if (sat) OPT_L(A, true, false, D); else if (red) OPT_L(A, false, true, D); else OPT_L(A, false, false, D); }
 		if (dst) { if (absg) OPT_SR(true, true) else OPT_SR(false, true) }

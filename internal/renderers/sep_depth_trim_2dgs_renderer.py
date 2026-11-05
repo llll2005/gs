@@ -43,7 +43,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
             bwd_sat_skip: bool = False,
             bwd_reduce: bool = False,
             bwd_pair_bit: bool = False,
+            bwd_zero_grad_skip: bool = False,
+            skip_unscored_pixels: bool = False,
             trim_running_vc: bool = False,
+            trim_running_warp: bool = False,
             trim_protect_vc: float = -1.0,
             trim_merge_first: bool = False,
             trim_merge_color_tol: float = 0.1,
@@ -103,6 +106,14 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ★ 2026-10-16 配對貢獻 bit（使用者「試試」）：forward（lean 訓練）記每個 (tile,顆粒) 配對有沒有被任一像素混合，
         #   backward 只處理被混合過的（其他配對對每個像素都是 valid=false => 梯度不變，只省掉重算交點與指數的工作）
         self.bwd_pair_bit = bwd_pair_bit
+        # ★ 2026-11-05 不計分像素（塊外遮罩的 C 區，b3／b12 佔 12～14% 像素、11～13% tile；使用者 11-05「排一次測試」）：
+        #   bwd_zero_grad_skip    backward 不處理上游梯度全 0 的像素（C 區在 metric 被 detach => 梯度恰為 0；dist 步除外）。
+        #                         梯度只差浮點加總順序（與 bwd_reduce 同級）。需要 lean_train。
+        #   skip_unscored_pixels  lean 訓練 forward 直接略過 C 區像素（輸出背景色、T=1），backward 隨之不處理。
+        #                         不是逐位元相同：C 區不再算 dist、不再進累加式 V/C，交界處 SSIM 視窗看到的 C 值變成背景色。
+        #                         需要 metric.block_mask_dir；完整路徑的步（法向、補洞事件）照常渲染 C 區。
+        self.bwd_zero_grad_skip = bwd_zero_grad_skip
+        self.skip_unscored_pixels = skip_unscored_pixels
         # ★ 2026-10-16 取代 trim（使用者「直接實作」）：
         #   trim_running_vc  lean 訓練 forward 順便累加逐顆 Σ T·α（V）與覆蓋數（C），週期 trim 改用這段期間的累積值算 V/C，
         #                    不再每 500 步掃全部訓練相機（增生期每步約 30% 的時間）。這段期間沒被任何訓練視角看到的（C=0）這輪不剪。
@@ -111,6 +122,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #                    支撐外的在 loss 加 rho/2·mean((o+λ)²)（λ 每次投影累加 o）把 opacity 拉向 0、由 MCMC 回收；
         #                    增生期最後一次 trim 把仍在支撐外的硬剪掉。出處：GaussianSpa（ADMM 稀疏化）＋判準換成我方 V/C。
         self.trim_running_vc = trim_running_vc
+        # ★ 2026-11-05 trim_running_warp（使用者 11-05「V/C 累加直接對 forward 作看看」）：訓練中累加 V/C 先在 warp 內加總
+        #   （光柵器 forward.cu WACC：ballot＋popc 算覆蓋數、shuffle 加總 T·α，每個 j 每個 warp 只寫一次 shared）。
+        #   原本 32 條執行緒同時對同一個 shared 位址做 atomic（10-24 量：增生期 forward 13.0 ms 裡 3.7 ms）。
+        #   渲染不變、覆蓋數逐位元相同、V 只差浮點加總順序。需要 trim_running_vc。
+        self.trim_running_warp = trim_running_warp
         # ★ 2026-10-31 最大貢獻保護（使用者：少數視角才有的資訊被「所有視角加總」的 V/C 稀釋 => b2 超高塔頂被剪）：
         #   累加期間記錄逐顆「單一視角的平均貢獻 ta/cn」的最大值 M；M >= trim_protect_vc 的顆粒這輪不剪（-1＝關）。
         self.trim_protect_vc = trim_protect_vc
@@ -284,6 +300,18 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 "設了 exact_conic_aabb 但光柵器不認得這個欄位 —— 沒重編。\n"
                 "    rm -rf submodules/diff-surfel-rasterization-trim-pp/build 後重裝\n"
                 "    （CLAUDE.md『Rebuilding the trim rasterizer』；lab 要強制 CUDA_HOME）")
+        # ★ 2026-11-05 不計分像素：training_forward 從 module._pix_skip 帶進來（uint8 H*W；None＝這張沒有遮罩）
+        _pix = kwargs.get("_pix_skip") if getattr(self, "skip_unscored_pixels", False) else None
+        if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "bwd_zero_grad_skip", False)) \
+                and "pix_skip" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError("設了 skip_unscored_pixels／bwd_zero_grad_skip 但光柵器不認得 pix_skip 欄位 —— 沒重編")
+        if _lean and not record_transmittance and getattr(self, "skip_unscored_pixels", False) \
+                and not getattr(self, "_pix_skip_announced", False):
+            self._pix_skip_announced = True
+            if _pix is None:
+                print("⚠⚠ [skip-unscored] 開了但這一步拿不到 C 區遮罩（metric 沒設 block_mask_dir？）=> 照常渲染全部像素", flush=True)
+            else:
+                print(f"[skip-unscored] ✅ 首次觸發：lean 訓練 forward 略過不計分像素 {float(_pix.float().mean()):.3f}（這張）", flush=True)
         raster_settings = GaussianRasterizationSettings(
             image_height=int(viewpoint_camera.height),
             image_width=int(viewpoint_camera.width),
@@ -315,8 +343,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"bwd_sat_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_sat_skip", False)) else {}),
             **({"bwd_reduce": True} if (_lean and not record_transmittance and getattr(self, "bwd_reduce", False)) else {}),
             **({"bwd_pair_bit": True} if (_lean and not record_transmittance and getattr(self, "bwd_pair_bit", False)) else {}),
+            **({"bwd_zero_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_zero_grad_skip", False)) else {}),
+            **({"pix_skip": _pix} if (_lean and not record_transmittance and _pix is not None) else {}),
             **({"train_record": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
                                           and not getattr(self, "_acc_stop", False)) else {}),
+            **({"train_record_warp": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
+                                               and getattr(self, "trim_running_warp", False)) else {}),
             **({"absgrad": bool(kwargs.get("_absgrad", True))}
                if (getattr(self, "absgrad_gate", False) and "absgrad" in GaussianRasterizationSettings._fields) else {}),
             # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
@@ -325,6 +357,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"tile_cull": True} if (not record_transmittance and not kwargs.get("_audit", False)
                                        and getattr(self, "tile_cull", False)) else {}),
         )
+        if getattr(self, "trim_running_warp", False) and "train_record_warp" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError("設了 trim_running_warp 但光柵器不認得 train_record_warp 欄位 —— 沒重編")
         if getattr(self, "trim_running_vc", False) and "train_record" not in GaussianRasterizationSettings._fields:
             raise RuntimeError("設了 trim_running_vc 但光柵器不認得 train_record 欄位 —— 沒重編")
         for _f in ("bwd_sat_skip", "bwd_reduce", "bwd_pair_bit"):
@@ -537,6 +571,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if not self._absgrad_announced and not need:
                 self._absgrad_announced = True
                 print(f"[absgrad-gate] ✅ 首次關閉 absgrad 累加：step {step}（absgrad_densify={w}、densify_until={until}）")
+        if getattr(self, "skip_unscored_pixels", False) and "_pix_skip" not in kwargs:
+            kwargs["_pix_skip"] = getattr(module, "_pix_skip", None)   # ★ 2026-11-05 GaussianSplatting.training_step 在渲染前取好
         if "_lean_dist" not in kwargs:
             # ★ 2026-10-19：深度失真正則有作用的步 => dist 版 lean（其他幾何 loss 若 > 0，光柵器 backward 會當場報錯）
             mcfg = getattr(getattr(module, "metric", None), "config", None)
@@ -738,6 +774,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if rho != 0:   # 增生期最後一次：把仍在支撐外的硬剪掉
                 ss = self._trim_state(pc, ("V", "C", "lam", "off"))
                 low = low | ss["off"]
+            # ★ 2026-11-05 定價自決容量（density price_lambda）：剪之前用這輪的 V/C 重訂這塊的 cap
+            _pu = getattr(module.density_controller, "price_update", None)
+            if _pu is not None:
+                _pu(step, pc, V, C, seen, low)
             _mf_msg = ""
             if bool(getattr(self, "trim_merge_first", False)) and bool(low.any()):
                 from internal.density_controllers.merge_ops import absorb_step

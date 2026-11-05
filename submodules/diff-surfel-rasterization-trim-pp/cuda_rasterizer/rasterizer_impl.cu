@@ -345,7 +345,8 @@ int CudaRasterizer::Rasterizer::forward(
 	int* out_tiles,
 	bool exact_conic_aabb,
 	int lean,   // 0 舊路徑／1 lean／3 audit（見 forward.cu auditCUDA）
-	const float* shs_rest)
+	const float* shs_rest,
+	const uint8_t* pix_skip)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -499,7 +500,11 @@ int CudaRasterizer::Rasterizer::forward(
 		// ★ 2026-10-16 bit 32＝訓練中累加 V/C：MODE 1 收到 record_transmittance=true 時在訓練 forward 裡順便累加（見 forward.cu rec_acc）
 		record_transmittance || ((lean & 32) && (fmode == 1 || fmode == 5)),
 		// lean：訓練 => 只算顏色（MODE 1）；record => 只算 T*alpha 與覆蓋數（MODE 2）。見 forward.cu
-		fmode, pair_used), debug)
+		fmode, pair_used,
+		// ★ 2026-11-05 不計分像素只在 lean 訓練 forward（MODE 1／5）略過；完整路徑、record、audit 一律不略過
+		(fmode == 1 || fmode == 5) ? pix_skip : nullptr,
+		// ★ 2026-11-05 bit 128 = 訓練中累加 V/C 走 warp 先加總（forward.cu renderCUDA 的 WACC）
+		(lean & 128) != 0 && (fmode == 1 || fmode == 5)), debug)
 
 	return num_rendered;
 }

@@ -14,6 +14,7 @@
 
 #include <vector>
 #include <functional>
+#include <cstdint>
 
 #include "sh_adam.h"
 
@@ -66,7 +67,8 @@ namespace CudaRasterizer
 			//   三槽平行 A/B **無法同時跑**，且誤用不會報錯。
 			bool exact_conic_aabb = false,
 			int lean = 0,
-			const float* shs_rest = nullptr);   // ★ 2026-10-24 SH 分開存放（shs＝dc；M＝含 dc 的總係數數）
+			const float* shs_rest = nullptr,   // ★ 2026-10-24 SH 分開存放（shs＝dc；M＝含 dc 的總係數數）
+			const uint8_t* pix_skip = nullptr);   // ★ 2026-11-05 逐像素不計分遮罩（H*W，1＝略過；只在 lean 訓練 forward 用）
 
 		static void backward(
 			const int P, int D, int M, int R,

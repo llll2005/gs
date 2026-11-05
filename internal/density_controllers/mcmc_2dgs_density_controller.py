@@ -439,6 +439,52 @@ class MCMC2DGSDensityController(MCMCDensityController):
     （2DGS 的 MCMC 雜訊本來就只在面元平面內：共變異法向那軸是 0；跑出牆面的是光度梯度。）"""
     inplane_ramp_from: int = 1000
     inplane_ramp_until: int = 10000
+    sfm_lock: bool = False
+    """★ 2026-11-05 SfM 錨點（使用者「鎖住 SfM 位置」）。True 時，開訓時位置與可靠 SfM 點（track>=3、重投影誤差<1.5 px；
+    <data.path>/sparse/0/points3D.bin）重合（<1e-5）的顆粒＝錨點：每步結束把位置還原（光度梯度、MCMC 雜訊、合併都動不了），
+    不參與 relocation、補洞改用、trim、合併。opacity、大小、方向、顏色照學（可以學成透明 => 錯的 SfM 點不會變永久瑕疵）。
+    參數變成非有限的錨點解除鎖定、照常搬家。dup 的抖動複本與補點不是錨點。False＝關。"""
+    sfm_track: bool = False
+    """★ 2026-11-05 只追蹤、不鎖（sfm_lock 關著時才有意義）：同樣找出錨點（初始化裡的可靠 SfM 點），但不保護、不還原，
+    只在 sfm 報告裡印它們的下場——被 trim 剪掉、被合併刪掉、被搬家／補洞挪走、還活著的位移與透明度。訓練行為不變。"""
+    sfm_birth_radius: float = 0.0
+    """★ 2026-11-05 SfM 增生限制（場景單位；0.05＝5 m）。>0 時 MCMC 抽母點（增生與搬家）時，離最近可靠 SfM 點超過此距離的
+    母點，抽樣機率 × sfm_birth_eps。距離用開訓時建的距離場（塊範圍、體素 sfm_dist_voxel、誤差約半個體素）。0＝關。
+    （實驗分析 27：海面浮塊幾乎全在 SfM 5 m 外，地下層 74～80% 在 5 m 內 => 這個只管浮塊；CityGS 在 b3 高處的表面 14% 在 5 m 外。）"""
+    sfm_birth_eps: float = 0.01
+    """離 SfM 太遠的母點的抽樣倍率。1.0＝不改抽樣、只印統計（時間軸對照用）。"""
+    sfm_birth_from_iter: int = 0
+    sfm_birth_until_iter: int = -1
+    """sfm_birth 只在這個步數範圍內生效（-1＝不設上限）。範圍外照原 MCMC 抽樣。"""
+    sfm_merge_eps: float = 1.0
+    """★ 2026-11-05（使用者「合併也乘」）<1 時，訓練中合併的候選對裡有一顆離 SfM 超過 sfm_birth_radius 的，配對成本 × 此值
+    => 每次的合併額度（merge_max_frac）先給偏離 SfM 的。只改「先併哪些」，不放寬同平面／相鄰／同色的條件。1＝關。"""
+    sfm_dist_voxel: float = 0.01
+    """SfM 距離場的體素邊長（場景單位；0.01＝1 m）。塊太大時自動放大到總體素 <= 1.5 億。"""
+    sfm_report_interval: int = 1500
+    """sfm_* 任一開著時，每這麼多步印一次：錨點存活／死亡、不透明顆粒在 SfM r 外的數量。0＝不印。"""
+    price_lambda: float = 0.0
+    """★ 2026-11-05 定價自決容量（使用者 11-05：自適應 cap 不能靠探針跑次與既有結果，要通用、更省）。>0 時開。
+    每塊用自己訓練中累加的 V/C（累加式 trim 本來就在算，零額外成本）決定要多少顆：
+      n_ok  = #{出生滿 price_probation 步、這段有被看到、這輪不剪、且 V/C >= price_lambda} + #{還不知道的（剛出生或這段沒被看到）}
+      cap_t = clip(n_ok / price_headroom, price_cap_min, cap_max)        cap_max 變成硬體上限
+    MCMC 補點上限改跟 cap_t（不再一律補滿 cap_max）。λ 是「每單位渲染成本的最低價值」（V/C 無單位），各塊共用、固定不調
+    => 各塊互不相干（實驗分析/14 §3.3：價格固定時共享問題完全解耦），不需要探針跑次。需要 renderer.trim_running_vc。"""
+    price_probation: int = 500
+    """新出生（增生／搬家）的顆粒這麼多步內不算價值（還沒學好），當作「還不知道」。"""
+    price_headroom: float = 0.9
+    """cap_t = n_ok / headroom：留給新生顆粒試用的空間（同 cap 只交付約 90% 的慣例）。"""
+    price_cap_min: int = 200000
+    price_cap_init: int = 0
+    """>0 => 價格還沒開始決定之前（price_from_iter 以前）的容量；0＝直接用 cap_max（硬體上限）。
+    cap_max 當硬體上限設得比平常高時要給，否則前幾千步會一路長到硬體上限。"""
+    price_from_iter: int = 3000
+    """從這一步之後的 trim 才用價格決定 cap（更早的 V/C 還不穩）。"""
+    price_stop_tol: float = 0.0
+    """>0 時開「容量收斂就提早結束增生」：price_stop_from 之後，連續 price_stop_patience 次 trim 的 cap_t 相對變動都 < tol
+    => 把 densify_until_iter 改成這一步（增生、搬家、trim、V/C 累加、absgrad 累加、補洞事件一起結束，進入較快的後半）。"""
+    price_stop_from: int = 6000
+    price_stop_patience: int = 3
     occl_recycle_min: int = 0
     """★ 2026-11-02 遮擋回收（使用者「延後的都排」：地底塊）。>0 時每個增生事件（densify 期、occl_from_iter 之後）用該步訓練視角（完整路徑）看每顆中心：
     在不透明表面（該像素 α>0.95）後方超過 occl_margin（相對深度）記「被擋」；其餘看得到的情況（在表面上、前方、或在半透明表面後方＝可能透出來）記「可見」。
@@ -738,12 +784,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 self._opacities_and_scales_initialization(pl_module.gaussian_model)
             # Register the xyz-noise hook regardless of initialize_from.
             pl_module.on_train_batch_end_hooks.append(self._add_xyz_noise)
+            if bool(getattr(self.config, "sfm_lock", False)):
+                pl_module.on_train_batch_end_hooks.append(self._sfm_restore)   # 排在雜訊之後 => 錨點連雜訊也還原
             if self.config.dar_lambda > 0:
                 # runs after optimizer.step() -> Adam moments stay photometric-only
                 pl_module.on_train_batch_end_hooks.append(self._dar_cost_decay)
 
     def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
         self._ip_step = global_step                     # relocate_gs／add_new_gs 的平面錯開要用（漸增係數）
+        if self._sfm_on():
+            if not getattr(self, "_sfm_ready", False):  # 第一次（還沒做任何 optimizer step）=> 位置＝初始化
+                self._sfm_setup(gaussian_model, pl_module)
+            self._sfm_report(gaussian_model, global_step)
         if int(getattr(self.config, "inplane_hold", 0) or 0) > 0:
             self._inplane_project(gaussian_model, global_step)
         # Same event gating as the parent, plus optional screen-size recycling (see the
@@ -1027,6 +1079,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 dead_mask = dead_mask | _merge_dead             # 合併掉的 j：不受 relocate_protect 保護、一定搬走
             if int(getattr(self.config, "occl_recycle_min", 0) or 0) > 0 and global_step >= int(getattr(self.config, "occl_from_iter", 3000)):
                 dead_mask = self._occl_step(gaussian_model, outputs, batch, dead_mask, global_step)
+            dead_mask = self._anchor_exclude(dead_mask, gaussian_model)        # 錨點不給補洞拿去用（relocate_gs 也會再擋一次）
             if float(getattr(self.config, "hole_fill_frac", 0.0) or 0.0) > 0 and global_step >= int(getattr(self.config, "hole_fill_from_iter", 1000)):
                 dead_mask = self._hole_fill(gaussian_model, optimizers, outputs, batch, pl_module, dead_mask, global_step)
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
@@ -1071,7 +1124,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                             or global_step + self.config.densification_interval >= self.config.densify_until_iter):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
 
-    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0}     # 跟著 N 走的逐顆狀態 => 新增時補的值
+    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1}     # 跟著 N 走的逐顆狀態 => 新增時補的值
 
     def _per_particle_extend(self, n0: int, n1: int) -> None:
         for k, fill in self._PER_PARTICLE.items():
@@ -1111,7 +1164,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             th = torch.rand(idx.numel(), device=idx.device) * (2 * math.pi)
             d = torch.cos(th)[:, None] * R[:, :, 0] + torch.sin(th)[:, None] * R[:, :, 1]
             g["means"][idx] = (g["means"][idx].float() + off * smax[:, None] * d).to(g["means"].dtype)
-        if not getattr(self, "_inplane_announced", False) and r > 0:
+        if not getattr(self, "_inplane_announced", False) and r > 0 and self._inplane_on():
             self._inplane_announced = True
             print(f"[inplane] ✅ 首次觸發 step {step}：本次出生 {idx.numel():,} 顆；平面內錯開 {off:.2f}×長軸、"
                   f"梯度限制 {int(getattr(self.config, 'inplane_hold', 0) or 0)} 步（漸增 {100 * r:.0f}%）", flush=True)
@@ -1136,23 +1189,254 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if step % 2000 == 0:
             print(f"[inplane] step {step}：限制中的新點 {sel.numel():,}／{b.shape[0]:,}（漸增 {100 * r:.0f}%）", flush=True)
 
+    # ────────── SfM 錨點與 SfM 增生限制（sfm_*；2026-11-05）
+    # ────────── 定價自決容量（price_*）
+    def _price_on(self) -> bool:
+        return float(getattr(self.config, "price_lambda", 0.0) or 0.0) > 0
+
+    @torch.no_grad()
+    def price_update(self, step: int, gaussian_model, V: torch.Tensor, C: torch.Tensor, seen: torch.Tensor, low: torch.Tensor) -> None:
+        """renderer 的累加式 trim 在剪枝「之前」呼叫（V、C、seen、low 都是這輪 trim 的、長度＝目前 N）。
+        依這段期間的 V/C 重訂這塊的容量 cap_t；設了 price_stop_tol 時，容量收斂就提早結束增生。"""
+        c = self.config
+        if not self._price_on() or step < int(getattr(c, "price_from_iter", 3000)):
+            return
+        lam = float(c.price_lambda)
+        n = V.shape[0]
+        b = getattr(self, "_birth", None)
+        age_ok = (step - b >= int(getattr(c, "price_probation", 500))) if (b is not None and b.shape[0] == n) else torch.ones_like(seen)
+        known = seen & age_ok & ~low
+        ok = known & (V / torch.clamp_min(C, 1.0) >= lam)
+        unknown = ~known & ~low
+        n_ok = int(ok.sum()) + int(unknown.sum())
+        cap_hw = int(c.cap_max)
+        cap_t = int(min(max(n_ok / float(getattr(c, "price_headroom", 0.9)), int(getattr(c, "price_cap_min", 200000))), cap_hw))
+        prev = getattr(self, "_price_cap", None)
+        self._price_cap = cap_t
+        self._cap_cut = cap_hw - cap_t        # add_new_gs 的上限＝cap_max − _cap_cut＝cap_t（訓練中合併之後再往下扣，下一輪重算）
+        nk = int(known.sum())
+        msg = (f"[price] step {step}：N {n:,}（這輪剪 {int(low.sum()):,}）；已知 {nk:,} 中 V/C >= {lam:.2e} 的 {int(ok.sum()):,}"
+               f"（{int(ok.sum()) / max(nk, 1):.1%}）、未知 {int(unknown.sum()):,} => cap {prev if prev is not None else cap_hw:,} -> {cap_t:,}")
+        if not getattr(self, "_price_announced", False):
+            self._price_announced = True
+            print(f"[price] ✅ 首次觸發：每塊容量改由價格決定（λ {lam:.2e}、試用期 {int(getattr(c, 'price_probation', 500))} 步、"
+                  f"headroom {float(getattr(c, 'price_headroom', 0.9)):.2f}、硬體上限 {cap_hw:,}）", flush=True)
+        print(msg, flush=True)
+        tol = float(getattr(c, "price_stop_tol", 0.0) or 0.0)
+        if tol > 0 and step < int(c.densify_until_iter):
+            h = self.__dict__.setdefault("_price_hist", [])
+            h.append(cap_t)
+            k = int(getattr(c, "price_stop_patience", 3))
+            if step >= int(getattr(c, "price_stop_from", 6000)) and len(h) > k:
+                rel = [abs(h[-i] - h[-i - 1]) / max(h[-i - 1], 1) for i in range(1, k + 1)]
+                if max(rel) < tol:
+                    old = int(c.densify_until_iter)
+                    c.densify_until_iter = int(step)   # renderer 的 trim／累加、absgrad、補洞事件都讀這個 => 一起結束
+                    print(f"[price-stop] ✅ step {step}：最近 {k} 次 cap 變動 {', '.join(f'{x:.1%}' for x in rel)} 都 < {tol:.0%}"
+                          f" => 增生提早結束（densify_until {old:,} -> {step:,}；cap {cap_t:,}）", flush=True)
+
+    def _sfm_on(self) -> bool:
+        c = self.config
+        return self._anchors_wanted() or float(getattr(c, "sfm_birth_radius", 0.0) or 0.0) > 0
+
+    def _anchors_wanted(self) -> bool:
+        return bool(getattr(self.config, "sfm_lock", False)) or bool(getattr(self.config, "sfm_track", False))
+
+    def _anchor_fate(self, idx_mask, why: str) -> None:
+        """追蹤模式：這些錨點被挪走或刪掉 => 記帳（挪走的同時解除錨點身分）。鎖定模式下錨點不會走到這裡。"""
+        a = getattr(self, "_anchor", None)
+        if a is None or a.shape[0] != idx_mask.shape[0]:
+            return
+        hit = idx_mask & (a >= 0)
+        n = int(hit.sum())
+        if n:
+            f = getattr(self, "_anchor_fates", None) or {}
+            f[why] = f.get(why, 0) + n
+            self._anchor_fates = f
+            if why in ("搬家", "補洞"):
+                a[hit] = -1
+
+    @staticmethod
+    def _reliable_sfm(path: str):
+        """可靠 SfM 點（track>=3、重投影誤差<1.5 px；同 geom_gate／研究總覽的定義）=> [M,3] float64。"""
+        import numpy as np
+        from internal.utils.colmap import read_points3D_binary
+        pts = read_points3D_binary(path)
+        return np.array([p.xyz for p in pts.values() if len(p.image_ids) >= 3 and p.error < 1.5], dtype=np.float64).reshape(-1, 3)
+
+    def _sfm_build(self, sfm, X0: torch.Tensor) -> None:
+        """距離場（只蓋初始化顆粒的範圍＋邊界）與錨點。sfm＝可靠 SfM 點 [M,3]；X0＝開訓時的顆粒位置。"""
+        import numpy as np
+        from scipy.ndimage import distance_transform_edt
+        from scipy.spatial import cKDTree
+        c = self.config
+        dev = X0.device
+        X = X0.detach().float().cpu().numpy()
+        r = float(getattr(c, "sfm_birth_radius", 0.0) or 0.0)
+        pad = max(0.1, 2 * r)
+        # 範圍：x／y 取 0.5～99.5% 分位、z 取 1～99.5%（b3 的 init 有離群點把 z 拉到 −1.5 km => 0.1% 分位會讓體素放大到 2.4 m）；
+        # 範圍外的顆粒距離＝inf（算「離 SfM 很遠」）
+        lo = np.quantile(X, [0.005, 0.005, 0.01], axis=0).diagonal() - pad
+        hi = np.quantile(X, 0.995, axis=0) + pad
+        v = float(getattr(c, "sfm_dist_voxel", 0.01) or 0.01)
+        while np.prod(np.ceil((hi - lo) / v)) > 1.5e8:
+            v *= 1.25
+        shp = np.ceil((hi - lo) / v).astype(int)
+        S = sfm[np.all((sfm >= lo) & (sfm < hi), axis=1)]
+        occ = np.zeros(shp, dtype=bool)
+        if len(S):
+            ci = np.floor((S - lo) / v).astype(int)
+            occ[ci[:, 0], ci[:, 1], ci[:, 2]] = True
+        d = distance_transform_edt(~occ) * v if occ.any() else np.full(shp, np.inf)
+        q = v / 2                                                            # 存成 uint8、單位半個體素（上限 127.5 個體素）
+        self._sfm_grid = torch.from_numpy(np.minimum(np.round(d / q), 255).astype(np.uint8)).to(dev)
+        self._sfm_lo = torch.tensor(lo, dtype=torch.float32, device=dev)
+        self._sfm_vox, self._sfm_q = v, q
+        del d, occ
+        msg = f"距離場 {tuple(int(s) for s in shp)}（體素 {v * 100:.1f} m）、塊範圍內可靠 SfM {len(S):,}"
+        if self._anchors_wanted():
+            dist, _ = cKDTree(sfm).query(X, k=1, distance_upper_bound=1e-5)
+            hit = np.isfinite(dist)
+            a = torch.full((X.shape[0],), -1, dtype=torch.long, device=dev)
+            idx = torch.from_numpy(np.nonzero(hit)[0]).to(dev)
+            a[idx] = torch.arange(idx.numel(), device=dev)
+            self._anchor = a
+            self._anchor_xyz = X0.detach()[idx].clone()
+            mode = "鎖定" if bool(getattr(c, "sfm_lock", False)) else "只追蹤"
+            msg += f"；錨點（{mode}）{idx.numel():,}／{X.shape[0]:,} 顆（初始化裡與可靠 SfM 重合的）"
+            if idx.numel() == 0:
+                print("⚠⚠ [sfm] sfm_lock／sfm_track 開著但沒有任何初始化顆粒與可靠 SfM 點重合 => 錨點不會生效（init 不是 SfM 點？）", flush=True)
+        print(f"[sfm] ✅ 首次觸發：{msg}", flush=True)
+
+    def _sfm_setup(self, gaussian_model, pl_module) -> None:
+        self._sfm_ready = True
+        import os
+        root = pl_module.trainer.datamodule.hparams["path"]
+        cands = [os.path.join(root, "sparse", "0", "points3D.bin"), os.path.join(root, "sparse", "points3D.bin")]
+        f = next((x for x in cands if os.path.isfile(x)), None)
+        if f is None:
+            print(f"⚠⚠ [sfm] 找不到 points3D.bin（{cands}）=> sfm_* 不會生效", flush=True)
+            return
+        self._sfm_build(self._reliable_sfm(f), gaussian_model.gaussians["means"])
+
+    @torch.no_grad()
+    def _sfm_dist(self, X: torch.Tensor) -> torch.Tensor:
+        """離最近可靠 SfM 點的距離（場景單位；距離場外＝inf）。"""
+        g = self._sfm_grid
+        ci = torch.floor((X.float() - self._sfm_lo) / self._sfm_vox).long()
+        shp = torch.tensor(g.shape, device=X.device)
+        ok = ((ci >= 0) & (ci < shp)).all(dim=-1)
+        d = torch.full((X.shape[0],), float("inf"), device=X.device)
+        c = ci[ok]
+        d[ok] = g[c[:, 0], c[:, 1], c[:, 2]].float() * self._sfm_q
+        return d
+
+    def _anchor_all(self, n: int):
+        a = getattr(self, "_anchor", None)
+        return (a >= 0) if a is not None and a.shape[0] == n else None
+
+    def _anchor_mask(self, n: int):
+        """要保護的錨點（只有鎖定模式；追蹤模式回 None => 所有豁免都不生效）。"""
+        return self._anchor_all(n) if bool(getattr(self.config, "sfm_lock", False)) else None
+
+    def _sfm_restore(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
+        """每步結束（optimizer step 與 MCMC 雜訊之後）把錨點位置還原。"""
+        am = self._anchor_mask(gaussian_model.n_gaussians)
+        if am is None:
+            return
+        sel = torch.nonzero(am, as_tuple=True)[0]
+        if sel.numel():
+            with torch.no_grad():
+                m = gaussian_model.gaussians["means"]
+                m[sel] = self._anchor_xyz[self._anchor[sel]].to(m.dtype)
+
+    def _anchor_exclude(self, dead_mask, gaussian_model):
+        """錨點不准被搬家／拿去補洞；但參數變成非有限的錨點解除鎖定（不然 NaN 會永遠留著）。"""
+        am = self._anchor_mask(dead_mask.shape[0])
+        if am is None or not bool((dead_mask & am).any()):
+            return dead_mask
+        g = gaussian_model.gaussians
+        fin = torch.isfinite(g["scales"]).all(-1) & torch.isfinite(g["means"]).all(-1) & torch.isfinite(g["opacities"]).all(-1)
+        rel = am & ~fin
+        if bool(rel.any()):
+            self._anchor[rel] = -1
+            print(f"[sfm-lock] ⚠ {int(rel.sum()):,} 顆錨點參數非有限 => 解除鎖定、照常搬家", flush=True)
+        return dead_mask & ~(am & fin)
+
+    def _geom_gate_probs(self, gaussian_model, probs, indices=None):
+        probs = super()._geom_gate_probs(gaussian_model, probs, indices)
+        c = self.config
+        r = float(getattr(c, "sfm_birth_radius", 0.0) or 0.0)
+        if r <= 0 or getattr(self, "_sfm_grid", None) is None:
+            return probs
+        step = int(getattr(self, "_ip_step", 0))
+        hi = int(getattr(c, "sfm_birth_until_iter", -1) or -1)
+        if step < int(getattr(c, "sfm_birth_from_iter", 0) or 0) or (hi > 0 and step > hi):
+            return probs
+        X = gaussian_model.gaussians["means"]
+        X = X if indices is None else X[indices]
+        if X.shape[0] != probs.shape[0]:
+            return probs
+        far = self._sfm_dist(X) > r
+        eps = float(getattr(c, "sfm_birth_eps", 0.01))
+        tot = probs.sum().clamp_min(1e-30)
+        m0 = float(probs[far].sum() / tot)
+        out = probs * torch.where(far, torch.full_like(probs, eps), torch.ones_like(probs))
+        m1 = float(out[far].sum() / out.sum().clamp_min(1e-30))
+        first = not getattr(self, "_sfm_birth_announced", False)
+        if first or step // 1500 != getattr(self, "_sfm_birth_last", -1):
+            self._sfm_birth_announced = True; self._sfm_birth_last = step // 1500
+            print(f"[sfm-birth] {'✅ 首次觸發' if first else '　'} step {step}：{'搬家' if indices is not None else '增生'}抽母點，"
+                  f"離 SfM > {r * 100:.1f} m 的 {int(far.sum()):,}／{X.shape[0]:,} 顆；機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）", flush=True)
+        return out
+
+    def _sfm_report(self, gaussian_model, step: int) -> None:
+        iv = int(getattr(self.config, "sfm_report_interval", 1500) or 0)
+        if iv <= 0 or step % iv != 0 or getattr(self, "_sfm_grid", None) is None:
+            return
+        with torch.no_grad():
+            o = gaussian_model.get_opacities().reshape(-1)
+            r = float(getattr(self.config, "sfm_birth_radius", 0.0) or 0.0) or 0.05
+            op = o > 0.5
+            d = self._sfm_dist(gaussian_model.gaussians["means"][op])
+            s = (f"[sfm] step {step}：N {o.shape[0]:,}；不透明 {int(op.sum()):,}，其中離 SfM > {r * 100:.1f} m {int((d > r).sum()):,}"
+                 f"（{float((d > r).float().mean()):.1%}）、> 10 m {int((d > 0.1).sum()):,}")
+            am = self._anchor_all(o.shape[0])
+            if am is not None:
+                sel = torch.nonzero(am, as_tuple=True)[0]
+                mv = (gaussian_model.gaussians["means"][sel].float() - self._anchor_xyz[self._anchor[sel]].float()).norm(dim=-1) * 100
+                n0 = int(self._anchor_xyz.shape[0])
+                s += (f"；錨點 {sel.numel():,}／{n0:,}（不透明 {int((am & op).sum()):,}、近乎透明 o<0.05 {int((am & (o < 0.05)).sum()):,}"
+                      + (f"；位移中位 {float(mv.median()):.2f} m、>1 m {float((mv > 1).float().mean()):.1%}、>5 m {float((mv > 5).float().mean()):.1%}" if sel.numel() else "")
+                      + "）")
+                f = getattr(self, "_anchor_fates", None)
+                if f:
+                    s += "；累計離開：" + "、".join(f"{k} {v:,}" for k, v in f.items())
+        print(s, flush=True)
+
     def relocate_gs(self, gaussian_model, optimizers, dead_mask) -> None:
+        dead_mask = self._anchor_exclude(dead_mask, gaussian_model)
+        self._anchor_fate(dead_mask, "搬家")                          # 追蹤模式才會有（鎖定模式錨點已被排除）
         super().relocate_gs(gaussian_model, optimizers, dead_mask)
         for k in ("_occ_n", "_see_n"):                                 # 搬家的＝新位置 => 遮擋計數重來
             t = getattr(self, k, None)
             if t is not None and t.shape[0] == dead_mask.shape[0]:
                 t[dead_mask] = 0
-        if self._inplane_on() and bool(dead_mask.any()):
+        if (self._inplane_on() or self._price_on()) and bool(dead_mask.any()):
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, dead_mask.nonzero(as_tuple=True)[0])   # 搬家的＝新點（宿主留在原地）
 
     def add_new_gs(self, gaussian_model, optimizers):
         n0 = gaussian_model.n_gaussians
+        if self._price_on() and getattr(self, "_price_cap", None) is None:
+            _ci = int(getattr(self.config, "price_cap_init", 0) or 0)       # 價格接手前的容量（訓練中合併已扣的照扣）
+            if _ci > 0:
+                self._cap_cut = max(int(getattr(self, "_cap_cut", 0) or 0), int(self.config.cap_max) - _ci)
         out = super().add_new_gs(gaussian_model, optimizers)
         n1 = gaussian_model.n_gaussians
         if n1 > n0:
             self._per_particle_extend(n0, n1)
-        if self._inplane_on() and n1 > n0:
+        if (self._inplane_on() or self._price_on()) and n1 > n0:
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, torch.arange(n0, n1, device=gaussian_model.gaussians["means"].device))
         return out
@@ -1237,7 +1521,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         slots = dead_mask.nonzero(as_tuple=True)[0]
         n_dead = int(slots.numel())
         if n_dead < K:
-            low = torch.nonzero((~dead_mask) & (o < 0.05), as_tuple=True)[0]
+            _am = self._anchor_mask(o.shape[0])
+            low = torch.nonzero((~dead_mask) & (o < 0.05) & (~_am if _am is not None else True), as_tuple=True)[0]
             low = low[torch.argsort(o[low])][: K - n_dead]
             slots = torch.cat([slots, low])
         else:
@@ -1245,6 +1530,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         K = int(slots.numel())
         if K == 0:
             return dead_mask
+        if getattr(self, "_anchor", None) is not None:                    # 追蹤模式：被拿去補洞的錨點記帳
+            _sm = torch.zeros(o.shape[0], dtype=torch.bool, device=dev); _sm[slots] = True
+            self._anchor_fate(_sm, "補洞")
         pix = pix[torch.randperm(pix.numel(), device=dev)[:K]]
         rows, cols = pix // W, pix % W
         zm = 1.0 / inv.clamp_min(1e-6)
@@ -1299,16 +1587,30 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         prune=True：直接刪 j（N 減少）、`_cap_cut` 加上刪掉的顆數（增生不補回）、清掉長度跟 N 走的視窗；回傳 None。"""
         from .merge_ops import merge_step
         n0 = gaussian_model.n_gaussians
+        _prio = None
+        _me = float(getattr(self.config, "sfm_merge_eps", 1.0) or 1.0)
+        _r = float(getattr(self.config, "sfm_birth_radius", 0.0) or 0.0)
+        if _me < 1.0 and _r > 0 and getattr(self, "_sfm_grid", None) is not None:   # ★ 2026-11-05 偏離 SfM 的配對先併
+            _far = self._sfm_dist(gaussian_model.gaussians["means"]) > _r
+            _prio = torch.where(_far, torch.full_like(_far, _me, dtype=torch.float), torch.ones_like(_far, dtype=torch.float))
+            if not getattr(self, "_sfm_merge_announced", False):
+                self._sfm_merge_announced = True
+                print(f"[sfm-merge] ✅ 首次觸發 step {global_step}：離 SfM > {_r * 100:.1f} m 的 {int(_far.sum()):,}／{n0:,} 顆，配對成本 × {_me:g}", flush=True)
         _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=float(self.config.merge_max_frac),
                                       color_tol=float(self.config.merge_color_tol),
-                                      chunk=int(getattr(self.config, "merge_chunk", 1 << 19)))
+                                      chunk=int(getattr(self.config, "merge_chunk", 1 << 19)),
+                                      exclude=self._anchor_mask(n0), prio=_prio)
         out = None
         if _mI.numel() > 0:
             self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)          # 合併後的 i 重設 Adam 狀態
             dead = torch.zeros(n0, dtype=torch.bool, device=_mJ.device)
             dead[_mJ] = True
             if prune:
-                self._prune_points(dead, gaussian_model, optimizers)
+                self._prune_reason = "合併刪掉"
+                try:
+                    self._prune_points(dead, gaussian_model, optimizers)
+                finally:
+                    self._prune_reason = None
                 _acc = getattr(self, "_absgrad_accum", None)
                 if _acc is not None and _acc.shape[0] == n0:
                     self._absgrad_accum = _acc[~dead]                                        # 這個區間的 |g| 跟著剪（增生取樣還要用）
@@ -2035,6 +2337,13 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # and calls this to remove them. MCMC keeps no per-Gaussian state buffers (only the
         # binoms table), so unlike Vanilla/RTGStable we just prune the model properties.
         # `mask`: True = prune.
+        _am = self._anchor_mask(mask.shape[0])
+        if _am is not None and bool((mask & _am).any()):              # ★ 2026-11-05 SfM 錨點不給 trim 剪
+            if not getattr(self, "_anchor_prune_announced", False):
+                self._anchor_prune_announced = True
+                print(f"[sfm-lock] ✅ 首次觸發：本次剪枝 {int(mask.sum()):,} 顆中 {int((mask & _am).sum()):,} 顆是錨點 => 保留", flush=True)
+            mask = mask & ~_am
+        self._anchor_fate(mask, getattr(self, "_prune_reason", None) or "trim 剪掉")   # 追蹤模式：記下被剪的錨點
         valid = ~mask
         gaussian_model.properties = Utils.prune_properties(valid, gaussian_model, optimizers)
         for _k in self._PER_PARTICLE:                                  # 出生步數、遮擋計數跟著剪

@@ -241,6 +241,7 @@ class GaussianSplatting(LightningModule):
             outside_pool_sweep_interval: int = 0,
             outside_pool_price: float = 0.0,
             outside_pool_keep: float = 1.0,
+            train_log_interval: int = 1,
     ) -> None:
         super().__init__()
         self.automatic_optimization = False
@@ -316,6 +317,13 @@ class GaussianSplatting(LightningModule):
                 on_epoch=on_epoch,
                 batch_size=self.batch_size,
             )
+
+    def _train_log_due(self, global_step: int) -> bool:
+        """★ 2026-11-05 `train_log_interval`（使用者 11-05：log 做成開關，量總時間時再關）：
+        1＝每步記錄 train/* 指標（原行為）；k > 1＝每 k 步一次；0＝訓練中不記錄 train/*（val／test 照常）。
+        每步記錄要把指標交給 Lightning（lab 11-02 計時：log_metrics 0.81 ms／步）；train_status 的 loss 也跟著這個節奏更新。"""
+        k = int(self.hparams.get("train_log_interval", 1) or 0)
+        return k == 1 or (k > 1 and global_step % k == 0)
 
     def _fixed_background_color(self):
         return self.background_color
@@ -813,18 +821,25 @@ class GaussianSplatting(LightningModule):
             # buffers to ~1/K (budget-formula supply lever on the main-line kernel).
             outputs, metrics, prog_bar = self._strip_forward_backward(camera, batch, global_step, n_strips)
             _prof.mark("3-6 條帶 forward+loss+backward")
-            self.log_metrics(metrics, prog_bar, prefix="train", on_step=True, on_epoch=False)
+            if self._train_log_due(global_step):
+                self.log_metrics(metrics, prog_bar, prefix="train", on_step=True, on_epoch=False)
             self._finish_training_step(optimizers, schedulers, outputs, batch, global_step)
             _prof.end_step()
             return
 
+        # ★ 2026-11-05 renderer.skip_unscored_pixels：渲染前先取本影像的 C 區（metric 的同一張遮罩），lean 訓練 forward 略過
+        self._pix_skip = None
+        if getattr(self.renderer, "skip_unscored_pixels", False) and hasattr(self.metric, "block_mask_skip"):
+            _gt = batch[1][1]
+            self._pix_skip = self.metric.block_mask_skip(batch[1][0], tuple(_gt.shape[-2:]), _gt.device)
         # forward
         outputs = self(camera)
         _prof.mark("3 forward（光柵化）")
         # metrics
         metrics, prog_bar = self.metric.get_train_metrics(self, self.gaussian_model, global_step, batch, outputs)
         _prof.mark("4 loss（L1+SSIM+正則）")
-        self.log_metrics(metrics, prog_bar, prefix="train", on_step=True, on_epoch=False)
+        if self._train_log_due(global_step):
+            self.log_metrics(metrics, prog_bar, prefix="train", on_step=True, on_epoch=False)
         _prof.mark("5 log_metrics")
 
         # invoke `before_backward` interface of density controller
