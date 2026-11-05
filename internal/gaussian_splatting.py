@@ -242,6 +242,19 @@ class GaussianSplatting(LightningModule):
             outside_pool_price: float = 0.0,
             outside_pool_keep: float = 1.0,
             train_log_interval: int = 1,
+            cap_ctrl: bool = False,
+            cap_ctrl_adjust: bool = True,
+            cap_ctrl_holdout_frac: float = 0.015,
+            cap_ctrl_from: int = 6000,
+            cap_ctrl_interval: int = 1500,
+            cap_ctrl_until: int = -1,
+            cap_ctrl_step: float = 0.1,
+            cap_ctrl_init: int = 0,
+            cap_ctrl_min: int = 200000,
+            cap_ctrl_hole_hi: float = 0.02,
+            cap_ctrl_hole_lo: float = 0.005,
+            cap_ctrl_gain_hi: float = 0.02,
+            cap_ctrl_gain_lo: float = 0.005,
     ) -> None:
         super().__init__()
         self.automatic_optimization = False
@@ -324,6 +337,103 @@ class GaussianSplatting(LightningModule):
         每步記錄要把指標交給 Lightning（lab 11-02 計時：log_metrics 0.81 ms／步）；train_status 的 loss 也跟著這個節奏更新。"""
         k = int(self.hparams.get("train_log_interval", 1) or 0)
         return k == 1 or (k > 1 and global_step % k == 0)
+
+    # ────────── 採樣控制顆數（cap_ctrl_*；2026-11-05 使用者）
+    #   起訓時從本塊訓練相機挑「看到的東西別人也看得到」的 cap_ctrl_holdout_frac 台當驗證視角（internal/utils/cap_ctrl.py）；
+    #   它們在 cap_ctrl_until（預設＝densify_until）之前不訓練（整步跳過，步數不前進），之後放回。
+    #   cap_ctrl_from 起每 cap_ctrl_interval 步渲染驗證視角（只算塊內 A 像素）=> 誤差 L1、透空率 => cap 加／減 cap_ctrl_step（cap_ctrl.decide）。
+    #   density cap_max＝硬體上限；cap_ctrl_init＝起始容量。cap_ctrl_adjust=false＝只留出與記錄、cap 不動（對照組）。
+    def _cap_ctrl_until(self) -> int:
+        u = int(self.hparams.get("cap_ctrl_until", -1) or -1)
+        return u if u > 0 else int(self.density_controller.config.densify_until_iter)
+
+    def _cap_ctrl_state(self):
+        st = getattr(self, "_cc", None)
+        if st is not None:
+            return st
+        from internal.utils.cap_ctrl import select_safe_holdout
+        hp = self.hparams
+        ts = self.trainer.datamodule.dataparser_outputs.train_set
+        hold, info = select_safe_holdout(self.trainer.datamodule.hparams["path"], ts.image_names,
+                                         frac=float(hp.get("cap_ctrl_holdout_frac", 0.015)))
+        st = self._cc = {"hold": hold, "cache": {}, "hist": []}
+        dc = self.density_controller
+        ci = int(hp.get("cap_ctrl_init", 0) or 0)
+        if ci > 0:
+            dc._cap_cut = max(int(getattr(dc, "_cap_cut", 0) or 0), int(dc.config.cap_max) - ci)
+        print(f"[cap-ctrl] ✅ 首次觸發：留出 {info['K']}／{info['n_cam']} 台當驗證視角（從最安全的 {info['pool']} 台抽；"
+              f"它們看到的點裡觀測 <= 4 台的比例 {info['weak_pick']:.1%}，全部相機平均 {info['weak_all']:.1%}），"
+              f"{self._cap_ctrl_until():,} 步前不訓練、之後放回；容量 {int(dc.config.cap_max) - int(getattr(dc, '_cap_cut', 0) or 0):,}"
+              f"（硬體上限 {int(dc.config.cap_max):,}）；{'會調整' if hp.get('cap_ctrl_adjust', True) else '只記錄、不調整（對照組）'}", flush=True)
+        return st
+
+    def _cap_ctrl_skip(self, batch) -> bool:
+        """留出的驗證視角：控制期內整步跳過（不做 optimizer step => global_step 不前進），順便把影像與相機留下來給檢查用。"""
+        if self.trainer.global_step + 1 > self._cap_ctrl_until():
+            return False
+        st = self._cap_ctrl_state()
+        name = os.path.basename(str(batch[1][0]))
+        if name not in st["hold"]:
+            return False
+        if name not in st["cache"]:
+            st["cache"][name] = (batch[0], batch[1][1].detach().to("cpu"))
+        self._skip_this_batch = True
+        return True
+
+    @torch.no_grad()
+    def _cap_ctrl_check(self, step: int) -> None:
+        import math
+        from internal.utils.cap_ctrl import decide
+        hp = self.hparams
+        st = self._cap_ctrl_state()
+        if not st["cache"]:
+            if not getattr(self, "_cc_warned", False):
+                self._cc_warned = True
+                print(f"⚠⚠ [cap-ctrl] step {step}：驗證視角一張都還沒輪到（快取空）=> 這次不判", flush=True)
+            return
+        bg = torch.zeros(3, device=self.gaussian_model.get_xyz.device)
+        l1s, holes, mses = [], [], []
+        _use_mask = hasattr(self.metric, "_block_mask_get") and bool(getattr(getattr(self.metric, "config", None), "block_mask_dir", ""))
+        for name, (cam, gt) in st["cache"].items():
+            out = self.renderer(cam, self.gaussian_model, bg_color=bg, render_types=self.renderer_output_types)
+            r = out["render"].clamp(0, 1)
+            g = gt.to(r.device)
+            g = g.float() / 255.0 if not g.is_floating_point() else g.float()
+            m = None
+            if _use_mask:
+                mm = self.metric._block_mask_get(name, tuple(g.shape[-2:]), r.device)
+                m = (mm == 1) if mm is not None else None
+            if m is None:
+                m = torch.ones(g.shape[-2:], dtype=torch.bool, device=r.device)
+            if not bool(m.any()):
+                continue
+            d = (r - g)
+            l1s.append(float(d.abs().mean(0)[m].mean()))
+            mses.append(float((d * d).mean(0)[m].mean()))
+            a = out.get("rend_alpha")
+            if a is not None:
+                holes.append(float((a[0][m] < 0.5).float().mean()))
+        if not l1s:
+            return
+        L1 = sum(l1s) / len(l1s)
+        H = sum(holes) / len(holes) if holes else 0.0
+        P = sum(-10 * math.log10(max(x, 1e-12)) for x in mses) / len(mses)
+        dc = self.density_controller
+        capmax = int(dc.config.cap_max)
+        cap = capmax - int(getattr(dc, "_cap_cut", 0) or 0)
+        N = int(self.gaussian_model.n_gaussians)
+        prev = st["hist"][-1] if st["hist"] else None
+        act, new, gain = decide(prev, L1, H, N, cap, capmax, int(hp.get("cap_ctrl_min", 200000)), float(hp.get("cap_ctrl_step", 0.1)),
+                                float(hp.get("cap_ctrl_hole_hi", 0.02)), float(hp.get("cap_ctrl_hole_lo", 0.005)),
+                                float(hp.get("cap_ctrl_gain_hi", 0.02)), float(hp.get("cap_ctrl_gain_lo", 0.005)))
+        if not bool(hp.get("cap_ctrl_adjust", True)):
+            act, new = f"（對照組，原本會：{act}）", cap
+        elif new != cap:
+            dc._cap_cut = capmax - new
+        st["hist"].append({"step": step, "L1": L1, "hole": H, "psnr": P, "N": N, "cap": cap, "act": act})
+        print(f"[cap-ctrl] step {step}：驗證 {len(l1s)} 台（塊內）L1 {L1:.4f}"
+              + (f"（進步 {gain:+.2%}）" if gain is not None else "") + f"、PSNR {P:.2f}、透空 {H:.2%}｜N {N:,}／cap {cap:,}"
+              + f" => {act}" + (f"，cap -> {new:,}" if new != cap else ""), flush=True)
 
     def _fixed_background_color(self):
         return self.background_color
@@ -779,6 +889,9 @@ class GaussianSplatting(LightningModule):
                 print(f"[batch-hash] step {self.trainer.global_step} {_nm} {tuple(_gt.shape)} {str(_gt.dtype).replace('torch.','')} {_h}", flush=True)
             except Exception as _e:
                 print(f"⚠⚠ [batch-hash] 取不到影像：{type(_e).__name__} {_e}", flush=True)
+        # ★ 2026-11-05 採樣控制顆數：留出的驗證視角在控制期內整步跳過（on_train_batch_end 也跳過）
+        if self.hparams.get("cap_ctrl", False) and self._cap_ctrl_skip(batch):
+            return None
         camera, image_info, _ = batch
         # image_name, gt_image, masked_pixels = image_info
 
@@ -1159,6 +1272,11 @@ class GaussianSplatting(LightningModule):
         # the value of `trainer.global_step` here
         # is the same as the local variable `global_step` in training_step
         global_step = self.trainer.global_step
+        if getattr(self, "_skip_this_batch", False):
+            # ★ 2026-11-05 採樣控制顆數跳過的那批：沒有 optimizer step（global_step 沒前進）=> trim 等「每 N 步」的事件不可再跑一次
+            self._skip_this_batch = False
+            super().on_train_batch_end(outputs, batch, batch_idx)
+            return
 
         self.gaussian_model.on_train_batch_end(global_step, self)
 
@@ -1191,6 +1309,11 @@ class GaussianSplatting(LightningModule):
 
         for i in self.on_train_batch_end_hooks:
             i(outputs, batch, self.gaussian_model, global_step, self)
+
+        if self.hparams.get("cap_ctrl", False):
+            _f, _iv = int(self.hparams.get("cap_ctrl_from", 6000)), max(1, int(self.hparams.get("cap_ctrl_interval", 1500)))
+            if _f <= global_step <= self._cap_ctrl_until() and (global_step - _f) % _iv == 0:
+                self._cap_ctrl_check(global_step)
 
         super().on_train_batch_end(outputs, batch, batch_idx)
 
