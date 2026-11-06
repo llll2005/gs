@@ -114,7 +114,14 @@
   </label>
   <span class="btn" onclick="goHome()">重新置中（F）</span>
   <label style="font-size:12px;margin-left:6px"><input id="autoFrame" type="checkbox" checked> 載入時自動置中</label>
-  <div id="hint">拖曳 .ply 或 .ckpt 到視窗任意位置<br>雙擊：以該點為旋轉中心並拉近；滾輪：朝游標縮放</div>
+  <!-- 11-06 使用者「加一個拉桿、拉越近越難放大」：滾輪是按距離比例縮放 => 越靠近每格走越少、永遠到不了中心。
+       拉桿用對數刻度直接設「到旋轉中心的距離」，近處和遠處一樣好調；跟滾輪雙向同步。 -->
+  <div style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:12px">
+    <span>距離</span>
+    <input id="distSlider" type="range" min="0" max="1000" step="1" value="500" style="flex:1">
+    <span id="distVal" style="min-width:5.5em;text-align:right;color:#9cf">—</span>
+  </div>
+  <div id="hint">拖曳 .ply 或 .ckpt 到視窗任意位置<br>雙擊：以該點為旋轉中心並拉近；滾輪：朝游標縮放<br>拉桿：到旋轉中心的距離（對數刻度）；想看哪裡先雙擊那裡再拉</div>
 </div>
 
 <div id="status">就緒</div>
@@ -487,6 +494,33 @@ statusEl.textContent = "從「本機 ckpt」選一個（或拖曳 .ply／.ckpt �
 setInterval(pollCurrent,      1500);
 setInterval(refreshCkptList, 10000);
 
+// ── 距離拉桿（對數刻度；1 場景單位＝100 m）──────────────────────────────────
+const distSlider = document.getElementById("distSlider");
+const distVal    = document.getElementById("distVal");
+const D_MIN = 0.001;                                              // 0.1 m
+const dMax  = () => Math.max(homeView ? homeView.d * 3 : 50, 1);
+const toDist   = v => D_MIN * Math.pow(dMax() / D_MIN, v / 1000);
+const toSlider = d => 1000 * Math.log(Math.max(d, D_MIN) / D_MIN) / Math.log(dMax() / D_MIN);
+const fmtDist  = d => { const m = d * 100; return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : m >= 10 ? `${m.toFixed(0)} m` : `${m.toFixed(1)} m`; };
+let sliderActive = false;
+distSlider.addEventListener("pointerdown", () => { sliderActive = true; });
+window.addEventListener("pointerup", () => { sliderActive = false; });
+distSlider.addEventListener("input", () => {
+  const d = toDist(+distSlider.value);
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() < 1e-20) dir.set(0, -1, 1);
+  camera.position.copy(controls.target).addScaledVector(dir.normalize(), d);
+  const homeNear = homeView ? Math.max(homeView.d * 1e-4, 1e-6) : 1e-3;
+  camera.near = Math.max(Math.min(d * 1e-2, homeNear), 1e-6);   // 貼得很近時近平面跟著縮，不會被切掉
+  camera.updateProjectionMatrix();
+  distVal.textContent = fmtDist(d);
+});
+function syncDistSlider() {        // 滾輪／雙擊／重新置中之後，拉桿跟著目前距離走
+  const d = camera.position.distanceTo(controls.target);
+  distVal.textContent = fmtDist(d);
+  if (!sliderActive) distSlider.value = String(Math.round(Math.min(1000, Math.max(0, toSlider(d)))));
+}
+
 // ── Resize ────────────────────────────────────────────────────────────────
 window.addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight;
@@ -500,6 +534,7 @@ let fpsN = 0, fpsT0 = performance.now(), fpsPrev = fpsT0, fpsWorst = 0;
 renderer.setAnimationLoop(() => {
   controls.update(); renderer.render(scene, camera);
   const now = performance.now(); fpsWorst = Math.max(fpsWorst, now - fpsPrev); fpsPrev = now; fpsN++;
+  if (fpsN % 6 === 0) syncDistSlider();
   if (now - fpsT0 >= 1000) {
     const fps = fpsN * 1000 / (now - fpsT0);
     const n = currentSplat?.numSplats ?? currentSplat?.packedSplats?.numSplats;
