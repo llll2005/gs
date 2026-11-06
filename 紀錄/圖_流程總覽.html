@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- 2026-11-06 流程總覽圖的頁面原檔（claude.ai artifact KmyP8m6agRxqK5bQsJaj9X）；PNG／SVG 由它渲染匯出。 -->
+<title>城市級 2DGS 訓練流程</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* 版面：論文總覽圖（Figure 1）——上方標題與一句話、中間一張四面板流程圖（窄螢幕在自己的框裡橫向捲動）、下方圖說與圖例說明 */
+:root {
+  --bg: #f7f8fa;
+  --fg: #1c2230;
+  --muted: #5a6374;
+  --line: #8b93a2;
+  --panel: #eceff4;
+  --box: #ffffff;
+  --ours: #0e7469;
+  --ours-bg: #e0f1ee;
+  --cand: #a8540a;
+  --cand-bg: #fbf0e2;
+  --font-body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", "Heiti TC", sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11141a; --fg: #e5e8ee; --muted: #9ba3b3; --line: #6c7587; --panel: #191e27; --box: #1f2530;
+    --ours: #34d1bd; --ours-bg: #11312d; --cand: #f2a23c; --cand-bg: #352612; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11141a; --fg: #e5e8ee; --muted: #9ba3b3; --line: #6c7587; --panel: #191e27; --box: #1f2530;
+  --ours: #34d1bd; --ours-bg: #11312d; --cand: #f2a23c; --cand-bg: #352612; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 40px;
+}
+.wrap { max-width: 1240px; margin: 0 auto; display: grid; gap: 18px; }
+header { display: grid; gap: 4px; }
+h1 { font-size: 1.45rem; font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: 0.01em; }
+.lede { color: var(--muted); margin: 0; max-width: 62ch; }
+.fig { overflow-x: auto; background: var(--box); border: 1px solid var(--panel); border-radius: 6px; padding: 12px; }
+.fig svg { display: block; width: 100%; min-width: 1060px; height: auto; }
+.cap { display: grid; gap: 8px; max-width: 78ch; font-size: 0.92rem; }
+.cap p { margin: 0; }
+.cap b { font-weight: 700; }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+
+/* ── SVG ── */
+svg text { font-family: var(--font-body); fill: var(--fg); }
+.ph { font-size: 15px; font-weight: 700; letter-spacing: 0.02em; }
+.ph .tag { fill: var(--muted); font-weight: 500; }
+.bx { fill: var(--box); stroke: var(--line); stroke-width: 1.2; }
+.bx.ours { fill: var(--ours-bg); stroke: var(--ours); stroke-width: 1.5; }
+.bx.cand { fill: var(--cand-bg); stroke: var(--cand); stroke-width: 1.5; stroke-dasharray: 5 3; }
+.cont { fill: var(--panel); stroke: var(--line); stroke-width: 1; }
+.t1 { font-size: 14px; font-weight: 700; }
+.t2 { font-size: 12.5px; fill: var(--muted); }
+.t2.fg { fill: var(--fg); }
+.ar { stroke: var(--line); stroke-width: 1.4; fill: none; }
+.ar.big { stroke-width: 2.6; }
+.ahp { fill: var(--line); }
+.lbl { font-size: 12px; fill: var(--muted); }
+.chip rect { stroke-width: 1.2; rx: 4; }
+.chip text { font-size: 12.5px; }
+.chip.k-inh rect { fill: var(--box); stroke: var(--line); }
+.chip.k-ours rect { fill: var(--ours-bg); stroke: var(--ours); }
+.chip.k-cand rect { fill: var(--cand-bg); stroke: var(--cand); stroke-dasharray: 4 2.5; }
+.res { fill: var(--ours-bg); stroke: var(--ours); stroke-width: 1.5; }
+.big-num { font-family: var(--font-num); font-size: 19px; font-weight: 500; }
+.mono { font-family: var(--font-num); }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>城市級 2DGS 訓練流程</h1>
+    <p class="lede">MatrixCity 空拍場景：分成 4×4 塊、每塊獨立訓練 30k 步，再合併成全場景模型。圖中標出哪些元件沿用前人、哪些是我們加的、哪些還在本機驗證。</p>
+  </header>
+
+  <div class="fig" role="img" aria-label="四面板流程圖：輸入、每塊準備、每塊訓練、合併與評測">
+  <svg viewBox="0 0 1500 690" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" class="ahp"/>
+      </marker>
+    </defs>
+
+    <!-- ───────── (a) 輸入 ───────── -->
+    <text class="ph" x="20" y="36">(a) 輸入</text>
+    <rect class="bx" x="20" y="56" width="232" height="74" rx="5"/>
+    <text class="t1" x="32" y="80">MatrixCity 空拍影像</text>
+    <text class="t2" x="32" y="100"><tspan class="mono">5,621</tspan> 張＋相機姿態</text>
+    <text class="t2" x="32" y="118">姿態與 CityGS 相同</text>
+
+    <rect class="bx" x="20" y="172" width="232" height="74" rx="5"/>
+    <text class="t1" x="32" y="196">COLMAP 三角化 → SfM 點</text>
+    <text class="t2" x="32" y="216">可靠：track ≥ 3、誤差 &lt; 1.5 px</text>
+    <text class="t2" x="32" y="234">之後各處的幾何依據</text>
+
+    <rect class="bx" x="20" y="288" width="232" height="74" rx="5"/>
+    <text class="t1" x="32" y="312">Depth Anything V2</text>
+    <text class="t2" x="32" y="332">每張影像的單目深度</text>
+    <text class="t2" x="32" y="350">用 SfM 點擬合尺度</text>
+
+    <path class="ar" d="M136 130 V170" marker-end="url(#ah)"/>
+    <path class="ar" d="M136 246 V286" marker-end="url(#ah)"/>
+    <text class="lbl" x="144" y="270">尺度</text>
+    <path class="ar" d="M20 100 H10 V325 H18" marker-end="url(#ah)"/>
+
+    <!-- (a) → (b) -->
+    <path class="ar big" d="M256 209 H280" marker-end="url(#ah)"/>
+
+    <!-- ───────── (b) 每塊準備 ───────── -->
+    <text class="ph" x="286" y="36">(b) 每塊準備 <tspan class="tag">訓練前一次算好</tspan></text>
+    <rect class="bx" x="286" y="56" width="264" height="62" rx="5"/>
+    <text class="t1" x="298" y="80">4×4 分塊</text>
+    <text class="t2" x="298" y="102">與 CityGS 同一個網格 → 每塊的訓練相機</text>
+
+    <rect class="bx ours" x="286" y="128" width="264" height="62" rx="5"/>
+    <text class="t1" x="298" y="152">塊外遮罩 A／B／C</text>
+    <text class="t2 fg" x="298" y="174">塊內算分、邊緣隨機背景、塊外不算</text>
+
+    <rect class="bx ours" x="286" y="200" width="264" height="62" rx="5"/>
+    <text class="t1" x="298" y="224">初始化</text>
+    <text class="t2 fg" x="298" y="246">可靠 SfM 點抖動複製 K 份、裁到塊盒</text>
+
+    <rect class="bx cand" x="286" y="272" width="264" height="62" rx="5"/>
+    <text class="t1" x="298" y="296">每塊顆數上限</text>
+    <text class="t2 fg" x="298" y="318">依塊內可靠 SfM 點數分配</text>
+
+    <rect class="bx cand" x="286" y="344" width="264" height="62" rx="5"/>
+    <text class="t1" x="298" y="368">SfM 視線格</text>
+    <text class="t2 fg" x="298" y="390">每台相機、每 8 px 格的 SfM 深度範圍</text>
+
+    <!-- (b) → (c) -->
+    <path class="ar big" d="M554 231 H586" marker-end="url(#ah)"/>
+
+    <!-- ───────── (c) 每塊訓練 ───────── -->
+    <text class="ph" x="592" y="36">(c) 每塊訓練 <tspan class="tag">30k 步，16 塊各自獨立</tspan></text>
+    <rect class="cont" x="592" y="56" width="610" height="486" rx="8"/>
+
+    <rect class="bx" x="608" y="74" width="144" height="80" rx="5"/>
+    <text class="t1" x="620" y="98">2DGS 面元</text>
+    <text class="t2" x="620" y="118">位置、旋轉、2 軸尺度</text>
+    <text class="t2" x="620" y="136">opacity、SH 3 階</text>
+
+    <rect class="bx" x="770" y="74" width="156" height="80" rx="5"/>
+    <text class="t1" x="782" y="98">光柵化</text>
+    <text class="t2" x="782" y="118">Trim2DGS 光柵器</text>
+    <text class="t2" x="782" y="136">順便累加 V／C、|g|</text>
+
+    <rect class="bx" x="940" y="74" width="246" height="198" rx="5"/>
+    <text class="t1" x="952" y="98">損失</text>
+    <g class="chips" data-x="952" data-y="110" data-w="224">
+      <g class="chip k-inh"><rect x="952" y="110" width="86" height="24"/><text x="960" y="127">L1＋SSIM</text></g>
+      <g class="chip k-cand"><rect x="1046" y="110" width="66" height="24"/><text x="1054" y="127">L2 ×2</text></g>
+      <g class="chip k-ours"><rect x="952" y="142" width="104" height="24"/><text x="960" y="159">遮罩 A／B／C</text></g>
+      <g class="chip k-inh"><rect x="1064" y="142" width="100" height="24"/><text x="1072" y="159">dist 每 4 步</text></g>
+      <g class="chip k-ours"><rect x="952" y="174" width="118" height="24"/><text x="960" y="191">opacity 二元熵</text></g>
+      <g class="chip k-cand"><rect x="1078" y="174" width="96" height="24"/><text x="1086" y="191">法向 每 8 步</text></g>
+      <g class="chip k-cand"><rect x="952" y="206" width="186" height="24"/><text x="960" y="223">深度支撐閘門（單目多視角投票）</text></g>
+    </g>
+
+    <rect class="bx" x="770" y="186" width="156" height="80" rx="5"/>
+    <text class="t1" x="782" y="210">反傳＋更新</text>
+    <text class="t2" x="782" y="230">飽和略過、FusedAdam</text>
+    <text class="t2" x="782" y="248">高階 SH 每 16 步</text>
+
+    <path class="ar" d="M752 114 H768" marker-end="url(#ah)"/>
+    <path class="ar" d="M926 114 H938" marker-end="url(#ah)"/>
+    <path class="ar" d="M940 226 H928" marker-end="url(#ah)"/>
+    <path class="ar" d="M770 226 H680 V156" marker-end="url(#ah)"/>
+    <text class="lbl" x="616" y="214">每一步</text>
+
+    <rect class="bx ours" x="608" y="290" width="578" height="146" rx="5"/>
+    <text class="t1" x="620" y="314">密度控制 <tspan class="t2" dx="6">每 150 步，到 15k 步</tspan></text>
+    <g class="chips" data-x="620" data-y="326" data-w="556">
+      <g class="chip k-inh"><rect x="620" y="326" width="190" height="24"/><text x="628" y="343">MCMC：死顆粒搬家＋增生到上限</text></g>
+      <g class="chip k-ours"><rect x="818" y="326" width="170" height="24"/><text x="826" y="343">母點抽樣 ∝ o·(1＋w·|g|)</text></g>
+      <g class="chip k-cand"><rect x="620" y="358" width="96" height="24"/><text x="628" y="375">閘門外 ×10⁻³</text></g>
+      <g class="chip k-cand"><rect x="724" y="358" width="138" height="24"/><text x="732" y="375">SfM 視線一致性 ×0.01</text></g>
+      <g class="chip k-cand"><rect x="870" y="358" width="124" height="24"/><text x="878" y="375">補洞（依單目深度）</text></g>
+      <g class="chip k-cand"><rect x="620" y="390" width="130" height="24"/><text x="628" y="407">合併共平面同色鄰居</text></g>
+      <g class="chip k-cand"><rect x="758" y="390" width="106" height="24"/><text x="766" y="407">新點平面內錯開</text></g>
+      <g class="chip k-cand"><rect x="872" y="390" width="160" height="24"/><text x="880" y="407">沒證據的不准往上（測試中）</text></g>
+    </g>
+
+    <rect class="bx ours" x="608" y="452" width="578" height="74" rx="5"/>
+    <text class="t1" x="620" y="476">累加式 V／C trim <tspan class="t2" dx="6">每 500 步，到 15k 步</tspan></text>
+    <text class="t2 fg" x="620" y="498">剪掉「貢獻 V ÷ 覆蓋像素 C」最低的 10%</text>
+    <text class="t2" x="620" y="516">V 與 C 在每一步的光柵化裡順便累加，不另外掃相機</text>
+
+    <!-- 單目深度 → (c) -->
+    <path class="ar" d="M136 362 V572 H990 V546" marker-end="url(#ah)"/>
+    <text class="lbl" x="300" y="590">單目深度：給損失的深度支撐閘門、給密度控制的補洞</text>
+
+    <!-- (c) → (d) -->
+    <path class="ar big" d="M1206 231 H1236" marker-end="url(#ah)"/>
+
+    <!-- ───────── (d) 合併與評測 ───────── -->
+    <text class="ph" x="1242" y="36">(d) 合併與評測</text>
+    <rect class="bx" x="1242" y="56" width="240" height="62" rx="5"/>
+    <text class="t1" x="1254" y="80">每塊只留塊盒內顆粒</text>
+    <text class="t2" x="1254" y="102">塊外的只是訓練時的陪襯</text>
+
+    <rect class="bx" x="1242" y="140" width="240" height="62" rx="5"/>
+    <text class="t1" x="1254" y="164">合併 16 塊</text>
+    <text class="t2" x="1254" y="186">→ 全場景模型（半精度部署）</text>
+
+    <rect class="bx" x="1242" y="224" width="240" height="62" rx="5"/>
+    <text class="t1" x="1254" y="248">MatrixCity test <tspan class="mono">741</tspan> 幀</text>
+    <text class="t2" x="1254" y="270">PSNR／SSIM／LPIPS（沒參與訓練）</text>
+
+    <rect class="bx ours" x="1242" y="308" width="240" height="80" rx="5"/>
+    <text class="t1" x="1254" y="332">幾何與外觀診斷</text>
+    <text class="t2 fg" x="1254" y="352">地面層、地下層、海面浮塊</text>
+    <text class="t2 fg" x="1254" y="370">高樓破洞、低角度、路燈與車</text>
+
+    <path class="ar" d="M1362 118 V138" marker-end="url(#ah)"/>
+    <path class="ar" d="M1362 202 V222" marker-end="url(#ah)"/>
+    <path class="ar" d="M1362 286 V306" marker-end="url(#ah)"/>
+
+    <rect class="res" x="1242" y="410" width="240" height="132" rx="6"/>
+    <text class="t2 fg" x="1254" y="434">現行最佳（全場景、A＋dist4）</text>
+    <text class="big-num" x="1254" y="464">28.058</text>
+    <text class="t2" x="1338" y="464">PSNR</text>
+    <text class="t2 fg mono" x="1254" y="488">SSIM .8824 · LPIPS .1142</text>
+    <text class="t2 fg" x="1254" y="508"><tspan class="mono">27.75M</tspan> 顆、訓練 <tspan class="mono">5.04</tspan> h</text>
+    <text class="t2" x="1254" y="528">CityGS 公開模型 <tspan class="mono">27.261</tspan></text>
+
+    <!-- ───────── 圖例 ───────── -->
+    <g transform="translate(20 630)">
+      <rect class="bx" x="0" y="0" width="28" height="20" rx="3"/>
+      <text class="t2 fg" x="38" y="15">沿用前人（2DGS、CityGaussianV2、3DGS-MCMC 等）</text>
+      <rect class="bx ours" x="400" y="0" width="28" height="20" rx="3"/>
+      <text class="t2 fg" x="438" y="15">我們加的或改造的，已進現行配方</text>
+      <rect class="bx cand" x="720" y="0" width="28" height="20" rx="3"/>
+      <text class="t2 fg" x="758" y="15">候選元件：本機每塊 1M 驗證過（b3／b12／b6），還沒進全場景</text>
+    </g>
+  </svg>
+  </div>
+
+  <section class="cap">
+    <p><b>(a)</b> 輸入只有影像、相機姿態、由它們三角化出的 SfM 點，以及單目深度。SfM 點是後面所有幾何判斷的依據；單目深度誤差約 ±10%，只用在不需要精確深度的地方。</p>
+    <p><b>(b)</b> 每塊在訓練前準備好：訓練相機、塊外遮罩、初始點、顆數上限，以及每台相機看到的 SfM 深度範圍。全部只靠 SfM 與分塊算出，不需要先訓練一次。</p>
+    <p><b>(c)</b> 每一步走一次「渲染 → 損失 → 反傳更新」；每 150 步由密度控制決定顆粒要搬到哪裡、從哪裡長新的；每 500 步依「貢獻 ÷ 成本」剪掉最不划算的顆粒。橘色虛線的元件都是在這個迴圈裡改抽樣機率、損失或顆粒位置，訓練步驟本身不變。</p>
+    <p><b>(d)</b> 16 塊各留自己盒內的顆粒後合併。畫質用 MatrixCity 的 741 幀測試影像量；空拍測試看不到的問題（路面在地底、海面浮塊、高樓立面、低角度、路燈與車）用另外的幾何工具量。</p>
+  </section>
+</div>
+
+<script>
+// 依實際字型寬度重排標籤（靜態座標是估計值；字型載入後量一次）
+(function () {
+  function layout() {
+    document.querySelectorAll("g.chips").forEach(function (grp) {
+      var x0 = +grp.dataset.x, y0 = +grp.dataset.y, w = +grp.dataset.w, gap = 8, row = 32;
+      var x = x0, y = y0;
+      grp.querySelectorAll("g.chip").forEach(function (ch) {
+        var t = ch.querySelector("text"), r = ch.querySelector("rect");
+        var tw = 0;
+        try { tw = t.getComputedTextLength(); } catch (e) { return; }
+        if (!tw) return;
+        var cw = Math.ceil(tw + 16);
+        if (x > x0 && x + cw > x0 + w) { x = x0; y += row; }
+        r.setAttribute("x", x); r.setAttribute("y", y); r.setAttribute("width", cw);
+        t.setAttribute("x", x + 8); t.setAttribute("y", y + 17);
+        x += cw + gap;
+      });
+    });
+  }
+  if (document.fonts && document.fonts.ready) { document.fonts.ready.then(layout); } else { layout(); }
+})();
+</script>
+
+</body>
+</html>

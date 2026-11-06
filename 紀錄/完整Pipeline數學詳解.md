@@ -134,6 +134,7 @@ L = (1 − λ)·L1 + λ·(1 − SSIM)                                   λ = 0.2
 | `labrun/time_1024.py`、`CITYGS_STEP_PROFILE=1` | 純訓練時間；逐段時間組成（`step_cost.txt`；開了會同步、不可拿來比總時間） |
 
 ## 11. 一張圖
+> 論文式的總覽圖（11-06，含 11-06 為止的候選元件）：`圖_流程總覽.png`（`.svg` 可編輯、`.html` 為原檔）。下面是 11-02 的文字版（只有現行配方）。
 ```
 MatrixCity 影像＋GT 姿態 ─┬─ COLMAP（GT 姿態）=> SfM 點 ─────────────┐
                           └─ Depth Anything V2 => 逆深度 ─(SfM 擬合縮放)┤
