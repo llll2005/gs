@@ -46,7 +46,8 @@ def f1(pts, gt, tau):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--block", type=int, required=True, help="-1＝不裁到區塊（全場景，驗證用）")
-    ap.add_argument("--merged", default="outputs/lab/full44_best/checkpoints/merged.ckpt")
+    ap.add_argument("--merged", default="outputs/lab/full44_best/checkpoints/merged.ckpt",
+                    help="none＝不換進合併模型，只用各候選本塊盒內的顆粒抽網格（11-06 本機：合併模型 12 GB 放不進 6 GB 卡；只做跑次之間的相對比較）")
     ap.add_argument("--cand", nargs="*", default=[])
     ap.add_argument("--names", nargs="*", default=None)
     ap.add_argument("--mesh", default=None, help="直接評一個現成網格（不抽網格）")
@@ -96,7 +97,8 @@ def main():
         from internal.utils.gs2d_mesh_utils import GS2DMeshUtils, post_process_mesh
         from swap_block_eval import block_mask
         dev = torch.device("cuda")
-        model, renderer, ck = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(a.merged, device=dev, eval_mode=True)
+        no_bg = str(a.merged).lower() in ("", "none")
+        model, renderer, ck = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(a.cand[0] if no_bg else a.merged, device=dev, eval_mode=True)
         for f_ in TRAIN_FLAGS:
             if hasattr(renderer, f_):
                 setattr(renderer, f_, False)
@@ -111,7 +113,9 @@ def main():
         base = {k: v.detach().cpu() for k, v in model.properties.items()}
         model.properties = {k: v[:1].to(dev) for k, v in base.items()}; torch.cuda.empty_cache()
         bm = None
-        variants = [("基準（合併模型原樣）", None)]
+        variants = [] if no_bg else [("基準（合併模型原樣）", None)]
+        if no_bg:
+            print("[背景] none：不換進合併模型，只用候選本塊盒內的顆粒（只能比同一把尺的跑次，不能對 lab 的 F1）", flush=True)
         for c, nm in zip(a.cand, a.names or [os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(c)))) for c in a.cand]):
             cck = torch.load(c, map_location="cpu"); cpc = cck["datamodule_hyper_parameters"]["parser"]; del cck
             assert list(cpc.block_dim or []) == [GX, GY] and cpc.block_id == a.block, f"{c}：分區不符"
@@ -127,7 +131,7 @@ def main():
         print(f"[相機] block {a.block} 的訓練相機 {len(cam_idx)} 台（stride {a.stride}）", flush=True)
         bg = torch.zeros(3, device=dev)
         for nm, cin in variants:
-            props = base if cin is None else {k: torch.cat([base[k][~bm], cin[k]], 0) for k in base}
+            props = base if cin is None else (cin if no_bg else {k: torch.cat([base[k][~bm], cin[k]], 0) for k in base})
             model.properties = {k: v.to(dev) for k, v in props.items()}
             model.active_sh_degree = 0
             volume = o3d.pipelines.integration.ScalableTSDFVolume(voxel_length=0.01, sdf_trunc=0.04,
