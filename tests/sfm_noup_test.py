@@ -9,7 +9,7 @@ from internal.density_controllers.mcmc_2dgs_density_controller import MCMC2DGSDe
 
 class SfmNoUpTest(unittest.TestCase):
     def setUp(self):
-        self.s = types.SimpleNamespace()
+        self.s = types.SimpleNamespace(config=types.SimpleNamespace(sfm_vis_noup_inherit=False, sfm_vis_noup_vote_every=0, densify_from_iter=1000))
         X = torch.tensor([[0., 0., 1.0], [0., 0., 2.0], [0., 0., 3.0]])
         # 第 0 顆：視野 5 台、有證據 0 => 標；第 1 顆：視野只有 1 台 => 不標；第 2 顆：有證據 => 不標
         C._sfm_noup_flag(self.s, X, torch.tensor([0, 0, 5]), torch.tensor([5, 1, 5]), 1050)

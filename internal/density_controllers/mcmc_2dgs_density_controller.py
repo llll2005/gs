@@ -517,6 +517,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     上限跟著往下走（只降不升）=> 可以往下、水平移動，不能往上。之後的投票若有了證據就解除；搬家的顆粒解除、新增的不標，等下次投票。
     依據：離線切除（tools/probe/cut_test_1106.py，b3）「沒證據」抓到海面上方浮塊的 83.5%、高樓 50～200 m 只 0.6%、地面 0；
     但直接刪掉會讓海面變黑（held-out −0.38 dB）=> 不刪，只不准往上，讓海面留在低處。沒有公尺常數、沒有高度門檻。"""
+    sfm_vis_noup_inherit: bool = False
+    """★ 2026-11-06 noup v2：新增與搬家的顆粒繼承母點的高度上限（原本要等下一次投票、約 150 步內可以往上飄）。
+    v1 在 b3 留下的海面上方顆粒 79.7% 仍是「沒證據」=> 是在被標記前就飄高了。"""
+    sfm_vis_noup_vote_every: int = 0
+    """★ 2026-11-06 noup v2：增生開始前（step < densify_from_iter）每 k 步、以及第 1 步也投票標記；0＝只在增生事件投票（v1：第一次在 1,050 步）。"""
     sfm_dist_voxel: float = 0.01
     """SfM 距離場的體素邊長（場景單位；0.01＝1 m）。塊太大時自動放大到總體素 <= 1.5 億。"""
     sfm_report_interval: int = 1500
@@ -1546,10 +1551,17 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             st = getattr(self, "_noup_stat", [0, 0, 0.0]); self._noup_stat = [0, 0, 0.0]
             print(f"[sfm-noup] {'✅ 首次觸發' if first else '　'} step {step}：沒證據（視野 >= 3 台、有 SfM 0 台）{int(noev.sum()):,}／{z.shape[0]:,} 顆"
                   f"｜新標 {int(new.sum()):,}、解除 {int((was & ~noev).sum()):,}｜上次報告以來：被往下夾 {st[1]:,} 顆次（{st[0]} 步）、"
-                  f"平均每次夾掉 {100 * st[2] / max(st[1], 1):.2f} m", flush=True)
+                  f"平均每次夾掉 {100 * st[2] / max(st[1], 1):.2f} m"
+                  + (f"｜新顆粒繼承上限 {getattr(self, '_noup_inh', 0):,} 顆" if bool(getattr(self.config, 'sfm_vis_noup_inherit', False)) else ""), flush=True)
+            self._noup_inh = 0
 
     def _sfm_noup_clamp(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
         """每步結束（optimizer step 與 MCMC 雜訊之後）：沒證據的顆粒 z 夾在上限以下，上限只降不升。"""
+        _k = int(getattr(self.config, "sfm_vis_noup_vote_every", 0) or 0)
+        if _k > 0 and global_step < int(self.config.densify_from_iter) and (global_step == 1 or global_step % _k == 0) \
+                and getattr(self, "_vis", None) is not None:
+            n = gaussian_model.n_gaussians                              # ★ 11-06 noup v2：增生開始前也投票標記（第 1 步起）
+            self._sfm_vis_probs(gaussian_model, torch.ones(n, device=gaussian_model.gaussians["means"].device), None)
         zmax = getattr(self, "_noup_z", None)
         if zmax is None:
             return
@@ -1628,9 +1640,15 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             t = getattr(self, k, None)
             if t is not None and t.shape[0] == dead_mask.shape[0]:
                 t[dead_mask] = 0
-        t = getattr(self, "_noup_z", None)                             # 搬家的＝新位置 => 高度上限解除，等下次投票
+        t = getattr(self, "_noup_z", None)                             # 搬家的＝新位置 => 高度上限解除，等下次投票（v2：繼承母點的）
         if t is not None and t.shape[0] == dead_mask.shape[0]:
-            t[dead_mask] = float("inf")
+            di = dead_mask.nonzero(as_tuple=True)[0]
+            par = getattr(self, "_last_parent_idx", None)
+            if bool(getattr(self.config, "sfm_vis_noup_inherit", False)) and par is not None and par.shape[0] == di.shape[0]:
+                t[di] = t[par]
+                self._noup_inh = getattr(self, "_noup_inh", 0) + int(torch.isfinite(t[di]).sum())
+            else:
+                t[dead_mask] = float("inf")
         if (self._inplane_on() or self._price_on()) and bool(dead_mask.any()):
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, dead_mask.nonzero(as_tuple=True)[0])   # 搬家的＝新點（宿主留在原地）
@@ -1645,6 +1663,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         n1 = gaussian_model.n_gaussians
         if n1 > n0:
             self._per_particle_extend(n0, n1)
+            t = getattr(self, "_noup_z", None); par = getattr(self, "_last_parent_idx", None)
+            if bool(getattr(self.config, "sfm_vis_noup_inherit", False)) and t is not None and par is not None \
+                    and t.shape[0] == n1 and par.shape[0] == n1 - n0:
+                t[n0:n1] = t[par]                                         # ★ 11-06 新增的繼承母點的高度上限（noup v2）
+                self._noup_inh = getattr(self, "_noup_inh", 0) + int(torch.isfinite(t[n0:n1]).sum())
         if (self._inplane_on() or self._price_on()) and n1 > n0:
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, torch.arange(n0, n1, device=gaussian_model.gaussians["means"].device))
@@ -2596,6 +2619,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         return new_opacity, new_scaling[:, :d]
 
     def _get_new_params(self, gaussian_model, idxs, ratio) -> Dict[str, torch.Tensor]:
+        self._last_parent_idx = idxs                    # ★ 11-06 sfm_vis_noup_inherit：relocate／add 的新顆粒 i 是 idxs[i] 的副本
         # Same as the parent but `new_scaling` is already the surfel's scale dim (2), so we
         # drop the parent's `.reshape(-1, 3)`.
         new_opacity, new_scaling = self.compute_relocation(
