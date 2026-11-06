@@ -273,13 +273,24 @@ function goHome() {
 }
 window.goHome = goHome;
 window.addEventListener("keydown", e => {
+  // 11-06：Ctrl+F（瀏覽器搜尋）也是 key "f" => 視角被拉回置中；有修飾鍵就不算
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if ((e.key === "f" || e.key === "F") && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement)) goHome();
 });
 
 // 雙擊：把旋轉中心移到點到的表面（Spark 的 SplatMesh 支援 three.js Raycaster），同時拉近一半
 //   => 之後滾輪縮放、旋轉都繞著那一點，想看哪裡就雙擊哪裡，不再需要放大上限。點到空白處就用目前中心深度上的那一點。
 const _ray = new THREE.Raycaster();
+// 11-06 使用者「viewer 會閃一下就亂切視角／距離」：快速拖兩下旋轉，瀏覽器會把兩次 mouseup 當成雙擊
+//   => 觸發「移到點到的表面＋拉近一半」，點到的常是背景或浮塊 => 視角跳走。拖曳過（移動 > 4 px）的點擊不算雙擊。
+let _downXY = null, _lastDragT = -1e9;
+renderer.domElement.addEventListener("pointerdown", e => { _downXY = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", e => {
+  if (_downXY && Math.hypot(e.clientX - _downXY[0], e.clientY - _downXY[1]) > 4) _lastDragT = performance.now();
+  _downXY = null;
+});
 renderer.domElement.addEventListener("dblclick", e => {
+  if (performance.now() - _lastDragT < 800) return;
   const ndc = new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   _ray.setFromCamera(ndc, camera);
   let p = null;
@@ -304,9 +315,12 @@ window.loadByName = async function(filename) {
 async function uploadToServer(file, endpoint, plyName, stageLabel) {
   const sizeMB = (file.size / 1e6).toFixed(1);
 
-  // cache check
+  // cache check（11-06：/convert 存成 <名>_v2.ply，原本只比 <名>.ply => 永遠對不上、每次都整檔上傳）
   const cached = await fetch("/files.json").then(r => r.json()).catch(() => []);
-  if (cached.includes(plyName)) {
+  const stem = plyName.replace(/\.ply$/, "");
+  const hit = cached.find(f => f === plyName || (endpoint === "/convert" && f.startsWith(stem + "_") && /_v\d+\.ply$/.test(f)));
+  if (hit) {
+    plyName = hit;
     setProgress(100, `已有快取：${plyName}`, "done");
     currentFile = null;
     await loadSplat(plyName, plyName);
@@ -340,23 +354,22 @@ async function uploadToServer(file, endpoint, plyName, stageLabel) {
     };
     setProgress(0, `準備上傳：${file.name}  (${sizeMB} MB)`);
     xhr.open("POST", endpoint);
-    xhr.setRequestHeader("X-Filename", plyName);
+    xhr.setRequestHeader("X-Filename", encodeURIComponent(plyName));   // 非 ASCII 檔名直接放 header 會丟例外
     xhr.send(file);
   });
 }
 
 // ── Upload .ply → server stores → load from server URL ───────────────────
+// 11-06：快取名原本是「檔名＋MB」，每個跑次的 ckpt 都叫 epoch=34-step=30000.ckpt、大小又接近 => 不同跑次會撞到同一個快取。
+//   改成「檔名＋確切位元組數＋修改時間」。
+const uploadStem = (file, ext) => file.name.replace(ext, "") + `_${file.size}b_${Math.round(file.lastModified / 1000)}`;
 async function uploadPly(file) {
-  const mb = Math.round(file.size / 1e6);
-  const plyName = file.name.replace(/\.ply$/, "") + `_${mb}mb.ply`;
-  await uploadToServer(file, "/upload", plyName, "上傳");
+  await uploadToServer(file, "/upload", uploadStem(file, /\.ply$/) + ".ply", "上傳");
 }
 
 // ── Upload .ckpt → server converts → load PLY ────────────────────────────
 async function uploadAndConvert(file) {
-  const mb = Math.round(file.size / 1e6);
-  const plyName = file.name.replace(/\.ckpt$/, "") + `_${mb}mb.ply`;
-  await uploadToServer(file, "/convert", plyName, "上傳");
+  await uploadToServer(file, "/convert", uploadStem(file, /\.ckpt$/) + ".ply", "上傳");
 }
 
 // wait for converting stage after upload completes

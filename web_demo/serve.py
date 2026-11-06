@@ -100,6 +100,36 @@ _lock       = threading.Lock()
 _converting = threading.Lock()   # only one conversion at a time
 
 
+def _upload_name(handler, default):
+    """X-Filename 由瀏覽器 encodeURIComponent（非 ASCII 檔名才送得出 header）；只取 basename，不讓它寫出 SERVE_DIR。"""
+    from urllib.parse import unquote
+    return os.path.basename(unquote(handler.headers.get("X-Filename", default))) or default
+
+
+def _drain(handler, length):
+    """11-06：快取命中／出錯時也要把上傳的 body 讀完再回應。沒讀完就回應 => 伺服器關連線時瀏覽器還在送，
+    XHR 收到 connection reset => 畫面顯示「連線失敗」（使用者 11-06：有時候丟 ckpt 會連線失敗）。"""
+    remaining = length
+    while remaining > 0:
+        chunk = handler.rfile.read(min(1 << 20, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+
+
+def _receive(handler, length, path):
+    """把 body 串流寫到 path；回傳實際收到的位元組數。"""
+    got = 0
+    with open(path, "wb") as f:
+        while got < length:
+            chunk = handler.rfile.read(min(1 << 20, length - got))
+            if not chunk:
+                break
+            f.write(chunk)
+            got += len(chunk)
+    return got
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=SERVE_DIR, **kwargs)
@@ -156,23 +186,23 @@ class Handler(SimpleHTTPRequestHandler):
             self._json({"ok": True})
 
         elif self.path == "/upload":
-            filename = self.headers.get("X-Filename", "upload.ply")
+            filename = _upload_name(self, "upload.ply")
             ply_path = os.path.join(SERVE_DIR, filename)
+            length = int(self.headers.get("Content-Length", 0))
             if os.path.exists(ply_path):
-                print(f"[cache] {filename}")
+                _drain(self, length)
+                print(f"[cache] {filename}", flush=True)
                 self._json({"ok": True, "file": filename, "cached": True})
                 return
-            length = int(self.headers.get("Content-Length", 0))
-            print(f"[upload-ply] {filename} ({length/1e6:.1f} MB)")
-            with open(ply_path, "wb") as f:
-                remaining = length
-                while remaining > 0:
-                    chunk = self.rfile.read(min(65536, remaining))
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    remaining -= len(chunk)
-            print(f"[done] {filename}")
+            print(f"[upload-ply] {filename} ({length/1e6:.1f} MB)", flush=True)
+            tmp_path = ply_path + f".part{os.getpid()}_{threading.get_ident()}"
+            got = _receive(self, length, tmp_path)
+            if got != length:
+                os.unlink(tmp_path)
+                self._json({"ok": False, "error": f"上傳不完整（{got}／{length} bytes）"})
+                return
+            os.replace(tmp_path, ply_path)
+            print(f"[done] {filename}", flush=True)
             self._json({"ok": True, "file": filename, "cached": False})
 
         elif self.path == "/convert_local":
@@ -188,8 +218,10 @@ class Handler(SimpleHTTPRequestHandler):
             # 命名帶上跑次與 block，否則每個跑次的 epoch=212-step=60000.ckpt 會互相蓋掉
             parts = os.path.relpath(full, os.path.join(PROJECT_ROOT, "outputs")).split(os.sep)
             run   = parts[0] if parts else "run"
-            if run == "lab" and len(parts) > 1:      # 10-14：outputs/lab/<跑次>/… 只取 "lab" 會讓不同跑次的同一塊撞名、讀到別人的快取
-                run = f"lab_{parts[1]}"
+            # 10-14：outputs/lab/<跑次>/… 只取 "lab" 會讓不同跑次的同一塊撞名、讀到別人的快取。
+            # 11-06：outputs/local/<跑次>/… 也一樣（之前只修了 lab）=> 11-05 起選任何本機 b3 30k 跑次都讀到組合臂的快取
+            if run in ("lab", "local") and len(parts) > 1:
+                run = f"{run}_{parts[1]}"
             blk   = next((x for x in parts if x.startswith("block_")), "")
             stem  = os.path.splitext(os.path.basename(full))[0]
             tag   = f"step{stem.split('step=')[-1]}" if "step=" in stem else stem   # merged_fp16 => 不加 step 前綴
@@ -198,75 +230,69 @@ class Handler(SimpleHTTPRequestHandler):
             ply_path = os.path.join(SERVE_DIR, ply_name)
 
             if os.path.exists(ply_path):
-                print(f"[cache] {ply_name}")
+                print(f"[cache] {ply_name}", flush=True)
                 self._json({"ok": True, "file": ply_name, "cached": True})
                 return
-            if not _converting.acquire(blocking=False):
-                self._json({"ok": False, "error": "已經有一個轉檔在跑"})
-                return
+            # 11-06：轉檔中再選一個 => 排隊等，不回錯誤；先寫 .part 再改名，轉到一半中斷不會留下壞的快取
             try:
-                print(f"[convert-local] {rel} -> {ply_name}")
-                from utils.export_splat_ply import load_gaussians, save_3dgs_ply
-                g = load_gaussians(full)
-                save_3dgs_ply(ply_path, g)
-                print(f"[done] {ply_name} ({os.path.getsize(ply_path)/1e6:.1f} MB)")
+                with _converting:
+                    if not os.path.exists(ply_path):
+                        print(f"[convert-local] {rel} -> {ply_name}", flush=True)
+                        from utils.export_splat_ply import load_gaussians, save_3dgs_ply
+                        g = load_gaussians(full)
+                        save_3dgs_ply(ply_path + ".part", g)
+                        os.replace(ply_path + ".part", ply_path)
+                        print(f"[done] {ply_name} ({os.path.getsize(ply_path)/1e6:.1f} MB)", flush=True)
                 self._json({"ok": True, "file": ply_name, "cached": False})
             except Exception as e:
                 import traceback
                 traceback.print_exc()
-                if os.path.exists(ply_path):
-                    os.unlink(ply_path)
+                if os.path.exists(ply_path + ".part"):
+                    os.unlink(ply_path + ".part")
                 self._json({"ok": False, "error": str(e)})
-            finally:
-                _converting.release()
 
         elif self.path == "/convert":
-            filename = self.headers.get("X-Filename", "upload.ckpt")
+            filename = _upload_name(self, "upload.ckpt")
             from utils.export_splat_ply import FORMAT_TAG
             ply_name = os.path.splitext(filename)[0] + f"_{FORMAT_TAG}.ply"
             ply_path = os.path.join(SERVE_DIR, ply_name)
+            length   = int(self.headers.get("Content-Length", 0))
 
-            # cache hit — already converted
+            # cache hit — already converted（body 照樣讀完，見 _drain）
             if os.path.exists(ply_path):
-                print(f"[cache] {ply_name}")
+                _drain(self, length)
+                print(f"[cache] {ply_name}", flush=True)
                 self._json({"ok": True, "file": ply_name, "cached": True})
                 return
 
-            if not _converting.acquire(blocking=False):
-                self._json({"ok": False, "error": "Another conversion is already running"})
-                return
-
-            tmp_path = os.path.join(SERVE_DIR, "_converting.ckpt")
+            # 11-06：暫存檔每個請求各自一個（原本共用 _converting.ckpt），先收完 body 再排隊等轉檔鎖
+            #   => 同時丟兩個 ckpt 時第二個等第一個轉完，不再回「已經有一個轉檔在跑」、也不會沒讀完 body 就斷線
+            tmp_path = os.path.join(SERVE_DIR, f"_converting_{os.getpid()}_{threading.get_ident()}.ckpt")
             try:
-                # stream upload to disk
-                length = int(self.headers.get("Content-Length", 0))
-                print(f"[upload] {filename} ({length/1e6:.1f} MB)")
-                with open(tmp_path, "wb") as f:
-                    remaining = length
-                    while remaining > 0:
-                        chunk = self.rfile.read(min(65536, remaining))
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        remaining -= len(chunk)
-
-                print(f"[convert] {filename} → {ply_name}")
-                from utils.export_splat_ply import load_gaussians, save_3dgs_ply
-                g = load_gaussians(tmp_path)
-                save_3dgs_ply(ply_path, g)
-                print(f"[done] {ply_name} ({os.path.getsize(ply_path)/1e6:.1f} MB)")
+                print(f"[upload] {filename} ({length/1e6:.1f} MB)", flush=True)
+                got = _receive(self, length, tmp_path)
+                if got != length:
+                    self._json({"ok": False, "error": f"上傳不完整（{got}／{length} bytes）"})
+                    return
+                with _converting:
+                    if not os.path.exists(ply_path):
+                        print(f"[convert] {filename} → {ply_name}", flush=True)
+                        from utils.export_splat_ply import load_gaussians, save_3dgs_ply
+                        g = load_gaussians(tmp_path)
+                        save_3dgs_ply(ply_path + ".part", g)
+                        os.replace(ply_path + ".part", ply_path)
+                        print(f"[done] {ply_name} ({os.path.getsize(ply_path)/1e6:.1f} MB)", flush=True)
                 self._json({"ok": True, "file": ply_name, "cached": False})
 
             except Exception as e:
                 import traceback
                 traceback.print_exc()
-                if os.path.exists(ply_path):
-                    os.unlink(ply_path)
+                if os.path.exists(ply_path + ".part"):
+                    os.unlink(ply_path + ".part")
                 self._json({"ok": False, "error": str(e)})
             finally:
                 if os.path.exists(tmp_path):
                     os.unlink(tmp_path)
-                _converting.release()
         else:
             self.send_error(404)
 
