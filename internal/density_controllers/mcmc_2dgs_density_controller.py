@@ -511,6 +511,12 @@ class MCMC2DGSDensityController(MCMCDensityController):
     sfm_vis_behind_frac: float = 0.9
     sfm_vis_eps: float = 0.01
     """視線一致性判成浮塊／地下的母點的抽樣倍率；1.0＝不改抽樣、只印統計。範圍同 sfm_birth_from_iter／until_iter。"""
+    sfm_vis_noup: bool = False
+    """★ 2026-11-06（使用者「讓沒證據的地方不准往上長」）需要 sfm_vis。每次投票時，視野內 >= 3 台相機、但格內有 SfM 的相機 0 台的顆粒
+    ＝「沒證據」：記下它當下的高度（世界 +z）當上限；之後每步（optimizer step 與 MCMC 雜訊之後）把它的 z 夾在上限以下，
+    上限跟著往下走（只降不升）=> 可以往下、水平移動，不能往上。之後的投票若有了證據就解除；搬家的顆粒解除、新增的不標，等下次投票。
+    依據：離線切除（tools/probe/cut_test_1106.py，b3）「沒證據」抓到海面上方浮塊的 83.5%、高樓 50～200 m 只 0.6%、地面 0；
+    但直接刪掉會讓海面變黑（held-out −0.38 dB）=> 不刪，只不准往上，讓海面留在低處。沒有公尺常數、沒有高度門檻。"""
     sfm_dist_voxel: float = 0.01
     """SfM 距離場的體素邊長（場景單位；0.01＝1 m）。塊太大時自動放大到總體素 <= 1.5 億。"""
     sfm_report_interval: int = 1500
@@ -838,6 +844,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             pl_module.on_train_batch_end_hooks.append(self._add_xyz_noise)
             if bool(getattr(self.config, "sfm_lock", False)):
                 pl_module.on_train_batch_end_hooks.append(self._sfm_restore)   # 排在雜訊之後 => 錨點連雜訊也還原
+            if bool(getattr(self.config, "sfm_vis_noup", False)):
+                if not bool(getattr(self.config, "sfm_vis", False)):
+                    raise ValueError("sfm_vis_noup 需要 sfm_vis（沒證據的判定來自視線一致性投票）")
+                pl_module.on_train_batch_end_hooks.append(self._sfm_noup_clamp)   # 排在雜訊之後 => 雜訊也推不上去
             if self.config.dar_lambda > 0:
                 # runs after optimizer.step() -> Adam moments stay photometric-only
                 pl_module.on_train_batch_end_hooks.append(self._dar_cost_decay)
@@ -1176,7 +1186,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                             or global_step + self.config.densification_interval >= self.config.densify_until_iter):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
 
-    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1}     # 跟著 N 走的逐顆狀態 => 新增時補的值
+    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_noup_z": float("inf")}     # 跟著 N 走的逐顆狀態 => 新增時補的值
 
     def _per_particle_extend(self, n0: int, n1: int) -> None:
         for k, fill in self._PER_PARTICLE.items():
@@ -1496,6 +1506,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 & (cv.float() >= float(getattr(c, "sfm_vis_rep", 0.0) or 0.0) * iv.float())
             vis["bad"] = floater | under; vis["fl"] = floater; vis["un"] = under; vis["cv"] = cv
             vis["step"] = step; vis["n"] = X.shape[0]; vis["ncam"] = int(pick.numel())
+            if bool(getattr(c, "sfm_vis_noup", False)):
+                self._sfm_noup_flag(X, cv, iv, step)
             if step // 1500 != getattr(self, "_sfm_vis_last", -1):
                 torch.cuda.synchronize(); vis["ms"] = (_t.time() - _t0) * 1000
         bad = vis["bad"] if indices is None else vis["bad"][indices]
@@ -1514,6 +1526,49 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                   f"浮塊（空區票）{int(vis['fl'].sum()):,}、地下（一直被擋）{int(vis['un'].sum()):,}、沒有 SfM 證據 {int((vis['cv'] == 0).sum()):,}／{n:,} 顆；"
                   f"機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）｜投票 {vis.get('ncam', 0)} 台相機、{vis.get('ms', 0):.0f} ms", flush=True)
         return out
+
+    @torch.no_grad()
+    def _sfm_noup_flag(self, X, cv, iv, step: int) -> None:
+        """sfm_vis_noup：投票後更新「沒證據」顆粒的高度上限（+inf＝不限制）。"""
+        z = X[:, 2].detach()
+        noev = (iv >= 3) & (cv == 0)
+        zmax = getattr(self, "_noup_z", None)
+        if zmax is None or zmax.shape[0] != z.shape[0]:
+            zmax = torch.full_like(z, float("inf"), dtype=torch.float32)
+        was = torch.isfinite(zmax)
+        new = noev & ~was
+        zmax = torch.where(new, z.float(), zmax)
+        zmax = torch.where(noev, zmax, torch.full_like(zmax, float("inf")))     # 有了證據 => 解除
+        self._noup_z = zmax
+        first = not getattr(self, "_noup_announced", False)
+        if first or step // 1500 != getattr(self, "_noup_last", -1):
+            self._noup_announced = True; self._noup_last = step // 1500
+            st = getattr(self, "_noup_stat", [0, 0, 0.0]); self._noup_stat = [0, 0, 0.0]
+            print(f"[sfm-noup] {'✅ 首次觸發' if first else '　'} step {step}：沒證據（視野 >= 3 台、有 SfM 0 台）{int(noev.sum()):,}／{z.shape[0]:,} 顆"
+                  f"｜新標 {int(new.sum()):,}、解除 {int((was & ~noev).sum()):,}｜上次報告以來：被往下夾 {st[1]:,} 顆次（{st[0]} 步）、"
+                  f"平均每次夾掉 {100 * st[2] / max(st[1], 1):.2f} m", flush=True)
+
+    def _sfm_noup_clamp(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
+        """每步結束（optimizer step 與 MCMC 雜訊之後）：沒證據的顆粒 z 夾在上限以下，上限只降不升。"""
+        zmax = getattr(self, "_noup_z", None)
+        if zmax is None:
+            return
+        m = gaussian_model.gaussians["means"]
+        if zmax.shape[0] != m.shape[0]:
+            return
+        with torch.no_grad():
+            sel = torch.nonzero(torch.isfinite(zmax), as_tuple=True)[0]
+            if sel.numel() == 0:
+                return
+            z = m[sel, 2].float(); lim = zmax[sel]
+            over = z > lim
+            nz = torch.minimum(z, lim)
+            m[sel, 2] = nz.to(m.dtype)
+            zmax[sel] = nz
+            st = getattr(self, "_noup_stat", [0, 0, 0.0])
+            n_over = int(over.sum())
+            st[0] += 1; st[1] += n_over; st[2] += float((z - lim)[over].sum()) if n_over else 0.0
+            self._noup_stat = st
 
     def _sfm_birth_probs(self, gaussian_model, probs, indices=None):
         c = self.config
@@ -1573,6 +1628,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             t = getattr(self, k, None)
             if t is not None and t.shape[0] == dead_mask.shape[0]:
                 t[dead_mask] = 0
+        t = getattr(self, "_noup_z", None)                             # 搬家的＝新位置 => 高度上限解除，等下次投票
+        if t is not None and t.shape[0] == dead_mask.shape[0]:
+            t[dead_mask] = float("inf")
         if (self._inplane_on() or self._price_on()) and bool(dead_mask.any()):
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, dead_mask.nonzero(as_tuple=True)[0])   # 搬家的＝新點（宿主留在原地）
@@ -1708,6 +1766,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             g["opacities"][slots] = torch.log(op / (1 - op)).reshape(-1, *g["opacities"].shape[1:]).to(g["opacities"].dtype)
             g["shs_dc"][slots] = ((rgb - 0.5) / _C0).reshape(K, *g["shs_dc"].shape[1:]).to(g["shs_dc"].dtype)
             g["shs_rest"][slots] = 0
+            _nz = getattr(self, "_noup_z", None)                                  # 補洞放的＝新位置 => 高度上限解除（sfm_vis_noup）
+            if _nz is not None and _nz.shape[0] == g["means"].shape[0]:
+                _nz[slots] = float("inf")
         self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=slots)    # 新點 Adam 歸零
         _st = getattr(gaussian_model, "_trim_state", None)
         if _st:
@@ -1754,6 +1815,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         out = None
         if _mI.numel() > 0:
             self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)          # 合併後的 i 重設 Adam 狀態
+            _nz = getattr(self, "_noup_z", None)                                              # 合併後的 i 位置變了 => 高度上限解除（sfm_vis_noup）
+            if _nz is not None and _nz.shape[0] == n0:
+                _nz[_mI] = float("inf")
             dead = torch.zeros(n0, dtype=torch.bool, device=_mJ.device)
             dead[_mJ] = True
             if prune:
