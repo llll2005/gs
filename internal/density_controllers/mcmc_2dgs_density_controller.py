@@ -522,6 +522,19 @@ class MCMC2DGSDensityController(MCMCDensityController):
     v1 在 b3 留下的海面上方顆粒 79.7% 仍是「沒證據」=> 是在被標記前就飄高了。"""
     sfm_vis_noup_vote_every: int = 0
     """★ 2026-11-06 noup v2：增生開始前（step < densify_from_iter）每 k 步、以及第 1 步也投票標記；0＝只在增生事件投票（v1：第一次在 1,050 步）。"""
+    px_floor: float = 0.0
+    """★ 2026-11-07 點精靈下限（自主研究，紀錄/實驗分析/35、30）。>0 時每步（optimizer step 之後）：長軸小於
+    `px_floor x（看得到它的訓練相機裡最近的深度）/ fx`（＝在最近那台相機裡不到 px_floor 像素）的顆粒，兩個尺度都拉回這個下限。0＝關。
+    只看長軸：細長筆觸（一軸次像素、一軸夠長）沿長軸仍走 ray-splat 分支、拿得到尺度梯度，不是吸收態；兩軸都夾的話
+    CityGS b3 會有 39.9% 不透明顆粒被改，只看長軸 2.6%（我方 30k 28.7%，幾乎全是點精靈）。
+    病因（程式碼：backward.cu 的 `rho3d <= rho2d` 分支）：2DGS 的螢幕低通濾波（FilterSize 0.707 px）讓尺度 -> 0 的顆粒仍畫成約 1 px 的點，
+    但走濾波分支時梯度只回到螢幕中心、尺度與旋轉拿不到任何光度梯度；scale_reg（L1）＋Adam 則每步固定往下推
+    => 一旦小於濾波就回不來（吸收態），而且不透明（熵把 o 推到 1）=> MCMC 不當它死掉、永遠不回收。
+    量測（b3 本機）：不透明顆粒的點精靈比例 30k 26.3%、60k 16.0%、前段低解析度 67.9%、CityGS 0.0%；地面層 58.9%、車輛帶 71.8%、路燈帶 65.6%；
+    跟地面覆蓋、低角度破洞、區塊 F1 同排序。從空拍訓練距離看是一個像素，viewer 拉近／低角度就只剩一個點（路燈、車消失、地面透空）。
+    🟨 借用改造自 Mip-Splatting 的 3D 平滑濾波（用可見訓練相機的最高取樣率限制最小尺寸）；這裡是硬下限、不改渲染器。單位是像素，沒有公尺常數。"""
+    px_floor_interval: int = 50
+    """px_floor 的「最近可見深度」每幾步重算一次（顆數變了會立刻重算）；中間用快取。"""
     sfm_dist_voxel: float = 0.01
     """SfM 距離場的體素邊長（場景單位；0.01＝1 m）。塊太大時自動放大到總體素 <= 1.5 億。"""
     sfm_report_interval: int = 1500
@@ -853,6 +866,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 if not bool(getattr(self.config, "sfm_vis", False)):
                     raise ValueError("sfm_vis_noup 需要 sfm_vis（沒證據的判定來自視線一致性投票）")
                 pl_module.on_train_batch_end_hooks.append(self._sfm_noup_clamp)   # 排在雜訊之後 => 雜訊也推不上去
+            if float(getattr(self.config, "px_floor", 0.0) or 0.0) > 0:
+                pl_module.on_train_batch_end_hooks.append(self._px_floor_clamp)   # optimizer step 之後 => 把 scale_reg 推下去的拉回下限
             if self.config.dar_lambda > 0:
                 # runs after optimizer.step() -> Adam moments stay photometric-only
                 pl_module.on_train_batch_end_hooks.append(self._dar_cost_decay)
@@ -1581,6 +1596,57 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             n_over = int(over.sum())
             st[0] += 1; st[1] += n_over; st[2] += float((z - lim)[over].sum()) if n_over else 0.0
             self._noup_stat = st
+
+    @staticmethod
+    def _px_floor_log(means, cams, res: float, kappa: float, chunk: int = 8192):
+        """每顆粒：看得到它（投影在畫面內、在相機前方）的訓練相機裡最小的 深度/fx => log(kappa x 那個值)；沒有相機看得到 => -inf（不夾）。"""
+        dev = means.device
+        W2C = cams.world_to_camera.to(dev).float()                                   # [K,4,4] 轉置過：p_cam = [p,1] @ W2C
+        fx = cams.fx.to(dev).float(); fy = cams.fy.to(dev).float(); cx = cams.cx.to(dev).float(); cy = cams.cy.to(dev).float()
+        Wd = cams.width.to(dev).float(); Hd = cams.height.to(dev).float()
+        out = torch.empty(means.shape[0], device=dev)
+        for i in range(0, means.shape[0], chunk):
+            X = means[i:i + chunk].float()
+            pc = torch.einsum("nj,kjl->nkl", X, W2C[:, :3, :3]) + W2C[:, 3, :3][None]  # [n,K,3]
+            z = pc[..., 2]
+            zc = z.clamp_min(1e-6)
+            u = fx[None] * pc[..., 0] / zc + cx[None]; v = fy[None] * pc[..., 1] / zc + cy[None]
+            vis = (z > 1e-6) & (u >= 0) & (u < Wd[None]) & (v >= 0) & (v < Hd[None])
+            q = torch.where(vis, z / fx[None], torch.full_like(z, float("inf"))).min(1).values
+            out[i:i + chunk] = torch.where(torch.isfinite(q), torch.log(kappa * q / max(res, 1e-6)), torch.full_like(q, float("-inf")))
+        return out
+
+    def _px_floor_clamp(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
+        """每步結束：尺度夾在「最近可見相機裡 px_floor 像素」以上（點精靈吸收態的修法；見 config.px_floor）。"""
+        kappa = float(self.config.px_floor)
+        s = gaussian_model.gaussians["scales"]; m = gaussian_model.gaussians["means"]
+        res = float(getattr(pl_module, "_res_now", 1.0) or 1.0)
+        fl = getattr(self, "_pxf_log", None)
+        k = max(1, int(getattr(self.config, "px_floor_interval", 50) or 50))
+        with torch.no_grad():
+            if fl is None or fl.shape[0] != m.shape[0] or global_step % k == 0 or res != getattr(self, "_pxf_res", None):
+                import time
+                _t0 = time.perf_counter()
+                fl = self._px_floor_log(m, pl_module.trainer.datamodule.dataparser_outputs.train_set.cameras, res, kappa)
+                if not getattr(self, "_pxf_announced", False) and m.is_cuda:
+                    torch.cuda.synchronize()
+                self._pxf_ms = (time.perf_counter() - _t0) * 1e3
+                self._pxf_log = fl; self._pxf_res = res
+            lo = fl[:, None].to(s.dtype)
+            low = s.max(1).values < fl.to(s.dtype)                  # 長軸不到下限（兩軸都在濾波以下＝吸收態）
+            n_low = int(low.sum())
+            if n_low:
+                s.copy_(torch.where(low[:, None], torch.maximum(s, lo), s))
+            st = getattr(self, "_pxf_stat", [0, 0])
+            st[0] += 1; st[1] += n_low; self._pxf_stat = st
+            if not getattr(self, "_pxf_announced", False) or global_step % 1500 == 0:
+                fin = torch.isfinite(fl)
+                qs = torch.quantile(torch.exp(fl[fin][:1_000_000]).float(), torch.tensor([.1, .5, .9], device=fl.device)).tolist() if fin.any() else [float("nan")] * 3
+                print(f"[px-floor] {'✅ 首次觸發 ' if not getattr(self, '_pxf_announced', False) else ''}step {global_step}：下限 {kappa:g} px x 最近可見深度/fx"
+                      f"（訓練解析度 x{res:g}）｜本步被拉回 {n_low:,}／{m.shape[0]:,} 顆｜下限 q10/50/90 {qs[0]*100:.2f}/{qs[1]*100:.2f}/{qs[2]*100:.2f} m"
+                      f"｜沒有相機看得到（不夾）{int((~fin).sum()):,}｜近 {st[0]} 步平均每步拉回 {st[1] / max(st[0], 1):,.0f} 顆"
+                      f"｜重算下限 {getattr(self, '_pxf_ms', float('nan')):.0f} ms（每 {k} 步）", flush=True)
+                self._pxf_announced = True; self._pxf_stat = [0, 0]
 
     def _sfm_birth_probs(self, gaussian_model, probs, indices=None):
         c = self.config
