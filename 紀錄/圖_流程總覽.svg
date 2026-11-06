@@ -130,7 +130,7 @@ svg text { font-family: "Noto Sans TC", "Noto Sans CJK TC", "PingFang TC", "Micr
       <g class="chip k-cand"><rect x="771" y="358" width="129" height="24"></rect><text x="779" y="375">補洞（依單目深度）</text></g>
       <g class="chip k-cand"><rect x="908" y="358" width="129" height="24"></rect><text x="916" y="375">合併共平面同色鄰居</text></g>
       <g class="chip k-cand"><rect x="1045" y="358" width="104" height="24"></rect><text x="1053" y="375">新點平面內錯開</text></g>
-      <g class="chip k-cand"><rect x="620" y="390" width="179" height="24"></rect><text x="628" y="407">沒證據的不准往上（測試中）</text></g>
+      <g class="chip k-cand"><rect x="620" y="390" width="117" height="24"></rect><text x="628" y="407">沒證據的不准往上</text></g>
     </g>
 
     <rect class="bx ours" x="608" y="452" width="578" height="74" rx="5"></rect>
@@ -183,6 +183,6 @@ svg text { font-family: "Noto Sans TC", "Noto Sans CJK TC", "PingFang TC", "Micr
       <rect class="bx ours" x="400" y="0" width="28" height="20" rx="3"></rect>
       <text class="t2 fg" x="438" y="15">我們加的或改造的，已進現行配方</text>
       <rect class="bx cand" x="720" y="0" width="28" height="20" rx="3"></rect>
-      <text class="t2 fg" x="758" y="15">候選元件：本機每塊 1M 驗證過（b3／b12／b6），還沒進全場景</text>
+      <text class="t2 fg" x="758" y="15">候選元件：本機每塊 1M 驗證過（b3 等），還沒進全場景</text>
     </g>
   </svg>
