@@ -868,13 +868,26 @@ class GaussianSplatting(LightningModule):
             gt = F.interpolate(gt[None].float(), size=(h, w), mode="area")[0].to(gt.dtype)
         if mask is not None:
             mask = F.interpolate(mask[None].float(), size=(h, w), mode="nearest")[0].to(mask.dtype)
-        if extra is not None and not getattr(self, "_res_extra_warned", False):
-            self._res_extra_warned = True
-            print("⚠⚠ [train-res] batch 帶有額外資料（深度圖等）而它沒有跟著縮小 —— 用到深度 loss 時不可開 train_res_schedule")
+
+        # ★ 11-06：額外資料（單目逆深度）與影像同大小時跟著縮小。大小不同時原樣保留：現有的使用端都按比例取樣
+        #   （深度支撐閘門 geom_gate.update 用 深度圖寬／相機寬 換算座標；補洞 _hole_fill 先 interpolate 到渲染大小），
+        #   所以低解析度步也對得上。新加的使用端若直接用相機像素座標索引深度圖，要自己處理。
+        def _rs_t(t):
+            if torch.is_tensor(t) and t.dim() >= 2 and tuple(t.shape[-2:]) == (H, W):
+                lead = t.shape[:-2]
+                y = F.interpolate(t.reshape(1, -1, H, W).float(), size=(h, w), mode="area")
+                return y.reshape(*lead, h, w).to(t.dtype)
+            return t
+        if isinstance(extra, (tuple, list)):
+            extra = type(extra)(_rs_t(t) for t in extra)
+        elif extra is not None:
+            extra = _rs_t(extra)
         last = getattr(self, "_res_last", None)
         if last != (w, h):
             self._res_last = (w, h)
-            print(f"[train-res] ✅ step {step}: 訓練解析度 {W}x{H} -> {w}x{h}（x{s:g}）")
+            print(f"[train-res] ✅ step {step}: 訓練解析度 {W}x{H} -> {w}x{h}（x{s:g}）"
+                  + (f"；額外資料 {', '.join(str(tuple(t.shape)) for t in (extra if isinstance(extra, (tuple, list)) else [extra]) if torch.is_tensor(t))}"
+                     "（與影像同大小的已縮小，其餘由使用端按比例取樣）" if extra is not None else ""), flush=True)
         return cam, (cam, (name, gt, mask), extra)
 
     def training_step(self, batch, batch_idx):
@@ -898,6 +911,7 @@ class GaussianSplatting(LightningModule):
         global_step = self.trainer.global_step + 1  # must start from 1 to prevent densify at the beginning
         # ★ 2026-10-09 低解析度起步（使用者：DLSS 式，前期顆數多時壓低逐像素／逐配對負載）
         _rs = self._train_res_scale(global_step)
+        self._res_now = _rs                      # ★ 11-06 metric／renderer 讀它決定低解析度步的 dist 權重（metric.lambda_dist_lowres）
         if _rs < 1.0:
             camera, batch = self._downscale_batch(camera, batch, _rs, global_step)
         if int(self.hparams.get("outside_pool_start", 0) or 0) > 0:

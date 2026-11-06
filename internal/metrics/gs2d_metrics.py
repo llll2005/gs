@@ -12,6 +12,9 @@ class GS2DMetrics(VanillaMetrics):
     lambda_dist_ramp_until: int = 0
     """★ 2026-10-18 使用者「堆疊懲罰從 0 逐步加強」：>0 時 dist 權重從 dist_regularization_from_iter 線性升到此步才達 lambda_dist
     （0＝原行為：到 from_iter 一步跳到 lambda_dist）。動機：dist 1000 從頭固定 => −2~3 dB；增生初期幾何未成形時不宜強壓。"""
+    lambda_dist_lowres: float = 1.0
+    """★ 2026-11-06 低解析度步（model.train_res_schedule 倍率 < 1）的 dist 權重倍率；0＝那些步不算 dist（光柵器也走不含 distortion 的 lean，
+    renderer.training_forward 用同一個規則）。動機：10-24 DashGaussian 臂 dist100 在低解析度發散（b0 本塊 −9.8 dB）。"""
     lambda_dist_interval: int = 1
     """★ 2026-10-24 >1 時 dist 只在 step % k == 0 的步算、權重乘 k（期望值不變）；其餘步光柵器走不含 distortion 的 lean
     （renderer.training_forward 用同一個規則決定 _lean_dist）。動機：本機量到 dist100 讓每步 +21%（render forward +4.6 ms、
@@ -46,6 +49,14 @@ class GS2DMetricsImpl(VanillaMetricsImpl):
             if lambda_normal > 0 and step < 10 ** 8 and not getattr(self, "_normal_interval_announced", False):
                 self._normal_interval_announced = True
                 print(f"[normal-interval] ✅ 首次觸發 step={step}：normal 每 {_ni} 步算一次、權重 {lambda_normal:.4g}（＝{_ni} 倍）", flush=True)
+
+        # ★ 11-06 低解析度步（train_res_schedule < 1）的 dist 權重倍率：10-24 DashGaussian 臂 dist100 在低解析度發散（b0 本塊 −9.8 dB）
+        _dl = float(getattr(self.config, "lambda_dist_lowres", 1.0))
+        if _dl != 1.0 and lambda_dist > 0 and float(getattr(pl_module, "_res_now", 1.0)) < 1.0:
+            lambda_dist = lambda_dist * _dl
+            if not getattr(self, "_dist_lowres_announced", False):
+                self._dist_lowres_announced = True
+                print(f"[dist-lowres] ✅ 首次觸發 step={step}：訓練解析度 x{float(getattr(pl_module, '_res_now', 1.0)):g} => dist 權重 x{_dl:g}", flush=True)
 
         _di = int(getattr(self.config, "lambda_dist_interval", 1) or 1)
         if _di > 1 and lambda_dist > 0:

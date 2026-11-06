@@ -582,6 +582,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
             #   => 用 step + 1 判斷，且寧可早一步開（多算一步 distortion 無害；少算一步 metric 會讀不到 rend_dist）
             _di = int(getattr(mcfg, "lambda_dist_interval", 1) or 1)       # ★ 10-24 dist 每 k 步（與 metric 同一規則：metric 的 step＝這裡的 step + 1）
             kwargs["_lean_dist"] = lam > 0 and (step + 1) >= frm and (_di <= 1 or (step + 1) % _di == 0)
+            if kwargs["_lean_dist"] and float(getattr(mcfg, "lambda_dist_lowres", 1.0)) == 0.0 \
+                    and float(getattr(module, "_res_now", 1.0)) < 1.0:
+                kwargs["_lean_dist"] = False                     # ★ 11-06 低解析度步不算 dist（與 metric 同一規則）
         if "_geo" not in kwargs:
             # ★ 2026-10-29 normal loss 有作用的步 => 要幾何通道（rend_normal、surf_normal）：該步不走 lean（與 metric 同一規則：metric 的 step＝這裡的 step + 1）
             mcfg = getattr(getattr(module, "metric", None), "config", None)

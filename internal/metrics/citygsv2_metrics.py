@@ -55,6 +55,7 @@ class CityGSV2Metrics(GS2DMetrics):
     lambda_dist_ramp_until: int = 0     # ★ 2026-10-18 dist 漸進（說明見 GS2DMetrics）
 
     lambda_dist_interval: int = 1       # ★ 2026-10-24 dist 每 k 步算一次、權重乘 k（說明見 GS2DMetrics）
+    lambda_dist_lowres: float = 1.0     # ★ 2026-11-06 低解析度步的 dist 權重倍率（說明見 GS2DMetrics）
 
     lambda_normal_interval: int = 1     # ★ 2026-10-29 normal 每 k 步算一次、權重乘 k（說明見 GS2DMetrics）
 
