@@ -52,6 +52,15 @@ class SfmVisVotesTest(unittest.TestCase):
         f, b, c, iv = self.votes([[100.0, 0.0, 0.0], [0.0, 0.0, 20.0]])
         self.assertEqual(c.tolist(), [0, 0]); self.assertEqual(iv.tolist(), [0, 0])
 
+    def test_behind_max_drops_far_views(self):
+        # ★ 11-08：容差＝8 px x 顆粒深度 / 100；behind_max 10。地下 3（深度 13、上限 10.4）仍算被擋；地下 60（深度 70、上限 56）整台不算證據
+        dmin, dmax = _grid()
+        X = torch.tensor([[0.0, 0.0, -3.0], [0.0, 0.0, -60.0]], dtype=torch.float32)
+        f, b, c, iv, ca = sfm_vis_votes(X, *self.cam, dmin, dmax, 10, 8.0, behind_max=10.0, return_cover_all=True)
+        self.assertEqual(b.tolist(), [1, 0]); self.assertEqual(c.tolist(), [1, 0]); self.assertEqual(ca.tolist(), [1, 1])
+        f0, b0, c0, _ = sfm_vis_votes(X, *self.cam, dmin, dmax, 10, 8.0)            # 預設＝原行為（v4）
+        self.assertEqual(b0.tolist(), [1, 1]); self.assertEqual(c0.tolist(), [1, 1])
+
     def test_tolerance_scales_with_pixels(self):
         X = [[0.0, 0.0, -0.5]]                                          # 0.5 在 8 px（0.8）內、在 2 px（0.2）外
         self.assertEqual(int(self.votes(X, k_px=8.0)[1][0]), 0)

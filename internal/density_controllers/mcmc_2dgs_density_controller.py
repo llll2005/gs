@@ -47,7 +47,7 @@ def hole_candidates(alpha, z, inv, A, margin: float):
 
 
 @torch.no_grad()
-def sfm_vis_votes(X, R, T, fx, fy, cx, cy, W, H, dmin, dmax, cell: int, k_px: float):
+def sfm_vis_votes(X, R, T, fx, fy, cx, cy, W, H, dmin, dmax, cell: int, k_px: float, behind_max: float = 0.0, return_cover_all: bool = False):
     """★ 2026-11-05 SfM 視線一致性（使用者：取代「離 SfM 多遠」——那會把『沒有證據』當成『有證據說是空的』，誤傷少 SfM 的高樓）。
     每個 SfM 觀測代表「相機到點的連線上是空的、點的後面被它擋住」。對 K 台相機（R [K,3,3]、T [K,3]：x_cam = R x + T，COLMAP 慣例；
     fx..cy [K]；W、H 像素），dmin／dmax [K, Hc, Wc]＝該相機觀測到的可靠 SfM 點在每個 cell x cell 像素格裡的最近／最遠深度（沒有點＝nan）。
@@ -56,10 +56,16 @@ def sfm_vis_votes(X, R, T, fx, fy, cx, cy, W, H, dmin, dmax, cell: int, k_px: fl
       behind＝ 落在有 SfM 的格、而且比該格最遠的 SfM 點還遠 tol 以上（被觀測到的表面擋住，例如路面下方）
       cover ＝ 落在有 SfM 的格（有證據的相機數）
       inview＝ 在相機視野內（不論格裡有沒有 SfM）
-    回傳四個 [N] int 計數。"""
+    回傳四個 [N] int 計數。
+    ★ 2026-11-08 behind_max > 0：比該格最遠的 SfM 點還遠 behind_max x tol 以上的那台相機整台不算（既不算 behind、也不算 cover）——
+      它看到的是別的表面（例如從大樓背面看到背面立面，牆在它後面一整棟樓的厚度），對這顆所在的局部表面沒有資訊。
+      使用者 11-08「test 圖牆面有些地方糊」：v4（rep 0.1）把少 SfM 的牆 52.8% 判成地下（清楚的牆 19.2%）=> 增生被擋、粒子餓死；
+      K=10：糊牆 5.6%、清楚牆 1.2%、真地下層（路面下 1~10 m）48.6% -> 35.5%、地面 0.1%（scratchpad behind_cap_check_1108.py）。
+      return_cover_all=True 時多回傳 cover_all（不排除落後太多的相機；空區票比例與 noup 的「沒證據」照舊用它）。"""
     N = X.shape[0]
     free = torch.zeros(N, dtype=torch.int32, device=X.device)
     behind = torch.zeros_like(free); cover = torch.zeros_like(free); inview = torch.zeros_like(free)
+    cover_all = torch.zeros_like(free) if return_cover_all else None
     Hc, Wc = dmin.shape[1], dmin.shape[2]
     for k in range(R.shape[0]):
         Xc = X @ R[k].T + T[k]
@@ -71,10 +77,13 @@ def sfm_vis_votes(X, R, T, fx, fy, cx, cy, W, H, dmin, dmax, cell: int, k_px: fl
         dm = dmin[k][cv, cu].float(); dM = dmax[k][cv, cu].float()
         has = ok & torch.isfinite(dm)
         tol = k_px * z / fx[k]
-        free += (has & (z < dm - tol)).int()
-        behind += (has & (z > dM + tol)).int()
-        cover += has.int(); inview += ok.int()
-    return free, behind, cover, inview
+        hv = has & (z <= dM + behind_max * tol) if behind_max > 0 else has
+        free += (hv & (z < dm - tol)).int()
+        behind += (hv & (z > dM + tol)).int()
+        cover += hv.int(); inview += ok.int()
+        if cover_all is not None:
+            cover_all += has.int()
+    return (free, behind, cover, inview, cover_all) if return_cover_all else (free, behind, cover, inview)
 
 
 def backproject(u, v, z, fx, fy, cx, cy, w2c):
@@ -514,6 +523,10 @@ class MCMC2DGSDensityController(MCMCDensityController):
     它們的證據／視野中位 0.08～0.09，路面下方 0.20～0.22。"""
     sfm_vis_behind_min: int = 3
     sfm_vis_behind_frac: float = 0.9
+    sfm_vis_behind_max: float = 0.0
+    """★ 2026-11-08 地下票的「落後上限」（容差 sfm_vis_px 的倍數；0＝不限＝v4）。比格內最遠 SfM 點還遠這麼多倍容差的相機整台不算證據
+    （看到的是別的表面，例如從大樓背面）。使用者 11-08「test 圖牆面有些地方糊」：v4 rep 0.1 把少 SfM 的牆 52.8% 判地下 => 增生被擋、
+    粒子只剩 2～5 顆（CityGS 22）；K=10 => 5.6%，真地下層的檢出 48.6% -> 35.5%（見 sfm_vis_votes）。空區票比例與 noup 照舊用全部證據。"""
     sfm_vis_eps: float = 0.01
     """視線一致性判成浮塊／地下的母點的抽樣倍率；1.0＝不改抽樣、只印統計。範圍同 sfm_birth_from_iter／until_iter。"""
     sfm_vis_noup: bool = False
@@ -1533,12 +1546,13 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             pick = torch.arange(K, device=X.device) if kk <= 0 or kk >= K else torch.randperm(K, device=X.device)[:kk]   # <=0＝全部相機
             import time as _t
             _t0 = _t.time()
-            f, b, cv, iv = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
-                                     vis["cy"][pick], vis["W"][pick], vis["H"][pick], vis["dmin"][pick], vis["dmax"][pick],
-                                     vis["cell"], float(getattr(c, "sfm_vis_px", 8.0)))
+            f, b, cn, iv, cv = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
+                                             vis["cy"][pick], vis["W"][pick], vis["H"][pick], vis["dmin"][pick], vis["dmax"][pick],
+                                             vis["cell"], float(getattr(c, "sfm_vis_px", 8.0)),
+                                             behind_max=float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0), return_cover_all=True)
             floater = (f >= int(getattr(c, "sfm_vis_free_min", 2))) & (f.float() >= float(getattr(c, "sfm_vis_free_frac", 0.0) or 0.0) * cv.float())
-            under = (cv >= int(getattr(c, "sfm_vis_behind_min", 3))) & (b.float() >= float(getattr(c, "sfm_vis_behind_frac", 0.9)) * cv.float()) \
-                & (cv.float() >= float(getattr(c, "sfm_vis_rep", 0.0) or 0.0) * iv.float())
+            under = (cn >= int(getattr(c, "sfm_vis_behind_min", 3))) & (b.float() >= float(getattr(c, "sfm_vis_behind_frac", 0.9)) * cn.float()) \
+                & (cn.float() >= float(getattr(c, "sfm_vis_rep", 0.0) or 0.0) * iv.float())
             vis["bad"] = floater | under; vis["fl"] = floater; vis["un"] = under; vis["cv"] = cv
             vis["step"] = step; vis["n"] = X.shape[0]; vis["ncam"] = int(pick.numel())
             if bool(getattr(c, "sfm_vis_noup", False)):
@@ -1559,7 +1573,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             n = vis["bad"].shape[0]
             print(f"[sfm-vis] {'✅ 首次觸發' if first else '　'} step {step}：{'搬家' if indices is not None else '增生'}抽母點｜"
                   f"浮塊（空區票）{int(vis['fl'].sum()):,}、地下（一直被擋）{int(vis['un'].sum()):,}、沒有 SfM 證據 {int((vis['cv'] == 0).sum()):,}／{n:,} 顆；"
-                  f"機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）｜投票 {vis.get('ncam', 0)} 台相機、{vis.get('ms', 0):.0f} ms", flush=True)
+                  f"機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）｜投票 {vis.get('ncam', 0)} 台相機、{vis.get('ms', 0):.0f} ms"
+                  + (f"｜地下票只算落後 {float(c.sfm_vis_behind_max):g}×容差內" if float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 else ""), flush=True)
         return out
 
     @torch.no_grad()
