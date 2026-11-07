@@ -715,6 +715,12 @@ class MCMC2DGSDensityController(MCMCDensityController):
     ＝破壞集合（§11.34 實測 −2.34 dB）。10.0 落在 corr 仍為 0.980 的箱內且留有餘裕。"""
 
     harvest_relocate: bool = False
+    harvest_prune_dead: bool = True
+    """★ 2026-11-07（使用者「直接設成預設」）：增生結束後每 harvest_prune_dead_interval 步刪掉 MCMC 判死的顆粒（o <= min_opacity）。
+    增生停了 MCMC 就不再回收它們，熵切雙向後把 o < 0.5 的一路推向 0 => 一直躺到結束（b3 30k：5.5 萬顆、7.6%）。
+    離線刪掉 V＝0（α < 1/255）的那批：held-out、F1 一位不差（`紀錄/實驗分析/31` §4.6）；`o < 0.005` 與 `o <= 1/255` 選到同一批（比 0.995，v1 §11.61）。
+    harvest_relocate 開著時不刪（交給它搬家）。False＝舊行為。"""
+    harvest_prune_dead_interval: int = 500
     """★ 收割期回收（使用者 2026-09-01 提案）：`densify_until_iter` 之後**繼續 relocation
     但不成長**（只搬死粒子到 `probs` 抽中的宿主，不呼叫 `add_new_gs`）⇒ N 不變、不動 cap/VRAM。
 
@@ -1000,6 +1006,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             #   而收割期的宿主正是在收斂外觀的那些 ⇒ 這就是 churn 淨負的機制。
             # ⚠ 門檻用 `min_opacity` 即可：實測 `o<0.005` 與 `o<=1/255` 選到同一批
             #   （15.03% vs 14.96%，比 0.995，§11.61）⇒ 再收緊門檻沒有意義。
+            if bool(getattr(self.config, "harvest_prune_dead", False)) and not self.config.harvest_relocate:
+                self._harvest_prune_dead(gaussian_model, optimizers, global_step)
             if self.config.harvest_relocate and global_step % self.config.densification_interval == 0:
                 with torch.no_grad():
                     _dead = (gaussian_model.get_opacities()
@@ -1649,6 +1657,23 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"｜沒有相機看得到（不夾）{int((~fin).sum()):,}｜近 {st[0]} 步平均每步拉回 {st[1] / max(st[0], 1):,.0f} 顆"
                       f"｜重算下限 {getattr(self, '_pxf_ms', float('nan')):.0f} ms（每 {k} 步）", flush=True)
                 self._pxf_announced = True; self._pxf_stat = [0, 0]
+
+    def _harvest_prune_dead(self, gaussian_model, optimizers, global_step: int) -> int:
+        """增生後刪 MCMC 判死的顆粒（config.harvest_prune_dead）。回傳刪掉的顆數。"""
+        k = max(1, int(getattr(self.config, "harvest_prune_dead_interval", 500) or 500))
+        if global_step % k != 0:
+            return 0
+        with torch.no_grad():
+            dead = (gaussian_model.get_opacities() <= self._current_min_opacity(global_step)).reshape(-1)
+            n_d = int(dead.sum()); n0 = int(dead.shape[0])
+            if n_d > 0:
+                self._prune_points(dead, gaussian_model, optimizers)
+        tot = getattr(self, "_hpd_total", 0) + n_d; self._hpd_total = tot
+        if not getattr(self, "_hpd_announced", False) or global_step % 3000 == 0:
+            print(f"[harvest-prune-dead] {'✅ 首次觸發 ' if not getattr(self, '_hpd_announced', False) else ''}step {global_step}："
+                  f"o <= {self._current_min_opacity(global_step):g} 的死顆粒刪 {n_d:,}／{n0:,}（增生後累計 {tot:,}）", flush=True)
+            self._hpd_announced = True
+        return n_d
 
     def _merge_exclude(self, gaussian_model, n0: int):
         """合併排除：錨點（sfm_lock）＋ trim_hidden 判為被擋的（這個窗口在畫面內、覆蓋 0 => 該剪不該併；11-07 使用者「合併加相關判定」）。"""
