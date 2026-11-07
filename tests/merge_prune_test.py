@@ -157,3 +157,39 @@ class AbsorbStepTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MergeRenderEpsTest(unittest.TestCase):
+    """★ 11-07 晚 MCMC 一致版合併：不透明質量守恆的 opacity、合併前後渲染的相對 L2 誤差、不設額度。"""
+
+    @staticmethod
+    def _two(d, o=0.6, s=0.01):
+        from internal.density_controllers.merge_ops import _pair_params
+        X = torch.tensor([[-d / 2, 0., 0.], [d / 2, 0., 0.]])
+        S = torch.full((2, 2), s); t1 = torch.tensor([[1., 0, 0]] * 2); t2 = torch.tensor([[0., 1, 0]] * 2)
+        nrm = torch.tensor([[0., 0, 1]] * 2); O = torch.full((2,), o)
+        ar = torch.arange(2)
+        return {m: _pair_params(O, S, t1, t2, nrm, X, ar, ar[:1], ar[1:], m) for m in ("mass", "union")}
+
+    def test_mass_opacity_conserves_mass(self):
+        p = self._two(0.02)["mass"]                                     # 並排：合併後 s1 = sqrt(s² + (d/2)²)、s2 = s
+        s1, s2 = float(p["sc"][0, 0]), float(p["sc"][0, 1])
+        self.assertAlmostEqual(s1, (0.01 ** 2 + 0.01 ** 2) ** 0.5, places=6)
+        self.assertAlmostEqual(float(p["on"][0]) * s1 * s2, 2 * 0.6 * 0.01 * 0.01, places=9)
+
+    def test_error_small_when_adjacent_large_when_far(self):
+        near, mid, far = self._two(0.02), self._two(0.03), self._two(0.06)               # 中心距 2s／3s／6s（s＝尺度）
+        self.assertLess(float(near["mass"]["err"][0]), 0.05)                               # 緊鄰：一顆幾乎畫得出兩顆
+        self.assertLess(float(mid["mass"]["err"][0]), float(mid["union"]["err"][0]))       # 3s（現行幾何條件的上限）：聯集的 opacity 讓質量變多
+        self.assertGreater(float(far["mass"]["err"][0]), 0.4)                              # 離太遠：一顆蓋不出兩顆的樣子
+
+    def test_merge_step_eps_no_quota(self):
+        from internal.density_controllers.merge_ops import merge_step
+        gm, _ = _plane()
+        I, J, info = merge_step(gm, k=12, max_frac=1.0, color_tol=1.0, opacity_mode="mass", render_eps=0.5)
+        self.assertGreater(info["mutual"], 0)
+        self.assertEqual(I.numel(), info["pairs"])
+        self.assertLessEqual(info["pairs"], info["mutual"])
+        gm2, _ = _plane()
+        _, _, info0 = merge_step(gm2, k=12, max_frac=1.0, color_tol=1.0, opacity_mode="mass", render_eps=1e-6)
+        self.assertEqual(info0["pairs"], 0)                                                 # 門檻極小 => 一對都不併

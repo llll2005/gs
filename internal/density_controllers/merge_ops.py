@@ -7,6 +7,13 @@ MCMC 只有「搬」與「增」，沒有「併」。這裡在增生期每隔幾
   合併（質量守恆矩匹配，權重 o×面積）：中心＝加權平均；法向＝兩個鄰域平面法向平均（貼牆，不用面元自己的法向）；
         面內兩軸／尺度＝兩片面元 2D 共變異投影到合併平面＋中心離散的二階矩；opacity＝1−(1−o_i)(1−o_j)；SH＝加權平均
 寫回 i 的槽位（原始參數），回傳 (i, j)：呼叫端把 i 的 Adam 狀態重設、把 j 併進 dead_mask 交給 MCMC relocation 搬走（N 不變）。
+
+★ 2026-11-07 晚 MCMC 一致版（使用者「MCMC 的機制都基於某個算式，合併能不能也符合、不要限額度讓它自然判斷」）：
+  3DGS-MCMC 的 relocation 是「不改變渲染結果的跳躍」——一顆拆成 N 顆時用 Eq.9 調 opacity／尺度讓疊起來的樣子不變，
+  搬多少由狀態決定（死了幾顆）而不是額度。合併是它的反向：兩顆換一顆，只有在「換了之後渲染幾乎不變」時才是合法的一步。
+  opacity_mode="mass"：合併後 opacity 由不透明質量守恆決定 o_m·|Σ_m|^½ = o_i·|Σ_i|^½ + o_j·|Σ_j|^½（舊的聯集公式只對完全疊在一起的兩顆成立，
+  並排的兩顆會讓質量變多）；render_eps > 0：在合併平面上算 f = o_i·G_i + o_j·G_j 與 g = o_m·G_m 的相對 L2 誤差
+  ||f−g||²／||f||²（2D 高斯乘積積分有封閉式），誤差 < render_eps 的互為最佳配對全部合併；額度 max_frac >= 1 時不設上限。
 """
 import torch
 
@@ -46,9 +53,11 @@ def _mat2q(R):
 
 @torch.no_grad()
 def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, flat_tol: float = 0.1,
-               min_opacity: float = 0.5, chunk: int = 1 << 19, exclude=None, prio=None):
+               min_opacity: float = 0.5, chunk: int = 1 << 19, exclude=None, prio=None,
+               opacity_mode: str = "union", render_eps: float = -1.0):
     """exclude（[N] bool，可省）：不參與合併的顆粒（SfM 錨點）。prio（[N] float，可省）：每顆的成本倍率，
-    配對取兩顆中較小的；只在候選對超過 max_frac 額度時改變「先併哪些」（2026-11-05 sfm_merge_eps）。兩者省略＝原行為。"""
+    配對取兩顆中較小的；只在候選對超過 max_frac 額度時改變「先併哪些」（2026-11-05 sfm_merge_eps）。兩者省略＝原行為。
+    opacity_mode／render_eps：見檔頭「MCMC 一致版」；預設＝原行為。"""
     g = gm.gaussians
     X, raw_s, raw_q, raw_o = g["means"], g["scales"], g["rotations"], g["opacities"]
     dc, rest = g["shs_dc"], g["shs_rest"]
@@ -93,25 +102,43 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
     bb = best.clamp_min(0)
     mutual = has & has[bb] & (best[bb] == ar) & (ar < bb)
     pi = torch.nonzero(mutual, as_tuple=True)[0]; pj = best[pi]
-    lim = int(max_frac * X.shape[0])
+    n_mutual = int(pi.numel())
+    err_med = float("nan")
+    if render_eps > 0 and pi.numel() > 0:
+        err = _pair_params(O, S, t1, t2, nrm, Xc, cand, pi, pj, opacity_mode)["err"]
+        err_med = float(err.median())
+        okp = err < render_eps
+        pi, pj, bestc_p = pi[okp], pj[okp], err[okp]
+    else:
+        bestc_p = bestc[pi]
+    lim = int(max_frac * X.shape[0]) if max_frac < 1 else pi.numel()
     if pi.numel() > lim:
-        key = bestc[pi]
+        key = bestc_p
         if prio is not None and prio.shape[0] == O.shape[0]:
             key = key * torch.minimum(prio[cand[pi]], prio[cand[pj]]).to(key.dtype)
         keep = torch.topk(key, lim, largest=False).indices
         pi, pj = pi[keep], pj[keep]
+    extra = {"mutual": n_mutual, "err_med": err_med}
     if pi.numel() == 0:
-        return empty, empty, {"pairs": 0}
-    return _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, pi, pj)
+        return empty, empty, {"pairs": 0, **extra}
+    I, J, info = _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, pi, pj, opacity_mode)
+    return I, J, {**info, **extra}
+
+
+def _gauss_overlap(A, a, Bm, b):
+    """∫ exp(−½(x−a)ᵀA⁻¹(x−a))·exp(−½(x−b)ᵀB⁻¹(x−b)) dx（2D、不歸一化、峰值 1 的高斯；A、B [m,2,2]，a、b [m,2]）
+    ＝ 2π·sqrt(|A||B|／|A+B|)·exp(−½ dᵀ(A+B)⁻¹d)。"""
+    C = A + Bm
+    d = a - b
+    q = (d[:, None, :] @ torch.linalg.solve(C, d[:, :, None]))[:, 0, 0]
+    det = lambda M: (M[:, 0, 0] * M[:, 1, 1] - M[:, 0, 1] * M[:, 1, 0]).clamp_min(1e-60)
+    return 2 * torch.pi * torch.sqrt(det(A) * det(Bm) / det(C)) * torch.exp(-0.5 * q)
 
 
 @torch.no_grad()
-def _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, pi, pj):
-    """把 cand[pj] 併進 cand[pi]（質量守恆矩匹配；寫回 cand[pi] 的原始參數）。pi／pj 是 cand 內的局部索引、一一配對、互不重複。
-    merge_step（互為最佳的兩兩合併）與 absorb_step（trim 候選併進最佳鄰居）共用。回傳 (留下的全域索引, 併掉的全域索引, 統計)。"""
-    X, raw_s, raw_q, raw_o = g["means"], g["scales"], g["rotations"], g["opacities"]
-    dc, rest = g["shs_dc"], g["shs_rest"]
-    dev = X.device
+def _pair_params(O, S, t1, t2, nrm, Xc, cand, pi, pj, opacity_mode="union"):
+    """一對一的合併結果（不寫回）：中心 c、尺度 sc、四元數 qn、opacity on、法向 nn、SH 權重 fi／fj、渲染誤差 err（見檔頭）。"""
+    dev = Xc.device
     I, J = cand[pi], cand[pj]
     oi, oj = O[I], O[J]
     wi = oi * S[pi, 0] * S[pi, 1]; wj = oj * S[pj, 0] * S[pj, 1]; ws = (wi + wj).clamp_min(1e-20)
@@ -122,18 +149,46 @@ def _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, pi, pj):
     u = torch.cross(nn, ref, dim=-1); u = u / u.norm(dim=-1, keepdim=True).clamp_min(1e-12); v = torch.cross(nn, u, dim=-1)
     B = torch.stack([u, v], -1)                                           # [m, 3, 2]
     cov = torch.zeros(pi.numel(), 2, 2, device=dev)
+    S2, Q2 = [], []
     for idx, w in ((pi, wi), (pj, wj)):
         Sig = (S[idx, 0] ** 2)[:, None, None] * torch.einsum("ni,nj->nij", t1[idx], t1[idx]) \
             + (S[idx, 1] ** 2)[:, None, None] * torch.einsum("ni,nj->nij", t2[idx], t2[idx])
         q2 = torch.einsum("nij,ni->nj", B, Xc[idx] - c)
-        cov += (w / ws)[:, None, None] * (torch.einsum("nki,nkl,nlj->nij", B, Sig, B) + torch.einsum("ni,nj->nij", q2, q2))
+        s2 = torch.einsum("nki,nkl,nlj->nij", B, Sig, B)
+        S2.append(s2); Q2.append(q2)
+        cov += (w / ws)[:, None, None] * (s2 + torch.einsum("ni,nj->nij", q2, q2))
     ev2, evec2 = torch.linalg.eigh(cov)
     sc = torch.sqrt(ev2.flip(-1).clamp_min(1e-14))                        # 大的在前
     a1 = evec2[:, 0, 1:2] * u + evec2[:, 1, 1:2] * v; a1 = a1 / a1.norm(dim=-1, keepdim=True).clamp_min(1e-12)
     a2 = torch.cross(nn, a1, dim=-1)
     qn = _mat2q(torch.stack([a1, a2, nn], -1))
-    on = (1 - (1 - oi) * (1 - oj)).clamp(1e-4, 0.999)
-    fi, fj = (wi / ws)[:, None, None], (wj / ws)[:, None, None]
+    if opacity_mode == "mass":                                            # 不透明質量守恆：o·s1·s2（2π 約掉）
+        on = ((wi + wj) / (sc[:, 0] * sc[:, 1]).clamp_min(1e-30)).clamp(1e-4, 0.999)
+    elif opacity_mode == "union":
+        on = (1 - (1 - oi) * (1 - oj)).clamp(1e-4, 0.999)
+    else:
+        raise ValueError(f"opacity_mode={opacity_mode!r}（只接受 union／mass）")
+    # 渲染誤差（合併平面上、加法近似；float64）：f = o_i G_i + o_j G_j，g = o_m G_m
+    D = torch.float64
+    Ai, Aj, Am = S2[0].to(D), S2[1].to(D), cov.to(D)
+    qi, qj, z = Q2[0].to(D), Q2[1].to(D), torch.zeros_like(Q2[0], dtype=D)
+    oi_, oj_, om_ = oi.to(D), oj.to(D), on.to(D)
+    ff = oi_ ** 2 * _gauss_overlap(Ai, qi, Ai, qi) + oj_ ** 2 * _gauss_overlap(Aj, qj, Aj, qj) + 2 * oi_ * oj_ * _gauss_overlap(Ai, qi, Aj, qj)
+    fg = oi_ * _gauss_overlap(Ai, qi, Am, z) + oj_ * _gauss_overlap(Aj, qj, Am, z)
+    gg = om_ ** 2 * _gauss_overlap(Am, z, Am, z)
+    err = ((ff - 2 * om_ * fg + gg).clamp_min(0) / ff.clamp_min(1e-60)).float()
+    return {"I": I, "J": J, "c": c, "sc": sc, "qn": qn, "on": on, "nn": nn,
+            "fi": (wi / ws)[:, None, None], "fj": (wj / ws)[:, None, None], "err": err}
+
+
+@torch.no_grad()
+def _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, pi, pj, opacity_mode="union"):
+    """把 cand[pj] 併進 cand[pi]（質量守恆矩匹配；寫回 cand[pi] 的原始參數）。pi／pj 是 cand 內的局部索引、一一配對、互不重複。
+    merge_step（互為最佳的兩兩合併）與 absorb_step（trim 候選併進最佳鄰居）共用。回傳 (留下的全域索引, 併掉的全域索引, 統計)。"""
+    X, raw_s, raw_q, raw_o = g["means"], g["scales"], g["rotations"], g["opacities"]
+    dc, rest = g["shs_dc"], g["shs_rest"]
+    pr = _pair_params(O, S, t1, t2, nrm, Xc, cand, pi, pj, opacity_mode)
+    I, J, c, sc, qn, on, nn, fi, fj = (pr[k] for k in ("I", "J", "c", "sc", "qn", "on", "nn", "fi", "fj"))
     X[I] = c.to(X.dtype)
     raw_s[I] = torch.log(sc).to(raw_s.dtype)
     raw_q[I] = qn.to(raw_q.dtype)

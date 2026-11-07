@@ -449,6 +449,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     merge_chunk: int = 1 << 19
     """merge_step 每批處理幾顆（鄰域平面擬合的批次 eigh 工作區約 4 KB／顆 => 預設 52 萬顆一批約 2 GiB）。
     結果與批次大小無關（逐顆的 3x3 eigh）；6 GB 卡用 65536（2026-11-03 本機 1M 在第一次合併 OOM）。"""
+    merge_opacity: str = "union"
+    """★ 2026-11-07 晚（使用者「合併能不能符合 MCMC 的算式」）：合併後 opacity 的算法。union＝1−(1−o_i)(1−o_j)（原行為；只對疊在一起的兩顆成立）；
+    mass＝不透明質量守恆 o_m·s1_m·s2_m = o_i·s1_i·s2_i + o_j·s1_j·s2_j（並排的兩顆合併後渲染不變；relocation Eq.9 的反向精神）。"""
+    merge_render_eps: float = -1.0
+    """>0 時：互為最佳的配對只在「合併前後渲染的相對 L2 誤差 < 這個值」時合併（`merge_ops` 檔頭）；搭配 merge_max_frac >= 1＝不設額度、讓狀態決定併多少。"""
     merge_until_iter: int = -1
     """>0 時合併只在 [merge_from_iter, merge_until_iter] 內做；<=0＝不設上限（relocate 模式本來就只在增生期）。"""
     hole_fill_frac: float = 0.0
@@ -1957,7 +1962,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=float(self.config.merge_max_frac),
                                       color_tol=float(self.config.merge_color_tol),
                                       chunk=int(getattr(self.config, "merge_chunk", 1 << 19)),
-                                      exclude=self._merge_exclude(gaussian_model, n0), prio=_prio)
+                                      exclude=self._merge_exclude(gaussian_model, n0), prio=_prio,
+                                      opacity_mode=str(getattr(self.config, "merge_opacity", "union") or "union"),
+                                      render_eps=float(getattr(self.config, "merge_render_eps", -1.0)))
         out = None
         if _mI.numel() > 0:
             self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)          # 合併後的 i 重設 Adam 狀態
@@ -1984,7 +1991,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 if prune else "j 交給 relocation 搬走")
         print(f"[merge] {'✅ 首次觸發' if not getattr(self, '_merge_announced', False) else '　'} step {global_step}："
               f"合併 {_minfo.get('pairs', 0):,} 對（立面 {100 * _minfo.get('facade', 0):.0f}%；長軸中位 {_minfo.get('len_before', 0):.4f} -> "
-              f"{_minfo.get('len_after', 0):.4f}），{tail}", flush=True)
+              f"{_minfo.get('len_after', 0):.4f}；互為最佳 {_minfo.get('mutual', 0):,} 對"
+              f"{'、渲染誤差中位 %.3f' % _minfo['err_med'] if _minfo.get('err_med') == _minfo.get('err_med') else ''}），{tail}", flush=True)
         self._merge_announced = True
         return out
 
