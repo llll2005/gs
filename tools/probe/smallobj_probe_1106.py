@@ -81,7 +81,8 @@ lab0, ref, rnd0 = load(a.models[0])
 for fl in ("absgrad_gate", "bwd_sat_skip", "bwd_reduce", "record_reduce", "tile_cull", "lean_train"):
     if hasattr(rnd0, fl):
         setattr(rnd0, fl, False)
-X0 = ref.properties["means"].detach().numpy().astype(np.float64); O0 = torch.sigmoid(ref.properties["opacities"].detach()).reshape(-1).numpy()
+# ⚠ 11-07 修：載入器 eval_mode 預設 pre_activate，properties["opacities"] 已是 0～1；之前再套 sigmoid => 全部落在 0.5～0.73，o > 0.3 過濾從沒生效
+X0 = ref.properties["means"].detach().numpy().astype(np.float64); O0 = ref.get_opacities().detach().reshape(-1).numpy()
 cc0, lamp0, car0, _ = bands(X0)
 lamp0 &= O0 > 0.3; car0 &= O0 > 0.3
 cnt = np.zeros(shp); np.add.at(cnt, (cc0[lamp0, 0], cc0[lamp0, 1]), 1)
@@ -139,7 +140,7 @@ for mi, spec in enumerate(a.models):
         lab, model = lab0, ref
     else:
         lab, model, _ = load(spec)
-    X = model.properties["means"].detach().cpu().numpy().astype(np.float64); O = torch.sigmoid(model.properties["opacities"].detach()).reshape(-1).cpu().numpy()
+    X = model.properties["means"].detach().cpu().numpy().astype(np.float64); O = model.get_opacities().detach().reshape(-1).cpu().numpy()
     _, lamp, car, _ = bands(X)
     tr = cKDTree(X[O > 0.3])
     gap = lambda ref_m, r: 100 * np.mean(np.isinf(tr.query(X0[ref_m], k=1, distance_upper_bound=r)[0])) if ref_m.any() else float("nan")

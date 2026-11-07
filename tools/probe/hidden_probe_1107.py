@@ -1,5 +1,5 @@
 """11-07 使用者 viewer：「看了建築內部，還是有高斯在建築中間，沒有達成建築中空」「CityGS 地底塊比我們少」。
-量「被藏起來的顆粒」：每顆中心投到本塊訓練相機（均勻抽 --ncam 台），在該像素渲染 alpha > 0.95 且顆粒深度 > 表面深度 x (1+margin) 記「被擋」，
+量「被藏起來的顆粒」：每顆中心投到本塊訓練相機（均勻抽 --ncam 台），在該像素渲染 alpha > 0.95 且顆粒比表面深超過 --margin_px 個像素足跡（depth/fx）記「被擋」，
 其餘在畫面內的記「看得到」。全部被擋＝畫面內 >= 3 台且 0 台看得到（＝遮擋回收 occl_recycle 的判準，只是改成看全部相機）。
 分區（同 sprite_bands：2 m 格 SfM 中位 < 3 m＝地面格，其餘有 SfM 的格＝建築格；高度＝離地面格中位）：
   地下（地面格、< −0.5 m）、地面（地面格 ±0.5 m）、建築範圍內（建築格、離地 > 3 m）、其他。只看本塊盒內、o > 0.5 的顆粒。GPU；只讀。
@@ -18,7 +18,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--block", type=int, default=3)
 ap.add_argument("--models", nargs="+", required=True)
 ap.add_argument("--ncam", type=int, default=150)
-ap.add_argument("--margin", type=float, default=0.03)
+ap.add_argument("--margin_px", type=float, default=5.0, help="被擋＝比表面深超過這麼多個像素足跡（depth/fx）；11-07 原本用相對 3%＝空拍 450 m 約 13 m，路面下 89% 的地下顆粒判不到")
 a = ap.parse_args()
 D = "data/matrix_city/aerial/train/block_all"; B = a.block; dev = torch.device("cuda")
 P = torch.load(f"{D}/partition/partitions-dim_4_4_visibility_0.08/partitions.pt", map_location="cpu", weights_only=False)
@@ -65,7 +65,7 @@ def mk(nm):
 
 
 CAMS = [mk(n) for n in names]
-print(f"b{B}｜訓練相機 {len(CAMS)} 台（均勻抽）｜被擋＝該像素 alpha > 0.95 且顆粒深度 > 表面 x {1 + a.margin:g}｜全部被擋＝畫面內 >= 3 台且 0 台看得到｜只看本塊盒內 o > 0.5", flush=True)
+print(f"b{B}｜訓練相機 {len(CAMS)} 台（均勻抽）｜被擋＝該像素 alpha > 0.95 且顆粒比表面深 > {a.margin_px:g} 個像素足跡｜全部被擋＝畫面內 >= 3 台且 0 台看得到｜只看本塊盒內 o > 0.5", flush=True)
 rnd0 = None
 rows = []
 for spec in a.models:
@@ -91,9 +91,9 @@ for spec in a.models:
             uu = (float(cd.fx) * p[:, 0] / zc.clamp_min(1e-6) + float(cd.cx)).floor().long(); vv = (float(cd.fy) * p[:, 1] / zc.clamp_min(1e-6) + float(cd.cy)).floor().long()
             inn = (zc > 1e-3) & (uu >= 0) & (uu < W) & (vv >= 0) & (vv < H)
             uu, vv = uu.clamp(0, W - 1), vv.clamp(0, H - 1)
-            occ = inn & (al[vv, uu] > 0.95) & (zs[vv, uu] > 0) & (zc > zs[vv, uu] * (1 + a.margin))
+            occ = inn & (al[vv, uu] > 0.95) & (zs[vv, uu] > 0) & (zc > zs[vv, uu] * (1 + a.margin_px / float(cd.fx)))
             n_in += inn.float(); n_occ += occ.float()
-    op = (torch.sigmoid(model.gaussians["opacities"].detach()).reshape(-1) > 0.5).cpu().numpy()
+    op = (model.get_opacities().detach().reshape(-1) > 0.5).cpu().numpy()          # 載入器已 pre_activate（不能再套 sigmoid）
     n_in = n_in.cpu().numpy(); n_vis = n_in - n_occ.cpu().numpy()
     hid = (n_in >= 3) & (n_vis == 0); most = (n_in >= 3) & (n_vis <= 0.05 * n_in)
     R = regions(X.cpu().numpy().astype(np.float64))

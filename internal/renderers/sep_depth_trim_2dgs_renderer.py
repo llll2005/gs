@@ -51,6 +51,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_merge_first: bool = False,
             trim_merge_color_tol: float = 0.1,
             trim_running_score: str = "vc",
+            trim_hidden: bool = False,
+            trim_hidden_window: int = 0,
+            trim_hidden_min_views: int = 3,
             trim_soft_rho: float = 0.0,
             trim_schedule: str = "",
             trim_by_mean_contribution: bool = False,
@@ -142,6 +145,16 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if trim_running_score not in ("vc", "v", "inv_vc"):
             raise ValueError(f"trim_running_score 只能是 vc／v／inv_vc（收到 {trim_running_score!r}）")
         self.trim_running_score = trim_running_score
+        # ★ 2026-11-07 trim_hidden（使用者「把光度低的、沒貢獻的都刪掉」「trim 不清除固定 %，而是清除未達標的」）：
+        #   累加 V／C 時另記 F＝在畫面內（radii > 0）的次數。光柵器的覆蓋數 C 不計已飽和（T < 1e-4）像素後面的顆粒
+        #   => 完全被擋的顆粒 C＝0，原本被當「未觀測」（score＝inf）永遠不剪；增生結束後 trim 又整個停掉（30k 配方後半 15k 步沒有任何刪除）。
+        #   開了之後：(1) 增生期：F > 0 且 C＝0（在畫面內卻一次都沒被算到＝被擋）排在最前面剪；
+        #   (2) 增生後：繼續累加，每 trim_hidden_window 步（0＝2 x 訓練相機數，保證窗口含完整一個 epoch＝每台至少看一次）
+        #       剪掉 F >= trim_hidden_min_views 且 C＝0 的（不補位 => 顆數下降）；(3) density 的合併排除 F > 0 且 C＝0 的（該剪不該併）。
+        #   固定 10% 的 V/C trim 照舊（增生期汰舊換新，速度配方的一部分）；這是加一條「未達標就刪」，不是取代。
+        self.trim_hidden = trim_hidden
+        self.trim_hidden_window = trim_hidden_window
+        self.trim_hidden_min_views = trim_hidden_min_views
         if trim_merge_first and not trim_running_vc:
             print("⚠⚠ [trim-merge-first] 只接在累加式 trim（trim_running_vc）上；現在沒開 => 合併優先不會生效", flush=True)
         # ★ 2026-10-24 SH 分開存放／SH 的 Adam 融進 backward（紀錄/加速論文對照.md A5、B2；光柵器 cuda_rasterizer/sh_adam.h）
@@ -477,7 +490,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             # 光柵器未重編（沒有 return_tiles 欄位）時回傳 3 個 => 相容解包
             if len(output) == 6:
                 rendered_image, radii, allmap, tiles, _ta, _cn = output
-                self._acc_add(pc, _ta, _cn)
+                self._acc_add(pc, _ta, _cn, radii if getattr(self, "trim_hidden", False) else None)
             elif len(output) == 4:
                 rendered_image, radii, allmap, tiles = output
             else:
@@ -715,11 +728,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 st[k] = torch.zeros(n, dtype=dt, device=pc.get_xyz.device)
         return st
 
-    def _acc_add(self, pc, ta, cn):
+    def _acc_add(self, pc, ta, cn, radii=None):
         with torch.no_grad():
             st = self._trim_state(pc)
             st["V"] += ta.float()
             st["C"] += cn.float()
+            if radii is not None:                                   # trim_hidden：在畫面內的次數（被擋也算）
+                Ft = self._trim_state(pc, ("F",))["F"]
+                if radii.shape[0] == Ft.shape[0]:
+                    Ft += (radii > 0).float()
             if float(getattr(self, "trim_protect_vc", -1.0) or -1.0) > 0:
                 mt = self._trim_state(pc, ("M",))["M"]
                 torch.maximum(mt, torch.where(cn > 0, ta.float() / cn.float().clamp_min(1.0), torch.zeros_like(mt)), out=mt)
@@ -727,6 +744,26 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if not getattr(self, "_acc_announced", False):
             self._acc_announced = True
             print(f"[trim-running] ✅ 首次觸發：訓練 forward 累加 V／C（本步有覆蓋的顆粒 {int((cn > 0).sum()):,}／{cn.numel():,}）", flush=True)
+
+    def _hidden_prune(self, step, module, window):
+        """trim_hidden 增生後：這個窗口（>= 一個 epoch）裡在畫面內 >= trim_hidden_min_views 次、卻一次都沒被光柵器算到的顆粒刪掉；重設累加器。"""
+        pc = module.gaussian_model
+        st = self._trim_state(pc, ("V", "C", "F"))
+        N = pc.get_xyz.shape[0]
+        k = max(1, int(getattr(self, "trim_hidden_min_views", 3) or 3))
+        hid = (st["F"] >= k) & (st["C"] == 0)
+        n_h = int(hid.sum())
+        n_op = int((hid & (pc.get_opacities().squeeze(-1).detach() > 0.5)).sum())
+        if n_h:
+            module.density_controller._prune_points(hid, pc, module.gaussian_optimizers)
+        print(f"[trim-hidden] step {step}：增生後窗口 {window} 步（{int(st.get('views', 0))} 個視角）｜畫面內 >= {k} 次但覆蓋 0 => 刪 {n_h:,}／{N:,} 顆"
+              f"（其中 o > 0.5：{n_op:,}）｜剩 {pc.get_xyz.shape[0]:,}", flush=True)
+        n = pc.get_xyz.shape[0]
+        for _k in ("V", "C", "F", "M"):
+            if _k in pc._trim_state:
+                pc._trim_state[_k] = torch.zeros(n, device=pc.get_xyz.device)
+        pc._trim_state["views"] = 0
+        torch.cuda.empty_cache()
 
     def _running_trim(self, step, module, until):
         """取代週期 trim：用訓練中累加的 V／C（不掃相機）。回傳 True＝已處理。"""
@@ -740,6 +777,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if _rs == "inv_vc":
             _base = -_base                                                                   # 剪 V/C 最高的
         score = torch.where(seen, _base, torch.full_like(V, float("inf")))   # 沒被看到 => 這輪不剪
+        _hid_msg = ""
+        if getattr(self, "trim_hidden", False) and "F" in st and st["F"].shape[0] == V.shape[0]:
+            hid = (st["F"] > 0) & (C == 0)                                   # 在畫面內卻一次都沒被算到＝被擋（不是未觀測）
+            score = torch.where(hid, torch.full_like(score, -1.0), score)
+            seen = seen | hid
+            _hid_msg = f"｜其中被擋（畫面內、覆蓋 0）{int(hid.sum()):,} 顆排最前面"
+            if not getattr(self, "_hid_announced", False):
+                self._hid_announced = True
+                print(f"[trim-hidden] ✅ 首次觸發 step {step}：畫面內但覆蓋 0 的 {int(hid.sum()):,} 顆改當最低分（原本當未觀測不剪）", flush=True)
         if _rs != "vc" and not getattr(self, "_rs_announced", False):
             self._rs_announced = True
             print(f"[trim-running] ✅ 判準 {_rs}（{'只看總貢獻 V' if _rs == 'v' else '反過來：剪 V/C 最高的'}）", flush=True)
@@ -798,15 +844,16 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if rho != 0:
                 pc._trim_state.pop("lam", None); pc._trim_state.pop("off", None); pc._trim_state.pop("off_n", None)
         print(f"[{tag}] step {step}：{n_views} 個訓練視角累加、看到 {n_seen:,}／{seen.numel():,} 顆、未觀測 {seen.numel() - n_seen:,} 顆不剪；"
-              f"門檻（{_rs}）{float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}", flush=True)
+              f"門檻（{_rs}）{float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}{_hid_msg}", flush=True)
         # 重設累加器（剪枝後 N 變了 => 以新 N 重建）
         pc._trim_state["V"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         pc._trim_state["C"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         pc._trim_state["views"] = 0
-        if "M" in pc._trim_state:
-            pc._trim_state["M"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
-        if step >= until:
-            self._acc_stop = True          # 增生期結束 => 不再累加（省 forward 的那點開銷）
+        for _k in ("M", "F"):
+            if _k in pc._trim_state:
+                pc._trim_state[_k] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
+        if step >= until and not getattr(self, "trim_hidden", False):
+            self._acc_stop = True          # 增生期結束 => 不再累加（省 forward 的那點開銷）；trim_hidden 要繼續累加
         elif int(getattr(self, "reseed_views", 0) or 0) > 0 and rho == 0:
             self._reseed(step, module, int(float(getattr(self, "reseed_frac", 1.0)) * int(low.sum())))
         return True
@@ -918,6 +965,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ★ 2026-10-19 累加式 trim：超過 until 就停止累加（原本只在「until 那一步剛好觸發 trim」時才停；
         #   until 不是 interval 的倍數、或計時工具用 densify_until 0 模擬收割期時，會一路白累加，forward 多 ~3.5 ms）。
         #   真實 60k 訓練的 until（30k）是 500 的倍數，已在最後一次 trim 停 => 訓練行為不變。
+        if (not _sch) and getattr(self, "trim_running_vc", False) and getattr(self, "trim_hidden", False) and step > until:
+            _w = int(getattr(self, "trim_hidden_window", 0) or 0) or 2 * len(cameras)
+            if (step - until) % _w == 0:
+                with torch.no_grad():
+                    self._hidden_prune(step, module, _w)
+            return
         if (not _sch) and getattr(self, "trim_running_vc", False) and step > until and not getattr(self, "_acc_stop", False):
             self._acc_stop = True
             print(f"[trim-running] step {step} > until {until} => 停止累加 V/C", flush=True)

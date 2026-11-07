@@ -1650,6 +1650,20 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"｜重算下限 {getattr(self, '_pxf_ms', float('nan')):.0f} ms（每 {k} 步）", flush=True)
                 self._pxf_announced = True; self._pxf_stat = [0, 0]
 
+    def _merge_exclude(self, gaussian_model, n0: int):
+        """合併排除：錨點（sfm_lock）＋ trim_hidden 判為被擋的（這個窗口在畫面內、覆蓋 0 => 該剪不該併；11-07 使用者「合併加相關判定」）。"""
+        ex = self._anchor_mask(n0)
+        st = getattr(gaussian_model, "_trim_state", None)
+        if st and "F" in st and "C" in st and st["F"].shape[0] == n0 and st["C"].shape[0] == n0:
+            hid = (st["F"] > 0) & (st["C"] == 0)
+            n_h = int(hid.sum())
+            if n_h:
+                ex = hid if ex is None else (ex | hid)
+                if not getattr(self, "_mx_announced", False):
+                    self._mx_announced = True
+                    print(f"[merge-hidden] ✅ 首次觸發：合併排除被擋的 {n_h:,} 顆（畫面內、覆蓋 0）", flush=True)
+        return ex
+
     def _sfm_birth_probs(self, gaussian_model, probs, indices=None):
         c = self.config
         r = float(getattr(c, "sfm_birth_radius", 0.0) or 0.0)
@@ -1918,7 +1932,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=float(self.config.merge_max_frac),
                                       color_tol=float(self.config.merge_color_tol),
                                       chunk=int(getattr(self.config, "merge_chunk", 1 << 19)),
-                                      exclude=self._anchor_mask(n0), prio=_prio)
+                                      exclude=self._merge_exclude(gaussian_model, n0), prio=_prio)
         out = None
         if _mI.numel() > 0:
             self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)          # 合併後的 i 重設 Adam 狀態
