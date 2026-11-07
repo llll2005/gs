@@ -534,7 +534,8 @@ class MCMC2DGSDensityController(MCMCDensityController):
     跟地面覆蓋、低角度破洞、區塊 F1 同排序。從空拍訓練距離看是一個像素，viewer 拉近／低角度就只剩一個點（路燈、車消失、地面透空）。
     🟨 借用改造自 Mip-Splatting 的 3D 平滑濾波（用可見訓練相機的最高取樣率限制最小尺寸）；這裡是硬下限、不改渲染器。單位是像素，沒有公尺常數。"""
     px_floor_interval: int = 50
-    """px_floor 的「最近可見深度」每幾步重算一次（顆數變了會立刻重算）；中間用快取。"""
+    """px_floor 的「最近可見深度」每幾步全量重算一次；中間用快取。新增與搬家的顆粒繼承母點的下限（11-07 v2：原本顆數一變就重算，
+    增生期每 100 步一次、每次 0.4～0.7 s => 30k 多 9%）；剪枝、排序跟著 _PER_PARTICLE 走；補洞放的顆粒 -inf（不夾）到下次重算。"""
     sfm_dist_voxel: float = 0.01
     """SfM 距離場的體素邊長（場景單位；0.01＝1 m）。塊太大時自動放大到總體素 <= 1.5 億。"""
     sfm_report_interval: int = 1500
@@ -1206,7 +1207,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                             or global_step + self.config.densification_interval >= self.config.densify_until_iter):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
 
-    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_noup_z": float("inf")}     # 跟著 N 走的逐顆狀態 => 新增時補的值
+    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_noup_z": float("inf"),
+                     "_pxf_log": float("-inf")}     # 跟著 N 走的逐顆狀態 => 新增時補的值（_pxf_log：px_floor 的 log 下限，-inf＝不夾）
 
     def _per_particle_extend(self, n0: int, n1: int) -> None:
         for k, fill in self._PER_PARTICLE.items():
@@ -1706,6 +1708,13 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             t = getattr(self, k, None)
             if t is not None and t.shape[0] == dead_mask.shape[0]:
                 t[dead_mask] = 0
+        t = getattr(self, "_pxf_log", None); par = getattr(self, "_last_parent_idx", None)   # px_floor：搬家的＝母點旁邊 => 繼承母點的下限
+        if t is not None and t.shape[0] == dead_mask.shape[0]:
+            di = dead_mask.nonzero(as_tuple=True)[0]
+            if par is not None and par.shape[0] == di.shape[0]:
+                t[di] = t[par]
+            else:
+                self._pxf_log = None                                    # 對不上 => 下一步全量重算
         t = getattr(self, "_noup_z", None)                             # 搬家的＝新位置 => 高度上限解除，等下次投票（v2：繼承母點的）
         if t is not None and t.shape[0] == dead_mask.shape[0]:
             di = dead_mask.nonzero(as_tuple=True)[0]
@@ -1729,6 +1738,12 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         n1 = gaussian_model.n_gaussians
         if n1 > n0:
             self._per_particle_extend(n0, n1)
+            t = getattr(self, "_pxf_log", None); par = getattr(self, "_last_parent_idx", None)
+            if t is not None and t.shape[0] == n1:
+                if par is not None and par.shape[0] == n1 - n0:
+                    t[n0:n1] = t[par]                                     # px_floor：新增的繼承母點的下限（11-07 v2）
+                else:
+                    self._pxf_log = None
             t = getattr(self, "_noup_z", None); par = getattr(self, "_last_parent_idx", None)
             if bool(getattr(self.config, "sfm_vis_noup_inherit", False)) and t is not None and par is not None \
                     and t.shape[0] == n1 and par.shape[0] == n1 - n0:
@@ -1858,6 +1873,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             _nz = getattr(self, "_noup_z", None)                                  # 補洞放的＝新位置 => 高度上限解除（sfm_vis_noup）
             if _nz is not None and _nz.shape[0] == g["means"].shape[0]:
                 _nz[slots] = float("inf")
+            _pf = getattr(self, "_pxf_log", None)                                 # 補洞放的＝新位置 => px_floor 不夾，等下次重算
+            if _pf is not None and _pf.shape[0] == g["means"].shape[0]:
+                _pf[slots] = float("-inf")
         self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=slots)    # 新點 Adam 歸零
         _st = getattr(gaussian_model, "_trim_state", None)
         if _st:

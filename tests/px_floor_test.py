@@ -44,6 +44,12 @@ class PxFloorTest(unittest.TestCase):
         self.assertTrue(torch.allclose(e[1:3], torch.full((2, 2), 1e-6)))       # 沒有相機看得到 => 不夾
         self.assertTrue(torch.allclose(e[3], torch.tensor([0.01, 1.0])))        # 細長筆觸（長軸夠長）=> 不動
 
+    def test_new_particles_get_no_floor_until_inherited(self):
+        s = types.SimpleNamespace(_pxf_log=torch.tensor([0.5, -1.0]), _PER_PARTICLE=C._PER_PARTICLE)
+        C._per_particle_extend(s, 2, 4)                                          # 新增 2 顆 => 先補 -inf（不夾），add_new_gs 再繼承母點
+        self.assertEqual(s._pxf_log.shape[0], 4)
+        self.assertTrue(torch.isneginf(s._pxf_log[2:]).all())
+
 
 if __name__ == "__main__":
     unittest.main()
