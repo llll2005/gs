@@ -23,6 +23,7 @@ ap.add_argument("--ckpt", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--vmax", type=float, default=0.01)
 ap.add_argument("--only", nargs="*", default=[], help="只存這幾種刪法的 ckpt（預設全部）")
+ap.add_argument("--tmax", type=float, default=-1.0, help=">0：再跑一次 record_T（光柵器 11-07 新增：逐顆每覆蓋像素平均穿透率 T），加一種刪法「T 被擋」＝o > 0.5、畫面內 >= 3、每台平均 T 都 < tmax")
 a = ap.parse_args()
 D = "data/matrix_city/aerial/train/block_all"; B = a.block; dev = torch.device("cuda")
 P = torch.load(f"{D}/partition/partitions-dim_4_4_visibility_0.08/partitions.pt", map_location="cpu", weights_only=False)
@@ -72,7 +73,8 @@ for fl in ("absgrad_gate", "bwd_sat_skip", "bwd_reduce", "record_reduce", "tile_
         setattr(rnd, fl, False)
 model.to(dev)
 X = model.get_xyz.detach().float(); N = X.shape[0]; Xh = torch.cat([X, torch.ones_like(X[:, :1])], 1)
-F = torch.zeros(N, device=dev); V = torch.zeros(N, device=dev); Vm = torch.zeros(N, device=dev)
+F = torch.zeros(N, device=dev); V = torch.zeros(N, device=dev); Vm = torch.zeros(N, device=dev); Tm = torch.zeros(N, device=dev)
+import time; _tT = 0.0
 bg = torch.zeros(3, device=dev)
 for nm in names:
     cd = mk(nm).to_device(dev)
@@ -85,12 +87,27 @@ for nm in names:
         uu = float(cd.fx) * p[:, 0] / zc.clamp_min(1e-6) + float(cd.cx); vv = float(cd.fy) * p[:, 1] / zc.clamp_min(1e-6) + float(cd.cy)
         F += ((zc > 1e-3) & (uu >= 0) & (uu < float(cd.width)) & (vv >= 0) & (vv < float(cd.height))).float()
         V += tr; torch.maximum(Vm, tr, out=Vm)
-F, V, Vm = F.cpu().numpy(), V.cpu().numpy(), Vm.cpu().numpy()
+        if a.tmax > 0:
+            torch.cuda.synchronize(); _t0 = time.perf_counter()
+            tT = rnd(cd, model, bg_color=bg, record_transmittance=True, record_T=True).float().clamp_min(0)
+            torch.cuda.synchronize(); _tT += time.perf_counter() - _t0
+            torch.maximum(Tm, tT, out=Tm)
+F, V, Vm, Tm = F.cpu().numpy(), V.cpu().numpy(), Vm.cpu().numpy(), Tm.cpu().numpy()
 o = model.get_opacities().detach().reshape(-1).cpu().numpy()                     # 載入器已 pre_activate
 Xn = X.cpu().numpy().astype(np.float64); IN = inb(Xn, bb0); R = regions(Xn)
 cuts = {"完全被擋": (F >= 3) & (V == 0), "幾乎沒貢獻": (F >= 3) & (Vm < a.vmax),
         # 11-07 拆開：不透明卻每台貢獻都 < vmax => 每台穿透率都 < vmax/o（o > 0.5 => < 2%）＝躲在表面後面的實心塊；透明的淡顆粒另列
         "不透明且被擋": (F >= 3) & (Vm < a.vmax) & (o > 0.5), "透明且幾乎沒貢獻": (F >= 3) & (Vm < a.vmax) & (o <= 0.5)}
+if a.tmax > 0:
+    cuts["T被擋"] = (F >= 3) & (Tm < a.tmax) & (o > 0.5)
+    _op3 = (F >= 3) & (o > 0.5)
+    print(f"[record_T] {len(names)} 台 x 1 次 record_T pass：{_tT:.1f} s（{_tT / max(len(names), 1) * 1e3:.1f} ms／台）｜不透明顆粒的 Tmax 分位 q10/50/90 "
+          f"{np.percentile(Tm[_op3], [10, 50, 90]).round(4).tolist()}｜Tmax < {a.tmax:g}：{int(cuts['T被擋'].sum()):,} 顆"
+          f"｜同時「每台 T·α < 1%」的 {int((cuts['T被擋'] & (Vm < a.vmax)).sum()):,}；只在「T·α < 1%」那邊（＝T 大、每像素 α 小，例：斜看立面）{int(((Vm < a.vmax) & _op3 & ~cuts['T被擋']).sum()):,}", flush=True)
+    _r = float(np.median(Tm[_op3] / np.maximum(Vm[_op3], 1e-9)))
+    print(f"[record_T] 檢查：不透明顆粒 Tmax／(T·α)max 中位 {_r:.2f}（應 > 1；＝1 代表光柵器沒走 record_T、回傳的還是 T·α）", flush=True)
+    if _r < 1.05 or Tm.max() > 1.0001:
+        raise RuntimeError("record_T 沒有生效（或 T 超出 [0,1]）=> 光柵器沒重編？")
 if a.only:
     cuts = {k: v for k, v in cuts.items() if k in a.only}
 print(f"b{B}｜{os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(ck)))))}｜{len(names)} 台訓練相機｜{N:,} 顆（盒內 {int(IN.sum()):,}）"

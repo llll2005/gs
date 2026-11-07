@@ -102,7 +102,11 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-10-19 bit6 = dist 版 lean（訓練 forward 多算 distortion 通道；forward.cu MODE 5）
                 | (64 if getattr(raster_settings, "lean_dist", False) else 0)
                 # ★ 2026-11-05 bit7 = 訓練中累加 V/C 走 warp 先加總（forward.cu WACC；需 train_record）
-                | (128 if getattr(raster_settings, "train_record_warp", False) else 0)),
+                | (128 if getattr(raster_settings, "train_record_warp", False) else 0)
+                # ★ 2026-11-07 bit8 = record 模式累加 Σ T（到達該顆的穿透率）而不是 Σ T*alpha（逐顆可見度；forward.cu g_record_T）
+                | (256 if getattr(raster_settings, "record_T", False) else 0)
+                # ★ 2026-11-07 bit9 = alpha 上限 0.999（原 0.99；backward 旗標 bit7 同步）
+                | (512 if getattr(raster_settings, "alpha_999", False) else 0)),
             sh_rest,
             # ★ 2026-11-05 逐像素不計分遮罩（uint8 H*W，1＝略過；只在 lean 訓練 forward 生效）；None＝空張量＝不略過
             (getattr(raster_settings, "pix_skip", None) if getattr(raster_settings, "pix_skip", None) is not None
@@ -227,7 +231,9 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-10-19 bit5 = dist 版 lean 的 distortion 梯度（backward.cu renderCUDA_opt<DST=true>）
                 | (32 if dst_grad else 0)
                 # ★ 2026-11-05 bit6 = 上游梯度全 0 的像素不處理（只在 lean／geom 關時生效，backward.cu renderCUDA_opt）
-                | (64 if getattr(raster_settings, "bwd_zero_skip", False) else 0),
+                | (64 if getattr(raster_settings, "bwd_zero_skip", False) else 0)
+                # ★ 2026-11-07 bit7 = alpha 上限 0.999（必須與 forward 的 lean bit 512 一致）
+                | (128 if getattr(raster_settings, "alpha_999", False) else 0),
                 sh_rest, a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp)
 
         # Compute gradients for relevant tensors by invoking backward method
@@ -292,6 +298,8 @@ class GaussianRasterizationSettings(NamedTuple):
     train_record : bool = False   # ★ 2026-10-16 lean 訓練 forward 順便累加逐顆 Σ T·α 與覆蓋數（取代 trim 的全相機 record pass）
     lean_dist : bool = False      # ★ 2026-10-19 dist 版 lean：lean forward 多算 distortion、backward 加它的梯度（需 lean_render）
     absgrad : bool = True   # ★ 2026-10-09：False => backward 不做 absgrad 的 atomicAdd（只有 dL_dmean2D.z 變 0）
+    alpha_999 : bool = False  # ★ 2026-11-07 alpha 上限 0.999（原 0.99）：一層不透明面元後的顆粒不再被混合
+    record_T : bool = False  # ★ 2026-11-07 record 模式累加 Σ T 而不是 Σ T*alpha（逐顆可見度）
     train_record_warp : bool = False  # ★ 2026-11-05 訓練中累加 V/C 先在 warp 內加總（覆蓋數逐位元相同、V 只差加總順序）
     bwd_zero_skip : bool = False  # ★ 2026-11-05 backward 不處理上游梯度全 0 的像素（塊外遮罩 C 區；梯度只差浮點加總順序）
     pix_skip : Optional[torch.Tensor] = None  # ★ 2026-11-05 lean 訓練 forward 略過的像素（uint8 H*W，1＝略過；C 區）

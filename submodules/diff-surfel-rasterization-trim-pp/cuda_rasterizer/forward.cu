@@ -13,6 +13,16 @@
 #include "auxiliary.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
+
+// ★ 2026-11-07 record 模式（record_transmittance）累加逐顆 Σ T（到達該顆時的穿透率）而不是 Σ T*alpha
+//   （使用者 11-07「1 作看看」：逐顆可見度——躲在表面後面＝T 小；斜看的立面＝T 大但每像素 alpha 小，T*alpha 分不開兩者）。
+//   lean bit 256（rasterizer_impl.cu 每次 forward 前設定）；0＝原行為。只影響 record pass（MODE 0+record／2／4），訓練中累加（rec_acc／WACC）不動。
+__device__ int g_record_T = 0;
+// ★ 2026-11-07 alpha 上限（使用者 11-07「能讓 alpha 最大值＝1 嗎」）：原本 min(0.99, o·G) => 一層不透明面元後 T＝0.01，
+//   下一層不透明的 test_T＝0.01×0.01＝1e-4 剛好沒小於飽和門檻 => 被混合、拿 1% 貢獻與梯度（地底／建築內部被一直調的原因）。
+//   0.999（gsplat 的值）=> 一層後 T＝1e-3，下一層 α >= 0.9 的 test_T <= 1e-4 => 像素停止、後面的完全不被算到（C＝0、零梯度）。
+//   不能真的設 1：backward 用 T／(1−α) 往回推。lean bit 512（rasterizer_impl.cu 每次 forward 前設定）；預設 0.99＝原行為。
+__device__ float g_alpha_max = 0.99f;
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -639,9 +649,9 @@ renderCUDA(
 					// Obtain alpha by multiplying with Gaussian opacity
 					// and its exponential falloff from mean.
 					// Avoid numerical instabilities (see paper appendix).
-					float alpha = min(0.99f, nor_o.w * exp(power));
+					float alpha = min(g_alpha_max, nor_o.w * exp(power));
 					if (MODE == 2 || (MODE == 0 && record_transmittance)){
-						atomicAdd(&transmittance[collected_id[j]], T * alpha);
+						atomicAdd(&transmittance[collected_id[j]], g_record_T ? T : T * alpha);
 						atomicAdd(&num_covered_pixels[collected_id[j]], 1);
 					}
 					acc_ta = T * alpha; acc_hit = true;   // 原本：兩個 shared atomic（整個 warp 打同一個位址）
@@ -752,9 +762,9 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix).
-			float alpha = min(0.99f, nor_o.w * exp(power));
+			float alpha = min(g_alpha_max, nor_o.w * exp(power));
 			if (MODE == 2 || (MODE == 0 && record_transmittance)){
-				atomicAdd(&transmittance[collected_id[j]], T * alpha);
+				atomicAdd(&transmittance[collected_id[j]], g_record_T ? T : T * alpha);
 				atomicAdd(&num_covered_pixels[collected_id[j]], 1);
 			}
 			if (rec_acc) { atomicAdd(&s_ta1[j], T * alpha); atomicAdd(&s_cn1[j], 1); }
@@ -941,7 +951,7 @@ auditCUDA(
 			float4 nor_o = collected_normal_opacity[j];
 			float power = -0.5f * rho;
 			if (power > 0.0f) continue;
-			float alpha = min(0.99f, nor_o.w * exp(power));
+			float alpha = min(g_alpha_max, nor_o.w * exp(power));
 			if (alpha < 1.0f / 255.0f) continue;
 			s_geo[j] = 1;
 			if (!live) continue;
@@ -1056,8 +1066,8 @@ recordReduceCUDA(
 						if (power <= 0.0f)
 						{
 							float4 nor_o = collected_normal_opacity[j];
-							float alpha = min(0.99f, nor_o.w * exp(power));
-							v = T * alpha;
+							float alpha = min(g_alpha_max, nor_o.w * exp(power));
+							v = g_record_T ? T : T * alpha;
 							c = 1;
 							if (alpha >= 1.0f / 255.0f)
 							{
@@ -1086,6 +1096,19 @@ recordReduceCUDA(
 			atomicAdd(&num_covered_pixels[collected_id[block.thread_rank()]], s_cnt[block.thread_rank()]);
 		}
 	}
+}
+
+void FORWARD::setAlphaMax(float a)
+{
+	static float cur = -1.f;
+	if (a != cur) { cudaMemcpyToSymbol(g_alpha_max, &a, sizeof(float)); cur = a; }
+}
+
+void FORWARD::setRecordT(bool on)
+{
+	static int cur = -1;                       // 只在值改變時才寫裝置端旗標
+	const int v = on ? 1 : 0;
+	if (v != cur) { cudaMemcpyToSymbol(g_record_T, &v, sizeof(int)); cur = v; }
 }
 
 void FORWARD::render(

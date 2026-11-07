@@ -21,6 +21,9 @@
 
 namespace BACKWARD
 {
+	// ★ 2026-11-07 alpha 上限（必須與 forward 相同；flags bit 128 => 0.999）
+	void setAlphaMax(float a);
+
 	void render(
 		const dim3 grid, dim3 block,
 		const uint2* ranges,

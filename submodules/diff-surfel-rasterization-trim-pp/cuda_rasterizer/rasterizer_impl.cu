@@ -479,6 +479,8 @@ int CudaRasterizer::Rasterizer::forward(
 		CHECK_CUDA(cudaMemset(binningState.pair_used, fmode == 1 ? 0 : 1, num_rendered), debug)
 		if (fmode == 1) pair_used = binningState.pair_used;
 	}
+	FORWARD::setRecordT((lean & 256) != 0);   // ★ 2026-11-07 bit 256 = record 模式累加 Σ T（逐顆可見度）
+	FORWARD::setAlphaMax((lean & 512) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 512 = alpha 上限 0.999
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
 		imgState.ranges,
@@ -568,6 +570,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
 	const float* depth_ptr = geomState.depths;
 	const float* transMat_ptr = (transMat_precomp != nullptr) ? transMat_precomp : geomState.transMat;
+	BACKWARD::setAlphaMax((geom_grad & 128) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 128 = alpha 上限 0.999（與 forward 相同）
 	CHECK_CUDA(BACKWARD::render(
 		tile_grid,
 		block,

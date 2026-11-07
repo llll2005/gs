@@ -53,6 +53,11 @@ namespace FORWARD
 		const float* shs_rest = nullptr);   // ★ 2026-10-24 非 nullptr => SH 分開存放（shs 是 dc，M 是含 dc 的總係數數）
 
 	// Main rasterization method.
+	// ★ 2026-11-07 record 模式累加 Σ T 而不是 Σ T*alpha（lean bit 256；見 forward.cu g_record_T）
+	void setRecordT(bool on);
+	// ★ 2026-11-07 alpha 上限（預設 0.99；lean bit 512 => 0.999；見 forward.cu g_alpha_max）
+	void setAlphaMax(float a);
+
 	void render(
 		const dim3 grid, dim3 block,
 		const uint2* ranges,

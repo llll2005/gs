@@ -52,6 +52,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_merge_color_tol: float = 0.1,
             trim_running_score: str = "vc",
             trim_hidden: bool = False,
+            alpha_max_999: bool = False,
             trim_hidden_window: int = 0,
             trim_hidden_min_views: int = 3,
             trim_soft_rho: float = 0.0,
@@ -153,6 +154,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #       剪掉 F >= trim_hidden_min_views 且 C＝0 的（不補位 => 顆數下降）；(3) density 的合併排除 F > 0 且 C＝0 的（該剪不該併）。
         #   固定 10% 的 V/C trim 照舊（增生期汰舊換新，速度配方的一部分）；這是加一條「未達標就刪」，不是取代。
         self.trim_hidden = trim_hidden
+        # ★ 2026-11-07 alpha_max_999（使用者「能讓 alpha 最大值＝1 嗎」）：光柵器的 alpha 上限 0.99 => 0.999（gsplat 的值；不能是 1，backward 要除 1−α）。
+        #   0.99 時一層不透明面元後面的下一層剛好沒到飽和門檻 => 被混合、拿 1% 貢獻與梯度；0.999 => 不再被算到（C＝0）=> trim_hidden 抓得到。
+        #   所有渲染（訓練、評估、record）都用同一個上限；設定存在 ckpt 裡，評估工具載入時自動沿用。
+        self.alpha_max_999 = alpha_max_999
         self.trim_hidden_window = trim_hidden_window
         self.trim_hidden_min_views = trim_hidden_min_views
         if trim_merge_first and not trim_running_vc:
@@ -367,6 +372,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
             # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
             **({"audit_tiles": True} if kwargs.get("_audit", False) else {}),
             **({"record_reduce": True} if (record_transmittance and getattr(self, "record_reduce", False)) else {}),
+            **({"alpha_999": True} if getattr(self, "alpha_max_999", False) else {}),
+            # ★ 2026-11-07 record_T：record pass 回傳逐顆「每覆蓋像素平均 T」（到達該顆時的穿透率）而不是平均 T*alpha（逐顆可見度）
+            **({"record_T": True} if (record_transmittance and kwargs.get("record_T", False)) else {}),
             **({"tile_cull": True} if (not record_transmittance and not kwargs.get("_audit", False)
                                        and getattr(self, "tile_cull", False)) else {}),
         )

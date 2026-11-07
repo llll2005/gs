@@ -13,6 +13,9 @@
 #include "auxiliary.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
+
+// ★ 2026-11-07 alpha 上限，必須與 forward 相同（見 forward.cu g_alpha_max）；旗標 bit 128（rasterizer_impl.cu 每次 backward 前設定）
+__device__ float g_alpha_max_b = 0.99f;
 namespace cg = cooperative_groups;
 
 // Backward pass for conversion of spherical harmonics to RGB for
@@ -453,7 +456,7 @@ renderCUDA(
 				continue;
 
 			const float G = exp(power);
-			const float alpha = min(0.99f, nor_o.w * G);
+			const float alpha = min(g_alpha_max_b, nor_o.w * G);
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
@@ -772,7 +775,7 @@ renderCUDA_opt(
 					const float4 nor_o = collected_normal_opacity[j];
 					const float power = -0.5f * rho;
 					const float G = exp(power);
-					const float alpha = min(0.99f, nor_o.w * G);
+					const float alpha = min(g_alpha_max_b, nor_o.w * G);
 #ifndef BWD_NEAR_LIKE_FWD
 #define BWD_NEAR_LIKE_FWD 0
 #endif
@@ -1288,6 +1291,12 @@ void BACKWARD::preprocess(
 		nullptr,
 		nullptr
 	);
+}
+
+void BACKWARD::setAlphaMax(float a)
+{
+	static float cur = -1.f;
+	if (a != cur) { cudaMemcpyToSymbol(g_alpha_max_b, &a, sizeof(float)); cur = a; }
 }
 
 void BACKWARD::render(
