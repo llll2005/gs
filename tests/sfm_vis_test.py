@@ -1,9 +1,10 @@
 """SfM 視線一致性投票 sfm_vis_votes（2026-11-05）——純 CPU。"""
 import unittest
 
+import numpy as np
 import torch
 
-from internal.density_controllers.mcmc_2dgs_density_controller import sfm_vis_votes
+from internal.density_controllers.mcmc_2dgs_density_controller import sfm_ground_grid, sfm_ground_lookup, sfm_vis_votes
 
 
 def _cam():
@@ -60,6 +61,25 @@ class SfmVisVotesTest(unittest.TestCase):
         self.assertEqual(b.tolist(), [1, 0]); self.assertEqual(c.tolist(), [1, 0]); self.assertEqual(ca.tolist(), [1, 1])
         f0, b0, c0, _ = sfm_vis_votes(X, *self.cam, dmin, dmax, 10, 8.0)            # 預設＝原行為（v4）
         self.assertEqual(b0.tolist(), [1, 1]); self.assertEqual(c0.tolist(), [1, 1])
+
+    def test_behind_max_mask_only_applies_to_marked(self):
+        # ★ 11-08 高度條件：mask False 的顆粒照舊用全部相機（v4）；只有 True 的才套落後上限
+        dmin, dmax = _grid()
+        X = torch.tensor([[0.0, 0.0, -60.0], [0.0, 0.0, -60.0]], dtype=torch.float32)
+        f, b, c, iv = sfm_vis_votes(X, *self.cam, dmin, dmax, 10, 8.0, behind_max=10.0, behind_max_mask=torch.tensor([False, True]))
+        self.assertEqual(b.tolist(), [1, 0]); self.assertEqual(c.tolist(), [1, 0])
+
+    def test_ground_grid(self):
+        # 1 m 格、3x3 窗：x<5 是地面（z 0）、x>=5 是樓頂（z 100，只有樓頂點）；牆邊的樓頂格拿到旁邊地面高度、樓中間仍是樓頂
+        xs, ys = np.meshgrid(np.arange(10) + 0.5, np.arange(4) + 0.5, indexing="ij")
+        P = np.c_[xs.ravel(), ys.ravel(), np.where(xs.ravel() < 5, 0.0, 100.0)]
+        G = sfm_ground_grid(P, [0.0, 0.0], (12, 4), 1.0, win=3)
+        self.assertEqual(G[4, 1], 0.0); self.assertEqual(G[5, 1], 0.0)     # 牆邊（x=5 格）窗內有地面
+        self.assertEqual(G[7, 1], 100.0)                                   # 樓中間
+        self.assertTrue(np.isinf(G[11, 1]))                                # 窗內沒有 SfM
+        g = sfm_ground_lookup(torch.tensor([[5.5, 1.5, 50.0], [7.5, 1.5, 98.0], [-3.0, 0.0, 0.0]]), torch.from_numpy(G),
+                              torch.tensor([0.0, 0.0]), 1.0)
+        self.assertEqual(g[:2].tolist(), [0.0, 100.0]); self.assertTrue(torch.isinf(g[2]))
 
     def test_tolerance_scales_with_pixels(self):
         X = [[0.0, 0.0, -0.5]]                                          # 0.5 在 8 px（0.8）內、在 2 px（0.2）外
