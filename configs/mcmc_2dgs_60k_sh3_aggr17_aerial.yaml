@@ -18,9 +18,9 @@ model:
     init_args:
       sh_degree: 3              # sh3: +0.295 dB measured on 30k run
       optimization:
-        means_lr_init: 0.000064
+        means_lr_init: 0.000128       # ★ 2026-11-07 晚使用者「可以作為預設」：位置 lr x2（原 6.4e-5）；30k＋點精靈下限 v2 的 F1／地面覆蓋超過 60k（紀錄/實驗分析/36）
         means_lr_scheduler:
-          lr_final: 0.00000064
+          lr_final: 0.00000128         # 同上 x2（原 6.4e-7）
           max_steps: 60_000
         scales_lr: 0.004
   metric:
