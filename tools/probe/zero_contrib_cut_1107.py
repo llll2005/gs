@@ -22,6 +22,7 @@ ap.add_argument("--block", type=int, default=3)
 ap.add_argument("--ckpt", required=True)
 ap.add_argument("--out", required=True)
 ap.add_argument("--vmax", type=float, default=0.01)
+ap.add_argument("--only", nargs="*", default=[], help="只存這幾種刪法的 ckpt（預設全部）")
 a = ap.parse_args()
 D = "data/matrix_city/aerial/train/block_all"; B = a.block; dev = torch.device("cuda")
 P = torch.load(f"{D}/partition/partitions-dim_4_4_visibility_0.08/partitions.pt", map_location="cpu", weights_only=False)
@@ -87,7 +88,11 @@ for nm in names:
 F, V, Vm = F.cpu().numpy(), V.cpu().numpy(), Vm.cpu().numpy()
 o = model.get_opacities().detach().reshape(-1).cpu().numpy()                     # 載入器已 pre_activate
 Xn = X.cpu().numpy().astype(np.float64); IN = inb(Xn, bb0); R = regions(Xn)
-cuts = {"完全被擋": (F >= 3) & (V == 0), "幾乎沒貢獻": (F >= 3) & (Vm < a.vmax)}
+cuts = {"完全被擋": (F >= 3) & (V == 0), "幾乎沒貢獻": (F >= 3) & (Vm < a.vmax),
+        # 11-07 拆開：不透明卻每台貢獻都 < vmax => 每台穿透率都 < vmax/o（o > 0.5 => < 2%）＝躲在表面後面的實心塊；透明的淡顆粒另列
+        "不透明且被擋": (F >= 3) & (Vm < a.vmax) & (o > 0.5), "透明且幾乎沒貢獻": (F >= 3) & (Vm < a.vmax) & (o <= 0.5)}
+if a.only:
+    cuts = {k: v for k, v in cuts.items() if k in a.only}
 print(f"b{B}｜{os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(ck)))))}｜{len(names)} 台訓練相機｜{N:,} 顆（盒內 {int(IN.sum()):,}）"
       f"｜畫面內 0 台 {int((F == 0).sum()):,}｜Vmax 分位（畫面內 >= 3）q10/50/90 {np.percentile(Vm[F >= 3], [10, 50, 90]).round(4).tolist()}", flush=True)
 print(f"{'刪法':10}{'刪掉':>10}{'其中 o>0.5':>12}" + "".join(f"{k:>24}" for k in R) + "   （各區：刪掉／該區 o>0.5 的盒內顆數）", flush=True)
