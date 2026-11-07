@@ -19,6 +19,7 @@ from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADER
 from internal.cameras.cameras import CameraType, Camera
 from internal.dataparsers import DataParserConfig, ImageSet
 from internal.utils.graphics_utils import store_ply, BasicPointCloud
+from internal.utils.view_balance import coverage_view_weights, epoch_order
 
 from tqdm import tqdm
 
@@ -157,9 +158,12 @@ class CacheDataLoader(torch.utils.data.DataLoader):
             world_size: int = -1,
             global_rank: int = -1,
             async_caching: bool = False,
+            view_weights=None,
             **kwargs,
     ):
         assert kwargs.get("batch_size", 1) == 1, "only batch_size=1 is supported"
+        # ★ 2026-11-08 view_balance：每個 epoch 依權重有放回抽（None＝原本的 randperm）；權重對應 self.indices 的位置
+        self.view_weights = view_weights
 
         self.dataset = dataset
 
@@ -213,7 +217,7 @@ class CacheDataLoader(torch.utils.data.DataLoader):
         # TODO: GC will freeze program a while
         while not self.stop_caching:
             if self.shuffle is True:
-                indices = torch.randperm(len(self.indices), generator=self.generator).tolist()  # shuffle for each epoch
+                indices = epoch_order(len(self.indices), self.generator, self.view_weights)  # shuffle for each epoch
                 # print("#{} 1st index: {}".format(os.getpid(), indices[0]))
             else:
                 indices = self.indices.copy()
@@ -274,7 +278,7 @@ class CacheDataLoader(torch.utils.data.DataLoader):
         # TODO: support batching
         if self.max_cache_num < 0:
             if self.shuffle is True:
-                indices = torch.randperm(len(self.cached), generator=self.generator).tolist()  # shuffle for each epoch
+                indices = epoch_order(len(self.cached), self.generator, self.view_weights)  # shuffle for each epoch
                 # print("#{} 1st index: {}".format(os.getpid(), indices[0]))
             else:
                 indices = list(range(len(self.cached)))
@@ -283,7 +287,7 @@ class CacheDataLoader(torch.utils.data.DataLoader):
                 yield self.cached[i]
         else:
             if self.shuffle is True:
-                indices = torch.randperm(len(self.indices), generator=self.generator).tolist()  # shuffle for each epoch
+                indices = epoch_order(len(self.indices), self.generator, self.view_weights)  # shuffle for each epoch
                 # print("#{} 1st index: {}".format(os.getpid(), indices[0]))
             else:
                 indices = self.indices.copy()
@@ -347,6 +351,9 @@ class DataModule(LightningDataModule):
             image_uint8: bool = False,
             async_caching: bool = False,
             skip_unused_depth: bool = False,
+            view_balance: float = -1.0,
+            view_balance_clip: Tuple[float, float] = (0.25, 4.0),
+            view_balance_points: int = 60000,
     ) -> None:
         r"""Load dataset
 
@@ -354,6 +361,10 @@ class DataModule(LightningDataModule):
                 path: the path to the dataset
 
                 type: the dataset type
+
+                view_balance: ★ 2026-11-08 依覆蓋度加權抽訓練視角（`internal/utils/view_balance.py`）。>= 0 開啟、值＝γ；
+                    -1＝關（原本每個 epoch randperm，行為完全不變）。權重用 dataparser 的點雲（best1 系列＝本塊裁切的 init PLY）
+                    與訓練相機算；w_v＝Σ_{p 在 v 畫面內} c(p)^-γ，除以平均後夾到 view_balance_clip。epoch 長度不變（有放回抽）。
         """
 
         super().__init__()
@@ -526,7 +537,32 @@ class DataModule(LightningDataModule):
             world_size=self.trainer.world_size,
             global_rank=self.trainer.global_rank,
             async_caching=self.hparams["async_caching"],
+            view_weights=self._view_balance_weights(),
         )
+
+    def _view_balance_weights(self):
+        """view_balance >= 0 => 訓練視角的抽樣權重（說明見 __init__）；否則 None（原行為）。"""
+        gam = float(self.hparams.get("view_balance", -1.0))
+        if gam < 0:
+            return None
+        if self.hparams["distributed"]:
+            print("⚠⚠ [view-balance] 分散式訓練沒實作 => 不生效（照原本 randperm）", flush=True)
+            return None
+        cams = self.dataparser_outputs.train_set.cameras
+        pc = self.dataparser_outputs.point_cloud
+        w, st = coverage_view_weights(cams, pc.xyz if pc is not None else np.zeros((0, 3)), gamma=gam,
+                                      clip=tuple(self.hparams.get("view_balance_clip", (0.25, 4.0))),
+                                      n_points=int(self.hparams.get("view_balance_points", 60000)))
+        if not st.get("ok"):
+            print(f"⚠⚠ [view-balance] 拿不到權重（{st.get('reason')}）=> 照原本均勻抽", flush=True)
+            return None
+        names = self.dataparser_outputs.train_set.image_names
+        top = torch.argsort(w, descending=True)[:3].tolist()
+        print(f"[view-balance] ✅ γ={gam:g}、夾 {tuple(self.hparams.get('view_balance_clip'))}：{len(w)} 台訓練相機、點雲抽 {st['n_points']:,} 點"
+              f"（被看到 {st['seen_points']:,}；每點在畫面內的相機數中位 {st['c_median']:.0f}）｜有效視角數 {st['ess']:.0f}／{len(w)}、"
+              f"權重 {st['w_min']:.2f}～{st['w_max']:.2f}（夾到下限 {st['n_clip_lo']} 台、上限 {st['n_clip_hi']} 台、畫面內沒有點 {st['zero_view']} 台）｜"
+              f"最重 {', '.join(f'{names[i]}={float(w[i]):.2f}' for i in top)}", flush=True)
+        return w
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
         if self.hparams["val_on_train"] is True:
