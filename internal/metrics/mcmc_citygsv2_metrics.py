@@ -130,6 +130,12 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     """>=0 時啟用共面閘門：q_i < tau（q＝與鄰居法向 |cos| 的加權平均；0.5＝平均差 60 度；且附近有共面鄰居可比）
     的顆粒不受熵的往 1 推，改加 geom_gate_down_reg x -log(1-o)。"""
     geom_gate_down_reg: float = 0.002
+    vis_gate_tau: float = -1.0
+    """★ 2026-11-07 熵閘門「看得到才往 1 推」（>=0 開；需要 renderer `vis_snapshot true`＋`trim_running_vc`）。
+    上一個累加窗口的 VS＝V／(C·o)（覆蓋像素上平均 T·G）< tau 的顆粒進閘門外：熵不往 1 推、改加 geom_gate_down_reg x -log(1-o)，
+    （density `geom_gate_sampling true` 時 MCMC 抽樣也避開它）。動機（`紀錄/實驗分析/31` §4.6）：alpha 上限 0.999 讓被擋的顆粒只剩熵在推 => 地下層鎖成不透明（+14～20%）；
+    被藏的實心顆粒每顆仍有約 18 台看得到 => 按貢獻刪不掉，只能不再把「大多被擋」的推成實心、讓光度梯度自己決定。"""
+    vis_gate_from_iter: int = 1000
     """閘門外顆粒的下壓力權重；-log(1-o) 對 logit 的梯度＝o，o≈1 時仍推得動（L1 的梯度 o(1-o) 會飽和）。"""
     depth_support: bool = False
     """★ 2026-10-29 多視角深度支撐（`geom_gate.DepthSupport`）：一直在單目表面前方（浮塊）或從未貼面（地底、內部）的顆粒進閘門外。
@@ -337,7 +343,14 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         use_plane = (float(getattr(c, "plane_reg", 0.0)) > 0 or float(getattr(c, "geom_gate_tau", -1.0)) >= 0) \
             and step >= int(getattr(c, "plane_from_iter", 1000))
         use_ds = bool(getattr(c, "depth_support", False)) and step >= int(getattr(c, "depth_support_from_iter", 1000))
-        if not (use_plane or use_ds):
+        _vst = getattr(gaussian_model, "_trim_state", None) or {}
+        use_vis = float(getattr(c, "vis_gate_tau", -1.0)) >= 0 and step >= int(getattr(c, "vis_gate_from_iter", 1000))
+        if use_vis and not ("VS" in _vst and "VW" in _vst):
+            if not getattr(self, "_vis_warned", False) and step >= int(getattr(c, "vis_gate_from_iter", 1000)) + 1000:
+                self._vis_warned = True
+                print("⚠⚠ [vis-gate] 拿不到 renderer 的 VS 快照（vis_snapshot／trim_running_vc 沒開？）=> 熵閘門不會生效", flush=True)
+            use_vis = False
+        if not (use_plane or use_ds or use_vis):
             return None
         from .geom_gate import morton_neighbors, quat_normals, plane_q, plane_loss, DepthSupport
         xyz = gaussian_model.get_xyz
@@ -403,6 +416,18 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                     self._ds_announced = True
                 if ds.support is not None and ds.support.shape[0] == n:
                     gate &= ds.support
+        if use_vis:
+            for _k in ("VS", "VW"):                  # MCMC 加點接在尾端 => 補 0（VW＝0＝沒資訊；與 renderer `_trim_state` 的補法相同）
+                if _vst[_k].shape[0] < n:
+                    _vst[_k] = torch.cat([_vst[_k], torch.zeros(n - _vst[_k].shape[0], dtype=_vst[_k].dtype, device=_vst[_k].device)])
+        if use_vis and _vst["VS"].shape[0] == n and _vst["VW"].shape[0] == n:
+            off = (_vst["VW"] > 0) & (_vst["VS"] < float(c.vis_gate_tau))
+            gate &= ~off
+            if not getattr(self, "_vis_gate_announced", False) or step % 2000 == 0:
+                _op = opacities.detach().reshape(-1) > 0.5
+                print(f"[vis-gate] {'✅ 首次觸發 ' if not getattr(self, '_vis_gate_announced', False) else ''}step={step}：VS < {c.vis_gate_tau:g} 進閘門外 "
+                      f"{int(off.sum()):,}／{n:,}（不透明的 {int((off & _op).sum()):,}／{int(_op.sum()):,}）；沒有快照（新點／剛搬家）{int((_vst['VW'] == 0).sum()):,}", flush=True)
+                self._vis_gate_announced = True
         gaussian_model._geom_gate = gate
         metrics["gate_off"] = (~gate).float().mean()
         pbar["gate_off"] = False

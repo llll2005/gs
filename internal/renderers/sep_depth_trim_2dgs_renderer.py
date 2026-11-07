@@ -55,6 +55,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             alpha_max_999: bool = False,
             trim_hidden_window: int = 0,
             trim_hidden_min_views: int = 3,
+            vis_snapshot: bool = False,
             trim_soft_rho: float = 0.0,
             trim_schedule: str = "",
             trim_by_mean_contribution: bool = False,
@@ -160,6 +161,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
         self.alpha_max_999 = alpha_max_999
         self.trim_hidden_window = trim_hidden_window
         self.trim_hidden_min_views = trim_hidden_min_views
+        # ★ 2026-11-07 vis_snapshot（熵閘門「看得到才往 1 推」的訊號；metric `vis_gate_tau` 讀）：每個累加窗口結束時（增生期＝每次 trim 前，
+        #   增生後＝每 contribution_prune_interval 步，累加不停）把 VS＝V／(C·o)（覆蓋像素上平均 T·G）與 VW＝(C > 0) 存進 `_trim_state`。
+        #   逐顆狀態跟著剪枝／搬家／加點同步（搬家與新點的 VW＝0 => 沒資訊、熵照舊）。量測：被一層表面擋住的 VS 約 0.001～0.01，全看得到的約 0.1～0.2。
+        #   ⚠ 與 trim_hidden 同開時，增生後由 trim_hidden 的窗口重設累加器、不另存快照（快照停在增生結束那一次）。
+        self.vis_snapshot = vis_snapshot
         if trim_merge_first and not trim_running_vc:
             print("⚠⚠ [trim-merge-first] 只接在累加式 trim（trim_running_vc）上；現在沒開 => 合併優先不會生效", flush=True)
         # ★ 2026-10-24 SH 分開存放／SH 的 Adam 融進 backward（紀錄/加速論文對照.md A5、B2；光柵器 cuda_rasterizer/sh_adam.h）
@@ -753,6 +759,22 @@ class SepDepthTrim2DGSRenderer(Renderer):
             self._acc_announced = True
             print(f"[trim-running] ✅ 首次觸發：訓練 forward 累加 V／C（本步有覆蓋的顆粒 {int((cn > 0).sum()):,}／{cn.numel():,}）", flush=True)
 
+    def _vis_snap(self, pc, step):
+        """vis_snapshot：把這個窗口累加的 V／C 換成逐顆「看得到程度」VS＝V／(C·o)，VW＝這個窗口有被光柵器算到（C > 0）。"""
+        st = self._trim_state(pc, ("V", "C", "VS", "VW"))
+        V, C = st["V"], st["C"]
+        o = pc.get_opacities().squeeze(-1).detach().float().clamp_min(1e-6)
+        w = C > 0
+        st["VS"] = torch.where(w, V / (C.clamp_min(1.0) * o), torch.zeros_like(V))
+        st["VW"] = w.float()
+        first = not getattr(self, "_vis_announced", False)
+        if first or step % 2000 == 0:
+            self._vis_announced = True
+            m = w & (o > 0.5)
+            q = torch.quantile(st["VS"][m][:1_000_000].float(), torch.tensor([0.1, 0.5, 0.9], device=V.device)).tolist() if bool(m.any()) else [float("nan")] * 3
+            print(f"[vis-snapshot] {'✅ 首次觸發 ' if first else ''}step {step}：窗口 {int(st.get('views', 0))} 個視角｜有覆蓋 {int(w.sum()):,}／{w.numel():,}"
+                  f"｜不透明的 VS 分位 q10/50/90 {[round(x, 4) for x in q]}", flush=True)
+
     def _hidden_prune(self, step, module, window):
         """trim_hidden 增生後：這個窗口（>= 一個 epoch）裡在畫面內 >= trim_hidden_min_views 次、卻一次都沒被光柵器算到的顆粒刪掉；重設累加器。"""
         pc = module.gaussian_model
@@ -776,6 +798,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
     def _running_trim(self, step, module, until):
         """取代週期 trim：用訓練中累加的 V／C（不掃相機）。回傳 True＝已處理。"""
         pc = module.gaussian_model
+        if getattr(self, "vis_snapshot", False):
+            self._vis_snap(pc, step)                 # 剪之前存（快照跟著剪枝同步）
         st = self._trim_state(pc, ("V", "C"))
         n_views = int(st.get("views", 0))
         V, C = st["V"], st["C"]
@@ -860,7 +884,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
         for _k in ("M", "F"):
             if _k in pc._trim_state:
                 pc._trim_state[_k] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
-        if step >= until and not getattr(self, "trim_hidden", False):
+        if step >= until and not getattr(self, "trim_hidden", False) and not getattr(self, "vis_snapshot", False):
             self._acc_stop = True          # 增生期結束 => 不再累加（省 forward 的那點開銷）；trim_hidden 要繼續累加
         elif int(getattr(self, "reseed_views", 0) or 0) > 0 and rho == 0:
             self._reseed(step, module, int(float(getattr(self, "reseed_frac", 1.0)) * int(low.sum())))
@@ -978,6 +1002,17 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if (step - until) % _w == 0:
                 with torch.no_grad():
                     self._hidden_prune(step, module, _w)
+            return
+        if (not _sch) and getattr(self, "trim_running_vc", False) and getattr(self, "vis_snapshot", False) and step > until:
+            if (step - until) % self.contribution_prune_interval == 0:       # 增生後：只存快照、重設累加器，不剪
+                with torch.no_grad():
+                    pc = module.gaussian_model
+                    self._vis_snap(pc, step)
+                    n = pc.get_xyz.shape[0]
+                    for _k in ("V", "C", "M", "F"):
+                        if _k in pc._trim_state:
+                            pc._trim_state[_k] = torch.zeros(n, device=pc.get_xyz.device)
+                    pc._trim_state["views"] = 0
             return
         if (not _sch) and getattr(self, "trim_running_vc", False) and step > until and not getattr(self, "_acc_stop", False):
             self._acc_stop = True
