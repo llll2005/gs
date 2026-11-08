@@ -53,6 +53,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_running_score: str = "vc",
             trim_hidden: bool = False,
             alpha_max_999: bool = False,
+            t_sat_1e3: bool = False,
             trim_hidden_window: int = 0,
             trim_hidden_min_views: int = 3,
             vis_snapshot: bool = False,
@@ -159,6 +160,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   0.99 時一層不透明面元後面的下一層剛好沒到飽和門檻 => 被混合、拿 1% 貢獻與梯度；0.999 => 不再被算到（C＝0）=> trim_hidden 抓得到。
         #   所有渲染（訓練、評估、record）都用同一個上限；設定存在 ckpt 裡，評估工具載入時自動沿用。
         self.alpha_max_999 = alpha_max_999
+        # ★ 2026-11-08 t_sat_1e3（使用者「減少 tile／每像素工作量」）：像素飽和門檻 test_T < 1e-4 => 1e-3（忽略的顏色 <= 0.1%）。
+        #   0.99 上限下第一層不透明後 T＝0.01，第二層 test_T＝1e-4 沒小於 1e-4 => 被混合；1e-3 => 像素在第一層後就停。所有渲染同一門檻。
+        self.t_sat_1e3 = t_sat_1e3
         self.trim_hidden_window = trim_hidden_window
         self.trim_hidden_min_views = trim_hidden_min_views
         # ★ 2026-11-07 vis_snapshot（熵閘門「看得到才往 1 推」的訊號；metric `vis_gate_tau` 讀）：每個累加窗口結束時（增生期＝每次 trim 前，
@@ -324,8 +328,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 "設了 exact_conic_aabb 但光柵器不認得這個欄位 —— 沒重編。\n"
                 "    rm -rf submodules/diff-surfel-rasterization-trim-pp/build 後重裝\n"
                 "    （CLAUDE.md『Rebuilding the trim rasterizer』；lab 要強制 CUDA_HOME）")
+        if getattr(self, "t_sat_1e3", False) and "t_sat_1e3" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError("設了 t_sat_1e3 但光柵器不認得這個欄位 —— 沒重編")
         # ★ 2026-11-05 不計分像素：training_forward 從 module._pix_skip 帶進來（uint8 H*W；None＝這張沒有遮罩）
-        _pix = kwargs.get("_pix_skip") if getattr(self, "skip_unscored_pixels", False) else None
+        _pix = kwargs.get("_pix_skip") if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "_vrs_pix", False)) else None
         if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "bwd_zero_grad_skip", False)) \
                 and "pix_skip" not in GaussianRasterizationSettings._fields:
             raise RuntimeError("設了 skip_unscored_pixels／bwd_zero_grad_skip 但光柵器不認得 pix_skip 欄位 —— 沒重編")
@@ -379,6 +385,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"audit_tiles": True} if kwargs.get("_audit", False) else {}),
             **({"record_reduce": True} if (record_transmittance and getattr(self, "record_reduce", False)) else {}),
             **({"alpha_999": True} if getattr(self, "alpha_max_999", False) else {}),
+            **({"t_sat_1e3": True} if getattr(self, "t_sat_1e3", False) else {}),
             # ★ 2026-11-07 record_T：record pass 回傳逐顆「每覆蓋像素平均 T」（到達該顆時的穿透率）而不是平均 T*alpha（逐顆可見度）
             **({"record_T": True} if (record_transmittance and kwargs.get("record_T", False)) else {}),
             **({"tile_cull": True} if (not record_transmittance and not kwargs.get("_audit", False)
@@ -598,7 +605,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if not self._absgrad_announced and not need:
                 self._absgrad_announced = True
                 print(f"[absgrad-gate] ✅ 首次關閉 absgrad 累加：step {step}（absgrad_densify={w}、densify_until={until}）")
-        if getattr(self, "skip_unscored_pixels", False) and "_pix_skip" not in kwargs:
+        if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "_vrs_pix", False)) and "_pix_skip" not in kwargs:
             kwargs["_pix_skip"] = getattr(module, "_pix_skip", None)   # ★ 2026-11-05 GaussianSplatting.training_step 在渲染前取好
         if "_lean_dist" not in kwargs:
             # ★ 2026-10-19：深度失真正則有作用的步 => dist 版 lean（其他幾何 loss 若 > 0，光柵器 backward 會當場報錯）

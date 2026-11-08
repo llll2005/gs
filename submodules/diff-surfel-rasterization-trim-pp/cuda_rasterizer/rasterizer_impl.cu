@@ -480,6 +480,7 @@ int CudaRasterizer::Rasterizer::forward(
 		if (fmode == 1) pair_used = binningState.pair_used;
 	}
 	FORWARD::setRecordT((lean & 256) != 0);   // ★ 2026-11-07 bit 256 = record 模式累加 Σ T（逐顆可見度）
+	FORWARD::setTSat((lean & 1024) ? 0.001f : 0.0001f);   // ★ 2026-11-08 bit 1024 = 飽和門檻 1e-3（原 1e-4）
 	FORWARD::setAlphaMax((lean & 512) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 512 = alpha 上限 0.999
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,

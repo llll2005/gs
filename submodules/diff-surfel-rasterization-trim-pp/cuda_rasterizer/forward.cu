@@ -23,6 +23,9 @@ __device__ int g_record_T = 0;
 //   0.999（gsplat 的值）=> 一層後 T＝1e-3，下一層 α >= 0.9 的 test_T <= 1e-4 => 像素停止、後面的完全不被算到（C＝0、零梯度）。
 //   不能真的設 1：backward 用 T／(1−α) 往回推。lean bit 512（rasterizer_impl.cu 每次 forward 前設定）；預設 0.99＝原行為。
 __device__ float g_alpha_max = 0.99f;
+// ★ 2026-11-08 飽和門檻（使用者「減少 tile／每像素工作量」）：像素在 test_T < g_t_sat 時停止；預設 1e-4＝原行為（逐位元相同）。
+//   lean bit 1024 => 1e-3（忽略的顏色 <= 0.1%，不到 8 位元色階半格）。backward 跟著 forward 的最後貢獻者走，不用改。
+__device__ float g_t_sat = 0.0001f;
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -658,7 +661,7 @@ renderCUDA(
 					if (alpha < 1.0f / 255.0f)
 						break;
 					float test_T = T * (1 - alpha);
-					if (test_T < 0.0001f)
+					if (test_T < g_t_sat)
 					{
 						done = true;
 						break;
@@ -771,7 +774,7 @@ renderCUDA(
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
-			if (test_T < 0.0001f)
+			if (test_T < g_t_sat)
 			{
 				done = true;
 				continue;
@@ -956,7 +959,7 @@ auditCUDA(
 			s_geo[j] = 1;
 			if (!live) continue;
 			float test_T = T * (1 - alpha);
-			if (test_T < 0.0001f) { done = true; continue; }
+			if (test_T < g_t_sat) { done = true; continue; }
 			T = test_T;
 			n_blend += 1.f;
 		}
@@ -1072,7 +1075,7 @@ recordReduceCUDA(
 							if (alpha >= 1.0f / 255.0f)
 							{
 								float test_T = T * (1 - alpha);
-								if (test_T < 0.0001f)
+								if (test_T < g_t_sat)
 									done = true;
 								else
 									T = test_T;
@@ -1102,6 +1105,12 @@ void FORWARD::setAlphaMax(float a)
 {
 	static float cur = -1.f;
 	if (a != cur) { cudaMemcpyToSymbol(g_alpha_max, &a, sizeof(float)); cur = a; }
+}
+
+void FORWARD::setTSat(float t)
+{
+	static float cur = -1.f;
+	if (t != cur) { cudaMemcpyToSymbol(g_t_sat, &t, sizeof(float)); cur = t; }
 }
 
 void FORWARD::setRecordT(bool on)

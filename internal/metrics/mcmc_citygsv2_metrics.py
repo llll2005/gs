@@ -193,6 +193,16 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     rgb_l2_weight: float = 0.0
     """★ 2026-10-31 L1 混 L2（使用者：少數視角的強證據被 L1 的「每像素只投正負 1 票」稀釋）：
     loss 另加 (1−λ_dssim)×w×mean((I_hat−I)²)。誤差 e 的像素梯度＝sign(e)＋2we —— w=2 時 e≈0.25 的像素是純 L1 的 2 倍。"""
+    vrs_mode: str = ""
+    """★ 2026-11-08 誤差低的 tile 少算（`vrs.py`；使用者 10-09 的 VRS 想法、11-08「判準多作幾個假設」）。""＝關；
+    random（π＝keep，對照）／error（上次被抽到時的逐 tile L1）／texture（GT 逐 tile 梯度強度）。保留的 tile 梯度乘 1/π（vrs_reweight）、跳過的 loss 與梯度 0；
+    光柵器 lean 訓練 forward 用 pix_skip 略過（完整路徑的步照畫，但 loss 同樣遮）。"""
+    vrs_keep: float = 0.6
+    vrs_min_keep: float = 0.25
+    vrs_from_iter: int = 3000
+    vrs_reweight: bool = True
+    vrs_tile: int = 16
+
 
     def instantiate(self, *args, **kwargs) -> "MCMCCityGSV2MetricsModule":
         return MCMCCityGSV2MetricsModule(self)
@@ -510,10 +520,84 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                   f"；補洞項 ×{getattr(c, 'depth_see_through_hole', 1.0)}、看穿項 ×{getattr(c, 'depth_see_through_deeper', 1.0)}）", flush=True)
             self._st_announced = True
 
+    def vrs_skip(self, name, gt, step: int):
+        """★ 2026-11-08 渲染前呼叫：決定本步保留哪些 tile => 光柵器要略過的像素（uint8 [H*W]，1＝略過）；不跳 => None。"""
+        self._vrs_cur = None
+        c = self.config
+        mode = str(getattr(c, "vrs_mode", "") or "")
+        if not mode or step < int(getattr(c, "vrs_from_iter", 3000)):
+            return None
+        from . import vrs as V
+        T = int(getattr(c, "vrs_tile", 16))
+        H, W = int(gt.shape[-2]), int(gt.shape[-1])
+        Ht, Wt = -(-H // T), -(-W // T)
+        keep, kmin = float(c.vrs_keep), float(c.vrs_min_keep)
+        if mode == "random":
+            pi = torch.full((Ht, Wt), keep, device=gt.device)
+        elif mode == "error":
+            mem = self.__dict__.setdefault("_vrs_err", {}).get((name, H, W))
+            if mem is None:
+                self._vrs_cur = {"name": name, "full": True}
+                return None
+            pi = V.keep_probs(mem.float(), keep, kmin)
+        elif mode == "texture":
+            cache = self.__dict__.setdefault("_vrs_tex", {})
+            sc = cache.get((name, H, W))
+            if sc is None:
+                g = gt if gt.is_floating_point() else gt.float() / 255.0
+                sc = cache[(name, H, W)] = V.texture_score(g, T).half()
+            pi = V.keep_probs(sc.float(), keep, kmin)
+        else:
+            raise ValueError(f"vrs_mode 只能是 random／error／texture（收到 {mode!r}）")
+        kt = torch.rand((Ht, Wt), device=gt.device) < pi
+        wt = (1.0 / pi) if bool(getattr(c, "vrs_reweight", True)) else torch.ones_like(pi)
+        self._vrs_cur = {"name": name, "keep_t": kt, "w_t": wt, "pi": pi, "T": T}
+        return (~V.tile_to_pix(kt, H, W, T)).to(torch.uint8).contiguous().view(-1)
+
+    def _vrs_apply(self, step, batch, outputs):
+        """跳過的像素：GT 換成 detach 的渲染（loss 與梯度 0）；保留的：梯度乘 1/π。error 模式順便記這張的逐 tile L1。"""
+        from . import vrs as V
+        cur = getattr(self, "_vrs_cur", None)
+        self._vrs_cur = None
+        if cur is None:
+            return batch, outputs
+        name, gt = batch[1][0], batch[1][1]
+        gtf = gt if gt.is_floating_point() else gt.float() / 255.0
+        r = outputs["render"]
+        H, W = int(r.shape[-2]), int(r.shape[-1])
+        c = self.config
+        T = int(getattr(c, "vrs_tile", 16))
+        if str(getattr(c, "vrs_mode", "")) == "error":
+            e = V.tile_mean((r.detach() - gtf).abs().mean(0), T).half()
+            mem = self.__dict__.setdefault("_vrs_err", {})
+            old = mem.get((name, H, W))
+            if old is not None and "keep_t" in cur:
+                e = torch.where(cur["keep_t"], e, old)
+            mem[(name, H, W)] = e
+        if "keep_t" not in cur:
+            return batch, outputs
+        kp = V.tile_to_pix(cur["keep_t"], H, W, T)[None]
+        wp = V.tile_to_pix(cur["w_t"], H, W, T)[None].to(r.dtype)
+        out = dict(outputs)
+        out["render"] = torch.where(kp, V.scale_grad(r, wp), r.detach())
+        g2 = torch.where(kp, gtf, r.detach().to(gtf.dtype))
+        batch = (batch[0], (name, g2) + tuple(batch[1][2:])) + tuple(batch[2:])
+        st = self.__dict__.setdefault("_vrs_stat", [0, 0.0, 0.0])
+        st[0] += 1; st[1] += float(kp.float().mean()); st[2] += float(cur["pi"].min())
+        first = not getattr(self, "_vrs_announced", False)
+        if first or step % 2000 == 0:
+            self._vrs_announced = True
+            print(f"[vrs] {'✅ 首次觸發' if first else '　'} step {step}：模式 {c.vrs_mode}、目標保留 {c.vrs_keep:g}（下限 {c.vrs_min_keep:g}、"
+                  f"{'梯度 ×1/π' if c.vrs_reweight else '不補權重'}）｜近 {st[0]} 步平均保留像素 {st[1] / max(st[0], 1):.3f}、π 最小 {st[2] / max(st[0], 1):.2f}", flush=True)
+            self._vrs_stat = [0, 0.0, 0.0]
+        return batch, out
+
     def get_train_metrics(self, pl_module, gaussian_model, step: int, batch, outputs) -> Tuple[Dict[str, Any], Dict[str, bool]]:
         self._bm_cur = None
         if getattr(self.config, "block_mask_dir", ""):
             batch, outputs = self._block_mask_apply(pl_module, step, batch, outputs)
+        if getattr(self, "_vrs_cur", None) is not None:
+            batch, outputs = self._vrs_apply(step, batch, outputs)
         if getattr(self.config, "exposure_comp", False):
             outputs = self._exposure_apply(step, batch, outputs)
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)

@@ -959,6 +959,13 @@ class GaussianSplatting(LightningModule):
         if getattr(self.renderer, "skip_unscored_pixels", False) and hasattr(self.metric, "block_mask_skip"):
             _gt = batch[1][1]
             self._pix_skip = self.metric.block_mask_skip(batch[1][0], tuple(_gt.shape[-2:]), _gt.device)
+        # ★ 2026-11-08 誤差低的 tile 少算（metric vrs_mode）：本步要略過的 tile 併進同一張 pix_skip
+        self.renderer._vrs_pix = False
+        if hasattr(self.metric, "vrs_skip"):
+            _v = self.metric.vrs_skip(batch[1][0], batch[1][1], global_step)
+            if _v is not None:
+                self._pix_skip = _v if self._pix_skip is None else (self._pix_skip | _v)
+                self.renderer._vrs_pix = True
         # forward
         outputs = self(camera)
         _prof.mark("3 forward（光柵化）")
