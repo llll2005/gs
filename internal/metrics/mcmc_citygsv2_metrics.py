@@ -156,7 +156,8 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     （單目深度在細高塔上不可靠，塔頂被判「一直在前方」）。SfM 點是多視角三角化過的，比單目可信；海面沒有 SfM 點，浮塊照樣被判。"""
     depth_support_sfm_radius_nn: float = 0.0
     """★ 2026-11-08（使用者「不准用場景單位的門檻」）>0 時取代 depth_support_sfm_radius：r＝此倍數 × SfM 點最近鄰距離的中位數
-    （Scaffold-GS 的體素取法；3DGS 的 init 尺度也是用 SfM 近鄰距離）。MatrixCity 全場最近鄰中位 0.0037（0.37 m）=> 8 ≈ 原本的 0.03。"""
+    （Scaffold-GS 的體素取法；3DGS 的 init 尺度也是用 SfM 近鄰距離）。MatrixCity 全場最近鄰中位 0.0037（0.37 m）=> 8 ≈ 原本的 0.03。
+    11-08 b3 敏感度：4 倍、16 倍都比 8 倍差（海面浮塊／地下層）=> 30k 預設改用 8（使用者同意）。"""
     depth_see_through_reg: float = 0.0
     """★ 2026-10-31 單側「不能看穿表面」（使用者 10-30：離開空拍視角立面透空——窗戶被學成洞，從空拍看不出來）。
     只在塊外遮罩的 A 像素（第一表面在本塊）上：(1−α)＋relu(1/(1+margin) − z_單目／z_渲染)（後者只算 α>0.5 的像素）。

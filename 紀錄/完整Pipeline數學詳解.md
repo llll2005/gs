@@ -157,7 +157,7 @@ MatrixCity 影像＋GT 姿態 ─┬─ COLMAP（GT 姿態）=> SfM 點 ──�
 | 模組 | 做什麼 | 結果（單塊 b3／b12 為主） | 時間 | 狀態 |
 |---|---|---|---|---|
 | 深度支撐閘門（metric `depth_support`＋density `geom_gate_sampling`） | 顆粒中心投到每個視角，對單目深度的殘差在 400 步視窗內一直 < −5%（在前方）或從不貼面 => 不往 1 推熵、MCMC 抽樣 ×1e-3 | 海上浮塊 −85～95%、PSNR 持平 | +8～9% | 候選 |
-| └ SfM 豁免（`depth_support_sfm_radius 0.03`） | 離 SfM 點 0.03 單位內不判 | 修好 b3 塔頂變煙、浮塊壓制保留 | 0 | 候選 |
+| └ SfM 豁免（`depth_support_sfm_radius_nn 8`；11-08 前寫成 `depth_support_sfm_radius 0.03`） | 離 SfM 點 8 × SfM 最近鄰間距中位（MatrixCity 0.0296）內不判 | 修好 b3 塔頂變煙、浮塊壓制保留 | 0 | 候選 |
 | └ 投票規則／每 k 步（`depth_support_rule vote`、`depth_support_interval`） | 過半觀測說在前方才判（中位數）；每 k 步才累積 | 11-02 排在 lab | — | 實驗中 |
 | 單側不能看穿（`depth_see_through_reg`；`_hole`／`_deeper` 拆項） | A 像素 Σ(1−α)＋渲染比單目深 1.1 倍就罰 | F1 +0.04／+0.09；**好處與 b12 低角度變差都來自補洞項** | +9%（b3） | 被補洞放點取代中 |
 | MCMC 補洞放點（density `hole_fill_frac`） | 增生事件把洞／看穿處的像素沿視線放到單目深度（新小面元） | b12 低角度 3.0%（不能看穿 7.8%）；b3 塊內掉分 | ＋6%（待查） | 實驗中（`25`） |

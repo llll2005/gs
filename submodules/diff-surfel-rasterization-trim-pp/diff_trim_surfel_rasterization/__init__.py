@@ -91,7 +91,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.record_transmittance,
             raster_settings.debug,
             raster_settings.exact_conic_aabb,
-            (3 | (1024 if getattr(raster_settings, "t_sat_1e3", False) else 0)) if getattr(raster_settings, "audit_tiles", False) else (   # audit 也吃飽和門檻（11-08）
+            (3 | (1024 if getattr(raster_settings, "t_sat_1e3", False) else 0) | (2048 if getattr(raster_settings, "t_sat_1e5", False) else 0)) if getattr(raster_settings, "audit_tiles", False) else (   # audit 也吃飽和門檻（11-08）
                 (1 if getattr(raster_settings, "lean_render", False) else 0)
                 | (4 if getattr(raster_settings, "record_reduce", False) else 0)
                 | (8 if getattr(raster_settings, "tile_cull", False) else 0)
@@ -108,7 +108,9 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-11-07 bit9 = alpha 上限 0.999（原 0.99；backward 旗標 bit7 同步）
                 | (512 if getattr(raster_settings, "alpha_999", False) else 0)
                 # ★ 2026-11-08 bit10 = 飽和門檻 1e-3（原 1e-4；backward 不用旗標）
-                | (1024 if getattr(raster_settings, "t_sat_1e3", False) else 0)),
+                | (1024 if getattr(raster_settings, "t_sat_1e3", False) else 0)
+                # ★ 2026-11-08 bit11 = 飽和門檻 1e-5（被蓋住的顆粒也拿得到梯度；bit10 優先）
+                | (2048 if getattr(raster_settings, "t_sat_1e5", False) else 0)),
             sh_rest,
             # ★ 2026-11-05 逐像素不計分遮罩（uint8 H*W，1＝略過；只在 lean 訓練 forward 生效）；None＝空張量＝不略過
             (getattr(raster_settings, "pix_skip", None) if getattr(raster_settings, "pix_skip", None) is not None
@@ -302,6 +304,7 @@ class GaussianRasterizationSettings(NamedTuple):
     absgrad : bool = True   # ★ 2026-10-09：False => backward 不做 absgrad 的 atomicAdd（只有 dL_dmean2D.z 變 0）
     alpha_999 : bool = False  # ★ 2026-11-07 alpha 上限 0.999（原 0.99）：一層不透明面元後的顆粒不再被混合
     t_sat_1e3 : bool = False  # ★ 2026-11-08 飽和門檻 1e-3（原 1e-4）：像素早一點停
+    t_sat_1e5 : bool = False  # ★ 2026-11-08 飽和門檻 1e-5（原 1e-4）：像素晚一點停，被蓋住的顆粒也拿得到梯度
     record_T : bool = False  # ★ 2026-11-07 record 模式累加 Σ T 而不是 Σ T*alpha（逐顆可見度）
     train_record_warp : bool = False  # ★ 2026-11-05 訓練中累加 V/C 先在 warp 內加總（覆蓋數逐位元相同、V 只差加總順序）
     bwd_zero_skip : bool = False  # ★ 2026-11-05 backward 不處理上游梯度全 0 的像素（塊外遮罩 C 區；梯度只差浮點加總順序）

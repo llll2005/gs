@@ -57,7 +57,7 @@ namespace FORWARD
 	void setRecordT(bool on);
 	// ★ 2026-11-07 alpha 上限（預設 0.99；lean bit 512 => 0.999；見 forward.cu g_alpha_max）
 	void setAlphaMax(float a);
-	// ★ 2026-11-08 飽和門檻（預設 1e-4；lean bit 1024 => 1e-3；見 forward.cu g_t_sat）
+	// ★ 2026-11-08 飽和門檻（預設 1e-4；lean bit 1024 => 1e-3、bit 2048 => 1e-5；見 forward.cu g_t_sat）
 	void setTSat(float t);
 
 	void render(
