@@ -202,6 +202,9 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     vrs_from_iter: int = 3000
     vrs_reweight: bool = True
     vrs_tile: int = 16
+    vrs_scored_only: bool = False
+    """★ 11-08 v2：整塊都是不計分（塊外 C 區）的 tile 不參加抽樣（π＝1、照畫），保留比例只在計分 tile 上算。
+    v1 的 error 模式把配額花在 C 區（loss 恆 0 => 誤差 0 => π 落到下限），而 C 區本來就便宜 => 像素少畫 46% 只省 2.7% 時間。"""
 
 
     def instantiate(self, *args, **kwargs) -> "MCMCCityGSV2MetricsModule":
@@ -532,26 +535,38 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         H, W = int(gt.shape[-2]), int(gt.shape[-1])
         Ht, Wt = -(-H // T), -(-W // T)
         keep, kmin = float(c.vrs_keep), float(c.vrs_min_keep)
+        sel = None                                                            # 參加抽樣的 tile（None＝全部）
+        if bool(getattr(c, "vrs_scored_only", False)):
+            cache = self.__dict__.setdefault("_vrs_sel", {})
+            sel = cache.get((name, H, W))
+            if sel is None:
+                m = self._block_mask_get(name, (H, W), gt.device) if getattr(c, "block_mask_dir", "") else None
+                sel = torch.ones((Ht, Wt), dtype=torch.bool, device=gt.device) if m is None else (V.tile_mean((m == 0).float(), T) < 1.0)
+                cache[(name, H, W)] = sel
         if mode == "random":
-            pi = torch.full((Ht, Wt), keep, device=gt.device)
+            sc = None
         elif mode == "error":
-            mem = self.__dict__.setdefault("_vrs_err", {}).get((name, H, W))
-            if mem is None:
+            sc = self.__dict__.setdefault("_vrs_err", {}).get((name, H, W))
+            if sc is None:
                 self._vrs_cur = {"name": name, "full": True}
                 return None
-            pi = V.keep_probs(mem.float(), keep, kmin)
         elif mode == "texture":
             cache = self.__dict__.setdefault("_vrs_tex", {})
             sc = cache.get((name, H, W))
             if sc is None:
                 g = gt if gt.is_floating_point() else gt.float() / 255.0
                 sc = cache[(name, H, W)] = V.texture_score(g, T).half()
-            pi = V.keep_probs(sc.float(), keep, kmin)
         else:
             raise ValueError(f"vrs_mode 只能是 random／error／texture（收到 {mode!r}）")
+        if sel is None:
+            pi = torch.full((Ht, Wt), keep, device=gt.device) if sc is None else V.keep_probs(sc.float(), keep, kmin)
+        else:
+            pi = torch.ones((Ht, Wt), device=gt.device)
+            if bool(sel.any()):
+                pi[sel] = torch.full_like(pi[sel], keep) if sc is None else V.keep_probs(sc.float()[sel], keep, kmin)
         kt = torch.rand((Ht, Wt), device=gt.device) < pi
         wt = (1.0 / pi) if bool(getattr(c, "vrs_reweight", True)) else torch.ones_like(pi)
-        self._vrs_cur = {"name": name, "keep_t": kt, "w_t": wt, "pi": pi, "T": T}
+        self._vrs_cur = {"name": name, "keep_t": kt, "w_t": wt, "pi": pi, "T": T, "sel": sel}
         return (~V.tile_to_pix(kt, H, W, T)).to(torch.uint8).contiguous().view(-1)
 
     def _vrs_apply(self, step, batch, outputs):
@@ -582,14 +597,18 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         out["render"] = torch.where(kp, V.scale_grad(r, wp), r.detach())
         g2 = torch.where(kp, gtf, r.detach().to(gtf.dtype))
         batch = (batch[0], (name, g2) + tuple(batch[1][2:])) + tuple(batch[2:])
-        st = self.__dict__.setdefault("_vrs_stat", [0, 0.0, 0.0])
+        st = self.__dict__.setdefault("_vrs_stat", [0, 0.0, 0.0, 0.0, 0.0])
         st[0] += 1; st[1] += float(kp.float().mean()); st[2] += float(cur["pi"].min())
+        sl = cur.get("sel")
+        if sl is not None and bool(sl.any()):
+            st[3] += float(cur["keep_t"][sl].float().mean()); st[4] += float(sl.float().mean())
         first = not getattr(self, "_vrs_announced", False)
         if first or step % 2000 == 0:
             self._vrs_announced = True
             print(f"[vrs] {'✅ 首次觸發' if first else '　'} step {step}：模式 {c.vrs_mode}、目標保留 {c.vrs_keep:g}（下限 {c.vrs_min_keep:g}、"
-                  f"{'梯度 ×1/π' if c.vrs_reweight else '不補權重'}）｜近 {st[0]} 步平均保留像素 {st[1] / max(st[0], 1):.3f}、π 最小 {st[2] / max(st[0], 1):.2f}", flush=True)
-            self._vrs_stat = [0, 0.0, 0.0]
+                  f"{'梯度 ×1/π' if c.vrs_reweight else '不補權重'}）｜近 {st[0]} 步平均保留像素 {st[1] / max(st[0], 1):.3f}、π 最小 {st[2] / max(st[0], 1):.2f}"
+                  + (f"｜只算計分 tile：參加抽樣 {st[4] / st[0]:.3f}、其中保留 {st[3] / st[0]:.3f}" if st[4] > 0 else ""), flush=True)
+            self._vrs_stat = [0, 0.0, 0.0, 0.0, 0.0]
         return batch, out
 
     def get_train_metrics(self, pl_module, gaussian_model, step: int, batch, outputs) -> Tuple[Dict[str, Any], Dict[str, bool]]:

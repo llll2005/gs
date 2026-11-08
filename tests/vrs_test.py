@@ -51,6 +51,20 @@ class VrsTest(unittest.TestCase):
         self.assertTrue(bool((r.grad[:, ~kp] == 0).all()))                       # 跳過的像素零梯度
         self.assertTrue(bool((r.grad[:, kp].abs() >= 1.0 - 1e-6).all()))        # 保留的梯度 ×1/π >= 1
 
+    def test_scored_only_keeps_unscored_tiles(self):
+        from internal.metrics.mcmc_citygsv2_metrics import MCMCCityGSV2Metrics
+        m = MCMCCityGSV2Metrics(vrs_mode="random", vrs_keep=0.5, vrs_from_iter=0, vrs_scored_only=True, block_mask_dir="x").instantiate()
+        H, W = 64, 320
+        mask = torch.ones(H, W, dtype=torch.uint8); mask[:, :160] = 0             # 左半整塊 C 區（不計分）
+        m._block_mask_get = lambda name, hw, dev: mask
+        kept_c, kept_s = [], []
+        for i in range(40):
+            sk = m.vrs_skip("a", torch.rand(3, H, W), 5).view(H, W)
+            kept_c.append(float((sk[:, :160] == 0).float().mean())); kept_s.append(float((sk[:, 160:] == 0).float().mean()))
+            m._vrs_cur = None
+        self.assertEqual(min(kept_c), 1.0)                                        # C 區 tile 永遠照畫
+        self.assertAlmostEqual(sum(kept_s) / len(kept_s), 0.5, delta=0.06)        # 保留比例只在計分 tile 上算
+
 
 if __name__ == "__main__":
     unittest.main()
