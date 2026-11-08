@@ -1,7 +1,7 @@
 #!/bin/bash
 # ★ 2026-11-09 候選臂的全面向評估（本機 scratchpad eval_arms_1108.sh 的 lab 版；使用者「換成現行配方」＋「所有面向」）
 #   held-out（塊內 MatrixCity test 子集）、幾何 F1、地面／地下／地上層、貼地近樓／遠離樓、立面貼牆、CityGS 立面朝向依高度、海面上方、路燈與車、點精靈。
-#   時間只列 tfevents 首尾：候選臂在平行槽跑，**時間不可比**（時間判準看本機獨佔跑次）。
+#   時間＝tfevents 首尾；11-09 起候選臂全部 [solo] => 與同塊現行配方（也是 [solo]）可比，看相對差（判準：本機輕量版的時間預算，換成 lab 上「不比基準慢超過雜訊」）。
 #   CityGS 參考＝../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/blocks/block_<B>（與本機 outputs/official_release 是同一批模型；本機那份裁到塊內，量測本身也只看塊內）。
 # 用法（佇列）：[solo] bash scripts/lab/eval_arms_lab.sh <塊> <標籤> 名稱=跑次 ...      （跑次帶臂名，例 g44s30ksfm10nuPF2DB2_best1maskdistrfed10b4；第一個當基準）
 #   輸出 logs/eval_arms_<標籤>.log
@@ -21,7 +21,7 @@ done
 mkdir -p logs; LOG=logs/eval_arms_$TAG.log
 {
 printf '%s\n' "$CG" "${M[@]}"
-echo "### 時間（平行槽，不可比）"
+echo "### 時間（tfevents 首尾；[solo] 跑次之間可比）"
 $PY - "$B" "${RUNS[@]}" <<'PYEOF' 2>&1 | grep -v "$F"
 import glob, sys
 from tensorboard.backend.event_processing import event_accumulator as ea
