@@ -48,7 +48,7 @@ def hole_candidates(alpha, z, inv, A, margin: float):
 
 @torch.no_grad()
 def sfm_vis_votes(X, R, T, fx, fy, cx, cy, W, H, dmin, dmax, cell: int, k_px: float, behind_max: float = 0.0, return_cover_all: bool = False,
-                  behind_max_mask=None):
+                  behind_max_mask=None, return_side: bool = False):
     """★ 2026-11-05 SfM 視線一致性（使用者：取代「離 SfM 多遠」——那會把『沒有證據』當成『有證據說是空的』，誤傷少 SfM 的高樓）。
     每個 SfM 觀測代表「相機到點的連線上是空的、點的後面被它擋住」。對 K 台相機（R [K,3,3]、T [K,3]：x_cam = R x + T，COLMAP 慣例；
     fx..cy [K]；W、H 像素），dmin／dmax [K, Hc, Wc]＝該相機觀測到的可靠 SfM 點在每個 cell x cell 像素格裡的最近／最遠深度（沒有點＝nan）。
@@ -70,6 +70,8 @@ def sfm_vis_votes(X, R, T, fx, fy, cx, cy, W, H, dmin, dmax, cell: int, k_px: fl
     free = torch.zeros(N, dtype=torch.int32, device=X.device)
     behind = torch.zeros_like(free); cover = torch.zeros_like(free); inview = torch.zeros_like(free)
     cover_all = torch.zeros_like(free) if return_cover_all else None
+    sx = torch.zeros(N, dtype=torch.float32, device=X.device) if return_side else None
+    sy = torch.zeros_like(sx) if return_side else None
     Hc, Wc = dmin.shape[1], dmin.shape[2]
     for k in range(R.shape[0]):
         Xc = X @ R[k].T + T[k]
@@ -87,11 +89,19 @@ def sfm_vis_votes(X, R, T, fx, fy, cx, cy, W, H, dmin, dmax, cell: int, k_px: fl
         else:
             hv = has
         free += (hv & (z < dm - tol)).int()
-        behind += (hv & (z > dM + tol)).int()
+        bk = hv & (z > dM + tol)
+        behind += bk.int()
         cover += hv.int(); inview += ok.int()
         if cover_all is not None:
             cover_all += has.int()
-    return (free, behind, cover, inview, cover_all) if return_cover_all else (free, behind, cover, inview)
+        if sx is not None:                                                    # 被擋的相機在顆粒的哪個水平方位（世界 +z 朝上）
+            d = (-(R[k].T @ T[k]))[None, :2] - X[:, :2]
+            d = d / d.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+            sx += torch.where(bk, d[:, 0], 0.0); sy += torch.where(bk, d[:, 1], 0.0)
+    out = (free, behind, cover, inview, cover_all) if return_cover_all else (free, behind, cover, inview)
+    if sx is not None:
+        out = out + (torch.hypot(sx, sy) / behind.clamp_min(1).float(),)
+    return out
 
 
 def sfm_ground_grid(P, lo, shape, cell: float, win: int = 5, q: float = 0.1):
@@ -518,6 +528,13 @@ class MCMC2DGSDensityController(MCMCDensityController):
     （2DGS 的 MCMC 雜訊本來就只在面元平面內：共變異法向那軸是 0；跑出牆面的是光度梯度。）"""
     inplane_ramp_from: int = 1000
     inplane_ramp_until: int = 10000
+    sfm_normal_init: bool = False
+    """★ 2026-11-08（使用者「高處沒轉向」「用 SfM 近鄰擬平面給初始朝向」）開訓時把顆粒的面元法向轉到最近可靠 SfM 點的 k 近鄰 PCA 平面
+    （`sfm_normals.SfMNormals`；有效＝在那個 SfM 點的近鄰半徑內、而且鄰域平坦 λ3/λ2 < 0.1；沒有場景單位常數）。init 的旋轉原本是隨機的。
+    離線 b3（k 16）：init 有效 39%（其中立面 60%）；CityGS > 250 m 立面有效 50%、其中 77% 對齊（30k 訓練完只有 40%）。"""
+    sfm_normal_snap: bool = False
+    """★ 2026-11-08 同上，另外套在 MCMC 新點（增生、搬家）與訓練中合併的結果上（有效的才轉；新點本來繼承母點朝向）。"""
+    sfm_normal_k: int = 16
     sfm_lock: bool = False
     """★ 2026-11-05 SfM 錨點（使用者「鎖住 SfM 位置」）。True 時，開訓時位置與可靠 SfM 點（track>=3、重投影誤差<1.5 px；
     <data.path>/sparse/0/points3D.bin）重合（<1e-5）的顆粒＝錨點：每步結束把位置還原（光度梯度、MCMC 雜訊、合併都動不了），
@@ -566,6 +583,14 @@ class MCMC2DGSDensityController(MCMCDensityController):
     再取 10 m 窗內最小值（sfm_ground_grid）；地面附近與地下照舊用全部相機（v4）。BM 臂（全部套）地下覆蓋 1.24 -> 3.25：路面下 10～30 m
     v4 判地下 91.5%、K10 1.0%。離線（scratchpad behind_cap_height_1108.py）0.05（5 m）：糊牆 5.6%、清楚牆 1.2%（同 K10），
     地下 3～10 m 89.3%、10～30 m 91.1%、地面 0.6%（同 v4）；糊牆離局部地面中位 131 m、< 5 m 的只 1%。需要 sfm_vis_behind_max > 0。"""
+    sfm_vis_side_r: float = -1.0
+    """★ 2026-11-08（使用者否決 sfm_vis_behind_max_above 的 5 m：場景單位門檻）不用距離的牆面修法：判成「地下」的顆粒，
+    若被擋的相機水平方位的合成長度 R >= 此值（全從同一側，例：從大樓背面看牆），而且有 SfM 證據的相機 < sfm_vis_side_rep × 畫面內相機數
+    （證據稀），就不算地下。地下層從四面八方被路面擋住（R 中位 0.37～0.55）、證據比例 0.24～0.28；糊牆 R 0.65、比例 0.16。
+    離線 b3（`scratchpad/wall_combo_check_1108.py`，R 0.5＋比例 0.25）：糊牆判地下 52.8 -> 12.5%、清楚牆 19.2 -> 3.0%、
+    路面下 1～10 m 48.6 -> 37.6%、10～30 m 93.5 -> 80.2%（K 10 只剩 1.0%）、地面 1.0 -> 0.7%。<0＝關。兩個門檻都是無因次比例。"""
+    sfm_vis_side_rep: float = 0.25
+
     sfm_vis_eps: float = 0.01
     """視線一致性判成浮塊／地下的母點的抽樣倍率；1.0＝不改抽樣、只印統計。範圍同 sfm_birth_from_iter／until_iter。"""
     sfm_vis_noup: bool = False
@@ -918,6 +943,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 binoms[n, k] = math.comb(n, k)
         self.register_buffer("binoms", binoms, persistent=False)
 
+        if stage == "fit" and (bool(getattr(self.config, "sfm_normal_init", False)) or bool(getattr(self.config, "sfm_normal_snap", False))):
+            self._sfmn_setup(pl_module)
         if stage == "fit":
             # Only do MCMC's opacity/scale reset when there is NO prior to preserve.
             if pl_module.hparams["initialize_from"] is None:
@@ -1282,6 +1309,47 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 setattr(self, k, torch.cat([t, torch.full((n1 - n0,), fill, dtype=t.dtype, device=t.device)]) if t.shape[0] == n0 else None)
 
     # ────────── 增生方向限制（inplane_*）
+    def _sfmn_setup(self, pl_module) -> None:
+        """讀可靠 SfM（只取初始化顆粒範圍外擴 10% 內的）建 k 近鄰平面；sfm_normal_init 時當場轉 init 顆粒。"""
+        import os
+        import numpy as np
+        from .sfm_normals import SfMNormals, snap_rotations
+        root = pl_module.trainer.datamodule.hparams["path"]
+        cands = [os.path.join(root, "sparse", "0", "points3D.bin"), os.path.join(root, "sparse", "points3D.bin")]
+        f = next((x for x in cands if os.path.isfile(x)), None)
+        if f is None:
+            print(f"⚠⚠ [sfm-normal] 找不到 points3D.bin（{cands}）=> sfm_normal_* 不會生效", flush=True)
+            return
+        gm = pl_module.gaussian_model
+        X0 = gm.gaussians["means"].detach().float().cpu().numpy()
+        lo, hi = X0.min(0), X0.max(0)
+        pad = 0.1 * (hi - lo)
+        P = self._reliable_sfm(f)
+        P = P[np.all((P >= lo - pad) & (P <= hi + pad), axis=1)]
+        k = int(getattr(self.config, "sfm_normal_k", 16) or 16)
+        self._sfmn = SfMNormals(P, k=k)
+        print(f"[sfm-normal] SfM {len(P):,} 點、k {k}、鄰域平坦 {100 * float(self._sfmn.flat.mean()):.0f}%", flush=True)
+        if bool(getattr(self.config, "sfm_normal_init", False)):
+            st = snap_rotations(gm, self._sfmn)
+            msg = (f"init {st['n']:,} 顆裡有效 {st['ok']:,}（{100 * st['ok'] / max(st['n'], 1):.1f}%；其中立面 {st['facade']:,}）、平均轉 {st['deg']:.0f}°")
+            print(f"[sfm-normal] {'✅' if st['ok'] > 0 else '⚠⚠ 拿不到有效法向'} {msg}", flush=True)
+
+    def _sfmn_snap(self, gaussian_model, idx: torch.Tensor, what: str, step: int) -> None:
+        sn = getattr(self, "_sfmn", None)
+        if sn is None or not bool(getattr(self.config, "sfm_normal_snap", False)) or idx.numel() == 0:
+            return
+        from .sfm_normals import snap_rotations
+        st = snap_rotations(gaussian_model, sn, idx)
+        acc = getattr(self, "_sfmn_acc", None) or {}
+        a = acc.setdefault(what, [0, 0])
+        a[0] += st["n"]; a[1] += st["ok"]
+        self._sfmn_acc = acc
+        if not getattr(self, f"_sfmn_ann_{what}", False):
+            setattr(self, f"_sfmn_ann_{what}", True)
+            print(f"[sfm-normal] ✅ 首次套到{what} step {step}：{st['n']:,} 顆裡有效 {st['ok']:,}、平均轉 {st['deg']:.0f}°", flush=True)
+        elif step % 3000 < int(self.config.densification_interval):
+            print(f"[sfm-normal] step {step}：累計{'、'.join(f'{k} {v[1]:,}／{v[0]:,}' for k, v in acc.items())} 顆被轉到 SfM 平面", flush=True)
+
     def _inplane_ramp(self, step: int) -> float:
         c = self.config
         return ramp(int(step), int(getattr(c, "inplane_ramp_from", 1000)), int(getattr(c, "inplane_ramp_until", 10000)))
@@ -1295,6 +1363,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return
         n = gaussian_model.n_gaussians
         step = int(getattr(self, "_ip_step", 0))
+        self._sfmn_snap(gaussian_model, idx, "新點", step)                   # 先轉到 SfM 平面，下面的平面內錯開就沿新平面
         b = getattr(self, "_birth", None)
         if b is None or b.shape[0] != n:
             if b is not None and not getattr(self, "_birth_reset_warned", False):
@@ -1605,14 +1674,23 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 Xd = X.detach().float()
                 bmm = (Xd[:, 2] - sfm_ground_lookup(Xd, vis["gnd"], vis["gnd_lo"], vis["gnd_cell"])) > float(c.sfm_vis_behind_max_above)
                 vis["bm_frac"] = float(bmm.float().mean())
-            f, b, cn, iv, cv = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
+            _side_r = float(getattr(c, "sfm_vis_side_r", -1.0))
+            f = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
                                              vis["cy"][pick], vis["W"][pick], vis["H"][pick], vis["dmin"][pick], vis["dmax"][pick],
                                              vis["cell"], float(getattr(c, "sfm_vis_px", 8.0)),
                                              behind_max=float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0), return_cover_all=True,
-                                             behind_max_mask=bmm)
+                                             behind_max_mask=bmm, return_side=_side_r >= 0)
+            if _side_r >= 0:
+                f, b, cn, iv, cv, side = f
+            else:
+                f, b, cn, iv, cv = f
             floater = (f >= int(getattr(c, "sfm_vis_free_min", 2))) & (f.float() >= float(getattr(c, "sfm_vis_free_frac", 0.0) or 0.0) * cv.float())
             under = (cn >= int(getattr(c, "sfm_vis_behind_min", 3))) & (b.float() >= float(getattr(c, "sfm_vis_behind_frac", 0.9)) * cn.float()) \
                 & (cn.float() >= float(getattr(c, "sfm_vis_rep", 0.0) or 0.0) * iv.float())
+            if _side_r >= 0:
+                one_side = under & (side >= _side_r) & (cn.float() < float(getattr(c, "sfm_vis_side_rep", 0.25)) * iv.float())
+                vis["side_ex"] = int(one_side.sum()); vis["side_un0"] = int(under.sum())
+                under = under & ~one_side
             vis["bad"] = floater | under; vis["fl"] = floater; vis["un"] = under; vis["cv"] = cv
             vis["step"] = step; vis["n"] = X.shape[0]; vis["ncam"] = int(pick.numel())
             if bool(getattr(c, "sfm_vis_noup", False)):
@@ -1635,7 +1713,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                   f"浮塊（空區票）{int(vis['fl'].sum()):,}、地下（一直被擋）{int(vis['un'].sum()):,}、沒有 SfM 證據 {int((vis['cv'] == 0).sum()):,}／{n:,} 顆；"
                   f"機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）｜投票 {vis.get('ncam', 0)} 台相機、{vis.get('ms', 0):.0f} ms"
                   + (f"｜地下票只算落後 {float(c.sfm_vis_behind_max):g}×容差內" if float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 else "")
-                  + (f"（只套離地 > {float(c.sfm_vis_behind_max_above) * 100:g} m 的 {vis.get('bm_frac', 0.0):.1%} 顆）" if vis.get("gnd") is not None else ""), flush=True)
+                  + (f"（只套離地 > {float(c.sfm_vis_behind_max_above) * 100:g} m 的 {vis.get('bm_frac', 0.0):.1%} 顆）" if vis.get("gnd") is not None else "")
+                  + (f"｜單側被擋＋證據稀不算地下 {vis['side_ex']:,}／{vis['side_un0']:,}" if "side_ex" in vis else ""), flush=True)
         return out
 
     @torch.no_grad()
@@ -1844,7 +1923,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 self._noup_inh = getattr(self, "_noup_inh", 0) + int(torch.isfinite(t[di]).sum())
             else:
                 t[dead_mask] = float("inf")
-        if (self._inplane_on() or self._price_on()) and bool(dead_mask.any()):
+        if (self._inplane_on() or self._price_on() or getattr(self, "_sfmn", None) is not None) and bool(dead_mask.any()):
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, dead_mask.nonzero(as_tuple=True)[0])   # 搬家的＝新點（宿主留在原地）
 
@@ -1869,7 +1948,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     and t.shape[0] == n1 and par.shape[0] == n1 - n0:
                 t[n0:n1] = t[par]                                         # ★ 11-06 新增的繼承母點的高度上限（noup v2）
                 self._noup_inh = getattr(self, "_noup_inh", 0) + int(torch.isfinite(t[n0:n1]).sum())
-        if (self._inplane_on() or self._price_on()) and n1 > n0:
+        if (self._inplane_on() or self._price_on() or getattr(self, "_sfmn", None) is not None) and n1 > n0:
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, torch.arange(n0, n1, device=gaussian_model.gaussians["means"].device))
         return out
@@ -2043,6 +2122,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                                       render_eps=float(getattr(self.config, "merge_render_eps", -1.0)))
         out = None
         if _mI.numel() > 0:
+            self._sfmn_snap(gaussian_model, _mI, "合併", global_step)
             self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)          # 合併後的 i 重設 Adam 狀態
             _nz = getattr(self, "_noup_z", None)                                              # 合併後的 i 位置變了 => 高度上限解除（sfm_vis_noup）
             if _nz is not None and _nz.shape[0] == n0:

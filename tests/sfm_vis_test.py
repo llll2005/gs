@@ -69,6 +69,21 @@ class SfmVisVotesTest(unittest.TestCase):
         f, b, c, iv = sfm_vis_votes(X, *self.cam, dmin, dmax, 10, 8.0, behind_max=10.0, behind_max_mask=torch.tensor([False, True]))
         self.assertEqual(b.tolist(), [1, 0]); self.assertEqual(c.tolist(), [1, 0])
 
+    def test_side_resultant(self):
+        # ★ 11-08 單側被擋：兩台相機在顆粒兩側 => R≈0；同一側 => R≈1（世界 +z 朝上的水平方位合成長度）
+        def cams(C):
+            R = torch.diag(torch.tensor([1.0, -1.0, -1.0]))[None].repeat(len(C), 1, 1)
+            T = -(R @ torch.tensor(C)[:, :, None])[:, :, 0]
+            o = lambda v: torch.full((len(C),), float(v))
+            return R, T, o(100), o(100), o(50), o(50), o(100), o(100)
+        d = torch.full((2, 10, 10), 10.0)
+        X = torch.tensor([[0.0, 0.0, -3.0]])
+        two = sfm_vis_votes(X, *cams([[1.0, 0.0, 10.0], [-1.0, 0.0, 10.0]]), d, d.clone(), 10, 8.0, return_side=True)
+        one = sfm_vis_votes(X, *cams([[1.0, 0.0, 10.0], [1.0, 0.5, 10.0]]), d, d.clone(), 10, 8.0, return_side=True)
+        self.assertEqual(int(two[1][0]), 2); self.assertEqual(len(two), 5)
+        self.assertLess(float(two[-1][0]), 1e-5)
+        self.assertGreater(float(one[-1][0]), 0.9)
+
     def test_ground_grid(self):
         # 1 m 格、3x3 窗：x<5 是地面（z 0）、x>=5 是樓頂（z 100，只有樓頂點）；牆邊的樓頂格拿到旁邊地面高度、樓中間仍是樓頂
         xs, ys = np.meshgrid(np.arange(10) + 0.5, np.arange(4) + 0.5, indexing="ij")
