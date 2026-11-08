@@ -1,0 +1,47 @@
+#!/bin/bash
+# ★ 2026-11-09 候選臂的全面向評估（本機 scratchpad eval_arms_1108.sh 的 lab 版；使用者「換成現行配方」＋「所有面向」）
+#   held-out（塊內 MatrixCity test 子集）、幾何 F1、地面／地下／地上層、貼地近樓／遠離樓、立面貼牆、CityGS 立面朝向依高度、海面上方、路燈與車、點精靈。
+#   時間只列 tfevents 首尾：候選臂在平行槽跑，**時間不可比**（時間判準看本機獨佔跑次）。
+#   CityGS 參考＝../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/blocks/block_<B>（與本機 outputs/official_release 是同一批模型；本機那份裁到塊內，量測本身也只看塊內）。
+# 用法（佇列）：[solo] bash scripts/lab/eval_arms_lab.sh <塊> <標籤> 名稱=跑次 ...      （跑次帶臂名，例 g44s30ksfm10nuPF2DB2_best1maskdistrfed10b4；第一個當基準）
+#   輸出 logs/eval_arms_<標籤>.log
+cd "$(dirname "$0")/../.." || exit 1
+B=${1:?塊}; TAG=${2:?標籤}; shift 2
+PY="conda run -n gspl --no-capture-output python -u"
+F='Warn\|warn\|pkg_res\|declare_namespace\|rank_zero'
+CGK=${CITYGS_REF:-$(ls ../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/blocks/block_$B/checkpoints/*step=60000.ckpt 2>/dev/null | head -1)}
+[ -n "$CGK" ] || { echo "⛔ 找不到 CityGS b$B 參考 ckpt"; exit 2; }
+CG="CityGS=$CGK"
+M=(); RUNS=()
+for x in "$@"; do
+  c=$(ls outputs/lab/${x#*=}/blocks/block_$B/checkpoints/*step=30000.ckpt 2>/dev/null | head -1)
+  if [ -n "$c" ]; then M+=("${x%%=*}=$c"); RUNS+=("$x"); else echo "⚠ 缺 $x"; fi
+done
+[ ${#M[@]} -ge 1 ] || { echo "⛔ 沒有可評估的 ckpt"; exit 2; }
+mkdir -p logs; LOG=logs/eval_arms_$TAG.log
+{
+printf '%s\n' "$CG" "${M[@]}"
+echo "### 時間（平行槽，不可比）"
+$PY - "$B" "${RUNS[@]}" <<'PYEOF' 2>&1 | grep -v "$F"
+import glob, sys
+from tensorboard.backend.event_processing import event_accumulator as ea
+B = sys.argv[1]
+for x in sys.argv[2:]:
+    lab, r = x.split("=", 1)
+    fs = sorted(glob.glob(f"outputs/lab/{r}/blocks/block_{B}/lightning_logs/*/events*"))
+    if not fs: continue
+    a = ea.EventAccumulator(fs[-1], size_guidance={ea.SCALARS: 0}); a.Reload(); ev = a.Scalars("train/loss")
+    print(f"{lab:16} 純訓練（tfevents 首尾）{(ev[-1].wall_time - ev[0].wall_time) / 60:.1f} 分｜最後一步 {ev[-1].step}")
+PYEOF
+echo "### heldout"; for m in "${M[@]}"; do echo "== ${m%%=*}"; $PY tools/eval_official_test.py --ckpt "${m#*=}" --block $B --block_dim 4 4 2>&1 | grep -E '^\[模型\]|^PSNR|^SSIM|^LPIPS'; done
+echo "### F1"; C=(); N=(); for m in "${M[@]}"; do N+=("${m%%=*}"); C+=("${m#*=}"); done
+$PY tools/block_f1.py --block $B --merged none --stride 2 --cand "${C[@]}" --names "${N[@]}" --out outputs/lab/f1_$TAG 2>&1 | grep -E 'F1 [0-9]'
+echo "### ground"; $PY tools/probe/ground_layer_1103.py $B "$CG" "${M[@]}" 2>&1 | grep -v "$F"
+echo "### ground split"; $PY tools/probe/ground_split_1109.py $B "${M[@]}" 2>&1 | grep -v "$F"
+echo "### facade"; for m in "${M[@]}"; do echo "== ${m%%=*}"; $PY tools/facade_orient.py --block $B --ckpt "${m#*=}" 2>&1 | grep -E '貼牆中位' | sed 's/.*塊內不透明/塊內不透明/'; done
+echo "### orient bands"; CITYGS_CKPT=$CGK $PY tools/probe/orient_band_1109.py $B "${M[@]}" 2>&1 | grep -v "$F"
+echo "### sea"; SEA_BLOCK=$B $PY tools/probe/sea_opacity_nosfm_1106.py "$CG" "${M[@]}" 2>&1 | grep -v "$F\|塊外" || echo "（海面量測失敗：這塊可能沒有海面格）"
+echo "### smallobj"; $PY tools/probe/smallobj_cpu_1109.py --block $B --out outputs/lab/smallobj_$TAG --models "$CG" "${M[@]}" 2>&1 | grep -v "$F"
+echo "### sprite"; SPRITE_BLOCK=$B $PY tools/probe/sprite_bands_1107.py "$CG" "${M[@]}" 2>&1 | grep -v "$F"
+echo DONE
+} 2>&1 | tee "$LOG"
