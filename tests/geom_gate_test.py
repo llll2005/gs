@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import torch
 
-from internal.metrics.geom_gate import morton_neighbors, quat_normals, plane_q, plane_loss, DepthSupport, SfMVoxels, sym3_eig, surf_planes, surf_loss
+from internal.metrics.geom_gate import morton_neighbors, quat_normals, plane_q, plane_loss, DepthSupport, SfMVoxels, sym3_eig, surf_planes, surf_loss, median_nn_distance
 
 
 def _axis_quat(axis, ang):
@@ -128,6 +128,12 @@ class MetricGateTest(unittest.TestCase):
         d = torch.cdist(X, P).min(dim=1).values
         self.assertTrue(bool(near[d <= 0.05].all()))
         self.assertFalse(bool(near[d > 2 * math.sqrt(3) * 0.05 + 1e-6].any()))
+
+    def test_median_nn_distance_is_scale_free(self):
+        g = torch.stack(torch.meshgrid(torch.arange(20.), torch.arange(20.), torch.arange(3.), indexing="ij"), -1).reshape(-1, 3).numpy()
+        self.assertAlmostEqual(median_nn_distance(g), 1.0, places=6)
+        self.assertAlmostEqual(median_nn_distance(g * 0.01), 0.01, places=8)       # 場景縮放 => 半徑跟著縮
+        self.assertAlmostEqual(median_nn_distance(g, max_query=100), 1.0, places=6)  # 抽樣查詢
 
     def test_sym3_eig_matches_eigh(self):
         g = torch.Generator().manual_seed(1)

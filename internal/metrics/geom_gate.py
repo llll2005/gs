@@ -21,6 +21,7 @@ MCMC 的增生／搬遷抽樣乘上 g（density controller 的 geom_gate_samplin
 出處：🟨 kNN 法向平滑是點雲處理的常見做法、多視角深度一致性是 MVS 的常見做法；拿來控制熵的方向與 MCMC 抽樣 ⚠ 未查證是否有人做過。
 ⚠ 單目深度在海面上誤差大（b12 無 SfM 格只有 26% 落在地面 ±0.05）=> 深度支撐用「平均在前方」而不是單一視角判定。
 """
+import numpy as np
 import torch
 
 _M21 = (1 << 21) - 1
@@ -171,6 +172,19 @@ class DepthSupport:
             self.sum.zero_(); self.cnt.zero_(); self.vote.zero_(); self.mn.fill_(float("inf")); self.t0 = step
             return True
         return False
+
+
+def median_nn_distance(points, max_query: int = 200_000, seed: int = 0) -> float:
+    """SfM 點最近鄰距離的中位數（點多時隨機抽 max_query 個去查整棵樹；固定 seed）。
+    2026-11-08：把場景單位的門檻換成「SfM 間距的幾倍」用（Scaffold-GS 的體素＝初始點最近鄰距離中位）。"""
+    from scipy.spatial import cKDTree
+    P = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    P = P[np.isfinite(P).all(axis=1)]
+    if P.shape[0] < 2:
+        raise ValueError(f"median_nn_distance 需要至少 2 個點（收到 {P.shape[0]}）")
+    Q = P if P.shape[0] <= max_query else P[np.random.default_rng(seed).choice(P.shape[0], max_query, replace=False)]
+    d, _ = cKDTree(P).query(Q, k=2)
+    return float(np.median(d[:, 1]))
 
 
 class SfMVoxels:

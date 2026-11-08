@@ -154,6 +154,9 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     b3 現行模型上量：r=0.03 塔頂（z 3～4）被豁免 87%、浮塊候選（o>0.2、高出 SfM 包絡 0.1）0.3%；r=0.05 => 95%／4%。
     使用者 11-01 目視 b3 超高塔頂變煙；量到深度支撐單獨就讓 z 3～4 的不透明顆粒 7.26 萬 → 1.58 萬
     （單目深度在細高塔上不可靠，塔頂被判「一直在前方」）。SfM 點是多視角三角化過的，比單目可信；海面沒有 SfM 點，浮塊照樣被判。"""
+    depth_support_sfm_radius_nn: float = 0.0
+    """★ 2026-11-08（使用者「不准用場景單位的門檻」）>0 時取代 depth_support_sfm_radius：r＝此倍數 × SfM 點最近鄰距離的中位數
+    （Scaffold-GS 的體素取法；3DGS 的 init 尺度也是用 SfM 近鄰距離）。MatrixCity 全場最近鄰中位 0.0037（0.37 m）=> 8 ≈ 原本的 0.03。"""
     depth_see_through_reg: float = 0.0
     """★ 2026-10-31 單側「不能看穿表面」（使用者 10-30：離開空拍視角立面透空——窗戶被學成洞，從空拍看不出來）。
     只在塊外遮罩的 A 像素（第一表面在本塊）上：(1−α)＋relu(1/(1+margin) − z_單目／z_渲染)（後者只算 α>0.5 的像素）。
@@ -202,7 +205,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
     def setup(self, stage: str, pl_module):
         super().setup(stage, pl_module)
         self._sfm_xyz = None
-        if float(getattr(self.config, "depth_support_sfm_radius", 0.0)) > 0:
+        self._sfm_r = float(getattr(self.config, "depth_support_sfm_radius", 0.0))
+        k_nn = float(getattr(self.config, "depth_support_sfm_radius_nn", 0.0) or 0.0)
+        if self._sfm_r > 0 or k_nn > 0:
             # ⚠ 不用 datamodule.point_cloud：task_cmp 的 best1 系列走 points_from ply => 那是 init PLY（SfM＋補點，補點也撒在海面上方的空中），
             #   拿它豁免會連浮塊一起放過。直接讀 COLMAP 的 points3D.bin（只有三角化過的點）。
             import os
@@ -212,7 +217,12 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             f = next((x for x in cands if os.path.isfile(x)), None)
             if f is not None:
                 self._sfm_xyz = ColmapDataParser.read_points3D_binary(f)[0]
-            print(f"[depth-support] SfM 豁免：半徑 {self.config.depth_support_sfm_radius:g}、"
+                if k_nn > 0:
+                    from .geom_gate import median_nn_distance
+                    s = median_nn_distance(self._sfm_xyz)
+                    self._sfm_r = k_nn * s
+                    print(f"[depth-support] SfM 豁免半徑＝{k_nn:g} × 最近鄰中位 {s:.5g} ＝ {self._sfm_r:.5g}（場景單位）", flush=True)
+            print(f"[depth-support] SfM 豁免：半徑 {self._sfm_r:g}、"
                   f"{f'{len(self._sfm_xyz):,} 個 SfM 點（{f}）' if f else f'⚠⚠ 找不到 points3D.bin（{cands}）=> 不會生效'}", flush=True)
         if not getattr(self.config, "exposure_comp", False):
             return
@@ -404,7 +414,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 if done and getattr(self, "_sfm_xyz", None) is not None and ds.support is not None and ds.support.shape[0] == n:
                     from .geom_gate import SfMVoxels
                     if getattr(self, "_sfm_vox", None) is None:
-                        self._sfm_vox = SfMVoxels(self._sfm_xyz, float(c.depth_support_sfm_radius), xyz.device)
+                        self._sfm_vox = SfMVoxels(self._sfm_xyz, self._sfm_r, xyz.device)
                     near = self._sfm_vox.near(xyz.detach())
                     k_ex = int((near & ~ds.support).sum())
                     ds.support |= near
