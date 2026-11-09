@@ -15,6 +15,8 @@ CG="CityGS=$CGK"
 M=(); RUNS=()
 for x in "$@"; do
   c=$(ls outputs/lab/${x#*=}/blocks/block_$B/checkpoints/*step=30000.ckpt 2>/dev/null | head -1)
+  # 11-09 coarse 排程臂（20k／15k）沒有 30k ckpt => 取步數最大的那個（＝該跑次的終點；同 task_full44.sh swap）
+  [ -n "$c" ] || c=$(ls outputs/lab/${x#*=}/blocks/block_$B/checkpoints/*step=*.ckpt 2>/dev/null | grep -v xyz_rgb | awk -F'step=' '{print $2"\t"$0}' | sort -n | tail -1 | cut -f2)
   if [ -n "$c" ]; then M+=("${x%%=*}=$c"); RUNS+=("$x"); else echo "⚠ 缺 $x"; fi
 done
 [ ${#M[@]} -ge 1 ] || { echo "⛔ 沒有可評估的 ckpt"; exit 2; }
