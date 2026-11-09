@@ -35,7 +35,7 @@ _o0, _shp, _med = G4; NOSFM = (~(maximum_filter(np.isfinite(_med).astype(np.uint
 o10 = np.floor(S[:, :2].min(0) / 0.1).astype(int) - 2; ci10 = np.floor(S[:, :2] / 0.1).astype(int) - o10
 shp10 = tuple(ci10.max(0) + 3); top = np.full(shp10, -1e9); np.maximum.at(top, (ci10[:, 0], ci10[:, 1]), S[:, 2])
 TALL = maximum_filter((top > 1.0).astype(np.uint8), size=3).astype(float)   # 高樓格（同 sfm_vis_diag／tower_probe）
-print(f"b3｜海平面估 {ZS * 100:.1f} m｜海面上方＝4 cm 格（4 m）3x3 鄰域沒有可靠 SfM、或格內 SfM 中位在海平面 ±1 m、扣掉高樓格（SfM 頂高 > 100 m 的 10 m 格膨脹 1 格）、顆粒高於海平面 5 m 以上（單位 m；場景 1＝100 m）")
+print(f"b{B}｜海平面估 {ZS * 100:.1f} m｜海面上方＝4 cm 格（4 m）3x3 鄰域沒有可靠 SfM、或格內 SfM 中位在海平面 ±1 m、扣掉高樓格（SfM 頂高 > 100 m 的 10 m 格膨脹 1 格）、顆粒高於海平面 5 m 以上（單位 m；場景 1＝100 m）")
 print(f"{'模型':14}{'o>0.5':>8}{'0.1~0.5':>9}{'0.02~0.1':>10}{'Σo·面積 m²':>12}{'高度中位':>9}{'高度p90':>9}{'離SfM中位':>10}{'離SfM>5m':>10}{'>20m':>8}{'>50m':>8}")
 for spec in sys.argv[1:]:
     lab, pat = spec.split("=", 1); f = sorted(glob.glob(pat))[-1]
