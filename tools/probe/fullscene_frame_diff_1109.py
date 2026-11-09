@@ -8,6 +8,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -49,7 +50,10 @@ def main():
     assert all(os.path.exists(f) for f in fb), "兩邊的幀對不起來"
     print(f"幀數 {len(names)}｜基準 {a.base}｜比較 {a.cmp}", flush=True)
 
-    src = {f"{i:04d}": fr["file_path"].split("/")[0] for i, fr in enumerate(json.load(open(a.pose_json))["frames"])}
+    def src_of(fp):   # "block_9_test/ERR_12.png"、"./block_9_test/..."、"block9/..." 都收
+        m = re.search(r"block_?(\d+)", fp)
+        return f"block_{int(m.group(1))}" if m else fp.split("/")[0]
+    src = {f"{i:04d}": src_of(fr["file_path"]) for i, fr in enumerate(json.load(open(a.pose_json))["frames"])}
     imgs = read_images_binary(os.path.join(a.test_dir, "sparse", "0", "images.bin"))
     cen = {}
     for im in imgs.values():
@@ -74,17 +78,23 @@ def main():
         elif mid is not None:
             blk[i] = int(torch.argmin(((mid - xy[i]) ** 2).sum(1)))
 
-    pa = np.zeros(len(names)); pb = np.zeros(len(names)); sa = np.zeros((len(names), 4, 4)); sb = np.zeros_like(sa)
-    for i, (x, y) in enumerate(zip(fa, fb)):
-        pa[i], sa[i] = frame_psnr(x); pb[i], sb[i] = frame_psnr(y)
-        if (i + 1) % 100 == 0:
-            print(f"  ...{i + 1}", flush=True)
+    cache = os.path.join(a.cmp, "frame_diff_vs_" + os.path.basename(os.path.normpath(a.base)) + ".npz")
+    if os.path.exists(cache):
+        z = np.load(cache); pa, pb, sa, sb = z["pa"], z["pb"], z["sa"], z["sb"]
+        print(f"（讀快取 {cache}）")
+    else:
+        pa = np.zeros(len(names)); pb = np.zeros(len(names)); sa = np.zeros((len(names), 4, 4)); sb = np.zeros_like(sa)
+        for i, (x, y) in enumerate(zip(fa, fb)):
+            pa[i], sa[i] = frame_psnr(x); pb[i], sb[i] = frame_psnr(y)
+            if (i + 1) % 100 == 0:
+                print(f"  ...{i + 1}", flush=True)
+        np.savez(cache, pa=pa, pb=pb, sa=sa, sb=sb, names=np.array(names))
     d = pb - pa
     print(f"\n全部：基準 {pa.mean():.3f}｜比較 {pb.mean():.3f}｜Δ {d.mean():+.3f}（中位 {np.median(d):+.3f}）"
           f"｜變差 > 0.5 dB 的幀 {np.mean(d < -0.5):.1%}、> 1 dB {np.mean(d < -1):.1%}｜變好 > 0.5 dB {np.mean(d > 0.5):.1%}")
     print("Δ 分位（p5／p25／p50／p75／p95）：" + "／".join(f"{np.quantile(d, q):+.2f}" for q in (0.05, 0.25, 0.5, 0.75, 0.95)))
     print("\n依 MatrixCity 來源塊：幀數｜基準｜比較｜Δ｜Δ 中位")
-    for s in sorted(set(src[n] for n in names), key=lambda t: int(t.split("_")[1])):
+    for s in sorted(set(src[n] for n in names), key=lambda t: (int(t.split("_")[1]) if t.split("_")[-1].isdigit() else 999, t)):
         k = np.array([src[n] == s for n in names])
         print(f"  {s:14} {k.sum():4d}｜{pa[k].mean():6.2f}｜{pb[k].mean():6.2f}｜{d[k].mean():+.3f}｜{np.median(d[k]):+.3f}")
     print("\n依 4x4 分塊（相機中心；塊外算最近的塊）：幀數｜基準｜比較｜Δ｜Δ 中位｜Δ 對總差的貢獻")
