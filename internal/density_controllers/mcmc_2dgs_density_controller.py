@@ -130,6 +130,18 @@ def sfm_ground_lookup(X, grid, lo, cell: float):
     return out
 
 
+def behind_above_params(c, P) -> Tuple[float, float, str]:
+    """落後上限的高度條件：回傳（局部地面格邊長、離地門檻、說明）。P＝可靠 SfM 點 [M,3]（numpy）。
+    sfm_vis_behind_max_above_nn >= 0（11-09）：兩者都是 SfM 最近鄰間距中位的倍數（不帶場景單位）；否則沿用 11-08 的場景單位寫法（2 m 格、BH 臂）。"""
+    k = float(getattr(c, "sfm_vis_behind_max_above_nn", -1.0))
+    if k >= 0:
+        from internal.metrics.geom_gate import median_nn_distance
+        nn = median_nn_distance(P)
+        kc = float(getattr(c, "sfm_vis_ground_cell_nn", 6.0))
+        return kc * nn, k * nn, f"門檻 {k:g} 倍、格 {kc:g} 倍 SfM 最近鄰間距中位 {nn:.4g}"
+    return 0.02, float(getattr(c, "sfm_vis_behind_max_above", -1.0)), "場景單位（11-08 BH 寫法）"
+
+
 def backproject(u, v, z, fx, fy, cx, cy, w2c):
     """像素中心 (u, v)（已含 +0.5）＋相機 z => 世界座標；w2c 是 gspl 的 world_to_camera（列向量版：[p,1] @ w2c）。
     與 geom_gate.DepthSupport.update 的投影 u = fx·x/z + cx 互逆。"""
@@ -583,6 +595,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     再取 10 m 窗內最小值（sfm_ground_grid）；地面附近與地下照舊用全部相機（v4）。BM 臂（全部套）地下覆蓋 1.24 -> 3.25：路面下 10～30 m
     v4 判地下 91.5%、K10 1.0%。離線（scratchpad behind_cap_height_1108.py）0.05（5 m）：糊牆 5.6%、清楚牆 1.2%（同 K10），
     地下 3～10 m 89.3%、10～30 m 91.1%、地面 0.6%（同 v4）；糊牆離局部地面中位 131 m、< 5 m 的只 1%。需要 sfm_vis_behind_max > 0。"""
+    sfm_vis_behind_max_above_nn: float = -1.0
+    """★ 11-09 同 sfm_vis_behind_max_above，但門檻寫成「可靠 SfM 最近鄰間距中位的幾倍」（不帶場景單位；同 depth_support_sfm_radius_nn 的寫法）。
+    >=0 時取代 sfm_vis_behind_max_above，局部地面格的邊長也改成 sfm_vis_ground_cell_nn 倍間距（原本寫死 2 m）。
+    BH 臂（5 m）b3 牆修好（糊牆粒子 4.7 -> 11.0）、地下 1.33、時間平；只因為 5 m 是場景單位被否決。MatrixCity 間距 0.37 m => 5 m ≈ 13.6 倍。"""
+    sfm_vis_ground_cell_nn: float = 6.0
     sfm_vis_side_r: float = -1.0
     """★ 2026-11-08（使用者否決 sfm_vis_behind_max_above 的 5 m：場景單位門檻）不用距離的牆面修法：判成「地下」的顆粒，
     若被擋的相機水平方位的合成長度 R >= 此值（全從同一側，例：從大樓背面看牆），而且有 SfM 證據的相機 < sfm_vis_side_rep × 畫面內相機數
@@ -1300,7 +1317,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
 
     _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_noup_z": float("inf"),
-                     "_pxf_log": float("-inf")}     # 跟著 N 走的逐顆狀態 => 新增時補的值（_pxf_log：px_floor 的 log 下限，-inf＝不夾）
+                     "_pxf_log": float("-inf"), "_sfm_under": 0}
+    # 跟著 N 走的逐顆狀態 => 新增時補的值（_pxf_log：px_floor 的 log 下限，-inf＝不夾；_sfm_under：v4 地下票，0＝沒判／等下次投票）
 
     def _per_particle_extend(self, n0: int, n1: int) -> None:
         for k, fill in self._PER_PARTICLE.items():
@@ -1586,20 +1604,21 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         self._vis = {"dmin": t(dmin.astype(np.float16)), "dmax": t(dmax.astype(np.float16)), "R": t(R), "T": t(T),
                      "fx": t(intr[:, 0]), "fy": t(intr[:, 1]), "cx": t(intr[:, 2]), "cy": t(intr[:, 3]), "W": t(intr[:, 4]), "H": t(intr[:, 5]),
                      "cell": g, "step": -1}
-        if float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 and float(getattr(c, "sfm_vis_behind_max_above", -1.0)) >= 0:
-            gc = 0.02                                                          # 2 m 格、5 格窗（10 m）；範圍＝距離場（init 顆粒範圍）
+        _ab_nn = float(getattr(c, "sfm_vis_behind_max_above_nn", -1.0))
+        if float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 and (float(getattr(c, "sfm_vis_behind_max_above", -1.0)) >= 0 or _ab_nn >= 0):
+            P = np.array(list(good.values()), dtype=np.float64).reshape(-1, 3)
+            gc, above, unit = behind_above_params(c, P)
             lo2 = self._sfm_lo[:2].cpu().numpy().astype(np.float64)
             ext = np.array(self._sfm_grid.shape[:2]) * self._sfm_vox
             shp = np.ceil(ext / gc).astype(int)
-            P = np.array(list(good.values()), dtype=np.float64).reshape(-1, 3)
             G = sfm_ground_grid(P, lo2, shp, gc)
-            self._vis.update({"gnd": t(G), "gnd_lo": t(lo2.astype(np.float32)), "gnd_cell": gc})
+            self._vis.update({"gnd": t(G), "gnd_lo": t(lo2.astype(np.float32)), "gnd_cell": gc, "above": above})
             fin = np.isfinite(G)
-            print(f"[sfm-vis] 局部地面格 {shp[0]}x{shp[1]}（{gc * 100:g} m、10 m 窗內 SfM z 10% 分位的最小值）有值 {100 * fin.mean():.1f}%｜"
-                  f"高度中位 {np.median(G[fin]) * 100 if fin.any() else float('nan'):.1f} m => 落後上限只套離地 > {float(c.sfm_vis_behind_max_above) * 100:g} m 的顆粒", flush=True)
+            print(f"[sfm-vis] 局部地面格 {shp[0]}x{shp[1]}（邊長 {gc:.4g}、5 格窗內 SfM z 10% 分位的最小值；{unit}）有值 {100 * fin.mean():.1f}%｜"
+                  f"高度中位 {np.median(G[fin]) if fin.any() else float('nan'):.4g} => 落後上限只套離地 > {above:.4g}（場景單位）的顆粒", flush=True)
             if not fin.any():
                 print("⚠⚠ [sfm-vis] 局部地面格全空 => 落後上限一顆都不會套（等於 v4）", flush=True)
-        elif float(getattr(c, "sfm_vis_behind_max_above", -1.0)) >= 0:
+        elif float(getattr(c, "sfm_vis_behind_max_above", -1.0)) >= 0 or _ab_nn >= 0:
             print("⚠⚠ [sfm-vis] sfm_vis_behind_max_above 設了但 sfm_vis_behind_max <= 0 => 沒有落後上限可套，高度條件不會生效", flush=True)
         print(f"[sfm-vis] ✅ 首次觸發：{K} 台本塊訓練相機、{n_obs:,} 個可靠 SfM 觀測、深度格 {Hc}x{Wc}（{g} px）、"
               f"有 SfM 的格 {100 * float((~empty).mean()):.1f}%；容差 {float(getattr(c, 'sfm_vis_px', 8.0)):g} 個像素足跡", flush=True)
@@ -1672,7 +1691,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             bmm = None
             if vis.get("gnd") is not None:
                 Xd = X.detach().float()
-                bmm = (Xd[:, 2] - sfm_ground_lookup(Xd, vis["gnd"], vis["gnd_lo"], vis["gnd_cell"])) > float(c.sfm_vis_behind_max_above)
+                bmm = (Xd[:, 2] - sfm_ground_lookup(Xd, vis["gnd"], vis["gnd_lo"], vis["gnd_cell"])) > float(vis["above"])
                 vis["bm_frac"] = float(bmm.float().mean())
             _side_r = float(getattr(c, "sfm_vis_side_r", -1.0))
             f = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
@@ -1692,6 +1711,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 vis["side_ex"] = int(one_side.sum()); vis["side_un0"] = int(under.sum())
                 under = under & ~one_side
             vis["bad"] = floater | under; vis["fl"] = floater; vis["un"] = under; vis["cv"] = cv
+            self._sfm_under = under.to(torch.uint8)                    # ★ 11-09 熵閘門 vis_gate_need_under 讀（跟著 _PER_PARTICLE 剪／補）
             vis["step"] = step; vis["n"] = X.shape[0]; vis["ncam"] = int(pick.numel())
             if bool(getattr(c, "sfm_vis_noup", False)):
                 self._sfm_noup_flag(X, cv, iv, step)
@@ -1713,7 +1733,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                   f"浮塊（空區票）{int(vis['fl'].sum()):,}、地下（一直被擋）{int(vis['un'].sum()):,}、沒有 SfM 證據 {int((vis['cv'] == 0).sum()):,}／{n:,} 顆；"
                   f"機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）｜投票 {vis.get('ncam', 0)} 台相機、{vis.get('ms', 0):.0f} ms"
                   + (f"｜地下票只算落後 {float(c.sfm_vis_behind_max):g}×容差內" if float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 else "")
-                  + (f"（只套離地 > {float(c.sfm_vis_behind_max_above) * 100:g} m 的 {vis.get('bm_frac', 0.0):.1%} 顆）" if vis.get("gnd") is not None else "")
+                  + (f"（只套離地 > {float(vis.get('above', 0.0)):.4g} 的 {vis.get('bm_frac', 0.0):.1%} 顆）" if vis.get("gnd") is not None else "")
                   + (f"｜單側被擋＋證據稀不算地下 {vis['side_ex']:,}／{vis['side_un0']:,}" if "side_ex" in vis else ""), flush=True)
         return out
 
@@ -1903,7 +1923,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         dead_mask = self._anchor_exclude(dead_mask, gaussian_model)
         self._anchor_fate(dead_mask, "搬家")                          # 追蹤模式才會有（鎖定模式錨點已被排除）
         super().relocate_gs(gaussian_model, optimizers, dead_mask)
-        for k in ("_occ_n", "_see_n"):                                 # 搬家的＝新位置 => 遮擋計數重來
+        for k in ("_occ_n", "_see_n", "_sfm_under"):                   # 搬家的＝新位置 => 遮擋計數重來、地下票作廢（等下次投票）
             t = getattr(self, k, None)
             if t is not None and t.shape[0] == dead_mask.shape[0]:
                 t[dead_mask] = 0
@@ -2075,6 +2095,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             _pf = getattr(self, "_pxf_log", None)                                 # 補洞放的＝新位置 => px_floor 不夾，等下次重算
             if _pf is not None and _pf.shape[0] == g["means"].shape[0]:
                 _pf[slots] = float("-inf")
+            _su = getattr(self, "_sfm_under", None)                               # 補洞放的＝新位置 => 地下票作廢
+            if _su is not None and _su.shape[0] == g["means"].shape[0]:
+                _su[slots] = 0
         self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=slots)    # 新點 Adam 歸零
         _st = getattr(gaussian_model, "_trim_state", None)
         if _st:
@@ -2127,6 +2150,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             _nz = getattr(self, "_noup_z", None)                                              # 合併後的 i 位置變了 => 高度上限解除（sfm_vis_noup）
             if _nz is not None and _nz.shape[0] == n0:
                 _nz[_mI] = float("inf")
+            _su = getattr(self, "_sfm_under", None)                                           # 合併後的 i 位置變了 => 地下票作廢
+            if _su is not None and _su.shape[0] == n0:
+                _su[_mI] = 0
             dead = torch.zeros(n0, dtype=torch.bool, device=_mJ.device)
             dead[_mJ] = True
             if prune:

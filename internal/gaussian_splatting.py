@@ -202,6 +202,24 @@ class _StepProfiler:
             pass
 
 
+@torch.no_grad()
+def normal_gain_step(means: torch.Tensor, means_before: torch.Tensor, rotations: torch.Tensor, gain: float) -> None:
+    """★ 11-09 位置更新只在面元法向放大 gain 倍（就地改 means；切向照原樣）。
+
+    位置 lr x2（11-07 預設）在 b3 換到幾何（F1 +0.014、地面、點精靈 26 -> 19%），但全場景 b1／b4 牆面紋理被抹掉
+    （拆解：拿掉 lr x2 補回 −0.33 dB 的 87%）；拆因已知增益來自梯度步長、不是 MCMC 雜訊（`實驗分析/36`）。
+    假說：幾何增益＝面元沿法向走到真實深度；紋理被抹＝帶紋理的面元在面內滑動 => 只放大法向那一半。
+    必須改「更新量」而不是梯度：Adam 的 m/sqrt(v) 對梯度大小不敏感，lr 加倍＝更新量加倍。
+    法向＝2DGS 面元旋轉矩陣第三欄（前兩欄是 scales 的兩軸）。"""
+    if gain == 1.0 or means.shape[0] != means_before.shape[0]:
+        return
+    q = rotations / rotations.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+    r, x, y, z = q.unbind(-1)
+    n = torch.stack([2 * (x * z + r * y), 2 * (y * z - r * x), 1 - 2 * (x * x + y * y)], -1).to(means.dtype)
+    d = ((means - means_before) * n).sum(-1, keepdim=True)
+    means.add_((gain - 1.0) * d * n)
+
+
 class GaussianSplatting(LightningModule):
     def __init__(
             self,
@@ -255,6 +273,8 @@ class GaussianSplatting(LightningModule):
             cap_ctrl_hole_lo: float = 0.005,
             cap_ctrl_gain_hi: float = 0.02,
             cap_ctrl_gain_lo: float = 0.005,
+            # ★ 11-09 位置更新只在面元法向放大（1.0＝關；見 normal_gain_step）
+            means_normal_gain: float = 1.0,
     ) -> None:
         super().__init__()
         self.automatic_optimization = False
@@ -1214,8 +1234,15 @@ class GaussianSplatting(LightningModule):
             _prof.mark("8 on_after_backward_hooks")
 
         # optimize
+        _ng = float(self.hparams.get("means_normal_gain", 1.0) or 1.0)
+        _m0 = self.gaussian_model.gaussians["means"].detach().clone() if _ng != 1.0 else None
         for optimizer in optimizers:
             optimizer.step()
+        if _m0 is not None:                       # 在 MCMC 雜訊（on_train_batch_end）之前 => 只放大 optimizer 的更新
+            normal_gain_step(self.gaussian_model.gaussians["means"], _m0, self.gaussian_model.gaussians["rotations"].detach(), _ng)
+            if not getattr(self, "_ng_announced", False):
+                self._ng_announced = True
+                print(f"[normal-gain] ✅ 首次觸發 step {global_step}：位置更新只在面元法向 x{_ng:g}（切向照原樣）", flush=True)
         _pool = getattr(self.gaussian_model, "_outside_pool", None)
         if _pool is not None and _pool.trainable:
             _pool.step(self.gaussian_optimizers)          # A：池自己的 Adam（學習率跟主模型同名參數群）

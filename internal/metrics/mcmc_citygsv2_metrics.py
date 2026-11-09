@@ -48,6 +48,17 @@ def see_through_loss(alpha, surf_depth, inv_gt, A, margin: float, w_hole: float 
     return loss, st
 
 
+def vis_gate_off(VS, VW, tau: float, under=None, need_under: bool = False):
+    """熵閘門外（bool [N]）：上一窗口看得到的比例 VS < tau（VW＝0＝沒快照，不算）。
+    need_under（11-09）：另要求 v4 地下票 under [N]（uint8／bool）；under 沒有或長度對不上 => 一顆都不進閘門外（寧可不作用也不錯配）。"""
+    off = (VW > 0) & (VS < tau)
+    if need_under:
+        if under is None or under.shape[0] != off.shape[0]:
+            return torch.zeros_like(off)
+        off = off & (under.to(off.device) > 0)
+    return off
+
+
 @dataclass
 class MCMCCityGSV2Metrics(CityGSV2Metrics):
     opacity_reg: float = 0.01
@@ -136,6 +147,10 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     （density `geom_gate_sampling true` 時 MCMC 抽樣也避開它）。動機（`紀錄/實驗分析/31` §4.6）：alpha 上限 0.999 讓被擋的顆粒只剩熵在推 => 地下層鎖成不透明（+14～20%）；
     被藏的實心顆粒每顆仍有約 18 台看得到 => 按貢獻刪不掉，只能不再把「大多被擋」的推成實心、讓光度梯度自己決定。"""
     vis_gate_from_iter: int = 1000
+    vis_gate_need_under: bool = False
+    """★ 11-09 熵閘門只對「v4 也判地下」的顆粒生效（兩個弱訊號取交集；需要 density `sfm_vis true`）。
+    熵閘門 0.002／0.005 單獨開：地下 −30／−49%，但 F1 −0.011／−0.07、低角度透空變多（真表面也被當成看不到）；
+    v4 地下票單獨：會把少 SfM 的牆判地下（b1 29%）。兩者同時成立才算 => 誤判應該少很多。沒有地下票（還沒投票／新點）＝不進閘門外。"""
     """閘門外顆粒的下壓力權重；-log(1-o) 對 logit 的梯度＝o，o≈1 時仍推得動（L1 的梯度 o(1-o) 會飽和）。"""
     depth_support: bool = False
     """★ 2026-10-29 多視角深度支撐（`geom_gate.DepthSupport`）：一直在單目表面前方（浮塊）或從未貼面（地底、內部）的顆粒進閘門外。
@@ -360,7 +375,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         batch = (batch[0], (name, g2) + tuple(batch[1][2:])) + tuple(batch[2:])
         return batch, out
 
-    def _geom_gate_step(self, gaussian_model, step, batch, metrics, pbar, opacities):
+    def _geom_gate_step(self, gaussian_model, step, batch, metrics, pbar, opacities, under=None):
         """★ 2026-10-29 共面 loss＋深度支撐 => 閘門（bool [N]，掛在 gaussian_model._geom_gate 給 density controller 抽樣用）。
         兩者都沒開或還沒到起始步 => 回傳 None（訓練行為與原本完全相同）。"""
         c = self.config
@@ -445,12 +460,17 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 if _vst[_k].shape[0] < n:
                     _vst[_k] = torch.cat([_vst[_k], torch.zeros(n - _vst[_k].shape[0], dtype=_vst[_k].dtype, device=_vst[_k].device)])
         if use_vis and _vst["VS"].shape[0] == n and _vst["VW"].shape[0] == n:
-            off = (_vst["VW"] > 0) & (_vst["VS"] < float(c.vis_gate_tau))
+            off = vis_gate_off(_vst["VS"], _vst["VW"], float(c.vis_gate_tau),
+                               under if bool(getattr(c, "vis_gate_need_under", False)) else None,
+                               need_under=bool(getattr(c, "vis_gate_need_under", False)))
             gate &= ~off
             if not getattr(self, "_vis_gate_announced", False) or step % 2000 == 0:
                 _op = opacities.detach().reshape(-1) > 0.5
                 print(f"[vis-gate] {'✅ 首次觸發 ' if not getattr(self, '_vis_gate_announced', False) else ''}step={step}：VS < {c.vis_gate_tau:g} 進閘門外 "
-                      f"{int(off.sum()):,}／{n:,}（不透明的 {int((off & _op).sum()):,}／{int(_op.sum()):,}）；沒有快照（新點／剛搬家）{int((_vst['VW'] == 0).sum()):,}", flush=True)
+                      f"{int(off.sum()):,}／{n:,}（不透明的 {int((off & _op).sum()):,}／{int(_op.sum()):,}）；沒有快照（新點／剛搬家）{int((_vst['VW'] == 0).sum()):,}"
+                      + ((f"｜只算 v4 也判地下的：地下票 {int((under > 0).sum()):,} 顆" if under is not None and under.shape[0] == n
+                          else "｜⚠⚠ 要求 v4 地下票但拿不到（sfm_vis 沒開或還沒投票）=> 這步一顆都不進閘門外")
+                         if bool(getattr(c, "vis_gate_need_under", False)) else ""), flush=True)
                 self._vis_gate_announced = True
         gaussian_model._geom_gate = gate
         metrics["gate_off"] = (~gate).float().mean()
@@ -655,7 +675,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             + _oreg_w * opacity_reg \
             + self.config.scale_reg * scale_reg
 
-        _gate = self._geom_gate_step(gaussian_model, step, batch, metrics, pbar, opacities)
+        _under = getattr(getattr(pl_module, "density_controller", None), "_sfm_under", None) \
+            if bool(getattr(self.config, "vis_gate_need_under", False)) else None
+        _gate = self._geom_gate_step(gaussian_model, step, batch, metrics, pbar, opacities, under=_under)
         if _gate is not None and float(getattr(self.config, "geom_gate_down_reg", 0.0)) > 0 and not bool(_gate.all()):
             # 閘門外：-log(1-o) = softplus(logit)，對 logit 的梯度＝o（飽和也推得動）；除以 N＝與熵同尺度（全體平均）
             _raw = gaussian_model.opacities.reshape(-1)
