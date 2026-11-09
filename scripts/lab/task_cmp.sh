@@ -156,7 +156,10 @@ case "$CASEARM" in
                 #   （sfmfill_sweep44_crop，外擴 m_c）；配方其餘＝累加式 trim。rbg＝只開隨機背景的對照（拆開隨機背景本身的影響）
                 # ★ 2026-10-18 使用者消融「sh3、dist 100、遮罩、cap={1M,2.5M,5M}」：dist 要幾何通道 => 不開 lean => 週期 trim（不用累加式）
                 bestmask|bestmaskdist100|bestmaskpt|bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15|bestmaskdistrfed10b4)    [ "$GRID" = 44 ] || { echo "⛔ bestmask 只支援 4x4"; exit 2; }
-                             _MD=data/matrix_city/aerial/train/block_all/block_masks44/block_$BLK
+                             # ★ 2026-11-09 CITYGS_MASK_DIR：換遮罩目錄（預設 block_masks44；接縫保留比例實驗用 block_masks44_r15＝m_in 0.15／m_c 0.30，
+                             #   搭配 CITYGS_CROP_INIT=sfmfill_sweep44_crop_r30）
+                             _MD=data/matrix_city/aerial/train/block_all/${CITYGS_MASK_DIR:-block_masks44}/block_$BLK
+                             [ "${CITYGS_MASK_DIR:-block_masks44}" = block_masks44 ] || echo "[mask] ★ 換遮罩目錄：$_MD"
                              [ -f "$_MD/stats.json" ] || { echo "⛔ 缺遮罩 $_MD（先跑 tools/block_mask44.py --blocks $BLK）"; exit 2; }
                              # ★ 2026-10-24 CITYGS_CROP_INIT：換裁盒初始化目錄（預設 sfmfill_sweep44_crop；深度補點臂用 sfmfill_depth44_crop，
                              #   tools/make_sfm_fill_init.py --fill-source depth＋block_mask44.py --crop_ply 產生）

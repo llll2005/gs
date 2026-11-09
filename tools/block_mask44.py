@@ -87,6 +87,7 @@ def main():
     ap.add_argument("--overlay", type=int, default=0, help="存幾張疊圖")
     ap.add_argument("--crop_ply", default="", help="另把 <data>/<此目錄>/dup*/block_<B>.ply 裁到本塊盒（外擴 m_c），寫到 <此目錄>_crop/（初始化用）")
     ap.add_argument("--skip_masks", action="store_true")
+    ap.add_argument("--crop_suffix", default="_crop", help="★ 11-09 裁盒初始化的輸出目錄＝<crop_ply><此後綴>（換外擴時要換後綴，否則蓋掉預設的 _crop）")
     a = ap.parse_args()
     D = a.data
     out_root = a.out or os.path.join(D, "block_masks44")
@@ -134,7 +135,7 @@ def main():
                 pd = PlyData.read(f); v = pd["vertex"].data
                 xyz = np.stack([v["x"], v["y"], v["z"]], -1).astype(np.float64) @ Rp.T
                 keep = in_box(xyz[:, :2], lo_c, hi_c)
-                of = os.path.join(src.rstrip("/") + "_crop", dk, f"block_{b}.ply"); os.makedirs(os.path.dirname(of), exist_ok=True)
+                of = os.path.join(src.rstrip("/") + a.crop_suffix, dk, f"block_{b}.ply"); os.makedirs(os.path.dirname(of), exist_ok=True)
                 PlyData([PlyElement.describe(v[keep], "vertex")], text=False).write(of)
                 print(f"  crop {dk}/block_{b}.ply：{len(v):,} -> {int(keep.sum()):,}（{100 * keep.mean():.1f}%）=> {of}", flush=True)
         if a.skip_masks:
