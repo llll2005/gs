@@ -33,6 +33,7 @@ ap.add_argument("--rep", type=float, default=0.1)
 ap.add_argument("--behind_min", type=int, default=3)
 ap.add_argument("--behind_frac", type=float, default=0.9)
 ap.add_argument("--nmax", type=int, default=300000)
+ap.add_argument("--wins", default="", help="例 1,3,5：鄰格否決——w×w 鄰域有 SfM 深度對得上這顆的格就不投浮塊／地下票（1＝現行）；給了就只印這張比較表")
 a = ap.parse_args()
 D = "data/matrix_city/aerial/train/block_all"; B = a.block; dev = "cuda"
 p = torch.load(f"{D}/partition/partitions-dim_4_4_visibility_0.08/partitions.pt", map_location="cpu", weights_only=False)
@@ -79,7 +80,10 @@ GROUND = np.nanpercentile(S[:, 2], 10)
 
 
 @torch.no_grad()
-def votes(X):
+def votes(X, win=1):
+    """win > 1（★ 11-09 鄰格否決）：證據照舊只來自自己那格；但 win×win 鄰域裡只要有一格的 SfM 深度範圍［最近−容差, 最遠＋容差］
+    包住這顆的深度（附近有它自己的表面）=> 這台相機的浮塊／地下票作廢。（11-09 先試的「鄰域取最近／最遠」會把別棟的點也算成證據，更糟。）"""
+    DMIN, DMAX = dmin_t, dmax_t
     N = X.shape[0]; z0 = lambda: torch.zeros(N, dtype=torch.int32, device=dev)
     fr_n, be_n, cov, inv, rel1 = z0(), z0(), z0(), z0(), z0()
     rel_sum = torch.zeros(N, device=dev)
@@ -89,9 +93,19 @@ def votes(X):
         u = fx * Xc[:, 0] / zs + cx; v = fy * Xc[:, 1] / zs + cy
         ok = (z > 1e-6) & (u >= 0) & (v >= 0) & (u < W) & (v < H)
         cu = (u / g).long().clamp(0, Wc - 1); cv = (v / g).long().clamp(0, Hc - 1)
-        dm = dmin_t[k][cv, cu]; dM = dmax_t[k][cv, cu]
+        dm = DMIN[k][cv, cu]; dM = DMAX[k][cv, cu]
         has = ok & torch.isfinite(dm); tol = a.px * z / fx
-        fr_n += (has & (z < dm - tol)).int(); be_n += (has & (z > dM + tol)).int()
+        sup = torch.zeros_like(has)
+        if win > 1:
+            r_ = win // 2
+            for dy in range(-r_, r_ + 1):
+                for dx in range(-r_, r_ + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    cu2 = (cu + dx).clamp(0, Wc - 1); cv2 = (cv + dy).clamp(0, Hc - 1)
+                    d1 = DMIN[k][cv2, cu2]; d2 = DMAX[k][cv2, cu2]
+                    sup |= torch.isfinite(d1) & (z >= d1 - tol) & (z <= d2 + tol)
+        fr_n += (has & (z < dm - tol) & ~sup).int(); be_n += (has & (z > dM + tol) & ~sup).int()
         cov += has.int(); inv += ok.int()
         rr = torch.where(has, (dM - dm) / tol.clamp_min(1e-9), torch.zeros_like(z))
         rel_sum += rr; rel1 += (has & (rr > 1)).int()
@@ -126,6 +140,24 @@ for spec in a.models:
     ev = np.linalg.eigvalsh(np.einsum("nki,nkj->nij", Q, Q) / 16)
     plan = ev[:, 0] / np.clip(ev.sum(1), 1e-18, None)
     col = (0.5 + 0.28209479 * dc[nb]).clip(0, 1).std(1).mean(1)
+    ci2 = np.floor(X[:, :2] / 0.02).astype(int) - o0
+    okc = (ci2[:, 0] >= 0) & (ci2[:, 0] < shp[0]) & (ci2[:, 1] >= 0) & (ci2[:, 1] < shp[1])
+    gz = np.full(len(X), GROUND); gz[okc] = np.where(np.isfinite(GZ[ci2[okc, 0], ci2[okc, 1]]), GZ[ci2[okc, 0], ci2[okc, 1]], GROUND)
+    hz = (X[:, 2] - gz) * 100
+    nz = np.abs(n[idx, 2])
+    if a.wins:
+        cw = [("地面 ±3 m", np.abs(hz) < 3), ("地下 < −3 m", hz < -3), ("樓頂 高>3m", (hz > 3) & (nz > 0.85)),
+              ("立面 高>3m", (hz > 3) & (nz < 0.3)), ("斜的 高>3m", (hz > 3) & (nz >= 0.3) & (nz <= 0.85)), ("地面以上合計", hz > 3)]
+        print(f"\n== {lab}｜塊內不透明 {len(m):,}、抽 {len(X):,}｜各格：判浮塊／判地下／沒證據 %（顆數）")
+        print("  鄰域  " + "".join(f"{nm}（{k.sum():,}）".ljust(30) for nm, k in cw))
+        Xt = torch.from_numpy(X).float().to(dev)
+        for w in [int(x) for x in a.wins.split(",")]:
+            f_, b_, c_, i_, _, _ = votes(Xt, w)
+            fr = (f_ >= a.free_min) & (f_ >= a.free_frac * c_)
+            be = (c_ >= a.behind_min) & (b_ >= a.behind_frac * c_) & (c_ >= a.rep * i_)
+            ne = (i_ >= 3) & (c_ == 0)
+            print(f"  {w}x{w}   " + "".join(f"{pct(fr[k])}／{pct(be[k])}／{pct(ne[k])}".ljust(30) for nm, k in cw), flush=True)
+        continue
     fr_n, be_n, cov, inv, rel_sum, rel1 = votes(torch.from_numpy(X).float().to(dev))
     rel = np.where(cov > 0, rel_sum / np.maximum(cov, 1), np.nan)
     relfrac = np.where(cov > 0, rel1 / np.maximum(cov, 1), np.nan)
@@ -133,11 +165,6 @@ for spec in a.models:
     behind = (cov >= a.behind_min) & (be_n >= a.behind_frac * cov) & (cov >= a.rep * inv)
     noev = (inv >= 3) & (cov == 0)
     anyf = free | behind
-    ci2 = np.floor(X[:, :2] / 0.02).astype(int) - o0
-    okc = (ci2[:, 0] >= 0) & (ci2[:, 0] < shp[0]) & (ci2[:, 1] >= 0) & (ci2[:, 1] < shp[1])
-    gz = np.full(len(X), GROUND); gz[okc] = np.where(np.isfinite(GZ[ci2[okc, 0], ci2[okc, 1]]), GZ[ci2[okc, 0], ci2[okc, 1]], GROUND)
-    hz = (X[:, 2] - gz) * 100
-    nz = np.abs(n[idx, 2])
     cats = [("全部", np.ones(len(X), bool)), ("地面 ±3 m", np.abs(hz) < 3), ("地下 < −3 m", hz < -3),
             ("樓頂／水平面 高 > 3 m", (hz > 3) & (nz > 0.85)), ("立面 |n_z|<0.3 高 > 3 m", (hz > 3) & (nz < 0.3)), ("斜的 高 > 3 m", (hz > 3) & (nz >= 0.3) & (nz <= 0.85))]
     print(f"\n== {lab}｜塊內不透明 {len(m):,}、抽 {len(X):,}｜判浮塊 {pct(free)}%、判地下 {pct(behind)}%、沒證據 {pct(noev)}%")
