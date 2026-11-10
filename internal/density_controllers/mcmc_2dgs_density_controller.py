@@ -673,6 +673,13 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 2026-11-02（使用者：合併完就減少點數）：True＝合併掉的 j 直接刪掉（N 減少），不交給 relocation 搬走；
     增生期同時把 cap 扣掉同樣顆數（`_cap_cut`），否則 MCMC 增生會在下幾個事件補回來。
     True 時增生期結束後（收割期）也照 merge_interval 合併（實驗「只在後半合併」用 merge_from_iter > densify_until_iter）。"""
+    merge_vis_under: bool = False
+    """★ 2026-11-10（使用者「把 v4 的機制融到合併機制，尤其是判準」）每次合併事件（merge_interval，合併窗口內）用本塊**全部**訓練相機投一次
+    SfM 視線一致性票，判準同 sfm_vis（`_sfm_vis_classify`：有證據的相機 >= sfm_vis_behind_min 台、被擋比例 >= sfm_vis_behind_frac、
+    證據比例 >= sfm_vis_rep；設了 sfm_vis_behind_max＋sfm_vis_behind_max_above_nn 就套 BH），判成地下的顆粒：增生期併進 dead_mask 交給
+    relocation（搬去表面，N 照舊＝SfM 分配的 cap；v4 在 3000～6000 步每次判地下 20～33%，扣 cap 會讓顆數由判準決定），收割期（merge_prune）直接刪。
+    浮塊票不動。不開 sfm_vis（每個增生事件投票＋壓母點機率 => 少 SfM 的牆被判地下、增生被擋而餓死；拿掉 v4 是 11-10 新基準）。
+    投票次數＝合併事件數（30k 約 17 次 vs v4 約 93 次）。需要 merge_interval > 0。"""
 
 
 
@@ -974,6 +981,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 if not bool(getattr(self.config, "sfm_vis", False)):
                     raise ValueError("sfm_vis_noup 需要 sfm_vis（沒證據的判定來自視線一致性投票）")
                 pl_module.on_train_batch_end_hooks.append(self._sfm_noup_clamp)   # 排在雜訊之後 => 雜訊也推不上去
+            if bool(getattr(self.config, "merge_vis_under", False)) and int(getattr(self.config, "merge_interval", 0) or 0) <= 0:
+                raise ValueError("merge_vis_under 需要 merge_interval > 0（地下票在合併事件時投）")
             if float(getattr(self.config, "px_floor", 0.0) or 0.0) > 0:
                 pl_module.on_train_batch_end_hooks.append(self._px_floor_clamp)   # optimizer step 之後 => 把 scale_reg 推下去的拉回下限
             if self.config.dar_lambda > 0:
@@ -1473,7 +1482,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     def _sfm_on(self) -> bool:
         c = self.config
-        return self._anchors_wanted() or float(getattr(c, "sfm_birth_radius", 0.0) or 0.0) > 0 or bool(getattr(c, "sfm_vis", False))
+        return self._anchors_wanted() or float(getattr(c, "sfm_birth_radius", 0.0) or 0.0) > 0 or bool(getattr(c, "sfm_vis", False)) \
+            or bool(getattr(c, "merge_vis_under", False))
 
     def _anchors_wanted(self) -> bool:
         return bool(getattr(self.config, "sfm_lock", False)) or bool(getattr(self.config, "sfm_track", False))
@@ -1554,7 +1564,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             print(f"⚠⚠ [sfm] 找不到 points3D.bin（{cands}）=> sfm_* 不會生效", flush=True)
             return
         self._sfm_build(self._reliable_sfm(f), gaussian_model.gaussians["means"])
-        if bool(getattr(self.config, "sfm_vis", False)):
+        if bool(getattr(self.config, "sfm_vis", False)) or bool(getattr(self.config, "merge_vis_under", False)):
             self._sfm_vis_build(os.path.dirname(f), pl_module, gaussian_model.gaussians["means"].device)
 
     def _sfm_vis_build(self, sparse_dir: str, pl_module, dev) -> None:
@@ -1673,6 +1683,87 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         return self._sfm_vis_probs(gaussian_model, probs, indices)
 
     @torch.no_grad()
+    def _sfm_vis_classify(self, X, pick):
+        """一次視線一致性投票＋判準（pick＝用哪幾台相機）。判準同 v4；設了 sfm_vis_behind_max（＋高度條件）就套 BH、設了 sfm_vis_side_r 就套單側排除。
+        回傳 (浮塊, 地下, 有證據的相機數（不排除落後太多的）, 視野內相機數)，都是 [N]。sfm_vis 的增生壓制與 merge_vis_under 共用這一份判準。"""
+        c = self.config
+        vis = self._vis
+        bmm = None
+        if vis.get("gnd") is not None:
+            Xd = X.detach().float()
+            bmm = (Xd[:, 2] - sfm_ground_lookup(Xd, vis["gnd"], vis["gnd_lo"], vis["gnd_cell"])) > float(vis["above"])
+            vis["bm_frac"] = float(bmm.float().mean())
+        _side_r = float(getattr(c, "sfm_vis_side_r", -1.0))
+        f = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
+                                         vis["cy"][pick], vis["W"][pick], vis["H"][pick], vis["dmin"][pick], vis["dmax"][pick],
+                                         vis["cell"], float(getattr(c, "sfm_vis_px", 8.0)),
+                                         behind_max=float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0), return_cover_all=True,
+                                         behind_max_mask=bmm, return_side=_side_r >= 0)
+        if _side_r >= 0:
+            f, b, cn, iv, cv, side = f
+        else:
+            f, b, cn, iv, cv = f
+        floater = (f >= int(getattr(c, "sfm_vis_free_min", 2))) & (f.float() >= float(getattr(c, "sfm_vis_free_frac", 0.0) or 0.0) * cv.float())
+        under = (cn >= int(getattr(c, "sfm_vis_behind_min", 3))) & (b.float() >= float(getattr(c, "sfm_vis_behind_frac", 0.9)) * cn.float()) \
+            & (cn.float() >= float(getattr(c, "sfm_vis_rep", 0.0) or 0.0) * iv.float())
+        if _side_r >= 0:
+            one_side = under & (side >= _side_r) & (cn.float() < float(getattr(c, "sfm_vis_side_rep", 0.25)) * iv.float())
+            vis["side_ex"] = int(one_side.sum()); vis["side_un0"] = int(under.sum())
+            under = under & ~one_side
+        return floater, under, cv, iv
+
+    @torch.no_grad()
+    def _merge_vis_under(self, gaussian_model, optimizers, global_step: int, prune: bool):
+        """merge_vis_under：合併事件時用本塊全部訓練相機投一次票。判成地下的顆粒：
+        增生期（或 prune=False）回傳遮罩，呼叫端併進 dead_mask 交給 relocation（搬去表面；N 照舊＝SfM 分配的 cap，不扣 cap）；
+        收割期（prune=True、增生已結束）直接刪（N 減少）。不動增生的母點機率。
+        不扣 cap 的原因：v4 在 3000～6000 步每次判地下 20～33%（lab 11-09 b1／b3／b4），扣下去顆數就由地下判準決定、不是 SfM 分配（使用者 11-10）。"""
+        vis = getattr(self, "_vis", None)
+        if vis is None:
+            if not getattr(self, "_mvu_warned", False):
+                self._mvu_warned = True
+                print("⚠⚠ [merge-vis] 沒有 SfM 視線一致性的深度格（找不到 points3D.bin 或相機對不到）=> 合併事件不刪地下顆粒", flush=True)
+            return None
+        X = gaussian_model.gaussians["means"]
+        n0 = X.shape[0]
+        _t0 = time.time()
+        floater, under, cv, iv = self._sfm_vis_classify(X, torch.arange(vis["R"].shape[0], device=X.device))
+        am = self._anchor_mask(n0)
+        if am is not None:
+            under = under & ~am
+        n_u = int(under.sum())
+        if X.is_cuda:
+            torch.cuda.synchronize()
+        ms = (time.time() - _t0) * 1000
+        relocate = (not prune) or global_step < int(getattr(self.config, "densify_until_iter", 0) or 0)
+        out = None
+        if n_u and not relocate:
+            self._prune_reason = "地下刪掉"
+            try:
+                self._prune_points(under, gaussian_model, optimizers)
+            finally:
+                self._prune_reason = None
+            _acc = getattr(self, "_absgrad_accum", None)
+            if _acc is not None and _acc.shape[0] == n0:
+                self._absgrad_accum = _acc[~under]
+            self._max_radii2D = None
+            self._max_tiles2D = None                                                     # N 變了，舊視窗長度對不上
+        elif n_u:
+            out = under
+        k = "_mvu_moved" if relocate else "_mvu_cut"
+        setattr(self, k, int(getattr(self, k, 0) or 0) + n_u)
+        first = not getattr(self, "_mvu_announced", False)
+        self._mvu_announced = True
+        tail = (f"交給 relocation 搬去表面（N 不變；增生期累計搬 {int(getattr(self, '_mvu_moved', 0) or 0):,}）" if relocate
+                else f"收割期直接刪 => N {n0:,} -> {gaussian_model.n_gaussians:,}（收割期累計刪 {int(getattr(self, '_mvu_cut', 0) or 0):,}）")
+        print(f"[merge-vis] {'✅ 首次觸發' if first else '　'} step {global_step}：{vis['R'].shape[0]} 台相機投票 {ms:.0f} ms｜"
+              f"地下（一直被擋）{n_u:,}／{n0:,}（{n_u / max(n0, 1):.2%}）、浮塊 {int(floater.sum()):,}（不動）、沒有 SfM 證據 {int((cv == 0).sum()):,}"
+              + (f"｜地下票只算落後 {float(self.config.sfm_vis_behind_max):g}×容差內" if float(getattr(self.config, "sfm_vis_behind_max", 0.0) or 0.0) > 0 else "")
+              + (f"（只套離地 > {float(vis.get('above', 0.0)):.4g} 的 {vis.get('bm_frac', 0.0):.1%} 顆）" if vis.get("gnd") is not None else "")
+              + f"｜{tail}", flush=True)
+        return out
+
+    @torch.no_grad()
     def _sfm_vis_probs(self, gaussian_model, probs, indices=None):
         c = self.config
         vis = getattr(self, "_vis", None)
@@ -1688,28 +1779,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             pick = torch.arange(K, device=X.device) if kk <= 0 or kk >= K else torch.randperm(K, device=X.device)[:kk]   # <=0＝全部相機
             import time as _t
             _t0 = _t.time()
-            bmm = None
-            if vis.get("gnd") is not None:
-                Xd = X.detach().float()
-                bmm = (Xd[:, 2] - sfm_ground_lookup(Xd, vis["gnd"], vis["gnd_lo"], vis["gnd_cell"])) > float(vis["above"])
-                vis["bm_frac"] = float(bmm.float().mean())
-            _side_r = float(getattr(c, "sfm_vis_side_r", -1.0))
-            f = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
-                                             vis["cy"][pick], vis["W"][pick], vis["H"][pick], vis["dmin"][pick], vis["dmax"][pick],
-                                             vis["cell"], float(getattr(c, "sfm_vis_px", 8.0)),
-                                             behind_max=float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0), return_cover_all=True,
-                                             behind_max_mask=bmm, return_side=_side_r >= 0)
-            if _side_r >= 0:
-                f, b, cn, iv, cv, side = f
-            else:
-                f, b, cn, iv, cv = f
-            floater = (f >= int(getattr(c, "sfm_vis_free_min", 2))) & (f.float() >= float(getattr(c, "sfm_vis_free_frac", 0.0) or 0.0) * cv.float())
-            under = (cn >= int(getattr(c, "sfm_vis_behind_min", 3))) & (b.float() >= float(getattr(c, "sfm_vis_behind_frac", 0.9)) * cn.float()) \
-                & (cn.float() >= float(getattr(c, "sfm_vis_rep", 0.0) or 0.0) * iv.float())
-            if _side_r >= 0:
-                one_side = under & (side >= _side_r) & (cn.float() < float(getattr(c, "sfm_vis_side_rep", 0.25)) * iv.float())
-                vis["side_ex"] = int(one_side.sum()); vis["side_un0"] = int(under.sum())
-                under = under & ~one_side
+            floater, under, cv, iv = self._sfm_vis_classify(X, pick)
             vis["bad"] = floater | under; vis["fl"] = floater; vis["un"] = under; vis["cv"] = cv
             self._sfm_under = under.to(torch.uint8)                    # ★ 11-09 熵閘門 vis_gate_need_under 讀（跟著 _PER_PARTICLE 剪／補）
             vis["step"] = step; vis["n"] = X.shape[0]; vis["ncam"] = int(pick.numel())
@@ -2176,6 +2246,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
               f"{_minfo.get('len_after', 0):.4f}；互為最佳 {_minfo.get('mutual', 0):,} 對"
               f"{'、渲染誤差中位 %.3f' % _minfo['err_med'] if _minfo.get('err_med') == _minfo.get('err_med') else ''}），{tail}", flush=True)
         self._merge_announced = True
+        if bool(getattr(self.config, "merge_vis_under", False)):                            # ★ 11-10 v4 判準搬進合併事件
+            _u = self._merge_vis_under(gaussian_model, optimizers, global_step, prune)
+            if _u is not None:
+                out = _u if out is None else (out | _u)
         return out
 
     @staticmethod
