@@ -54,12 +54,15 @@ case "$MODE" in
     rc=$?
     echo "── coarse 的純訓練時間（train_status val step0 -> 最後一次 val）與峰值 VRAM（台帳）"
     python3 ../labrun/time_1024.py "${CO_RUN}_best1" 2>/dev/null || echo "（time_1024.py 不在 ../labrun）"
-    grep -E "${CO_RUN}_best1/blocks" -A40 logs/quad_progress.log | grep -E "DONE|DIED" | tail -1
+    grep -E "${CO_RUN}_best1" -A40 logs/quad_progress.log | grep -E "DONE|DIED" | tail -1
     exit $rc ;;
   # 裁到各塊（CPU）
   crop)
-    CK=$(ls -t outputs/lab/${CO_RUN}_best1/blocks/block_null/checkpoints/*.ckpt 2>/dev/null | grep -v xyz_rgb | head -1)
-    [ -n "$CK" ] || { echo "⛔ 找不到 coarse 的 ckpt（outputs/lab/${CO_RUN}_best1/blocks/block_null/checkpoints）"; exit 2; }
+    # 全域跑次（block_id null）的 ckpt 直接在 <run>/checkpoints/（11-10 第一次重測在這裡找錯目錄）
+    CK=$(ls -t outputs/lab/${CO_RUN}_best1/checkpoints/*.ckpt outputs/lab/${CO_RUN}_best1/blocks/block_null/checkpoints/*.ckpt 2>/dev/null | grep -v xyz_rgb | head -1)
+    [ -n "$CK" ] || { echo "⛔ 找不到 coarse 的 ckpt（outputs/lab/${CO_RUN}_best1/checkpoints）"; exit 2; }
+    echo "coarse ckpt：$CK"
+    set -o pipefail
     $PY tools/coarse_crop.py crop --ckpt "$CK" --out "lab/$CROP" 2>&1 | grep -v -E 'Warn|pkg_res|declare' ;;
   # 從 coarse 起點細修（精確 A＋dist4；只換起點與排程）
   fine)
