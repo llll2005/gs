@@ -50,6 +50,16 @@ class DenseInitTest(unittest.TestCase):
         self.assertLess(n2, 10 ** 7)
         self.assertGreater(n2, 5000)
 
+    def test_solver_scans_past_coarse_cells_blocked_by_base(self):
+        """11-11 lab 第一次跑：粗格全被 SfM＋補點佔滿（格數 0～1），掃描誤判「過了峰值」提早停 => 只加 1 顆。"""
+        X, C, V = self._scene(n_views=6, per=20000)
+        o = np.array([-1e-3, -1e-3, -1.0])
+        rng = np.random.default_rng(5)
+        base = rng.uniform(0, 10, (60, 3)); base[:, 2] = 0.0          # 稀疏的 SfM 點：粗格（邊長 2.5）每格都有、細格大多沒有
+        self.assertLessEqual(count_supported(X, V, o, 2.5, 2, base), 1)
+        g, n = solve_voxel(X, V, o, 1500, 2, base, 2.5)
+        self.assertGreaterEqual(n, 1500)
+        self.assertLess(g, 1.0)
 
 if __name__ == "__main__":
     unittest.main()

@@ -84,7 +84,7 @@ def solve_voxel(xyz, view, origin, n_want, min_views, block_xyz, g_hi, n_scan=40
                 else:
                     hi = mid
             return lo, n
-        if n < 0.5 * best[1]:                     # 已經過了峰值、越切越少 => 不用再掃
+        if best[1] >= 0.2 * n_want and n < 0.5 * best[1]:   # 已經過了峰值、越切越少 => 不用再掃（格數還很少時不算，粗格多半被 SfM 佔滿）
             break
         prev, g = g, g * 0.84
     return best
@@ -156,18 +156,21 @@ def main():
             img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)[..., ::-1]
             XS.append(Xw[inb].astype(np.float32)); CS.append(img[vv[ok][inb], uu[ok][inb]]); VS.append(np.full(int(inb.sum()), vi, np.int32))
         X = np.concatenate(XS).astype(np.float64); C = np.concatenate(CS); V = np.concatenate(VS)
+        # 高度範圍夾在 SfM＋補點的範圍內（外擴 10%）：少數離群的深度會把點丟到很遠，撐大體素索引的範圍
+        zr = (X @ Rp.T)[:, 2]; zb = (bx @ Rp.T)[:, 2]; zm = 0.1 * float(zb.max() - zb.min())
+        inz = (zr >= zb.min() - zm) & (zr <= zb.max() + zm)
+        n_cand0 = len(X); X, C, V = X[inz], C[inz], V[inz]
+        from scipy.spatial import cKDTree
+        sub = bx[rng.choice(len(bx), min(len(bx), 50000), replace=False)]
+        nn = float(np.median(cKDTree(bx).query(sub, k=2)[0][:, 1]))          # SfM＋補點的近鄰間距中位（只當掃描起點的尺度與報告用）
         origin = np.minimum(X.min(0), bx.min(0)) - 1e-3
-        ext = float((np.maximum(X.max(0), bx.max(0)) - origin).max())
         n_want = max(target - len(bx), 0)
-        g, n_got = solve_voxel(X, V, origin, n_want, a.min_views, bx, ext / 64)
+        g, n_got = solve_voxel(X, V, origin, n_want, a.min_views, bx, 64.0 * nn)
         dx, dc = supported_voxels(X, C, V, origin, g, a.min_views, np.unique(voxel_keys(bx, origin, g)))
         out = os.path.join(D, a.out, "dup1", f"block_{b}.ply")
         write_xyzrgb_ply(out, np.concatenate([bx, dx]).astype(np.float32), np.concatenate([bc, np.clip(np.round(dc), 0, 255).astype(np.uint8)]))
         # 報告：體素邊長對 SfM 近鄰間距、對像素足跡的倍數（都只是描述，不是門檻）
-        from scipy.spatial import cKDTree
-        sub = bx[rng.choice(len(bx), min(len(bx), 50000), replace=False)]
-        nn = np.median(cKDTree(bx).query(sub, k=2)[0][:, 1])
-        print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}｜視角 {len(names)}、候選 {len(X):,}｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
+        print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
               f"稠密點 {len(dx):,}（要 {n_want:,}）=> 共 {len(bx) + len(dx):,}（{(len(bx) + len(dx)) / cap:.2f} cap）｜{time.time() - t0:.0f} s => {out}", flush=True)
     print("DONE make_tri_dense_init", flush=True)
 
