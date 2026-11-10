@@ -434,7 +434,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if (getattr(self, "sh_split", False) or _sh_adam is not None) and bool(kwargs.get("_lean", False)) \
                 and not record_transmittance and colors_precomp is None \
                 and type(self)._get_color_inputs is SepDepthTrim2DGSRenderer._get_color_inputs \
-                and getattr(pc, "_outside_pool", None) is None and hasattr(pc, "shs_dc"):
+                and getattr(pc, "_outside_pool", None) is None and hasattr(pc, "shs_dc") \
+                and pc.shs_rest.numel() > 0:    # ★ 11-10 SH0（coarse）沒有高階 SH => 走一般路徑（光柵器 split 以 rest 非空判定）
             import diff_trim_surfel_rasterization as _R
             if not getattr(_R, "SH_SPLIT_SUPPORTED", False):
                 raise RuntimeError("設了 sh_split／sh_adam_in_backward 但光柵器不支援 —— 沒重編（rm -rf build 後重裝；lab 用 lab_pull.sh）")
@@ -663,7 +664,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             _pool = getattr(pc, "_outside_pool", None)
             why = ("optimizer 不是 FusedAdam（或 shs_dc／shs_rest 不在同一個 optimizer）" if len(opts) != 1
                    else "FusedAdam 是稀疏模式" if getattr(opts[0], "sparse", False)
-                   else "有塊外池（SH 要串接池內顆粒）" if (_pool is not None and _pool.n > 0) else "")
+                   else "有塊外池（SH 要串接池內顆粒）" if (_pool is not None and _pool.n > 0)
+                   else "SH 階數 0（沒有高階 SH 可分開；11-10 coarse 在這裡 assert 掛掉）" if (hasattr(pc, "shs_rest") and pc.shs_rest.numel() == 0) else "")
             if why:
                 if not getattr(self, "_sh_adam_fallback_warned", False):
                     self._sh_adam_fallback_warned = True
