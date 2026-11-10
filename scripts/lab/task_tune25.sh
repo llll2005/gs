@@ -12,6 +12,10 @@
 #     mvu      v4 判準搬進合併事件（＋BH 用 SfM 間距倍數）
 #     mvugrow  同 mvu 但收割期不投票不刪（只在增生期搬）
 #     mvugnd   同 mvu 但只動貼地／地面以下的顆粒（離地高的不動）
+#     tri      深度換成 SfM 三角形校正的單目（tools/make_tri_depths.py；只留可靠三角形內的像素）——深度支撐閘門、補洞放點跟著用新深度
+#     trihf    tri＋補洞放點改成「渲染比校正深度深 2% 就補」（原本 10%）、每次最多 0.5% 顆（原本 0.2%）
+#     trist    tri＋單側不能看穿只留「比校正深度深 2% 就罰」那一項，每 8 步（與法向同一步，權重 0.5）
+#     trigate  tri＋深度支撐閘門收緊：不要 SfM 豁免、前方 3%、從未貼面 1.5%（原本 5%／5%）
 #   合併窗口跟著全長縮放（3k ～ 全長 x 0.9；現行配方寫死 27k＝30k 的 90%）；二元熵切雙向（全長／3）與位置 lr 排程由 task_cmp 跟著全長縮放。
 # 用法：[solo] bash scripts/lab/task_tune25.sh <塊> <臂>
 #       [solo] bash scripts/lab/task_tune25.sh eval <塊> <標籤> <臂>...   （只比跑完的臂；對照新基準 30k、A＋dist4）
@@ -33,8 +37,8 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd) XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd）"; return 2 ;;
+        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate) XT+=("$t") ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate）"; return 2 ;;
       esac
     fi
   done
@@ -42,7 +46,8 @@ parse() {
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
     case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
-      mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;; esac
+      mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
+      tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; esac
   done
 }
 
@@ -87,6 +92,16 @@ for t in "${XT[@]:-}"; do
                  --model.density.init_args.sfm_vis_behind_max 10 --model.density.init_args.sfm_vis_behind_max_above_nn 16)
             [ "$t" = mvugrow ] && XA+=(--model.density.init_args.merge_vis_under_harvest false)
             [ "$t" = mvugnd ] && XA+=(--model.density.init_args.merge_vis_under_ground true) ;;
+    tri|trihf|trist|trigate)
+            _TD=data/matrix_city/aerial/train/block_all/estimated_depths_tri
+            [ -d "$_TD" ] && [ -d "${_TD}_rel" ] || { echo "⛔ 缺 $_TD（先跑 tools/make_tri_depths.py）"; exit 2; }
+            XA+=(--data.parser.depth_dir estimated_depths_tri --data.parser.depth_scale_name estimated_depth_scales_tri
+                 --data.parser.depth_rel_dir estimated_depths_tri_rel)
+            [ "$t" = trihf ] && XA+=(--model.density.init_args.hole_fill_margin 0.02 --model.density.init_args.hole_fill_frac 0.005)
+            [ "$t" = trist ] && XA+=(--model.metric.init_args.depth_see_through_reg 0.5 --model.metric.init_args.depth_see_through_margin 0.02
+                                     --model.metric.init_args.depth_see_through_hole 0 --model.metric.init_args.depth_see_through_interval 8)
+            [ "$t" = trigate ] && XA+=(--model.metric.init_args.depth_support_sfm_radius_nn 0 --model.metric.init_args.depth_support_sfm_radius 0
+                                       --model.metric.init_args.depth_support_delta_front 0.03 --model.metric.init_args.depth_support_delta_back 0.015) ;;
   esac
 done
 CAP=$(python3 -c "import json;print(int(round(1e6 * json.load(open('configs/cap_alloc_sfm_g44.json'))['weights']['$B'])))")
