@@ -680,6 +680,12 @@ class MCMC2DGSDensityController(MCMCDensityController):
     relocation（搬去表面，N 照舊＝SfM 分配的 cap；v4 在 3000～6000 步每次判地下 20～33%，扣 cap 會讓顆數由判準決定），收割期（merge_prune）直接刪。
     浮塊票不動。不開 sfm_vis（每個增生事件投票＋壓母點機率 => 少 SfM 的牆被判地下、增生被擋而餓死；拿掉 v4 是 11-10 新基準）。
     投票次數＝合併事件數（30k 約 17 次 vs v4 約 93 次）。需要 merge_interval > 0。"""
+    merge_vis_under_harvest: bool = True
+    """merge_vis_under 第二版開關（11-10 v1 三塊：地下層 −65～78%、F1 b1／b3 +.03，但換塊 PSNR −0.14／−0.21／−0.05、b4 LPIPS +.010）。
+    False＝只在增生期搬（relocation），收割期不投票、不刪（v1 收割期刪 b4 7.3 萬顆、塊內顆數 −14%）。"""
+    merge_vis_under_ground: bool = False
+    """True＝只動貼地或地面以下的顆粒（離局部 SfM 地面 <= sfm_vis_behind_max_above_nn 倍 SfM 間距；地面格同 BH），
+    離地更高的（牆後、樓內、玻璃後的反射）一律不動。對準「路面在地底下」這個問題本身。需要 sfm_vis_behind_max > 0＋sfm_vis_behind_max_above_nn >= 0。"""
 
 
 
@@ -983,6 +989,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 pl_module.on_train_batch_end_hooks.append(self._sfm_noup_clamp)   # 排在雜訊之後 => 雜訊也推不上去
             if bool(getattr(self.config, "merge_vis_under", False)) and int(getattr(self.config, "merge_interval", 0) or 0) <= 0:
                 raise ValueError("merge_vis_under 需要 merge_interval > 0（地下票在合併事件時投）")
+            if bool(getattr(self.config, "merge_vis_under_ground", False)) and not (
+                    float(getattr(self.config, "sfm_vis_behind_max", 0.0) or 0.0) > 0
+                    and float(getattr(self.config, "sfm_vis_behind_max_above_nn", -1.0)) >= 0):
+                raise ValueError("merge_vis_under_ground 需要 sfm_vis_behind_max > 0＋sfm_vis_behind_max_above_nn >= 0（局部地面格只在 BH 開時建）")
             if float(getattr(self.config, "px_floor", 0.0) or 0.0) > 0:
                 pl_module.on_train_batch_end_hooks.append(self._px_floor_clamp)   # optimizer step 之後 => 把 scale_reg 推下去的拉回下限
             if self.config.dar_lambda > 0:
@@ -1693,6 +1703,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             Xd = X.detach().float()
             bmm = (Xd[:, 2] - sfm_ground_lookup(Xd, vis["gnd"], vis["gnd_lo"], vis["gnd_cell"])) > float(vis["above"])
             vis["bm_frac"] = float(bmm.float().mean())
+        self._vis_bmm = bmm                                                              # merge_vis_under_ground 用（離地 > above）
         _side_r = float(getattr(c, "sfm_vis_side_r", -1.0))
         f = sfm_vis_votes(X.detach().float(), vis["R"][pick], vis["T"][pick], vis["fx"][pick], vis["fy"][pick], vis["cx"][pick],
                                          vis["cy"][pick], vis["W"][pick], vis["H"][pick], vis["dmin"][pick], vis["dmax"][pick],
@@ -1724,18 +1735,33 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 self._mvu_warned = True
                 print("⚠⚠ [merge-vis] 沒有 SfM 視線一致性的深度格（找不到 points3D.bin 或相機對不到）=> 合併事件不刪地下顆粒", flush=True)
             return None
+        relocate = (not prune) or global_step < int(getattr(self.config, "densify_until_iter", 0) or 0)
+        if not relocate and not bool(getattr(self.config, "merge_vis_under_harvest", True)):
+            if not getattr(self, "_mvu_harvest_off_said", False):
+                self._mvu_harvest_off_said = True
+                print(f"[merge-vis] step {global_step}：收割期不投票（merge_vis_under_harvest false；增生期累計搬 "
+                      f"{int(getattr(self, '_mvu_moved', 0) or 0):,}）", flush=True)
+            return None
         X = gaussian_model.gaussians["means"]
         n0 = X.shape[0]
         _t0 = time.time()
+        self._vis_bmm = None
         floater, under, cv, iv = self._sfm_vis_classify(X, torch.arange(vis["R"].shape[0], device=X.device))
         am = self._anchor_mask(n0)
         if am is not None:
             under = under & ~am
+        _gnd_note = ""
+        if bool(getattr(self.config, "merge_vis_under_ground", False)):
+            bmm = getattr(self, "_vis_bmm", None)
+            if bmm is None:
+                raise RuntimeError("merge_vis_under_ground：沒有局部地面格（sfm_vis_behind_max／_above_nn 沒設？）")
+            n_hi = int((under & bmm).sum())
+            under = under & ~bmm
+            _gnd_note = f"｜只動貼地／地下（離地高的 {n_hi:,} 顆不動）"
         n_u = int(under.sum())
         if X.is_cuda:
             torch.cuda.synchronize()
         ms = (time.time() - _t0) * 1000
-        relocate = (not prune) or global_step < int(getattr(self.config, "densify_until_iter", 0) or 0)
         out = None
         if n_u and not relocate:
             self._prune_reason = "地下刪掉"
@@ -1760,7 +1786,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
               f"地下（一直被擋）{n_u:,}／{n0:,}（{n_u / max(n0, 1):.2%}）、浮塊 {int(floater.sum()):,}（不動）、沒有 SfM 證據 {int((cv == 0).sum()):,}"
               + (f"｜地下票只算落後 {float(self.config.sfm_vis_behind_max):g}×容差內" if float(getattr(self.config, "sfm_vis_behind_max", 0.0) or 0.0) > 0 else "")
               + (f"（只套離地 > {float(vis.get('above', 0.0)):.4g} 的 {vis.get('bm_frac', 0.0):.1%} 顆）" if vis.get("gnd") is not None else "")
-              + f"｜{tail}", flush=True)
+              + _gnd_note + f"｜{tail}", flush=True)
         return out
 
     @torch.no_grad()

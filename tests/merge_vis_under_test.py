@@ -150,6 +150,49 @@ class MergeVisUnderTest(unittest.TestCase):
         self.assertTrue(torch.allclose(p[n_plane:], torch.full((5,), 0.01)))
         self.assertTrue(torch.equal(p[:n_plane], torch.ones(n_plane)))
 
+    def test_harvest_off_keeps_underground(self):
+        # merge_vis_under_harvest false：收割期不投票、不刪；增生期照舊搬
+        gm, opts, n_plane = _scene()
+        impl = _impl(merge_vis_under_harvest=False)
+        n0 = gm.n_gaussians
+        out = impl._merge_event(gm, opts, 16500, prune=True)
+        self.assertIsNone(out)
+        z = gm.gaussians["means"].detach()[:, 2]
+        self.assertEqual(int((z < -1).sum()), 5)
+        self.assertEqual(int(getattr(impl, "_mvu_cut", 0) or 0), 0)
+        self.assertEqual(gm.n_gaussians, n0 - impl._cap_cut)                    # 只有合併的 j
+        gm2, opts2, _ = _scene()
+        impl2 = _impl(merge_vis_under_harvest=False)
+        out2 = impl2._merge_event(gm2, opts2, 3000, prune=True)
+        self.assertEqual(int(out2.sum()), 5)
+
+    def _with_ground(self, impl, ground_z):
+        impl._vis.update({"gnd": torch.full((3, 3), float(ground_z)), "gnd_lo": torch.tensor([-1.0, -1.0]), "gnd_cell": 1.0, "above": 1.0})
+        return impl
+
+    def test_ground_only_moves_below_ground(self):
+        gm, opts, n_plane = _scene()
+        impl = self._with_ground(_impl(merge_vis_under_ground=True), 0.0)       # 地面 z=0 => 地下 5 顆離地 −3～−7 <= 1 => 動
+        out = impl._merge_event(gm, opts, 3000, prune=True)
+        self.assertEqual(int(out.sum()), 5)
+        self.assertTrue(bool(out[-5:].all()))
+
+    def test_ground_only_skips_high_above_ground(self):
+        gm, opts, n_plane = _scene()
+        impl = self._with_ground(_impl(merge_vis_under_ground=True), -20.0)     # 地面 z=−20 => 同一批離地 13～17 > 1 => 不動（當作牆後／樓內）
+        out = impl._merge_event(gm, opts, 3000, prune=True)
+        self.assertIsNone(out)
+        self.assertEqual(int(getattr(impl, "_mvu_moved", 0) or 0), 0)
+        impl2 = self._with_ground(_impl(merge_vis_under_ground=False), -20.0)   # 開關關掉 => 照 v1 動
+        gm2, opts2, _ = _scene()
+        self.assertEqual(int(impl2._merge_event(gm2, opts2, 3000, prune=True).sum()), 5)
+
+    def test_ground_only_without_grid_raises(self):
+        gm, opts, n_plane = _scene()
+        impl = _impl(merge_vis_under_ground=True)
+        with self.assertRaises(RuntimeError):
+            impl._merge_event(gm, opts, 3000, prune=True)
+
 
 if __name__ == "__main__":
     unittest.main()
