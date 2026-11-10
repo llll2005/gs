@@ -54,9 +54,10 @@ class DenseInitTest(unittest.TestCase):
         """11-11 lab 第一次跑：粗格全被 SfM＋補點佔滿（格數 0～1），掃描誤判「過了峰值」提早停 => 只加 1 顆。"""
         X, C, V = self._scene(n_views=6, per=20000)
         o = np.array([-1e-3, -1e-3, -1.0])
-        rng = np.random.default_rng(5)
-        base = rng.uniform(0, 10, (60, 3)); base[:, 2] = 0.0          # 稀疏的 SfM 點：粗格（邊長 2.5）每格都有、細格大多沒有
-        self.assertLessEqual(count_supported(X, V, o, 2.5, 2, base), 1)
+        gx, gy = np.meshgrid(np.arange(0.5, 10, 1.0), np.arange(0.5, 10, 1.0))
+        base = np.stack([gx.ravel(), gy.ravel(), np.zeros(gx.size)], 1)   # 稀疏的 SfM 點（每 1.0 一顆）：粗格（邊長 2.5）每格都有、細格大多沒有
+        self.assertGreater(count_supported(X, V, o, 2.5, 2, base), 0)     # 第一個 g 有幾格
+        self.assertEqual(count_supported(X, V, o, 2.5 * 0.84, 2, base), 0)  # 下一個 g 掉到 0 => 舊版在這裡誤判「過了峰值」
         g, n = solve_voxel(X, V, o, 1500, 2, base, 2.5)
         self.assertGreaterEqual(n, 1500)
         self.assertLess(g, 1.0)
