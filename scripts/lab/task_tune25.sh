@@ -26,12 +26,15 @@ parse() {
   S=25; G=50; XT=()
   local t
   for t in ${1//+/ }; do
-    case "$t" in
-      s[0-9]*) S=${t#s} ;;
-      g[0-9]*) G=${t#g} ;;
-      lowres|coarse|np16|lr050|mvu) XT+=("$t") ;;
-      *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／lowres／coarse／np16／lr050／mvu）"; return 2 ;;
-    esac
+    if [[ $t =~ ^s([0-9]+)g([0-9]+)$ ]]; then S=${BASH_REMATCH[1]}; G=${BASH_REMATCH[2]}       # 3x3 的格子寫法 s20g40
+    elif [[ $t =~ ^s([0-9]+)$ ]]; then S=${BASH_REMATCH[1]}
+    elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
+    else
+      case "$t" in
+        lowres|coarse|np16|lr050|mvu) XT+=("$t") ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu）"; return 2 ;;
+      esac
+    fi
   done
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
@@ -42,13 +45,17 @@ parse() {
 
 if [ "$1" = eval ]; then
   B=${2:?塊}; TAG=${3:?標籤}; shift 3
-  R=(); ARGS=(新基準30k=$NB_RUN A+dist4=$A_RUN)
+  # TUNE_BASE／TUNE_BASE_LBL＝評估的基準跑次與名稱（預設新基準 30k；11-10 3x3 改建在新基準＋鄰域平面上 => 基準換成 30k 的鄰域平面臂）
+  BASE=${TUNE_BASE:-$NB_RUN}; BLBL=${TUNE_BASE_LBL:-新基準30k}
+  R=(); ARGS=("$BLBL=$BASE"); SW=($A_RUN $BASE)
+  [ "$BASE" = "$NB_RUN" ] || { ARGS+=(新基準30k=$NB_RUN); SW+=($NB_RUN); }
+  ARGS+=(A+dist4=$A_RUN)
   for a in "$@"; do
     parse "$a" || exit 2
     r=$FAM$SUF
     if [ -d outputs/lab/$r/blocks/block_$B ]; then R+=($r); ARGS+=("$LBL=$r"); else echo "⚠ 缺 $a（$r）"; fi
   done
-  bash scripts/lab/task_full44.sh swap "$B" $A_RUN $NB_RUN "${R[@]}"
+  bash scripts/lab/task_full44.sh swap "$B" "${SW[@]}" "${R[@]}"
   EVAL_ONLY=time,f1,ground,facade,orient,sea,smallobj bash scripts/lab/eval_arms_lab.sh "$B" tune_${TAG}_b${B} "${ARGS[@]}"
   exit $?
 fi
