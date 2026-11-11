@@ -196,6 +196,9 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_cap_interval: int = 8
     """每 k 步算一次、權重乘 k（與 lambda_normal_interval 同一套規則；設成同一個 k 時兩者落在同一步，完整路徑不多跑）。"""
     depth_cap_from_iter: int = 1000
+    depth_cap_until_iter: int = 0
+    """★ 2026-11-11 >0 時只算到這一步（不含）。11-11 b1：全程開、權重 2／8 地下覆蓋 4.46 → 1.22／0.69，但換塊 −0.22／−0.40 dB
+    => 地下層是增生期長出來的，試「只在增生期壓、收割期放手讓光度精修」。0＝全程。"""
     surf_reg: float = 0.0
     """★ 2026-11-01 鄰域平面約束（使用者 11-01：不增加計算、從 0 漸增到定值、用周遭高斯讓深度一致的表面平滑、取絕對值免得抹掉細節）。0＝關。
     不渲染：每 surf_every 步用 Morton 近鄰算每顆的鄰域平面（opacity 加權 PCA，`geom_gate.surf_planes`），只對平坦鄰域（e3/e2 < surf_flat）
@@ -535,6 +538,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         w = float(getattr(c, "depth_cap_reg", 0.0) or 0.0)
         k = int(getattr(c, "depth_cap_interval", 1) or 1)
         if w <= 0 or step < int(getattr(c, "depth_cap_from_iter", 0) or 0) or (k > 1 and step % k != 0):
+            return None
+        _until = int(getattr(c, "depth_cap_until_iter", 0) or 0)
+        if _until > 0 and step >= _until:
             return None
         inv = batch[2] if len(batch) > 2 else None
         if isinstance(inv, (tuple, list)):

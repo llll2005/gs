@@ -18,6 +18,9 @@ class DepthCapMetricTest(unittest.TestCase):
         self.assertIsNone(m.depth_cap_map(_batch(torch.full((6, 8), 0.5)), 992))     # 還沒到起始步
         self.assertIsNone(m.depth_cap_map(_batch(torch.full((6, 8), 0.5)), 2001))    # 不是 8 的倍數
         self.assertIsNotNone(m.depth_cap_map(_batch(torch.full((6, 8), 0.5)), 2000))
+        m = MCMCCityGSV2Metrics(depth_cap_reg=1.0, depth_cap_interval=8, depth_cap_from_iter=1000, depth_cap_until_iter=15000).instantiate()
+        self.assertIsNotNone(m.depth_cap_map(_batch(torch.full((6, 8), 0.5)), 14992))
+        self.assertIsNone(m.depth_cap_map(_batch(torch.full((6, 8), 0.5)), 15000))   # 只算到 until（不含）
 
     def test_map_values_invalid_and_resize(self):
         m = MCMCCityGSV2Metrics(depth_cap_reg=1.0, depth_cap_interval=1, depth_cap_from_iter=0, depth_cap_margin=0.02).instantiate()
