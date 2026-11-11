@@ -531,6 +531,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     hole_fill_margin: float = 0.1
     hole_fill_scale_px: float = 2.0
     hole_fill_opacity: float = 0.5
+    sample_behind_price: float = 0.0
+    """★ 2026-11-11 規格 2 §3 B2 落後貢獻計價進 MCMC 抽母點（新增與搬遷目標）：機率再乘 max(1 − λ·ρ, 0.01)，ρ＝這顆的貢獻落在表面後面的比例
+    （renderer 在有上限圖的完整路徑步記的帳 `_trim_state["BVc"／"BVb"]`；需要 metric depth_cap_reg > 0 或 hole_fill_demand 才有上限圖）。0＝關（逐位元不變）。"""
+    behind_price_evidence: float = 0.1
+    """證據門檻：Vc < 這個比例 × 「Vc > 0 的顆粒的 Vc 中位數」的顆粒 ρ＝0（相對量；與 renderer.behind_price_evidence 同義、預設相同）。"""
     hole_fill_demand: bool = False
     """★ 2026-11-11 規格 2 §2 需求地圖補貨（`紀錄/規格2_表面補貨與落後貢獻計價_1111.md`；需要 hole_fill_frac > 0 與重編過的光柵器）。
     開的時候補洞事件那一步：metric 交出上限圖（不加 loss），光柵器交出落後權重 W(p)＝Σ T·α·[交點深度 > (1+depth_cap_margin)·先驗深度]
@@ -1696,7 +1701,35 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     def _geom_gate_probs(self, gaussian_model, probs, indices=None):
         probs = super()._geom_gate_probs(gaussian_model, probs, indices)
         probs = self._sfm_birth_probs(gaussian_model, probs, indices)
-        return self._sfm_vis_probs(gaussian_model, probs, indices)
+        probs = self._sfm_vis_probs(gaussian_model, probs, indices)
+        return self._behind_price_probs(gaussian_model, probs, indices)
+
+    def _behind_price_probs(self, gaussian_model, probs, indices=None):
+        """★ 11-11 規格 2 §3 B2（config.sample_behind_price）。沒有帳（還沒到有上限圖的步）=> 不乘、印一次 ⚠⚠。"""
+        lam = float(getattr(self.config, "sample_behind_price", 0.0) or 0.0)
+        if lam <= 0:
+            return probs
+        st = getattr(gaussian_model, "_trim_state", None) or {}
+        n = gaussian_model.n_gaussians
+        Vc, Vb = st.get("BVc"), st.get("BVb")
+        if Vc is None or Vb is None or Vc.shape[0] > n or Vb.shape[0] != Vc.shape[0]:
+            if not getattr(self, "_sbp_warned", False):
+                self._sbp_warned = True
+                print("⚠⚠ [behind-price-sampling] 還沒有落後計價的帳（renderer 沒在有上限圖的步記帳？metric 沒開 depth_cap_reg／hole_fill_demand？）=> 這次不乘", flush=True)
+            return probs
+        if Vc.shape[0] < n:                                                   # 新顆粒接在尾端 => 沒帳＝ρ 0
+            z = torch.zeros(n - Vc.shape[0], device=Vc.device, dtype=Vc.dtype)
+            Vc, Vb = torch.cat([Vc, z]), torch.cat([Vb, z])
+        from internal.renderers.sep_depth_trim_2dgs_renderer import behind_price_factor
+        fac, rho, ok = behind_price_factor(Vc, Vb, lam, float(getattr(self.config, "behind_price_evidence", 0.1)), 0.01)
+        f = fac if indices is None else fac[indices]
+        if f.shape[0] != probs.shape[0]:
+            return probs
+        if not getattr(self, "_sbp_announced", False):
+            self._sbp_announced = True
+            print(f"[behind-price-sampling] ✅ 首次觸發：λ {lam:g}｜有證據 {100 * float(ok.float().mean()):.1f}%、ρ>0.5 {100 * float((ok & (rho > 0.5)).float().mean()):.2f}%"
+                  f"｜抽樣機率被壓到 < 0.5 倍的 {int((fac < 0.5).sum()):,}／{n:,} 顆", flush=True)
+        return probs * f.to(probs.dtype)
 
     @torch.no_grad()
     def _sfm_vis_classify(self, X, pick):
@@ -2258,17 +2291,21 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if getattr(self, "_hfd_announced", False) and global_step % 2000 != 0:
             return
         cap = getattr(getattr(pl_module, "metric", None), "_cap_map_cur", None)
+        has_any = False
         if cap is not None and Wm is not None and cap.numel() == Wm.numel():
             has = cap.reshape(Wm.shape) > 0
+            has_any = bool(has.any())
             fr = float(has.float().mean())
-            wm = float(Wm[has].mean()) if bool(has.any()) else 0.0
-            w5 = float((Wm[has] > 0.05).float().mean()) if bool(has.any()) else 0.0
-            st = f"有上限的像素 {100 * fr:.1f}%、其中 W 平均 {wm:.4f}、W>0.05 {100 * w5:.2f}%"
+            wm = float(Wm[has].mean()) if has_any else 0.0
+            w5 = float((Wm[has] > 0.05).float().mean()) if has_any else 0.0
+            st = f"有上限的像素 {100 * fr:.1f}%、其中 W 平均 {wm:.4f}、W>0.05 {100 * w5:.2f}%、W>0 的像素 {int((Wm > 0).sum()):,}"
         else:
             st = "⚠⚠ 拿不到 W" if Wm is None else f"W 平均 {float(Wm.mean()):.4f}（拿不到上限圖 => 以全畫面計）"
-        print(f"[hole-fill-demand] {'✅ 首次觸發' if not getattr(self, '_hfd_announced', False) else '　'} step {global_step}：{st}、"
-              f"α<0.5 的洞 {int(holes.sum()):,} => 放 {K:,} 顆", flush=True)
-        self._hfd_announced = True
+        first = not getattr(self, "_hfd_announced", False)
+        print(f"[hole-fill-demand] {'✅ 首次觸發' if first and has_any else '　'} step {global_step}：{st}、"
+              f"α<0.5 的洞 {int(holes.sum()):,} => 放 {K:,} 顆{'' if has_any else '（這張沒有上限像素，等下一次）'}", flush=True)
+        if has_any or Wm is None:                                             # 有上限像素的那一次才算首次觸發（11-11 冒煙第一次剛好 0%）
+            self._hfd_announced = True
 
     def _merge_window(self, global_step: int) -> bool:
         c = self.config

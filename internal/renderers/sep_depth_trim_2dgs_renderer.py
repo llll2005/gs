@@ -8,6 +8,26 @@ from internal.utils.topk_contribution import contribution_accumulator
 import math
 from .renderer import Renderer
 from .renderer import RendererOutputTypes, RendererOutputInfo, Renderer
+
+
+def behind_rho(Vc, Vb, evidence: float = 0.1):
+    """★ 2026-11-11 規格 2 §3 落後比例 ρ_i＝Vb_i ÷ Vc_i（Vc＝這顆在有可靠表面深度的像素上的總貢獻 Σ T·α、Vb＝其中交點深度落在上限後面的部分）。
+    證據不足（Vc_i < evidence × 「Vc > 0 的顆粒的 Vc 中位數」；相對量、不是場景單位）一律 ρ＝0。回傳 (ρ, 有證據)。"""
+    pos = Vc > 0
+    if not bool(pos.any()):
+        return torch.zeros_like(Vc), pos
+    thr = float(evidence) * float(Vc[pos].median())
+    ok = pos & (Vc >= thr)
+    rho = torch.where(ok, Vb / Vc.clamp_min(1e-12), torch.zeros_like(Vc)).clamp(0.0, 1.0)
+    return rho, ok
+
+
+def behind_price_factor(Vc, Vb, lam: float, evidence: float = 0.1, floor: float = 0.0):
+    """計價係數 max(1 − λ·ρ, floor)（剪枝用 floor 0、抽母點用 0.01）。λ <= 0 => None（呼叫端不乘，行為與之前逐位元相同）。"""
+    if lam <= 0:
+        return None
+    rho, ok = behind_rho(Vc, Vb, evidence)
+    return (1.0 - float(lam) * rho).clamp_min(float(floor)), rho, ok
 from ..cameras import Camera
 from ..models.gaussian import GaussianModel
 
@@ -51,6 +71,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_merge_first: bool = False,
             trim_merge_color_tol: float = 0.1,
             trim_running_score: str = "vc",
+            trim_behind_price: float = 0.0,
+            behind_price_evidence: float = 0.1,
+            behind_price_decay: float = 0.5,
             trim_hidden: bool = False,
             alpha_max_999: bool = False,
             t_sat_1e3: bool = False,
@@ -149,6 +172,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if trim_running_score not in ("vc", "v", "inv_vc"):
             raise ValueError(f"trim_running_score 只能是 vc／v／inv_vc（收到 {trim_running_score!r}）")
         self.trim_running_score = trim_running_score
+        # ★ 2026-11-11 規格 2 §3 B1 落後貢獻計價（`紀錄/規格2_表面補貨與落後貢獻計價_1111.md`）：λ＞0 時累加式 trim 的分數＝(V/C)·max(1 − λ·ρ, 0)，
+        #   ρ＝這顆在「有可靠表面深度」的像素上的貢獻裡、交點深度落在上限（metric depth_cap_map）後面的比例（光柵器逐顆兩筆帳，只在有上限圖的完整路徑步累加）。
+        #   λ＝1＝落在表面後面的貢獻不算價值。帳存在 `_trim_state["BVc"／"BVb"]`（剪枝／搬家／補洞／重排都跟著同步）；每次 trim 後乘 behind_price_decay（不歸零）。
+        #   證據不足（Vc < behind_price_evidence × 中位）＝ρ 0。只支援 vc／v 判準。不刪不搬（只改 trim 的排序）、不關二元熵。
+        self.trim_behind_price = trim_behind_price
+        self.behind_price_evidence = behind_price_evidence
+        self.behind_price_decay = behind_price_decay
         # ★ 2026-11-07 trim_hidden（使用者「把光度低的、沒貢獻的都刪掉」「trim 不清除固定 %，而是清除未達標的」）：
         #   累加 V／C 時另記 F＝在畫面內（radii > 0）的次數。光柵器的覆蓋數 C 不計已飽和（T < 1e-4）像素後面的顆粒
         #   => 完全被擋的顆粒 C＝0，原本被當「未觀測」（score＝inf）永遠不剪；增生結束後 trim 又整個停掉（30k 配方後半 15k 步沒有任何刪除）。
@@ -353,8 +383,15 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if _cap is not None:
             if "depth_cap" not in GaussianRasterizationSettings._fields:
                 raise RuntimeError("設了 metric.depth_cap_reg 但光柵器不認得 depth_cap 欄位 —— 沒重編")
-            if kwargs.get("_depth_cap_acc") is not None and "depth_cap_acc" not in GaussianRasterizationSettings._fields:
+            if (kwargs.get("_depth_cap_acc") is not None or kwargs.get("_cap_acct", False)) and "depth_cap_acc" not in GaussianRasterizationSettings._fields:
                 raise RuntimeError("要逐顆累加落在上限後面的 T·α，但光柵器不認得 depth_cap_acc 欄位 —— 沒重編")
+            if kwargs.get("_depth_cap_acc") is None and kwargs.get("_cap_acct", False):
+                # ★ 11-11 規格 2 §3：落後貢獻的兩筆帳直接累加在 `_trim_state`（就地；長度跟著 N 補齊）
+                _st_b = self._trim_state(pc, ("BVc", "BVb"))
+                kwargs["_depth_cap_acc"] = (_st_b["BVb"], _st_b["BVc"])
+                if not getattr(self, "_acct_announced", False):
+                    self._acct_announced = True
+                    print(f"[behind-price] ✅ 首次觸發：有上限圖的完整路徑步逐顆累加 Vc／Vb（N {pc.get_xyz.shape[0]:,}）", flush=True)
             if tuple(_cap.shape[-2:]) != (int(viewpoint_camera.height), int(viewpoint_camera.width)):
                 raise RuntimeError(f"depth_cap 大小 {tuple(_cap.shape)} != 渲染 {(int(viewpoint_camera.height), int(viewpoint_camera.width))}")
         raster_settings = GaussianRasterizationSettings(
@@ -672,6 +709,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
             # ★ 2026-11-11 逐貢獻深度上限（metric depth_cap_reg）：這一步有上限圖 => 走完整路徑
             if "_depth_cap" not in kwargs:
                 kwargs["_depth_cap"] = getattr(module, "_depth_cap", None)
+            if "_cap_acct" not in kwargs:      # ★ 11-11 規格 2 §3：剪枝或抽母點要計價 => 有上限圖的步記兩筆帳
+                _dcc = getattr(getattr(module, "density_controller", None), "config", None)
+                kwargs["_cap_acct"] = (float(getattr(self, "trim_behind_price", 0.0) or 0.0) > 0
+                                       or float(getattr(_dcc, "sample_behind_price", 0.0) or 0.0) > 0)
             kwargs["_geo"] = kwargs["_geo"] or kwargs["_depth_cap"] is not None
             if kwargs["_geo"] and not getattr(self, "_geo_announced", False):
                 self._geo_announced = True
@@ -854,6 +895,21 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if not getattr(self, "_hid_announced", False):
                 self._hid_announced = True
                 print(f"[trim-hidden] ✅ 首次觸發 step {step}：畫面內但覆蓋 0 的 {int(hid.sum()):,} 顆改當最低分（原本當未觀測不剪）", flush=True)
+        _bp_msg = ""
+        _lam = float(getattr(self, "trim_behind_price", 0.0) or 0.0)
+        _low0 = None
+        if _lam > 0:
+            if _rs == "inv_vc":
+                raise ValueError("trim_behind_price 只支援 trim_running_score vc／v（inv_vc 的分數是負的，乘係數意義相反）")
+            sb = self._trim_state(pc, ("BVc", "BVb"))
+            fac, rho, okev = behind_price_factor(sb["BVc"], sb["BVb"], _lam, float(getattr(self, "behind_price_evidence", 0.1)), 0.0)
+            _score0 = score
+            score = torch.where(C > 0, _base * fac, score)      # 只動有覆蓋的（未觀測 inf、trim_hidden 的被擋 −1 不動；避免 inf×0）
+            _n_ev = int(okev.sum())
+            _q = torch.quantile(rho[okev][:1_000_000].float(), torch.tensor([0.5, 0.9], device=rho.device)).tolist() if _n_ev else [float("nan")] * 2
+            _bp_msg = (f"｜落後計價 λ {_lam:g}：有證據 {100 * _n_ev / max(rho.numel(), 1):.1f}%、ρ 中位／p90 {_q[0]:.3f}／{_q[1]:.3f}、"
+                       f"ρ>0.5 {100 * float((okev & (rho > 0.5)).float().mean()):.2f}%")
+            _low0 = (_score0, okev & (rho > 0.5))
         if _rs != "vc" and not getattr(self, "_rs_announced", False):
             self._rs_announced = True
             print(f"[trim-running] ✅ 判準 {_rs}（{'只看總貢獻 V' if _rs == 'v' else '反過來：剪 V/C 最高的'}）", flush=True)
@@ -861,6 +917,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
         k_cut = int(self.prune_ratio * pc.get_xyz.shape[0])
         thr = torch.kthvalue(score.float().cpu(), max(1, min(k_cut, n_seen))).values.to(score.device) if n_seen > 0 and k_cut > 0 else None
         low = (score <= thr) & seen if thr is not None else torch.zeros_like(seen)
+        if _low0 is not None and thr is not None:
+            _s0, _hi = _low0                                                  # 對照：沒計價時會剪的那批
+            _thr0 = torch.kthvalue(_s0.float().cpu(), max(1, min(k_cut, n_seen))).values.to(_s0.device)
+            _l0 = (_s0 <= _thr0) & seen
+            _bp_msg += (f"｜這次剪的裡面 ρ>0.5 佔 {100 * float((low & _hi).sum()) / max(int(low.sum()), 1):.1f}%"
+                        f"（沒計價時 {100 * float((_l0 & _hi).sum()) / max(int(_l0.sum()), 1):.1f}%）")
         _ptau = float(getattr(self, "trim_protect_vc", -1.0) or -1.0)
         _prot_msg = ""
         if _ptau > 0 and "M" in st and st["M"].shape[0] == low.shape[0]:
@@ -912,7 +974,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if rho != 0:
                 pc._trim_state.pop("lam", None); pc._trim_state.pop("off", None); pc._trim_state.pop("off_n", None)
         print(f"[{tag}] step {step}：{n_views} 個訓練視角累加、看到 {n_seen:,}／{seen.numel():,} 顆、未觀測 {seen.numel() - n_seen:,} 顆不剪；"
-              f"門檻（{_rs}）{float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}{_hid_msg}", flush=True)
+              f"門檻（{_rs}）{float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}{_hid_msg}{_bp_msg}", flush=True)
         # 重設累加器（剪枝後 N 變了 => 以新 N 重建）
         pc._trim_state["V"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         pc._trim_state["C"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
@@ -920,6 +982,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         for _k in ("M", "F"):
             if _k in pc._trim_state:
                 pc._trim_state[_k] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
+        for _k in ("BVc", "BVb"):           # ★ 11-11 落後計價的帳不歸零、指數衰減（跟得上顆粒移動）；剪枝已由 _prune_points 同步
+            if _k in pc._trim_state and torch.is_tensor(pc._trim_state[_k]):
+                pc._trim_state[_k].mul_(float(getattr(self, "behind_price_decay", 0.5)))
         if step >= until and not getattr(self, "trim_hidden", False) and not getattr(self, "vis_snapshot", False):
             self._acc_stop = True          # 增生期結束 => 不再累加（省 forward 的那點開銷）；trim_hidden 要繼續累加
         elif int(getattr(self, "reseed_views", 0) or 0) > 0 and rho == 0:
