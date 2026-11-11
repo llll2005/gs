@@ -100,7 +100,7 @@ RasterizeGaussiansCUDA(
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
-  torch::Tensor out_others = torch::full({3+3+2, H, W}, 0.0, float_opts);
+  torch::Tensor out_others = torch::full({3+3+2+1, H, W}, 0.0, float_opts);   // ★ 11-11 第 9 個通道＝逐貢獻深度上限的超出量（CAP_OFFSET）
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   // ★ 2026-09-21：逐顆 tile 數（精確的 binning 成本），見 rasterizer.h 的註解
   torch::Tensor tiles = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
@@ -423,4 +423,17 @@ void FusedAdamCUDA(
 	else              { if (use_mask) FADAM_L(1, true); else FADAM_L(1, false); }
 #undef FADAM_L
 	C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+
+// ★ 2026-11-11 逐像素深度上限圖（auxiliary.h CAP_OFFSET）：cap＝CUDA 上連續的 float32、元素數＝H*W（1／((1+margin)·z_先驗)，0＝不設上限）；
+//   空張量＝清掉。只存裝置端指標 => 呼叫端要自己讓張量活到 forward／backward 結束（Python 的 autograd Function 在呼叫前後設定與清掉）。
+void SetDepthCap(const torch::Tensor& cap)
+{
+	if (cap.numel() > 0) {
+		TORCH_CHECK(cap.is_cuda() && cap.scalar_type() == at::kFloat && cap.is_contiguous(), "depth_cap 必須是 CUDA 上連續的 float32");
+		CudaRasterizer::Rasterizer::setDepthCap(cap.data_ptr<float>(), (int)cap.numel());
+	} else {
+		CudaRasterizer::Rasterizer::setDepthCap(nullptr, 0);
+	}
 }

@@ -16,6 +16,9 @@
 
 // ★ 2026-11-07 alpha 上限，必須與 forward 相同（見 forward.cu g_alpha_max）；旗標 bit 128（rasterizer_impl.cu 每次 backward 前設定）
 __device__ float g_alpha_max_b = 0.99f;
+// ★ 2026-11-11 逐像素深度上限圖（與 forward.cu 的 g_cap_inv／g_cap_n 同一份，呼叫端在 backward 前後設定與清掉）
+__device__ const float* g_cap_inv_b = nullptr;
+__device__ int g_cap_n_b = 0;
 namespace cg = cooperative_groups;
 
 // Backward pass for conversion of spherical harmonics to RGB for
@@ -371,6 +374,12 @@ renderCUDA(
 	const float final_D2 = (GEOM && inside) ? final_Ts[pix_id + 2 * H * W] : 0;
 	const float final_A = 1 - T_final;
 	float last_dL_dT = 0;
+	// ★ 2026-11-11 逐貢獻深度上限（CAP_OFFSET）：B = Σ T·α·max(z·icap − 1, 0)，與期望深度通道同一套回傳方式
+	float icap = 0.f, dL_dcap = 0.f, last_cap = 0.f, accum_cap_rec = 0.f;
+	if (GEOM && inside && g_cap_n_b == W * H) {
+		icap = g_cap_inv_b[pix_id];
+		dL_dcap = dL_depths[CAP_OFFSET * H * W + pix_id];
+	}
 #endif
 
 	if (inside){
@@ -485,6 +494,7 @@ renderCUDA(
 
 			float dL_dz = 0.0f;
 			float dL_dweight = 0;
+			float cap_v = 0.f;
 #if RENDER_AXUTILITY
 			if (GEOM) {
 			float m_d = (FAR_PLANE * c_d - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d);
@@ -510,6 +520,11 @@ renderCUDA(
 			accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
 			last_depth = c_d;
 			dL_dalpha += (c_d - accum_depth_rec) * dL_ddepth;
+			// ★ 11-11 逐貢獻深度上限：v_i = max(z_i·icap − 1, 0)（icap＝0 的像素恆為 0）
+			if (icap > 0.f) cap_v = fmaxf(c_d * icap - 1.f, 0.f);
+			accum_cap_rec = last_alpha * last_cap + (1.f - last_alpha) * accum_cap_rec;
+			last_cap = cap_v;
+			dL_dalpha += (cap_v - accum_cap_rec) * dL_dcap;
 			// Propagate gradients w.r.t. color ray-splat alphas
 			accum_alpha_rec = last_alpha * 1.0 + (1.f - last_alpha) * accum_alpha_rec;
 			dL_dalpha += (1 - accum_alpha_rec) * dL_daccum;
@@ -540,6 +555,7 @@ renderCUDA(
 			const float dL_dG = nor_o.w * dL_dalpha;
 #if RENDER_AXUTILITY
 			if (GEOM) dL_dz += alpha * T * dL_ddepth; 
+			if (GEOM && cap_v > 0.f) dL_dz += alpha * T * dL_dcap * icap;   // ★ 11-11 dB/dz_i = T·α·icap（超出上限時）
 #endif
 
 			if (rho3d <= rho2d) {
@@ -1291,6 +1307,12 @@ void BACKWARD::preprocess(
 		nullptr,
 		nullptr
 	);
+}
+
+void BACKWARD::setDepthCap(const float* cap_inv, int n)
+{
+	cudaMemcpyToSymbol(g_cap_inv_b, &cap_inv, sizeof(const float*));
+	cudaMemcpyToSymbol(g_cap_n_b, &n, sizeof(int));
 }
 
 void BACKWARD::setAlphaMax(float a)

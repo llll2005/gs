@@ -117,17 +117,26 @@ class _RasterizeGaussians(torch.autograd.Function):
              else _empty_u8_dev(means3D)),
         )
 
-        # Invoke C++/CUDA rasterizer
-        if raster_settings.debug:
-            cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
-            try:
+        # ★ 2026-11-11 逐貢獻深度上限：只在這一次 forward 期間把上限圖交給光柵器（裝置端全域指標），結束就清掉
+        #   => 其他渲染（驗證、trim record、別的相機）不會讀到它。backward 再設一次（raster_settings 存在 ctx 裡，張量活得到那時）。
+        _cap = _depth_cap_of(raster_settings)
+        if _cap is not None:
+            _C.set_depth_cap(_cap)
+        try:
+            # Invoke C++/CUDA rasterizer
+            if raster_settings.debug:
+                cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
+                try:
+                    num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_covered_pixels, tiles = _C.rasterize_gaussians(*args)
+                except Exception as ex:
+                    torch.save(cpu_args, "snapshot_fw.dump")
+                    print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
+                    raise ex
+            else:
                 num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_covered_pixels, tiles = _C.rasterize_gaussians(*args)
-            except Exception as ex:
-                torch.save(cpu_args, "snapshot_fw.dump")
-                print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
-                raise ex
-        else:
-            num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, transmittance, num_covered_pixels, tiles = _C.rasterize_gaussians(*args)
+        finally:
+            if _cap is not None:
+                _C.set_depth_cap(_empty_like_dev(means3D))
 
         if getattr(raster_settings, "audit_tiles", False):
             # audit：transmittance＝reached_tiles、num_covered_pixels＝useful_tiles、depth＝逐像素 [迴圈次數, tile 配對數, 混合次數]
@@ -240,17 +249,24 @@ class _RasterizeGaussians(torch.autograd.Function):
                 | (128 if getattr(raster_settings, "alpha_999", False) else 0),
                 sh_rest, a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp)
 
-        # Compute gradients for relevant tensors by invoking backward method
-        if raster_settings.debug:
-            cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
-            try:
-                grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_sh_rest = _C.rasterize_gaussians_backward(*args)
-            except Exception as ex:
-                torch.save(cpu_args, "snapshot_bw.dump")
-                print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
-                raise ex
-        else:
-             grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_sh_rest = _C.rasterize_gaussians_backward(*args)
+        _cap = _depth_cap_of(raster_settings) if geom_grad else None    # ★ 11-11 逐貢獻深度上限：backward 期間再把上限圖交給光柵器
+        if _cap is not None:
+            _C.set_depth_cap(_cap)
+        try:
+            # Compute gradients for relevant tensors by invoking backward method
+            if raster_settings.debug:
+                cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
+                try:
+                    grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_sh_rest = _C.rasterize_gaussians_backward(*args)
+                except Exception as ex:
+                    torch.save(cpu_args, "snapshot_bw.dump")
+                    print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
+                    raise ex
+            else:
+                 grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations, grad_sh_rest = _C.rasterize_gaussians_backward(*args)
+        finally:
+            if _cap is not None:
+                _C.set_depth_cap(_empty_like_dev(means3D))
 
         if sh_adam is not None and len(sh_adam) > 6 and isinstance(sh_adam[6], dict):
             sh_adam[6]["g_dc"], sh_adam[6]["g_rest"] = grad_sh, grad_sh_rest
@@ -309,6 +325,9 @@ class GaussianRasterizationSettings(NamedTuple):
     train_record_warp : bool = False  # ★ 2026-11-05 訓練中累加 V/C 先在 warp 內加總（覆蓋數逐位元相同、V 只差加總順序）
     bwd_zero_skip : bool = False  # ★ 2026-11-05 backward 不處理上游梯度全 0 的像素（塊外遮罩 C 區；梯度只差浮點加總順序）
     pix_skip : Optional[torch.Tensor] = None  # ★ 2026-11-05 lean 訓練 forward 略過的像素（uint8 H*W，1＝略過；C 區）
+    # ★ 2026-11-11 逐貢獻深度上限（完整路徑才算；out_others 第 9 個通道 B = Σ T·α·max(z·icap − 1, 0)）：
+    #   float32 [H, W] 或 [H*W]，icap＝1／((1+margin)·z_先驗)，0＝該像素不設上限。None＝不算（通道恆為 0、其餘逐位元不變）。
+    depth_cap : Optional[torch.Tensor] = None
     # ★ 2026-10-02：剃除沒人用的計算（見 forward.cu 的 MODE 與 backward.cu 的 GEOM）。
     #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。
     #   預設 False => 與舊行為完全相同（舊 kernel 的原始碼一字未動，只是多了模板參數）。
@@ -401,6 +420,20 @@ def _empty_u8_dev(t):
 
 # ★ 2026-11-05 呼叫端用它判斷這份光柵器支不支援 pix_skip／bwd_zero_skip（沒重編 => 屬性不存在 => 當場報錯）
 PIX_SKIP_SUPPORTED = True
+# ★ 2026-11-11 逐貢獻深度上限（depth_cap、第 9 個幾何通道）
+DEPTH_CAP_SUPPORTED = True
+
+
+def _depth_cap_of(raster_settings):
+    """raster_settings.depth_cap => 給 C++ 的連續 float32 CUDA 張量（元素數要等於 H*W）；沒設、lean、record => None。"""
+    cap = getattr(raster_settings, "depth_cap", None)
+    if cap is None or getattr(raster_settings, "lean_render", False) or raster_settings.record_transmittance:
+        return None
+    if cap.numel() != raster_settings.image_height * raster_settings.image_width:
+        raise ValueError(f"depth_cap 元素數 {cap.numel()} != H*W {raster_settings.image_height * raster_settings.image_width}")
+    if cap.dtype != torch.float32 or not cap.is_cuda or not cap.is_contiguous():
+        raise ValueError("depth_cap 必須是 CUDA 上連續的 float32")
+    return cap
 
 
 # ★ 2026-10-19 融合／稀疏 Adam（rasterize_points.cu FusedAdamCUDA；呼叫端＝internal/optimizers.py FusedAdam）

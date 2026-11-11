@@ -60,6 +60,10 @@
 #define MIDDEPTH_OFFSET 5
 #define DISTORTION_OFFSET 6
 #define MEDIAN_WEIGHT_OFFSET 7
+// ★ 2026-11-11 逐貢獻的單側深度上限（使用者 11-11「可以改」）：out_others 第 9 個通道
+//   B(p) = Σ_i T_i·α_i·max(z_i·icap(p) − 1, 0)，icap(p)＝1／((1+margin)·z_先驗(p))，0＝該像素不設上限。
+//   只在完整路徑（forward MODE 0／backward GEOM）且呼叫端設了上限圖時才算；沒設時這個通道是 0、其他通道逐位元不變。
+#define CAP_OFFSET 8
 
 // distortion helper macros
 #define BACKFACE_CULL 1

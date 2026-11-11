@@ -24,6 +24,9 @@ namespace CudaRasterizer
 	{
 	public:
 
+		// ★ 2026-11-11 逐像素深度上限圖（float H*W 的裝置端指標；nullptr／0＝清掉）。見 auxiliary.h CAP_OFFSET
+		static void setDepthCap(const float* cap_inv, int n);
+
 		static void markVisible(
 			int P,
 			float* means3D,

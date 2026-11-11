@@ -288,6 +288,13 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	return geom;
 }
 
+// ★ 2026-11-11 逐像素深度上限圖：forward／backward 兩個翻譯單元各有一份裝置端全域，一起設
+void CudaRasterizer::Rasterizer::setDepthCap(const float* cap_inv, int n)
+{
+	FORWARD::setDepthCap(cap_inv, n);
+	BACKWARD::setDepthCap(cap_inv, n);
+}
+
 CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, size_t N)
 {
 	ImageState img;

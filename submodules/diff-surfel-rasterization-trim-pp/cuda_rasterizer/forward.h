@@ -59,6 +59,8 @@ namespace FORWARD
 	void setAlphaMax(float a);
 	// ★ 2026-11-08 飽和門檻（預設 1e-4；lean bit 1024 => 1e-3、bit 2048 => 1e-5；見 forward.cu g_t_sat）
 	void setTSat(float t);
+	// ★ 2026-11-11 逐像素深度上限圖（裝置端指標＋像素數；nullptr／0＝清掉）
+	void setDepthCap(const float* cap_inv, int n);
 
 	void render(
 		const dim3 grid, dim3 block,

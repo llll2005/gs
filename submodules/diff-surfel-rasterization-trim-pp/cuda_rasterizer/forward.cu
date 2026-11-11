@@ -26,6 +26,10 @@ __device__ float g_alpha_max = 0.99f;
 // ★ 2026-11-08 飽和門檻（使用者「減少 tile／每像素工作量」）：像素在 test_T < g_t_sat 時停止；預設 1e-4＝原行為（逐位元相同）。
 //   lean bit 1024 => 1e-3（忽略的顏色 <= 0.1%，不到 8 位元色階半格）。backward 跟著 forward 的最後貢獻者走，不用改。
 __device__ float g_t_sat = 0.0001f;
+// ★ 2026-11-11 逐像素深度上限圖（auxiliary.h CAP_OFFSET）：g_cap_n＝圖的像素數（要等於 W*H 才用；0＝沒設）。
+//   呼叫端（Python 的 autograd Function）只在那一次 forward／backward 前後設定與清掉 => 其他渲染（驗證、trim record）不受影響。
+__device__ const float* g_cap_inv = nullptr;
+__device__ int g_cap_n = 0;
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -567,6 +571,8 @@ renderCUDA(
 	float median_depth = {0};
 	float median_weight = {0};
 	float median_contributor = {-1};
+	float capB = 0.f;                                      // ★ 11-11 逐貢獻深度上限的超出量（CAP_OFFSET）
+	const float icap = (MODE == 0 && inside && g_cap_n == W * H) ? g_cap_inv[pix_id] : 0.f;
 
 #endif
 
@@ -687,6 +693,7 @@ renderCUDA(
 
 					// Render depth map
 					D += depth * alpha * T;
+					if (icap > 0.f) { const float cv = depth * icap - 1.f; if (cv > 0.f) capB += cv * alpha * T; }   // ★ 11-11
 					// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 					dist1 += mapped_depth * alpha * T;
 					dist2 += mapped_depth * mapped_depth * alpha * T;
@@ -800,6 +807,7 @@ renderCUDA(
 
 			// Render depth map
 			D += depth * alpha * T;
+			if (icap > 0.f) { const float cv = depth * icap - 1.f; if (cv > 0.f) capB += cv * alpha * T; }   // ★ 11-11
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 			dist1 += mapped_depth * alpha * T;
 			dist2 += mapped_depth * mapped_depth * alpha * T;
@@ -864,6 +872,7 @@ renderCUDA(
 		out_others[pix_id + MIDDEPTH_OFFSET * H * W] = median_depth;
 		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
 		out_others[pix_id + MEDIAN_WEIGHT_OFFSET * H * W] = median_weight;
+		out_others[pix_id + CAP_OFFSET * H * W] = capB;
 		}
 #endif
 	}
@@ -1105,6 +1114,12 @@ void FORWARD::setAlphaMax(float a)
 {
 	static float cur = -1.f;
 	if (a != cur) { cudaMemcpyToSymbol(g_alpha_max, &a, sizeof(float)); cur = a; }
+}
+
+void FORWARD::setDepthCap(const float* cap_inv, int n)
+{
+	cudaMemcpyToSymbol(g_cap_inv, &cap_inv, sizeof(const float*));
+	cudaMemcpyToSymbol(g_cap_n, &n, sizeof(int));
 }
 
 void FORWARD::setTSat(float t)

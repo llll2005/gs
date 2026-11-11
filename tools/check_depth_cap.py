@@ -1,0 +1,142 @@
+"""★ 2026-11-11 逐貢獻深度上限（光柵器 CAP_OFFSET 通道）的檢查：小型合成場景，直接呼叫光柵器。
+
+  base   用**現在裝著的**光柵器存下基準（完整路徑與 lean 路徑的渲染、前 8 個幾何通道、全部梯度）=> 重編前跑
+  cmp    重編後跑：沒設上限圖時，渲染／前 8 個通道／梯度要與基準**逐位元相同**（新通道恆為 0）
+  grad   上限通道：沒設上限的像素恆為 0、上限放寬到不可能超出時全 0、設了上限圖後前 8 個通道逐位元不變；
+         有限差分把關三項（不透明度、尺度、全體沿 z 平移），位置／旋轉的隨機方向只印（會改排序，既有通道同樣對不上）
+用法：python tools/check_depth_cap.py base|cmp|grad
+"""
+import sys, math, os
+import torch
+from diff_trim_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+
+DEV = "cuda"
+W, H = 320, 208
+BASE = "/tmp/claude-1000/check_depth_cap_base.pt" if os.path.isdir("/tmp/claude-1000") else "check_depth_cap_base.pt"
+
+
+def scene(n=4000, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    means = torch.stack([(torch.rand(n, generator=g) - 0.5) * 6, (torch.rand(n, generator=g) - 0.5) * 4, 4 + torch.rand(n, generator=g) * 6], 1)
+    scales = torch.rand(n, 2, generator=g) * 0.25 + 0.03
+    rots = torch.nn.functional.normalize(torch.randn(n, 4, generator=g), dim=1)
+    opac = torch.rand(n, 1, generator=g) * 0.9 + 0.05
+    cols = torch.rand(n, 3, generator=g)
+    return [t.to(DEV).requires_grad_(True) for t in (means, scales, rots, opac, cols)]
+
+
+def settings(**kw):
+    fov = math.radians(60)
+    tanx = math.tan(fov / 2); tany = tanx * H / W
+    view = torch.eye(4, device=DEV)                       # 相機在原點看 +z（world_to_camera 的轉置慣例下 I 仍是 I）
+    zn, zf = 0.01, 100.0
+    P = torch.zeros(4, 4, device=DEV)
+    P[0, 0] = 1 / tanx; P[1, 1] = 1 / tany; P[2, 2] = zf / (zf - zn); P[2, 3] = -(zf * zn) / (zf - zn); P[3, 2] = 1.0
+    proj = (P @ view.T).T                                  # full_projection（列向量慣例）
+    return GaussianRasterizationSettings(
+        image_height=H, image_width=W, tanfovx=tanx, tanfovy=tany, bg=torch.zeros(3, device=DEV), scale_modifier=1.0,
+        viewmatrix=view, projmatrix=proj, sh_degree=0, campos=torch.zeros(3, device=DEV), prefiltered=False,
+        record_transmittance=False, debug=False, **kw)
+
+
+def render(params, **kw):
+    means, scales, rots, opac, cols = params
+    m2d = torch.zeros_like(means, requires_grad=True)
+    out = GaussianRasterizer(settings(**kw))(means3D=means, means2D=m2d, shs=None, colors_precomp=cols, opacities=opac,
+                                             scales=scales, rotations=rots, cov3D_precomp=None)
+    return out[0], out[2]                                  # 顏色、幾何通道
+
+
+def grads_of(loss, params):
+    return [g if g is not None else torch.zeros_like(p) for g, p in zip(torch.autograd.grad(loss, params, allow_unused=True), params)]
+
+
+def run_paths():
+    res = {}
+    p = scene()
+    tgt = torch.rand(3, H, W, generator=torch.Generator().manual_seed(1)).to(DEV)
+    wgt = torch.rand(8, H, W, generator=torch.Generator().manual_seed(2)).to(DEV)
+    col, oth = render(p)                                   # 完整路徑：顏色＋全部幾何通道都進 loss
+    loss = (col - tgt).abs().mean() + (oth[:8] * wgt).mean()
+    res["full"] = dict(col=col.detach().cpu(), oth=oth[:8].detach().cpu(), g=[g.cpu() for g in grads_of(loss, p)], nch=oth.shape[0])
+    p = scene()
+    col, oth = render(p, lean_render=True, bwd_sat_skip=True, bwd_reduce=True)   # lean 路徑：只有顏色
+    loss = (col - tgt).abs().mean()
+    res["lean"] = dict(col=col.detach().cpu(), g=[g.cpu() for g in grads_of(loss, p)])
+    return res
+
+
+def main():
+    mode = sys.argv[1]
+    if mode == "base":
+        torch.save(run_paths(), BASE)
+        print(f"基準已存 {BASE}（幾何通道數 {run_paths()['full']['nch']}）")
+        return
+    if mode == "cmp":
+        b = torch.load(BASE); r = run_paths(); ok = True
+        print(f"幾何通道數：基準 {b['full']['nch']} -> 現在 {r['full']['nch']}")
+        for k in ("full", "lean"):
+            for name in ("col", "oth"):
+                if name in b[k]:
+                    same = torch.equal(b[k][name], r[k][name]); ok &= same
+                    print(f"  {k:5} {name}: {'逐位元相同' if same else '⛔ 不同 max|d|=%.3e' % float((b[k][name] - r[k][name]).abs().max())}")
+            for i, nm in enumerate(("means", "scales", "rots", "opac", "cols")):
+                d = float((b[k]["g"][i] - r[k]["g"][i]).abs().max()); s = float(b[k]["g"][i].abs().max())
+                same = torch.equal(b[k]["g"][i], r[k]["g"][i])
+                # lean 的 backward 先在 block 內加總（atomic 順序不固定）=> 允許 1e-5 相對差；完整路徑也有 atomicAdd 的順序差
+                good = same or d <= 2e-5 * max(s, 1e-12); ok &= good
+                print(f"  {k:5} grad {nm:6}: {'逐位元相同' if same else '差 %.2e（最大值 %.2e）' % (d, s)}{'' if good else ' ⛔'}")
+        p = scene(); col, oth = render(p)
+        z = float(oth[8].abs().max()) if oth.shape[0] > 8 else float("nan")
+        print(f"  沒設上限圖時新通道最大值 {z}（要是 0）"); ok &= (z == 0.0)
+        print("✅ 通過" if ok else "⛔ 沒過"); sys.exit(0 if ok else 1)
+    if mode == "grad":
+        ok = True
+        p = scene(n=1500, seed=3)
+        with torch.no_grad():
+            _, o0 = render(scene(n=1500, seed=3))
+        med = o0[5]                                         # 中位深度當「先驗表面」；上限＝中位深度 x 0.97 => 中位面後面與中位面本身都會超出一點
+        cap = torch.where(med > 0, 1.0 / (med * 0.97), torch.zeros_like(med)).contiguous()
+        cap[:, : W // 4] = 0.0                              # 左四分之一不設上限
+        col, oth = render(p, depth_cap=cap)
+        B = oth[8]
+        print(f"上限通道：有上限的像素 {float((cap > 0).float().mean()):.3f}、其中 B>0 {float((B[cap > 0] > 0).float().mean()):.3f}、B 平均 {float(B[cap > 0].mean()):.5f}、沒上限處最大 {float(B[cap == 0].abs().max()):.1e}")
+        ok &= float(B[cap == 0].abs().max()) == 0.0 and float(B.min()) >= 0.0
+        # 上限放寬到不可能超出 => 全 0
+        _, o2 = render(scene(n=1500, seed=3), depth_cap=(cap * 1e-3).contiguous())
+        print(f"上限放得很寬時 B 最大 {float(o2[8].abs().max()):.1e}（要是 0）"); ok &= float(o2[8].abs().max()) == 0.0
+        # 其他通道不受上限圖影響
+        same = torch.equal(o0[:8], oth[:8].detach()); ok &= same
+        print(f"設了上限圖後前 8 個通道{'逐位元相同' if same else ' ⛔ 變了'}")
+        # 有限差分：L = Σ B·w（w 固定的隨機權重）
+        wB = torch.rand(H, W, generator=torch.Generator().manual_seed(5)).to(DEV)
+        L = (B * wB).sum()
+        g = grads_of(L, p)
+
+        def Lof(q):
+            with torch.no_grad():
+                return float((render(q, depth_cap=cap)[1][8].double() * wB.double()).sum())
+
+        # 把關的三項（對排序不敏感、可以精確比）：不透明度、尺度、全體沿 z 平移（dB/dz 那條路）
+        gen = torch.Generator().manual_seed(7)
+        dirs = [(3, "不透明度", torch.randn(p[3].shape, generator=gen).to(DEV), 0.10),   # alpha<1/255 與飽和提早結束是不連續的 => 容差放寬
+                (1, "尺度", torch.randn(p[1].shape, generator=gen).to(DEV), 0.10)]
+        dz = torch.zeros_like(p[0]); dz[:, 2] = 1.0
+        dirs.append((0, "全體沿 z 平移", dz, 0.03))
+        # 只印不把關：位置／旋轉的隨機方向（會改排序與外接盒；既有的 alpha／期望深度通道在同一個檢查下也差 25～53%）
+        dirs += [(0, "位置（只印）", torch.randn(p[0].shape, generator=gen).to(DEV), None), (2, "旋轉（只印）", torch.randn(p[2].shape, generator=gen).to(DEV), None)]
+        for idx, nm, d, tol in dirs:
+            d = d * (g[idx].abs().sum(-1, keepdim=True) > 0)
+            ana = float((g[idx].double() * d.double()).sum())
+            eps = 2e-4
+            qp = [t.detach().clone() for t in p]; qm = [t.detach().clone() for t in p]
+            qp[idx] += eps * d; qm[idx] -= eps * d
+            num = (Lof(qp) - Lof(qm)) / (2 * eps)
+            rel = abs(ana - num) / max(abs(num), abs(ana), 1e-9)
+            good = tol is None or rel < tol; ok &= good
+            print(f"  方向導數 {nm:10}: 解析 {ana:+.5e}｜有限差分 {num:+.5e}｜相對差 {rel:.3f}{'' if good else ' ⛔'}")
+        print("✅ 通過" if ok else "⛔ 沒過"); sys.exit(0 if ok else 1)
+
+
+if __name__ == "__main__":
+    main()

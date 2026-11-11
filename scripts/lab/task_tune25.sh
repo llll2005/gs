@@ -16,6 +16,7 @@
 #     trihf    tri＋補洞放點改成「渲染比校正深度深 2% 就補」（原本 10%）、每次最多 0.5% 顆（原本 0.2%）
 #     trist    tri＋單側不能看穿只留「比校正深度深 2% 就罰」那一項，每 8 步（與法向同一步，權重 0.5）
 #     trigate  tri＋深度支撐閘門收緊：不要 SfM 豁免、前方 3%、從未貼面 1.5%（原本 5%／5%）
+#     tricap<W> tri＋逐貢獻的單側深度上限（光柵器 CAP_OFFSET；每一份混合貢獻落在校正深度後面超過 1% 就依混合權重罰），權重 W（例 tricap2）、每 8 步
 #     dense    起點換成稠密初始化（tools/make_tri_dense_init.py：SfM＋補點之外，把可靠像素沿校正深度反投影、多視角一致的體素質心補滿到 0.9 cap）
 #     sni      初始化的面元朝向用 SfM 近鄰平面（sfm_normal_init；11-08 在 30k 效果被洗掉，短排程重測）
 #     trimask  塊外遮罩換成用校正深度判的那一份（block_masks44_tri；tools/block_mask44.py --depth_dir estimated_depths_tri --depth_raw）
@@ -41,6 +42,7 @@ parse() {
     else
       case "$t" in
         lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|dense|sni|trimask) XT+=("$t") ;;
+        tricap[0-9]*) [[ $t =~ ^tricap[0-9]+$ ]] || { echo "⛔ tricap 後面要接整數權重（例 tricap2）"; return 2; }; XT+=("$t") ;;
         *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／dense／sni／trimask）"; return 2 ;;
       esac
     fi
@@ -51,6 +53,7 @@ parse() {
     case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;;
+      tricap*) LBL+="逐貢獻深度上限w${t#tricap}" ;;
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; esac
   done
 }
@@ -96,7 +99,7 @@ for t in "${XT[@]:-}"; do
                  --model.density.init_args.sfm_vis_behind_max 10 --model.density.init_args.sfm_vis_behind_max_above_nn 16)
             [ "$t" = mvugrow ] && XA+=(--model.density.init_args.merge_vis_under_harvest false)
             [ "$t" = mvugnd ] && XA+=(--model.density.init_args.merge_vis_under_ground true) ;;
-    tri|trihf|trist|trigate)
+    tri|trihf|trist|trigate|tricap*)
             _TD=data/matrix_city/aerial/train/block_all/estimated_depths_tri
             [ -d "$_TD" ] && [ -d "${_TD}_rel" ] || { echo "⛔ 缺 $_TD（先跑 tools/make_tri_depths.py）"; exit 2; }
             XA+=(--data.parser.depth_dir estimated_depths_tri --data.parser.depth_scale_name estimated_depth_scales_tri
@@ -104,6 +107,8 @@ for t in "${XT[@]:-}"; do
             [ "$t" = trihf ] && XA+=(--model.density.init_args.hole_fill_margin 0.02 --model.density.init_args.hole_fill_frac 0.005)
             [ "$t" = trist ] && XA+=(--model.metric.init_args.depth_see_through_reg 0.5 --model.metric.init_args.depth_see_through_margin 0.02
                                      --model.metric.init_args.depth_see_through_hole 0 --model.metric.init_args.depth_see_through_interval 8)
+            [[ $t == tricap* ]] && XA+=(--model.metric.init_args.depth_cap_reg "${t#tricap}" --model.metric.init_args.depth_cap_margin 0.01
+                                        --model.metric.init_args.depth_cap_interval 8)
             [ "$t" = trigate ] && XA+=(--model.metric.init_args.depth_support_sfm_radius_nn 0 --model.metric.init_args.depth_support_sfm_radius 0
                                        --model.metric.init_args.depth_support_delta_front 0.03 --model.metric.init_args.depth_support_delta_back 0.015) ;;
     dense)  [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44_crop/dup1/block_$B.ply" ] || { echo "⛔ 缺稠密初始化（tools/make_tri_dense_init.py --blocks $B）"; exit 2; }

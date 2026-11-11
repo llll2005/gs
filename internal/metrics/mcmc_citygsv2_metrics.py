@@ -185,6 +185,17 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     """補洞項 Σ(1−α) 的相對權重（11-02 拆項：0＝只留「比單目深就罰」）。"""
     depth_see_through_deeper: float = 1.0
     """「比單目深 1+margin 倍就罰」那一項的相對權重（11-02 拆項：0＝只留補洞項）。"""
+    depth_cap_reg: float = 0.0
+    """★ 2026-11-11 逐貢獻的單側深度上限（使用者 11-11「可以改」；光柵器 CAP_OFFSET 通道，要重編）。>0 時每 depth_cap_interval 步：
+    loss＝Σ_{A 像素} B(p) / |A|，B(p)＝Σ_i T_i·α_i·max(z_i／((1+margin)·z_先驗(p)) − 1, 0)——這條光線上**每一份混合貢獻**只要落在先驗表面後面
+    超過 margin 就罰（依它的混合權重）。和 depth_see_through（只看中位深度）的差別：11-11 b1／b4 量到地下那幾層躲在「中位深度已經對」的貼地層後面
+    從縫裡補顏色，中位深度的 loss 碰不到（地下覆蓋只 −12～13%）；把它們搬走畫質又掉（`紀錄/實驗分析/31` §4.7、`37` §3）。
+    先驗＝dataparser 給的逆深度（校正深度＋可靠度過濾時，不可靠的像素是 0 => 不設上限）；只在塊外遮罩的 A 像素上。該步光柵器走完整路徑。"""
+    depth_cap_margin: float = 0.01
+    """上限＝先驗深度 x (1 + margin)。校正深度在可靠三角形內誤差中位 0.05%、|e| > 1% 7.6%（`37` §1）；地下層約在視線距離的 1.5～3%。"""
+    depth_cap_interval: int = 8
+    """每 k 步算一次、權重乘 k（與 lambda_normal_interval 同一套規則；設成同一個 k 時兩者落在同一步，完整路徑不多跑）。"""
+    depth_cap_from_iter: int = 1000
     surf_reg: float = 0.0
     """★ 2026-11-01 鄰域平面約束（使用者 11-01：不增加計算、從 0 漸增到定值、用周遭高斯讓深度一致的表面平滑、取絕對值免得抹掉細節）。0＝關。
     不渲染：每 surf_every 步用 Morton 近鄰算每顆的鄰域平面（opacity 加權 PCA，`geom_gate.surf_planes`），只對平坦鄰域（e3/e2 < surf_flat）
@@ -516,6 +527,63 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                   f"被截斷（> tau）{100 * trunc:.1f}%、朝向項 {float(lo):.3f}、權重 {lam * ramp:g}（漸增 {100 * ramp:.0f}%）", flush=True)
             self._surf_announced = True
 
+    def depth_cap_map(self, batch, step):
+        """★ 2026-11-11 渲染前呼叫（GaussianSplatting.training_step）：本步要不要算逐貢獻深度上限 => 上限圖 float32 [H, W]
+        （1／((1+margin)·z_先驗)；0＝不設上限）或 None（這一步不算）。step＝trainer.global_step + 1（與 get_train_metrics 收到的相同）。"""
+        c = self.config
+        self._cap_cur = None
+        w = float(getattr(c, "depth_cap_reg", 0.0) or 0.0)
+        k = int(getattr(c, "depth_cap_interval", 1) or 1)
+        if w <= 0 or step < int(getattr(c, "depth_cap_from_iter", 0) or 0) or (k > 1 and step % k != 0):
+            return None
+        inv = batch[2] if len(batch) > 2 else None
+        if isinstance(inv, (tuple, list)):
+            inv = inv[0]
+        if inv is None or not torch.is_tensor(inv):
+            if not getattr(self, "_cap_warned", False):
+                self._cap_warned = True
+                print(f"⚠⚠ [depth-cap] 拿不到先驗深度（這張沒有深度圖？）=> 這一步不算（step={step}；之後不再提醒）", flush=True)
+            return None
+        name, gt = batch[1][0], batch[1][1]
+        hw = tuple(gt.shape[-2:])
+        g = inv.reshape(inv.shape[-2:]).to(gt.device).float()
+        if tuple(g.shape) != hw:
+            g = torch.nn.functional.interpolate(g[None, None], size=hw, mode="nearest")[0, 0]
+        cap = torch.where(g > 1e-6, g / (1.0 + float(c.depth_cap_margin)), torch.zeros_like(g))
+        if getattr(c, "block_mask_dir", ""):
+            m = self._block_mask_get(name, hw, gt.device)
+            if m is not None:
+                cap = cap * (m == 1)
+        self._cap_cur = cap.contiguous()
+        return self._cap_cur
+
+    def _depth_cap_step(self, step, batch, outputs, metrics, pbar):
+        """逐貢獻深度上限的 loss（config.depth_cap_*）；這一步沒有上限圖或渲染器沒交出 rend_cap 就不動 loss。"""
+        cap = getattr(self, "_cap_cur", None)
+        if cap is None:
+            return
+        c = self.config
+        w = float(c.depth_cap_reg); k = int(getattr(c, "depth_cap_interval", 1) or 1)
+        B = outputs.get("rend_cap")
+        if B is None:
+            if not getattr(self, "_cap_warned2", False):
+                self._cap_warned2 = True
+                print(f"⚠⚠ [depth-cap] 渲染器沒有交出 rend_cap（光柵器沒重編？這一步沒走完整路徑？）=> 不算（step={step}）", flush=True)
+            return
+        B = B.reshape(B.shape[-2:])
+        on = cap > 0
+        n = on.sum().clamp_min(1)
+        loss = (B * on).sum() / n
+        metrics["loss"] = metrics["loss"] + w * k * loss
+        metrics["depth_cap"] = loss.detach()
+        pbar["depth_cap"] = False
+        if not getattr(self, "_cap_announced", False) or step % 2000 == 0:
+            with torch.no_grad():
+                hit = float(((B > 1e-4) & on).sum() / n)
+            print(f"[depth-cap] {'✅ 首次觸發' if not getattr(self, '_cap_announced', False) else '　'} step={step}：設了上限的像素 {float(on.float().mean()):.3f}、"
+                  f"其中有貢獻落在上限後面（B > 1e-4）{hit:.3f}、B 平均 {float(loss):.5f}（上限＝先驗深度 x {1 + float(c.depth_cap_margin):.3f}；權重 {w}×{k}）", flush=True)
+            self._cap_announced = True
+
     def _see_through_step(self, step, batch, outputs, metrics, pbar):
         """單側「不能看穿表面」（config.depth_see_through_*）；條件不符就不動 loss。"""
         c = self.config
@@ -642,6 +710,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             outputs = self._exposure_apply(step, batch, outputs)
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
         self._see_through_step(step, batch, outputs, metrics, pbar)
+        self._depth_cap_step(step, batch, outputs, metrics, pbar)
         _w2 = float(getattr(self.config, "rgb_l2_weight", 0.0) or 0.0)
         if _w2 > 0:
             _gt = batch[1][1]

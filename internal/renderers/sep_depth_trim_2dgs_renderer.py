@@ -348,6 +348,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 print("⚠⚠ [skip-unscored] 開了但這一步拿不到 C 區遮罩（metric 沒設 block_mask_dir？）=> 照常渲染全部像素", flush=True)
             else:
                 print(f"[skip-unscored] ✅ 首次觸發：lean 訓練 forward 略過不計分像素 {float(_pix.float().mean()):.3f}（這張）", flush=True)
+        # ★ 2026-11-11 逐貢獻深度上限：training_forward 從 module._depth_cap 帶進來（float32 [H, W]；None＝這一步不算）；只在完整路徑有作用
+        _cap = kwargs.get("_depth_cap") if (not _lean and not record_transmittance) else None
+        if _cap is not None:
+            if "depth_cap" not in GaussianRasterizationSettings._fields:
+                raise RuntimeError("設了 metric.depth_cap_reg 但光柵器不認得 depth_cap 欄位 —— 沒重編")
+            if tuple(_cap.shape[-2:]) != (int(viewpoint_camera.height), int(viewpoint_camera.width)):
+                raise RuntimeError(f"depth_cap 大小 {tuple(_cap.shape)} != 渲染 {(int(viewpoint_camera.height), int(viewpoint_camera.width))}")
         raster_settings = GaussianRasterizationSettings(
             image_height=int(viewpoint_camera.height),
             image_width=int(viewpoint_camera.width),
@@ -381,6 +388,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"bwd_pair_bit": True} if (_lean and not record_transmittance and getattr(self, "bwd_pair_bit", False)) else {}),
             **({"bwd_zero_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_zero_grad_skip", False)) else {}),
             **({"pix_skip": _pix} if (_lean and not record_transmittance and _pix is not None) else {}),
+            **({"depth_cap": _cap} if _cap is not None else {}),
             **({"train_record": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
                                           and not getattr(self, "_acc_stop", False)) else {}),
             **({"train_record_warp": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
@@ -579,6 +587,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # for unbounded scene, use expected depth, i.e., depth_ration = 0, to reduce disk anliasing.
         surf_depth = render_depth_expected * (1 - self.depth_ratio) + (self.depth_ratio) * render_depth_median
 
+        if _cap is not None:
+            rets['rend_cap'] = allmap[8:9]      # ★ 11-11 逐貢獻深度上限的超出量（光柵器 CAP_OFFSET）
         rets.update({
             'rend_alpha': render_alpha,
             'rend_normal': render_normal,
@@ -653,6 +663,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 _from = min([int(getattr(_dc, "hole_fill_from_iter", 1000) or 0)] * _hf + [int(getattr(_dc, "occl_from_iter", 3000) or 0)] * _oc)
                 kwargs["_geo"] = kwargs["_geo"] or (_s1 % int(getattr(_dc, "densification_interval", 100) or 100) == 0
                                                     and _s1 >= _from and _s1 < int(getattr(_dc, "densify_until_iter", 0) or 0))
+            # ★ 2026-11-11 逐貢獻深度上限（metric depth_cap_reg）：這一步有上限圖 => 走完整路徑
+            if "_depth_cap" not in kwargs:
+                kwargs["_depth_cap"] = getattr(module, "_depth_cap", None)
+            kwargs["_geo"] = kwargs["_geo"] or kwargs["_depth_cap"] is not None
             if kwargs["_geo"] and not getattr(self, "_geo_announced", False):
                 self._geo_announced = True
                 print(f"[normal-geo] ✅ 首次觸發 step={step}：這一步光柵器不走 lean、算 surf_normal（normal 每 {_ni} 步）", flush=True)

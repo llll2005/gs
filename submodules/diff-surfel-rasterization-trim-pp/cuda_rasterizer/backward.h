@@ -23,6 +23,8 @@ namespace BACKWARD
 {
 	// ★ 2026-11-07 alpha 上限（必須與 forward 相同；flags bit 128 => 0.999）
 	void setAlphaMax(float a);
+	// ★ 2026-11-11 逐像素深度上限圖（裝置端指標＋像素數；nullptr／0＝清掉）
+	void setDepthCap(const float* cap_inv, int n);
 
 	void render(
 		const dim3 grid, dim3 block,

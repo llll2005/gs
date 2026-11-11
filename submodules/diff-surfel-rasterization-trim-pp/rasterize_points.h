@@ -78,6 +78,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& adam_acc_rest,
 	const torch::Tensor& adam_hp);
 
+// ★ 2026-11-11 逐像素深度上限圖（rasterize_points.cu 末尾）
+void SetDepthCap(const torch::Tensor& cap);
+
 torch::Tensor markVisible(
 		torch::Tensor& means3D,
 		torch::Tensor& viewmatrix,
