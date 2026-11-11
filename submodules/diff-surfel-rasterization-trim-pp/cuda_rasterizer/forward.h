@@ -61,6 +61,7 @@ namespace FORWARD
 	void setTSat(float t);
 	// ★ 2026-11-11 逐像素深度上限圖（裝置端指標＋像素數；nullptr／0＝清掉）
 	void setDepthCap(const float* cap_inv, int n);
+	void setDepthCapAcc(float* bh, float* tot);   // ★ 2026-11-11 逐顆落在上限後面的 T·α
 
 	void render(
 		const dim3 grid, dim3 block,

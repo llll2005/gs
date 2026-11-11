@@ -353,6 +353,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if _cap is not None:
             if "depth_cap" not in GaussianRasterizationSettings._fields:
                 raise RuntimeError("設了 metric.depth_cap_reg 但光柵器不認得 depth_cap 欄位 —— 沒重編")
+            if kwargs.get("_depth_cap_acc") is not None and "depth_cap_acc" not in GaussianRasterizationSettings._fields:
+                raise RuntimeError("要逐顆累加落在上限後面的 T·α，但光柵器不認得 depth_cap_acc 欄位 —— 沒重編")
             if tuple(_cap.shape[-2:]) != (int(viewpoint_camera.height), int(viewpoint_camera.width)):
                 raise RuntimeError(f"depth_cap 大小 {tuple(_cap.shape)} != 渲染 {(int(viewpoint_camera.height), int(viewpoint_camera.width))}")
         raster_settings = GaussianRasterizationSettings(
@@ -389,6 +391,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"bwd_zero_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_zero_grad_skip", False)) else {}),
             **({"pix_skip": _pix} if (_lean and not record_transmittance and _pix is not None) else {}),
             **({"depth_cap": _cap} if _cap is not None else {}),
+            # ★ 2026-11-11 逐顆累加落在上限後面的 T·α（kwargs `_depth_cap_acc`＝(bh, tot)；只在有上限圖時）
+            **({"depth_cap_acc": kwargs["_depth_cap_acc"]} if (_cap is not None and kwargs.get("_depth_cap_acc") is not None) else {}),
             **({"train_record": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
                                           and not getattr(self, "_acc_stop", False)) else {}),
             **({"train_record_warp": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
@@ -589,6 +593,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
 
         if _cap is not None:
             rets['rend_cap'] = allmap[8:9]      # ★ 11-11 逐貢獻深度上限的超出量（光柵器 CAP_OFFSET）
+            if allmap.shape[0] > 9:             # ★ 11-11 規格 2：落後權重 W(p)（CAPW_OFFSET；不可微 => detach）
+                rets['rend_capw'] = allmap[9:10].detach()
         rets.update({
             'rend_alpha': render_alpha,
             'rend_normal': render_normal,

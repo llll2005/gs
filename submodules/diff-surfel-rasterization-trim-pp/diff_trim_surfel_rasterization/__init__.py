@@ -122,6 +122,10 @@ class _RasterizeGaussians(torch.autograd.Function):
         _cap = _depth_cap_of(raster_settings)
         if _cap is not None:
             _C.set_depth_cap(_cap)
+        # ★ 2026-11-11 逐顆累加「落在上限後面的 T·α」／「有上限像素上的 T·α」（只在有上限圖的這一次 forward；backward 不用）
+        _acc = _depth_cap_acc_of(raster_settings, means3D) if _cap is not None else None
+        if _acc is not None:
+            _C.set_depth_cap_acc(_acc[0], _acc[1])
         try:
             # Invoke C++/CUDA rasterizer
             if raster_settings.debug:
@@ -137,6 +141,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         finally:
             if _cap is not None:
                 _C.set_depth_cap(_empty_like_dev(means3D))
+            if _acc is not None:
+                _C.set_depth_cap_acc(_empty_like_dev(means3D), _empty_like_dev(means3D))
 
         if getattr(raster_settings, "audit_tiles", False):
             # audit：transmittance＝reached_tiles、num_covered_pixels＝useful_tiles、depth＝逐像素 [迴圈次數, tile 配對數, 混合次數]
@@ -328,6 +334,9 @@ class GaussianRasterizationSettings(NamedTuple):
     # ★ 2026-11-11 逐貢獻深度上限（完整路徑才算；out_others 第 9 個通道 B = Σ T·α·max(z·icap − 1, 0)）：
     #   float32 [H, W] 或 [H*W]，icap＝1／((1+margin)·z_先驗)，0＝該像素不設上限。None＝不算（通道恆為 0、其餘逐位元不變）。
     depth_cap : Optional[torch.Tensor] = None
+    # ★ 2026-11-11 逐顆累加（需要 depth_cap）：(bh, tot) 兩個 float32 [P] CUDA 張量，forward 時就地加上
+    #   bh[i] += Σ_{像素} T·α（這份貢獻的光線—面元交點深度 > 上限）、tot[i] += Σ_{有上限的像素} T·α。None＝不累加（逐位元不變）。
+    depth_cap_acc : Optional[tuple] = None
     # ★ 2026-10-02：剃除沒人用的計算（見 forward.cu 的 MODE 與 backward.cu 的 GEOM）。
     #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。
     #   預設 False => 與舊行為完全相同（舊 kernel 的原始碼一字未動，只是多了模板參數）。
@@ -422,6 +431,21 @@ def _empty_u8_dev(t):
 PIX_SKIP_SUPPORTED = True
 # ★ 2026-11-11 逐貢獻深度上限（depth_cap、第 9 個幾何通道）
 DEPTH_CAP_SUPPORTED = True
+# ★ 2026-11-11 逐顆累加落在上限後面的 T·α（depth_cap_acc）
+DEPTH_CAP_ACCOUNT_SUPPORTED = True   # 規格 2 §1.3 的名稱
+
+
+def _depth_cap_acc_of(raster_settings, means3D):
+    """raster_settings.depth_cap_acc => (bh, tot)：兩個連續 float32 CUDA 張量、元素數＝顆數；沒設 => None。"""
+    acc = getattr(raster_settings, "depth_cap_acc", None)
+    if acc is None:
+        return None
+    bh, tot = acc
+    P = means3D.shape[0]
+    for t in (bh, tot):
+        if t.numel() != P or t.dtype != torch.float32 or not t.is_cuda or not t.is_contiguous():
+            raise ValueError(f"depth_cap_acc 必須是兩個元素數＝顆數 {P}、CUDA 上連續的 float32（收到 {tuple(t.shape)} {t.dtype}）")
+    return bh, tot
 
 
 def _depth_cap_of(raster_settings):

@@ -295,6 +295,12 @@ void CudaRasterizer::Rasterizer::setDepthCap(const float* cap_inv, int n)
 	BACKWARD::setDepthCap(cap_inv, n);
 }
 
+// ★ 2026-11-11 只有 forward 用（backward 不讀）
+void CudaRasterizer::Rasterizer::setDepthCapAcc(float* bh, float* tot)
+{
+	FORWARD::setDepthCapAcc(bh, tot);
+}
+
 CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, size_t N)
 {
 	ImageState img;

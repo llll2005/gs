@@ -30,6 +30,11 @@ __device__ float g_t_sat = 0.0001f;
 //   呼叫端（Python 的 autograd Function）只在那一次 forward／backward 前後設定與清掉 => 其他渲染（驗證、trim record）不受影響。
 __device__ const float* g_cap_inv = nullptr;
 __device__ int g_cap_n = 0;
+// ★ 2026-11-11 逐顆「出的力有多少落在上限後面」（只在上限圖有設的像素、MODE 0 完整路徑）：g_cacc_tot[i] += T·α、
+//   且這份貢獻的交點深度 > 上限時 g_cacc_bh[i] += T·α。被擋住的顆粒 T≈0 自然沒有份量；深度用的是光線與面元的交點（同 capB）。
+//   nullptr＝不累加（預設；渲染與所有輸出通道逐位元不變）。呼叫端只在那一次 forward 前後設定與清掉。
+__device__ float* g_cacc_bh = nullptr;
+__device__ float* g_cacc_tot = nullptr;
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -572,7 +577,10 @@ renderCUDA(
 	float median_weight = {0};
 	float median_contributor = {-1};
 	float capB = 0.f;                                      // ★ 11-11 逐貢獻深度上限的超出量（CAP_OFFSET）
+	float capW = 0.f;                                      // ★ 11-11 落後權重（CAPW_OFFSET）
 	const float icap = (MODE == 0 && inside && g_cap_n == W * H) ? g_cap_inv[pix_id] : 0.f;
+	float* const cacc_tot = (icap > 0.f) ? g_cacc_tot : nullptr;   // ★ 11-11 逐顆累加（見 g_cacc_*）
+	float* const cacc_bh = g_cacc_bh;
 
 #endif
 
@@ -693,7 +701,8 @@ renderCUDA(
 
 					// Render depth map
 					D += depth * alpha * T;
-					if (icap > 0.f) { const float cv = depth * icap - 1.f; if (cv > 0.f) capB += cv * alpha * T; }   // ★ 11-11
+					if (icap > 0.f) { const float cv = depth * icap - 1.f; if (cv > 0.f) { capB += cv * alpha * T; capW += alpha * T; }   // ★ 11-11（capB 的算式與順序不變）
+						if (cacc_tot != nullptr) { atomicAdd(&cacc_tot[collected_id[j]], alpha * T); if (cv > 0.f) atomicAdd(&cacc_bh[collected_id[j]], alpha * T); } }
 					// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 					dist1 += mapped_depth * alpha * T;
 					dist2 += mapped_depth * mapped_depth * alpha * T;
@@ -807,7 +816,8 @@ renderCUDA(
 
 			// Render depth map
 			D += depth * alpha * T;
-			if (icap > 0.f) { const float cv = depth * icap - 1.f; if (cv > 0.f) capB += cv * alpha * T; }   // ★ 11-11
+			if (icap > 0.f) { const float cv = depth * icap - 1.f; if (cv > 0.f) { capB += cv * alpha * T; capW += alpha * T; }   // ★ 11-11（capB 的算式與順序不變）
+						if (cacc_tot != nullptr) { atomicAdd(&cacc_tot[collected_id[j]], alpha * T); if (cv > 0.f) atomicAdd(&cacc_bh[collected_id[j]], alpha * T); } }
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 			dist1 += mapped_depth * alpha * T;
 			dist2 += mapped_depth * mapped_depth * alpha * T;
@@ -873,6 +883,7 @@ renderCUDA(
 		out_others[pix_id + DISTORTION_OFFSET * H * W] = distortion;
 		out_others[pix_id + MEDIAN_WEIGHT_OFFSET * H * W] = median_weight;
 		out_others[pix_id + CAP_OFFSET * H * W] = capB;
+		out_others[pix_id + CAPW_OFFSET * H * W] = capW;
 		}
 #endif
 	}
@@ -1120,6 +1131,13 @@ void FORWARD::setDepthCap(const float* cap_inv, int n)
 {
 	cudaMemcpyToSymbol(g_cap_inv, &cap_inv, sizeof(const float*));
 	cudaMemcpyToSymbol(g_cap_n, &n, sizeof(int));
+}
+
+// ★ 2026-11-11 逐顆累加「落在上限後面的 T·α」與「有上限像素上的 T·α」（見 g_cacc_*）；nullptr＝關
+void FORWARD::setDepthCapAcc(float* bh, float* tot)
+{
+	cudaMemcpyToSymbol(g_cacc_bh, &bh, sizeof(float*));
+	cudaMemcpyToSymbol(g_cacc_tot, &tot, sizeof(float*));
 }
 
 void FORWARD::setTSat(float t)

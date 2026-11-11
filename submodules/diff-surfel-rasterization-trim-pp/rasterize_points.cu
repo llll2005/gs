@@ -100,7 +100,7 @@ RasterizeGaussiansCUDA(
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
-  torch::Tensor out_others = torch::full({3+3+2+1, H, W}, 0.0, float_opts);   // ★ 11-11 第 9 個通道＝逐貢獻深度上限的超出量（CAP_OFFSET）
+  torch::Tensor out_others = torch::full({3+3+2+2, H, W}, 0.0, float_opts);   // ★ 11-11 第 9 個通道＝逐貢獻深度上限的超出量（CAP_OFFSET）、第 10 個＝落後權重（CAPW_OFFSET）
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   // ★ 2026-09-21：逐顆 tile 數（精確的 binning 成本），見 rasterizer.h 的註解
   torch::Tensor tiles = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
@@ -435,5 +435,18 @@ void SetDepthCap(const torch::Tensor& cap)
 		CudaRasterizer::Rasterizer::setDepthCap(cap.data_ptr<float>(), (int)cap.numel());
 	} else {
 		CudaRasterizer::Rasterizer::setDepthCap(nullptr, 0);
+	}
+}
+
+
+// ★ 2026-11-11 逐顆累加（forward.cu g_cacc_*）：bh／tot＝CUDA 上連續的 float32、元素數＝顆數 P（呼叫端歸零、自己保證活到 forward 結束）；空張量＝清掉。
+void SetDepthCapAcc(const torch::Tensor& bh, const torch::Tensor& tot)
+{
+	if (bh.numel() > 0) {
+		TORCH_CHECK(bh.is_cuda() && tot.is_cuda() && bh.scalar_type() == at::kFloat && tot.scalar_type() == at::kFloat
+		            && bh.is_contiguous() && tot.is_contiguous() && bh.numel() == tot.numel(), "depth_cap_acc 必須是兩個等長、CUDA 上連續的 float32");
+		CudaRasterizer::Rasterizer::setDepthCapAcc(bh.data_ptr<float>(), tot.data_ptr<float>());
+	} else {
+		CudaRasterizer::Rasterizer::setDepthCapAcc(nullptr, nullptr);
 	}
 }

@@ -4,7 +4,11 @@
   cmp    重編後跑：沒設上限圖時，渲染／前 8 個通道／梯度要與基準**逐位元相同**（新通道恆為 0）
   grad   上限通道：沒設上限的像素恆為 0、上限放寬到不可能超出時全 0、設了上限圖後前 8 個通道逐位元不變；
          有限差分把關三項（不透明度、尺度、全體沿 z 平移），位置／旋轉的隨機方向只印（會改排序，既有通道同樣對不上）
-用法：python tools/check_depth_cap.py base|cmp|grad
+  ★ 11-11 規格 2（落後權重 W 與逐顆兩筆帳 Vc／Vb）：
+  base／cmp 另外比「設了上限圖」的完整路徑：渲染與前 9 個通道（含 B）逐位元相同、梯度在重跑雜訊內
+  acc    設了逐顆帳：渲染／10 個通道逐位元不變、梯度在重跑雜訊內；Σ Vc＝Σ_{有上限} alpha；Σ_{有上限} W＝Σ Vb；
+         上限極近 => Vb＝Vc、W＝alpha；極遠 => W、Vb 全 0；上限圖全 0 => 全 0；計時（有上限圖的 forward，開帳 vs 不開）
+用法：python tools/check_depth_cap.py base|cmp|grad|acc
 """
 import sys, math, os
 import torch
@@ -63,7 +67,24 @@ def run_paths():
     col, oth = render(p, lean_render=True, bwd_sat_skip=True, bwd_reduce=True)   # lean 路徑：只有顏色
     loss = (col - tgt).abs().mean()
     res["lean"] = dict(col=col.detach().cpu(), g=[g.cpu() for g in grads_of(loss, p)])
+    # ★ 11-11 設了上限圖的完整路徑（前 9 個通道含 B 進 loss）
+    cap = cap_map()
+    wgt9 = torch.rand(9, H, W, generator=torch.Generator().manual_seed(4)).to(DEV)
+    p = scene()
+    col, oth = render(p, depth_cap=cap)
+    loss = (col - tgt).abs().mean() + (oth[:9] * wgt9).mean()
+    res["cap"] = dict(col=col.detach().cpu(), oth=oth[:9].detach().cpu(), g=[g.cpu() for g in grads_of(loss, p)])
     return res
+
+
+def cap_map(n=4000, seed=0, scale=0.97):
+    """上限＝中位深度 x scale（中位面本身與後面都會超出一點）；左四分之一不設上限。"""
+    with torch.no_grad():
+        _, o0 = render(scene(n=n, seed=seed))
+    med = o0[5]
+    cap = torch.where(med > 0, 1.0 / (med * scale), torch.zeros_like(med)).contiguous()
+    cap[:, : W // 4] = 0.0
+    return cap
 
 
 def main():
@@ -75,7 +96,9 @@ def main():
     if mode == "cmp":
         b = torch.load(BASE); r = run_paths(); ok = True
         print(f"幾何通道數：基準 {b['full']['nch']} -> 現在 {r['full']['nch']}")
-        for k in ("full", "lean"):
+        for k in ("full", "lean", "cap"):
+            if k not in b:
+                print(f"  （基準沒有 {k}：是舊版 check 存的）"); continue
             for name in ("col", "oth"):
                 if name in b[k]:
                     same = torch.equal(b[k][name], r[k][name]); ok &= same
@@ -87,8 +110,8 @@ def main():
                 good = same or d <= 2e-5 * max(s, 1e-12); ok &= good
                 print(f"  {k:5} grad {nm:6}: {'逐位元相同' if same else '差 %.2e（最大值 %.2e）' % (d, s)}{'' if good else ' ⛔'}")
         p = scene(); col, oth = render(p)
-        z = float(oth[8].abs().max()) if oth.shape[0] > 8 else float("nan")
-        print(f"  沒設上限圖時新通道最大值 {z}（要是 0）"); ok &= (z == 0.0)
+        z = float(oth[8:].abs().max()) if oth.shape[0] > 8 else float("nan")
+        print(f"  沒設上限圖時新通道（第 9 個起，共 {oth.shape[0] - 8} 個）最大值 {z}（要是 0）"); ok &= (z == 0.0)
         print("✅ 通過" if ok else "⛔ 沒過"); sys.exit(0 if ok else 1)
     if mode == "grad":
         ok = True
@@ -136,6 +159,82 @@ def main():
             good = tol is None or rel < tol; ok &= good
             print(f"  方向導數 {nm:10}: 解析 {ana:+.5e}｜有限差分 {num:+.5e}｜相對差 {rel:.3f}{'' if good else ' ⛔'}")
         print("✅ 通過" if ok else "⛔ 沒過"); sys.exit(0 if ok else 1)
+
+
+    if mode == "acc":
+        acc_checks()
+
+
+def acc_checks():
+    """★ 11-11 規格 2 §1：落後權重 W（第 10 個通道）與逐顆兩筆帳（depth_cap_acc＝(Vb, Vc)）。"""
+    import time
+    ok = True
+    n = 4000
+    cap = cap_map()
+    tgt = torch.rand(3, H, W, generator=torch.Generator().manual_seed(1)).to(DEV)
+    wgt = torch.rand(10, H, W, generator=torch.Generator().manual_seed(2)).to(DEV)
+
+    def run(acc):
+        q = scene()
+        col, oth = render(q, depth_cap=cap, **({"depth_cap_acc": acc} if acc is not None else {}))
+        loss = (col - tgt).abs().mean() + (oth[:9] * wgt[:9]).mean()
+        return col.detach(), oth.detach(), grads_of(loss, q)
+    c0, o0, g0 = run(None)
+    _, _, g0b = run(None)
+    vb, vc = torch.zeros(n, device=DEV), torch.zeros(n, device=DEV)
+    c1, o1, g1 = run((vb, vc))
+    fwd = torch.equal(c0, c1) and torch.equal(o0, o1)
+    gd = lambda x, y: max(float((a_ - b_).abs().max()) for a_, b_ in zip(x, y))
+    noise, diff = gd(g0, g0b), gd(g0, g1)
+    g_ok = diff <= max(10 * noise, 1e-7)
+    print(f"1. 開逐顆帳：渲染／{o0.shape[0]} 個通道逐位元相同 {'✅' if fwd else '⛔'}｜梯度最大差 {diff:.2e}（重跑雜訊 {noise:.2e}）{'✅' if g_ok else '⛔'}")
+    ok &= fwd and g_ok
+    Wm, A = o0[9], o0[1]
+    has = cap > 0
+    r1 = abs(float(vc.sum()) - float(A[has].sum())) / max(float(A[has].sum()), 1e-9)
+    r2 = abs(float(vb.sum()) - float(Wm[has].sum())) / max(float(Wm[has].sum()), 1e-9)
+    print(f"2. Σ Vc {float(vc.sum()):.3f} vs Σ_有上限 alpha {float(A[has].sum()):.3f}（相對差 {r1:.1e}）｜Σ Vb {float(vb.sum()):.3f} vs Σ_有上限 W {float(Wm[has].sum()):.3f}（相對差 {r2:.1e}）"
+          f"｜沒上限處 W 最大 {float(Wm[~has].abs().max()):.1e}  {'✅' if (r1 < 1e-4 and r2 < 1e-4 and float(Wm[~has].abs().max()) == 0) else '⛔'}")
+    ok &= r1 < 1e-4 and r2 < 1e-4 and float(Wm[~has].abs().max()) == 0
+    print(f"   有上限的像素 {float(has.float().mean()):.3f}、其中 W>0 {float((Wm[has] > 0).float().mean()):.3f}；有帳的顆粒 {int((vc > 0).sum()):,}／{n:,}、Vb>0 {int((vb > 0).sum()):,}")
+    for nm, c_, want in (("極近（全部在後面）", torch.full((H, W), 2.0, device=DEV), "all"), ("極遠（放很寬）", (cap * 1e-3).contiguous(), "none"),
+                         ("上限圖全 0", torch.zeros(H, W, device=DEV), "zero")):
+        vb, vc = torch.zeros(n, device=DEV), torch.zeros(n, device=DEV)
+        with torch.no_grad():
+            _, o = render(scene(), depth_cap=c_, depth_cap_acc=(vb, vc))
+        if want == "all":
+            good = torch.allclose(vb, vc) and torch.allclose(o[9], o[1])
+        elif want == "none":
+            good = bool((vb == 0).all()) and float(o[9].abs().max()) == 0.0 and float(vc.sum()) > 0
+        else:
+            good = bool((vb == 0).all() and (vc == 0).all()) and float(o[9].abs().max()) == 0.0
+        print(f"3. {nm}：Σ Vb {float(vb.sum()):.3f}、Σ Vc {float(vc.sum()):.3f}、Σ W {float(o[9].sum()):.3f}  {'✅' if good else '⛔'}"); ok &= good
+    # 逐顆比例 vs 中心深度（只印）：平面上限 z＝7
+    vb, vc = torch.zeros(n, device=DEV), torch.zeros(n, device=DEV)
+    q = scene()
+    with torch.no_grad():
+        render(q, depth_cap=torch.full((H, W), 1.0 / 7.0, device=DEV), depth_cap_acc=(vb, vc))
+    z = q[0][:, 2].detach(); seen = vc > 1e-3; rho = torch.where(seen, vb / vc.clamp_min(1e-12), torch.zeros_like(vc))
+    print("4. 平面上限 z＝7 的逐顆 ρ＝Vb/Vc（只印）：" + "；".join(
+        f"中心 z∈[{lo},{hi}) {int((seen & (z >= lo) & (z < hi)).sum()):,} 顆 ρ 中位 {float(rho[seen & (z >= lo) & (z < hi)].median()):.2f}"
+        for lo, hi in ((4, 6.5), (6.5, 7.5), (7.5, 10))))
+    # 計時：較大的場景，有上限圖的 forward（no_grad），開帳 vs 不開
+    big = scene(n=200000, seed=9)
+    capb = torch.full((H, W), 1.0 / 7.0, device=DEV)
+    def tf(acc):
+        ts = []
+        with torch.no_grad():
+            for i in range(30):
+                if acc:
+                    vb_, vc_ = torch.zeros(200000, device=DEV), torch.zeros(200000, device=DEV)
+                torch.cuda.synchronize(); t0 = time.perf_counter()
+                render(big, depth_cap=capb, **({"depth_cap_acc": (vb_, vc_)} if acc else {}))
+                torch.cuda.synchronize(); ts.append(time.perf_counter() - t0)
+        return sorted(ts[5:])[len(ts[5:]) // 2] * 1e3
+    t0_, t1_ = tf(False), tf(True)
+    print(f"5. 計時（20 萬顆、{W}x{H}、有上限圖的完整路徑 forward 中位）：不開帳 {t0_:.2f} ms、開帳 {t1_:.2f} ms（{100 * (t1_ / t0_ - 1):+.1f}%；"
+          f"訓練只在完整路徑步（每 8 步一次）開 => 平均每步約 {100 * (t1_ / t0_ - 1) / 8:+.2f}% 的 forward）")
+    print("✅ 通過" if ok else "⛔ 沒過"); sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

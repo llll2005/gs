@@ -64,6 +64,9 @@
 //   B(p) = Σ_i T_i·α_i·max(z_i·icap(p) − 1, 0)，icap(p)＝1／((1+margin)·z_先驗(p))，0＝該像素不設上限。
 //   只在完整路徑（forward MODE 0／backward GEOM）且呼叫端設了上限圖時才算；沒設時這個通道是 0、其他通道逐位元不變。
 #define CAP_OFFSET 8
+// ★ 2026-11-11 規格 2：第 10 個通道＝逐像素落後權重 W(p) = Σ_i T_i·α_i·[z_i·icap(p) > 1]（落在上限後面的混合權重總和；不乘超出量、不可微）
+//   ＝這個像素的顏色有多少靠「表面後面的顆粒」在撐（需求地圖）。同 CAP_OFFSET 只在完整路徑且設了上限圖時才算。
+#define CAPW_OFFSET 9
 
 // distortion helper macros
 #define BACKFACE_CULL 1

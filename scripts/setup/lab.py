@@ -188,7 +188,11 @@ def main():
     if c == "bg":
         name, cmd = sys.argv[2], " ".join(sys.argv[3:])
         # 寫成腳本再跑：避免多層引號地獄；log 與 pid 都放 labrun/
-        script = f"labrun/{name}.sh"
+        # ⛔ 2026-11-11 啟動腳本改名 `<名稱>.bgrun.sh`：原本寫 `labrun/<名稱>.sh`，名稱和自己上傳的腳本同名時（10-29、11-11 各一次）
+        #   會蓋掉那支腳本、變成「bash 自己」的無限遞迴，把容器的行程數用滿（fork: Resource temporarily unavailable）。
+        script = f"labrun/{name}.bgrun.sh"
+        if f"labrun/{name}.bgrun.sh" in cmd:
+            raise SystemExit(f"⛔ 指令裡呼叫了啟動腳本自己（labrun/{name}.bgrun.sh）=> 會無限遞迴；換一個 bg 名稱")
         body = "#!/usr/bin/env bash\nset -u\n" + cmd + "\n"
         s = sess()
         s.put(f"{BASE}/api/contents/{ROOT}/labrun", timeout=60,
@@ -203,7 +207,7 @@ def main():
         #   正解：按**腳本名**找真正的行程，順便把真 pid 寫回 pid 檔（`ps` 子指令要用）。
         rc, out = sh(f"setsid nohup bash {script} > labrun/{name}.log 2>&1 < /dev/null & "
                      f"sleep 2; "
-                     f"P=$(ps -eo pid,cmd | grep 'bash labrun/{name}.sh' | grep -v grep "
+                     f"P=$(ps -eo pid,cmd | grep 'bash labrun/{name}.bgrun.sh' | grep -v grep "
                      f"| awk '{{print $1}}' | head -1); "
                      f"if [ -n \"$P\" ]; then echo $P > labrun/{name}.pid; "
                      f"echo \"確認：行程活著 pid=$P\"; "
