@@ -8,7 +8,8 @@
   類別：貼地 |h|<0.5 m／淺地下 −1～−0.5 m／真地下 < −1 m（地面格；o>0.5）、車輛帶 0.5～2.5 m／路燈帶 3～15 m（開闊地面；o>0.3，同 smallobj 的參考門檻）、
         樓頂 h>3 m 且 |n_z|>0.85／立面 h>3 m 且 |n_z|<0.3／斜的 h>3 m 其餘（不在開闊地面；o>0.5）。
 過關（規格）：CityGS 每一類 behind <= 約 3%（路燈帶、車輛帶特別列）；我方基準「真地下」behind >= 約 50%。
-另列幾個變體（同一次投影順便算，沒過時拿來討論）：窄帶換 (0.5,5)／(1,3)／(2,5)／(1,10)%，以及「貼面票 < 20%」（|r| <= margin 的觀測少＝這顆幾乎沒有在哪個視角是表面）。
+另列幾個變體（同一次投影順便算，沒過時拿來討論）：窄帶換 (0.5,5)／(1,3)／(2,5)／(1,10)%、「貼面票 < 20%」（|r| <= margin 的觀測少＝這顆幾乎沒有在哪個視角是表面），
+以及「不計被擋」：分母扣掉 r >= r_max 的觀測（被別的東西擋住的視角不算票，只在看得到附近表面的視角裡過半）——15 台試跑時貼地／真地下的觀測一半以上是 r >= 5%。
 用法（lab，cwd＝gs，CPU）：
   conda run -n gspl --no-capture-output python tools/probe/behind_offline_1111.py --block 1 \
      --cams outputs/lab/<基準>/blocks/block_1/cameras.json --models CityGS=<ckpt 樣式> 基準=<ckpt 樣式>
@@ -187,9 +188,11 @@ for md in models:
     cnt = s["cnt"]; seen = cnt >= a.min_count
     beh = {bi: seen & (s[f"b{bi}"] > 0.5 * cnt) for bi in range(len(BANDS))}
     strict = beh[0] & (s["on"] < 0.2 * cnt)
+    vis = cnt - s["far"]
+    nofar = (vis >= a.min_count) & (s["b0"] > 0.5 * vis)
     fr = lambda key: np.where(cnt > 0, s[key] / np.maximum(cnt, 1), np.nan)
     print(f"\n== {md['lab']}｜behind（主判準 ({100 * a.margin:g}, {100 * a.rmax:g})%）{100 * beh[0].mean():.2f}%＝{int(beh[0].sum()):,} 顆")
-    print(f"  {'類別':16}{'顆數':>10}{'看過>=3%':>9}{'behind%':>9}{'貼面票<20%':>11}  | 變體 behind%：" + "".join(f"{x:>12}" for x in hdr_b)
+    print(f"  {'類別':16}{'顆數':>10}{'看過>=3%':>9}{'behind%':>9}{'貼面票<20%':>11}{'不計被擋':>9}  | 變體 behind%：" + "".join(f"{x:>12}" for x in hdr_b)
           + "  | 觀測票平均：前方／貼面／窄帶／更後面 %")
     rows = [("全部", np.ones(len(cnt), bool))] + md["cats"]
     for nm, k in rows:
@@ -197,12 +200,12 @@ for md in models:
             print(f"  {nm:16}{0:>10}"); continue
         kv = k & (cnt > 0)
         mf = lambda key: f"{100 * np.nanmean(fr(key)[kv]):5.1f}" if kv.sum() else "  —"
-        print(f"  {nm:16}{int(k.sum()):>10,}{pct(seen, k):>9}{pct(beh[0], k):>9}{pct(strict, k):>11}  | "
+        print(f"  {nm:16}{int(k.sum()):>10,}{pct(seen, k):>9}{pct(beh[0], k):>9}{pct(strict, k):>11}{pct(nofar, k):>9}  | "
               + "".join(f"{pct(beh[bi], k):>12}" for bi in range(1, len(BANDS)))
               + f"  | {mf('front')}／{mf('on')}／{mf('b0')}／{mf('far')}", flush=True)
     if a.save:
         os.makedirs(a.save, exist_ok=True)
         np.savez_compressed(f"{a.save}/{md['lab']}_b{B}.npz", X=md["X"].numpy().astype(np.float32), o=md["o"].astype(np.float32), h=md["h"].astype(np.float32),
-                            behind=beh[0], strict=strict, **{k: v.astype(np.int16) for k, v in s.items()})
+                            behind=beh[0], strict=strict, nofar=nofar, **{k: v.astype(np.int16) for k, v in s.items()})
 print(f"\n過關條件（規格 §3）：第一個模型（CityGS）每一類 behind <= 約 3%（路燈帶、車輛帶特別看）；我方基準「真地下 < −1m」behind >= 約 50%｜{time.time() - t0:.0f} s")
 print("DONE")
