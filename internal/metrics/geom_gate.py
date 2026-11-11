@@ -109,14 +109,24 @@ class DepthSupport:
     """逐顆累積「中心投到當前相機、對單目深度的相對殘差」；視窗結束時更新支撐。顆數變了：增加＝補在尾端，減少＝整個重來。
     rule："mean"＝視窗內殘差平均 < −delta_front 判「一直在前方」（原行為）；"vote"＝超過一半的觀測 < −delta_front（＝殘差中位數 < −delta_front）。
     （2026-11-02 全域共識量測：平均會被少數錯很大的視角拉走——遠離 SfM 誤判 37.5% vs 中位 15.3%、海面 20.8% vs 5.1%。）
-    update 不做 nonzero／布林索引（2026-11-02：拿掉每步的 GPU 同步點；對全部 N 顆用遮罩累加，數學與舊版相同）。"""
+    update 不做 nonzero／布林索引（2026-11-02：拿掉每步的 GPU 同步點；對全部 N 顆用遮罩累加，數學與舊版相同）。
+    ★ 2026-11-11 behind 票（behind_margin 不是 None 時才開；關的時候 support 與之前逐位元相同）：觀測的 r 落在 (behind_margin, behind_max)
+    ＝在表面「後面一點點」記一票；視窗結束時看過 >= min_count 次且 behind 票過半 => behind[i]＝True（地下層候選；只給 MCMC 抽母點用，
+    不併進 support，SfM 豁免也不套用）。r >= behind_max（被別棟樓擋住、隔著樓看過去）算有效觀測但不投 behind 票
+    ——11-08 視線一致性 v4 就是把「從大樓背面看過去」當證據才餓死牆面（`紀錄/實驗分析/33` §6）。兩個門檻都是相對深度（無因次）。"""
 
-    def __init__(self, delta_front=0.05, delta_back=0.05, window=400, min_count=3, near=0.2, rule="mean"):
+    def __init__(self, delta_front=0.05, delta_back=0.05, window=400, min_count=3, near=0.2, rule="mean",
+                 behind_margin=None, behind_max=0.05):
         self.df, self.db, self.window, self.cmin, self.near = delta_front, delta_back, window, min_count, near
         if rule not in ("mean", "vote"):
             raise ValueError(f"depth_support_rule 只能是 mean／vote（收到 {rule!r}）")
         self.rule = rule
+        self.bm = None if behind_margin is None else float(behind_margin)
+        self.bmax = float(behind_max)
+        if self.bm is not None and not (0.0 <= self.bm < self.bmax):
+            raise ValueError(f"behind 窄帶要 0 <= margin < max（收到 {self.bm!r}、{self.bmax!r}）")
         self.sum = self.cnt = self.mn = self.vote = self.support = None
+        self.bvote = self.behind = None
         self.t0 = None
         self.last = {}
 
@@ -127,6 +137,9 @@ class DepthSupport:
             self.vote = torch.zeros(n, device=device)
             self.mn = torch.full((n,), float("inf"), device=device)
             self.support = torch.ones(n, dtype=torch.bool, device=device)
+            if self.bm is not None:
+                self.bvote = torch.zeros(n, device=device)
+                self.behind = torch.zeros(n, dtype=torch.bool, device=device)
             self.t0 = None
         elif self.sum.shape[0] < n:
             m = n - self.sum.shape[0]
@@ -135,6 +148,9 @@ class DepthSupport:
             self.vote = torch.cat([self.vote, torch.zeros(m, device=device)])
             self.mn = torch.cat([self.mn, torch.full((m,), float("inf"), device=device)])
             self.support = torch.cat([self.support, torch.ones(m, dtype=torch.bool, device=device)])
+            if self.bm is not None:
+                self.bvote = torch.cat([self.bvote, torch.zeros(m, device=device)])
+                self.behind = torch.cat([self.behind, torch.zeros(m, dtype=torch.bool, device=device)])
 
     @torch.no_grad()
     def update(self, step, means, w2c, fx, fy, cx, cy, width, height, inv_depth):
@@ -159,6 +175,8 @@ class DepthSupport:
         self.cnt += ok.to(self.cnt.dtype)
         self.vote += (ok & (r < -self.df)).to(self.vote.dtype)
         self.mn = torch.where(ok, torch.minimum(self.mn, r.abs()), self.mn)
+        if self.bm is not None:
+            self.bvote += (ok & (r > self.bm) & (r < self.bmax)).to(self.bvote.dtype)
         if step - self.t0 >= self.window:
             seen = self.cnt >= self.cmin
             if self.rule == "vote":
@@ -169,6 +187,10 @@ class DepthSupport:
             self.support = ~(front | never)
             self.last = {"seen": float(seen.float().mean()), "front": float(front.float().mean()),
                          "never": float(never.float().mean())}
+            if self.bm is not None:
+                self.behind = seen & (self.bvote > 0.5 * self.cnt)
+                self.last["behind"] = float(self.behind.float().mean())
+                self.bvote.zero_()
             self.sum.zero_(); self.cnt.zero_(); self.vote.zero_(); self.mn.fill_(float("inf")); self.t0 = step
             return True
         return False

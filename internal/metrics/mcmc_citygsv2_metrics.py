@@ -173,6 +173,16 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     """★ 2026-11-08（使用者「不准用場景單位的門檻」）>0 時取代 depth_support_sfm_radius：r＝此倍數 × SfM 點最近鄰距離的中位數
     （Scaffold-GS 的體素取法；3DGS 的 init 尺度也是用 SfM 近鄰距離）。MatrixCity 全場最近鄰中位 0.0037（0.37 m）=> 8 ≈ 原本的 0.03。
     11-08 b3 敏感度：4 倍、16 倍都比 8 倍差（海面浮塊／地下層）=> 30k 預設改用 8（使用者同意）。"""
+    depth_support_behind: bool = False
+    """★ 2026-11-11 深度支撐閘門的第三種票「在表面後面一點點」（`geom_gate.DepthSupport` 的 behind；需要 depth_support true）：
+    r＝(顆粒深度 − 表面深度)／表面深度 落在 (depth_support_behind_margin, depth_support_behind_max) 記一票；看過 >= 3 次且過半 => 地下層候選，
+    **只影響 MCMC 抽母點**（density `geom_gate_sampling true` 那條路，與「無支撐」同一個係數 1e-3）——不關二元熵、不刪不搬（11-10～11 兩版「搬走」都掉畫質，
+    `紀錄/實驗分析/31` §4.7）；SfM 豁免不套用（地下顆粒多半就在 SfM 點附近）。在表面前面的（路燈、車、陽台）一律不管。
+    深度用 dataparser 給的那份（`tri` 元件＝校正深度＋可靠度過濾；不可靠像素是 0＝不算觀測）。規格 `紀錄/規格_組合臂_表面起點增生限制深度上限_1111.md` §2。"""
+    depth_support_behind_margin: float = 0.01
+    """窄帶下緣（相對深度，無因次）：校正深度在可靠三角形內誤差中位 0.05%、|e| > 1% 7.6%（`37` §1）。"""
+    depth_support_behind_max: float = 0.05
+    """窄帶上緣（相對深度，無因次）：地下層約在 1.5～3%；r 再大＝這個視角是隔著別的東西（別棟樓）看過去，算有效觀測但不投 behind 票。"""
     depth_see_through_reg: float = 0.0
     """★ 2026-10-31 單側「不能看穿表面」（使用者 10-30：離開空拍視角立面透空——窗戶被學成洞，從空拍看不出來）。
     只在塊外遮罩的 A 像素（第一表面在本塊）上：(1−α)＋relu(1/(1+margin) − z_單目／z_渲染)（後者只算 α>0.5 的像素）。
@@ -247,6 +257,12 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
     # ── 逐影像曝光補償（config.exposure_comp） ──
     def setup(self, stage: str, pl_module):
         super().setup(stage, pl_module)
+        if bool(getattr(self.config, "depth_support_behind", False)):
+            _dc = getattr(getattr(pl_module, "density_controller", None), "config", None)
+            if not bool(getattr(self.config, "depth_support", False)) or not bool(getattr(_dc, "geom_gate_sampling", False)):
+                print("⚠⚠ [depth-support] depth_support_behind 有開，但 metric depth_support="
+                      f"{bool(getattr(self.config, 'depth_support', False))}、density geom_gate_sampling={bool(getattr(_dc, 'geom_gate_sampling', False))}"
+                      " => behind 票不會影響抽樣（兩個都要 true）", flush=True)
         self._sfm_xyz = None
         self._sfm_r = float(getattr(self.config, "depth_support_sfm_radius", 0.0))
         k_nn = float(getattr(self.config, "depth_support_sfm_radius_nn", 0.0) or 0.0)
@@ -409,6 +425,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         xyz = gaussian_model.get_xyz
         n = xyz.shape[0]
         gate = torch.ones(n, dtype=torch.bool, device=xyz.device)
+        _behind = None
         if use_plane:
             nrm = quat_normals(gaussian_model.get_rotations())
             od = opacities.detach()
@@ -438,16 +455,21 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         if use_ds:
             ds = getattr(self, "_depth_support", None)
             if ds is None:
+                _bh = bool(getattr(c, "depth_support_behind", False))
                 ds = self._depth_support = DepthSupport(c.depth_support_delta_front, c.depth_support_delta_back, int(c.depth_support_window),
-                                                        rule=str(getattr(c, "depth_support_rule", "mean") or "mean"))
-                print(f"[depth-support] 規則 {ds.rule}、每 {int(getattr(c, 'depth_support_interval', 1) or 1)} 步累積一次、視窗 {int(c.depth_support_window)} 步", flush=True)
+                                                        rule=str(getattr(c, "depth_support_rule", "mean") or "mean"),
+                                                        behind_margin=float(c.depth_support_behind_margin) if _bh else None,
+                                                        behind_max=float(getattr(c, "depth_support_behind_max", 0.05)))
+                print(f"[depth-support] 規則 {ds.rule}、每 {int(getattr(c, 'depth_support_interval', 1) or 1)} 步累積一次、視窗 {int(c.depth_support_window)} 步"
+                      + (f"｜behind 票（只擋 MCMC 抽母點）：r 在 ({ds.bm:g}, {ds.bmax:g})、過半" if _bh else ""), flush=True)
             inv = batch[2] if len(batch) > 2 else None
             if isinstance(inv, tuple):
                 inv = inv[0]
             if inv is None:
                 if not getattr(self, "_ds_warned", False):
                     self._ds_warned = True
-                    print("⚠⚠ [depth-support] 拿不到單目深度（batch[2] 是 None：skip_unused_depth 跳過了？）=> 深度支撐不會生效", flush=True)
+                    print("⚠⚠ [depth-support] 拿不到單目深度（batch[2] 是 None：skip_unused_depth 跳過了？）=> 深度支撐不會生效"
+                          + ("（behind 票也不會生效）" if ds.bm is not None else ""), flush=True)
             else:
                 cam = batch[0]
                 _k = int(getattr(c, "depth_support_interval", 1) or 1)
@@ -463,12 +485,20 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                     ds.support |= near
                     exempt = f"、SfM 豁免 {k_ex:,} 顆（離 SfM 點近的 {100 * float(near.float().mean()):.1f}%）"
                 if done and (not getattr(self, "_ds_announced", False) or step % 2000 < int(c.depth_support_window)):
+                    _bhs = ""
+                    if ds.behind is not None and ds.behind.shape[0] == n:
+                        _ob = ds.behind & (opacities.detach().reshape(-1) > 0.5)
+                        _nb = int(ds.behind.sum())
+                        _bhs = (f"｜behind（表面後 {100 * ds.bm:g}～{100 * ds.bmax:g}%、過半）{100 * ds.last.get('behind', 0.0):.2f}%＝{_nb:,} 顆，"
+                                f"其中不透明（o>0.5）{100 * int(_ob.sum()) / max(_nb, 1):.1f}%")
                     print(f"[depth-support] {'✅ 首次判定' if not getattr(self, '_ds_announced', False) else '　'} step={step}："
                           f"視窗內看過 >=3 次 {100 * ds.last['seen']:.1f}%、一直在前方 {100 * ds.last['front']:.2f}%、從未貼面 {100 * ds.last['never']:.2f}%"
-                          f"{exempt}", flush=True)
+                          f"{exempt}{_bhs}", flush=True)
                     self._ds_announced = True
                 if ds.support is not None and ds.support.shape[0] == n:
                     gate &= ds.support
+                if ds.behind is not None:
+                    _behind = ds.behind
         if use_vis:
             for _k in ("VS", "VW"):                  # MCMC 加點接在尾端 => 補 0（VW＝0＝沒資訊；與 renderer `_trim_state` 的補法相同）
                 if _vst[_k].shape[0] < n:
@@ -487,6 +517,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                          if bool(getattr(c, "vis_gate_need_under", False)) else ""), flush=True)
                 self._vis_gate_announced = True
         gaussian_model._geom_gate = gate
+        if bool(getattr(c, "depth_support_behind", False)):
+            # ★ 11-11 behind 只給 MCMC 抽母點（density _geom_gate_probs 優先讀這個）；熵／下壓力仍只看 gate。沒開＝不設這個屬性（行為與之前相同）
+            gaussian_model._geom_gate_samp = gate & ~_behind if _behind is not None and _behind.shape[0] == n else gate
         metrics["gate_off"] = (~gate).float().mean()
         pbar["gate_off"] = False
         return gate

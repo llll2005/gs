@@ -322,7 +322,9 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         """★ 2026-10-29 見 config.geom_gate_sampling。閘門長度對不上（顆數剛變）就不乘。"""
         if not getattr(self.config, "geom_gate_sampling", False):
             return probs
-        g = getattr(gaussian_model, "_geom_gate", None)
+        # ★ 11-11 metric 開了 depth_support_behind 時另掛 `_geom_gate_samp`＝閘門 ∧ 非 behind（只給抽母點）；沒開＝沒有這個屬性 => 讀 `_geom_gate`（同之前）
+        gs = getattr(gaussian_model, "_geom_gate_samp", None)
+        g = gs if gs is not None else getattr(gaussian_model, "_geom_gate", None)
         if g is None or g.shape[0] != gaussian_model.n_gaussians:
             return probs
         g = g if indices is None else g[indices]
@@ -330,7 +332,13 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
             return probs
         if not getattr(self, "_gate_samp_announced", False):
             self._gate_samp_announced = True
-            print(f"[geom-gate-sampling] ✅ 首次觸發：閘門外 {int((~g).sum()):,}/{g.shape[0]:,} 顆的抽樣機率乘 1e-3", flush=True)
+            _x = ""
+            if gs is not None:
+                g0 = getattr(gaussian_model, "_geom_gate", None)
+                if g0 is not None and g0.shape[0] == gaussian_model.n_gaussians:
+                    g0 = g0 if indices is None else g0[indices]
+                    _x = f"（其中只因 behind 票：{int((g0 & ~g).sum()):,} 顆）"
+            print(f"[geom-gate-sampling] ✅ 首次觸發：閘門外 {int((~g).sum()):,}/{g.shape[0]:,} 顆的抽樣機率乘 1e-3{_x}", flush=True)
         return probs * (g.to(probs.dtype) + 1e-3)
 
     def add_new_gs(self, gaussian_model, optimizers):
