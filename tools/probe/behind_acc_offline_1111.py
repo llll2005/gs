@@ -155,13 +155,15 @@ for spec in a.models:
         rho, ok = behind_rho(vc, vb, a.evidence)
         rho, ok = rho.cpu().numpy()[keep], ok.cpu().numpy()[keep]
         print(f"  margin {100 * mg:g}%｜有上限像素上的平均 W {wsum[mg][0] / max(wsum[mg][1], 1):.4f}｜有證據 {100 * ok.mean():.1f}%")
-        print(f"    {'類別':16}{'顆數':>10}{'有證據%':>9}{'ρ>0.5 %':>9}{'ρ>0.3 %':>9}{'ρ>0.7 %':>9}{'ρ 中位(有證據)':>14}")
+        flat = nz[keep] > 0.8                                  # 變體：只算躺平的顆粒（面元法向 z 分量絕對值 > 0.8；無因次）
+        print(f"    {'類別':16}{'顆數':>10}{'有證據%':>9}{'ρ>0.5 %':>9}{'ρ>0.3 %':>9}{'ρ>0.7 %':>9}{'ρ>0.9 %':>9}{'ρ>0.5∧躺平':>11}{'ρ 中位(有證據)':>14}")
         for nm, k in cats:
             if k.sum() == 0:
                 continue
             r_ = rho[k]
             print(f"    {nm:16}{int(k.sum()):>10,}{100 * ok[k].mean():>9.1f}{100 * (r_ > 0.5).mean():>9.2f}{100 * (r_ > 0.3).mean():>9.2f}"
-                  f"{100 * (r_ > 0.7).mean():>9.2f}{np.median(r_[ok[k]]) if ok[k].any() else float('nan'):>14.3f}", flush=True)
+                  f"{100 * (r_ > 0.7).mean():>9.2f}{100 * (r_ > 0.9).mean():>9.2f}{100 * ((r_ > 0.5) & flat[k]).mean():>11.2f}"
+                  f"{np.median(r_[ok[k]]) if ok[k].any() else float('nan'):>14.3f}", flush=True)
         ug = dict(cats)["真地下 < −1m"]; ab = np.zeros_like(ug)
         for nm, k in cats:
             if nm.startswith(("貼地", "車輛", "路燈", "樓頂", "立面", "斜的")):
