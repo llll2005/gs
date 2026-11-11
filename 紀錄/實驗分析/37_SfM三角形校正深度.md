@@ -211,6 +211,17 @@ loss = 權重 x k x Σ_{設了上限的像素} B(p) ／ 像素數        每 k�
   - 我方真地下的 ρ 是雙峰（margin 1%：b1 27.8% 在 0～0.1、23.2% 在 0.9～1.0）=> 一半的「地下」顆粒在有可靠深度的像素上其實貼著表面在畫（或被擋住沒帳）。
   - **照規格的字面（margin 3%、不限朝向）沒過 => B 臂沒排**；唯一兩條件都過的是「margin 1.5%＋只算躺平」，但它要兩個規格外的改動
     （帳的 margin 和 loss 的 margin 分開或 B 臂改用 1.5% 的上限；ρ 只算躺平的顆粒）=> 交使用者決定。
+  - **使用者 11-11「兩個選項都排」**（20bc08a：`behind_price_flat`、元件 `bpf`、`tricap0p5m1p5`）。lab 佇列（A 臂之後，b1 七臂＋評估 `supplyB` → 同 b4）：
+
+| 臂（接在 `s30g50+np16+` 後） | 選項 | 回答什麼 |
+|---|---|---|
+| `tricap0p5m3+vcb` | 2（規格字面，帳 margin 3%） | 計價只進剪枝 |
+| `tricap0p5m3+vcb+sbp` | 2 | 剪枝＋抽母點 |
+| `hfd+tricap0p5+vcb+sbp` | 2（帳 margin 1%） | 全開 |
+| `tricap0p5m1p5` | 1 的底 | margin 1.5% 這個劑量單獨（沒跑過） |
+| `tricap0p5m1p5+vcb+bpf` | 1（margin 1.5%＋只算躺平） | 計價只進剪枝 |
+| `tricap0p5m1p5+vcb+sbp+bpf` | 1 | 剪枝＋抽母點 |
+| `hfd+tricap0p5m1p5+vcb+sbp+bpf` | 1 | 全開 |
 
 ## 下一步與沒做的構想
 | 項目 | 狀態 | 理由／條件 |
