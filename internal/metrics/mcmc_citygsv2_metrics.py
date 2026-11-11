@@ -563,17 +563,20 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                   f"被截斷（> tau）{100 * trunc:.1f}%、朝向項 {float(lo):.3f}、權重 {lam * ramp:g}（漸增 {100 * ramp:.0f}%）", flush=True)
             self._surf_announced = True
 
-    def depth_cap_map(self, batch, step):
+    def depth_cap_map(self, batch, step, demand: bool = False):
         """★ 2026-11-11 渲染前呼叫（GaussianSplatting.training_step）：本步要不要算逐貢獻深度上限 => 上限圖 float32 [H, W]
-        （1／((1+margin)·z_先驗)；0＝不設上限）或 None（這一步不算）。step＝trainer.global_step + 1（與 get_train_metrics 收到的相同）。"""
+        （1／((1+margin)·z_先驗)；0＝不設上限）或 None（這一步不算）。step＝trainer.global_step + 1（與 get_train_metrics 收到的相同）。
+        ★ 11-11 規格 2 §2：demand＝True（density 的需求地圖補貨事件步）時即使這一步不算 loss 也交出上限圖（光柵器才會算落後權重 W）；
+        loss 只在原本的步算（`_cap_cur`）；`_cap_map_cur`＝這一步交出去的上限圖（給補貨的可觀測性用）。"""
         c = self.config
         self._cap_cur = None
+        self._cap_map_cur = None
         w = float(getattr(c, "depth_cap_reg", 0.0) or 0.0)
         k = int(getattr(c, "depth_cap_interval", 1) or 1)
-        if w <= 0 or step < int(getattr(c, "depth_cap_from_iter", 0) or 0) or (k > 1 and step % k != 0):
-            return None
         _until = int(getattr(c, "depth_cap_until_iter", 0) or 0)
-        if _until > 0 and step >= _until:
+        want_loss = (w > 0 and step >= int(getattr(c, "depth_cap_from_iter", 0) or 0) and (k <= 1 or step % k == 0)
+                     and not (_until > 0 and step >= _until))
+        if not (want_loss or demand):
             return None
         inv = batch[2] if len(batch) > 2 else None
         if isinstance(inv, (tuple, list)):
@@ -593,8 +596,10 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             m = self._block_mask_get(name, hw, gt.device)
             if m is not None:
                 cap = cap * (m == 1)
-        self._cap_cur = cap.contiguous()
-        return self._cap_cur
+        cap = cap.contiguous()
+        self._cap_map_cur = cap
+        self._cap_cur = cap if want_loss else None
+        return cap
 
     def _depth_cap_step(self, step, batch, outputs, metrics, pbar):
         """逐貢獻深度上限的 loss（config.depth_cap_*）；這一步沒有上限圖或渲染器沒交出 rend_cap 就不動 loss。"""

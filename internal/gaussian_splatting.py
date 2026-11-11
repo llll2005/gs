@@ -987,7 +987,9 @@ class GaussianSplatting(LightningModule):
                 self._pix_skip = _v if self._pix_skip is None else (self._pix_skip | _v)
                 self.renderer._vrs_pix = True
         # ★ 2026-11-11 逐貢獻深度上限（metric depth_cap_reg）：這一步要算時，渲染前先取上限圖，renderer.training_forward 讀它並改走完整路徑
-        self._depth_cap = self.metric.depth_cap_map(batch, global_step) if hasattr(self.metric, "depth_cap_map") else None
+        #   ★ 11-11 規格 2：density 的需求地圖補貨事件步也要上限圖（只出地圖、不加 loss）
+        _dem = bool(hasattr(self.density_controller, "demand_map_step") and self.density_controller.demand_map_step(global_step))
+        self._depth_cap = self.metric.depth_cap_map(batch, global_step, demand=_dem) if hasattr(self.metric, "depth_cap_map") else None
         # forward
         outputs = self(camera)
         _prof.mark("3 forward（光柵化）")

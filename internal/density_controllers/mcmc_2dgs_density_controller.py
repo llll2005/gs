@@ -531,6 +531,12 @@ class MCMC2DGSDensityController(MCMCDensityController):
     hole_fill_margin: float = 0.1
     hole_fill_scale_px: float = 2.0
     hole_fill_opacity: float = 0.5
+    hole_fill_demand: bool = False
+    """★ 2026-11-11 規格 2 §2 需求地圖補貨（`紀錄/規格2_表面補貨與落後貢獻計價_1111.md`；需要 hole_fill_frac > 0 與重編過的光柵器）。
+    開的時候補洞事件那一步：metric 交出上限圖（不加 loss），光柵器交出落後權重 W(p)＝Σ T·α·[交點深度 > (1+depth_cap_margin)·先驗深度]
+    ＝這個像素的顏色有多少靠「表面後面的顆粒」在撐（＝表面缺多少貨）。候選像素＝A 像素且先驗深度有效：依 W(p)＋[α<0.5 的洞] 當權重抽
+    （W 全 0 且沒有洞 => 不放）；原本的「看穿」判準不用。放的位置／朝向／大小／顏色／不透明度與名額來源沿用原本（死顆粒優先、不動 cap、不刪活的不透明顆粒）。
+    動機：地下層在替路面層補貨（顏色從縫漏下去由地下層接住）；課稅（深度上限）或搬走都讓路面缺貨 => 先在表面補供給。"""
     inplane_offset: float = 0.0
     """★ 2026-11-02 增生方向限制（使用者「排 2」：在牆面複製，新點只能在牆面上）。>0 時 MCMC 的新點（增生的、搬家的）
     不再疊在母點同一位置，而是在母點的面元平面內隨機方向錯開 inplane_offset × 長軸 × 漸增係數。0＝關（原 MCMC：同一點）。"""
@@ -2112,6 +2118,15 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         return out
 
     # ────────── MCMC 補洞放點（hole_fill_*）
+    def demand_map_step(self, step: int) -> bool:
+        """★ 11-11 規格 2 §2：這一步（training_step 的 global_step）是不是「需求地圖補貨」的補洞事件步 => metric 要交出上限圖。
+        規則與 renderer 強制完整路徑的那條相同（補洞事件＝densification_interval 的倍數、hole_fill_from_iter <= step < densify_until_iter）。"""
+        c = self.config
+        if not bool(getattr(c, "hole_fill_demand", False)) or float(getattr(c, "hole_fill_frac", 0.0) or 0.0) <= 0:
+            return False
+        return (step % int(getattr(c, "densification_interval", 100) or 100) == 0
+                and step >= int(getattr(c, "hole_fill_from_iter", 1000) or 0) and step < int(getattr(c, "densify_until_iter", 0) or 0))
+
     def _hole_fill(self, gaussian_model, optimizers, outputs, batch, pl_module, dead_mask, global_step: int):
         c = self.config
         a, z = outputs.get("rend_alpha"), outputs.get("surf_depth")
@@ -2140,10 +2155,30 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return x if x.shape == (H, W) else torch.nn.functional.interpolate(x[None, None], size=(H, W), mode="nearest")[0, 0]
         inv = fit(inv); A = fit(m) == 1
         holes, deeper = hole_candidates(a, z, inv, A, float(c.hole_fill_margin))
-        pix = torch.nonzero((holes | deeper).reshape(-1), as_tuple=True)[0]
+        dem = bool(getattr(c, "hole_fill_demand", False))
+        pw = None                                                             # 需求地圖：候選像素的抽樣權重（None＝原本的均勻抽）
+        Wm = None
+        if dem:
+            Wm = outputs.get("rend_capw")
+            if Wm is None:
+                if not getattr(self, "_hfd_warned", False):
+                    self._hfd_warned = True
+                    print(f"⚠⚠ [hole-fill-demand] step {global_step}：拿不到落後權重 W（rend_capw；這一步沒有上限圖？光柵器沒重編？）"
+                          f"=> 只補 α<0.5 的洞（之後不再提醒）", flush=True)
+                wt = holes.float()
+            else:
+                Wm = fit(Wm.detach())
+                wt = torch.where(A & (inv > 1e-6), Wm.clamp_min(0.0), torch.zeros_like(Wm)) + holes.float()
+            wt = wt.reshape(-1)
+            pix = torch.nonzero(wt > 0, as_tuple=True)[0]
+            pw = wt[pix]
+        else:
+            pix = torch.nonzero((holes | deeper).reshape(-1), as_tuple=True)[0]
         N = gaussian_model.n_gaussians
         K = min(int(pix.numel()), int(float(c.hole_fill_frac) * N))
         if K <= 0:
+            if dem:
+                self._hfd_report(global_step, pl_module, Wm, holes, 0)
             return dead_mask
         o = gaussian_model.get_opacities().reshape(-1)
         slots = dead_mask.nonzero(as_tuple=True)[0]
@@ -2161,7 +2196,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if getattr(self, "_anchor", None) is not None:                    # 追蹤模式：被拿去補洞的錨點記帳
             _sm = torch.zeros(o.shape[0], dtype=torch.bool, device=dev); _sm[slots] = True
             self._anchor_fate(_sm, "補洞")
-        pix = pix[torch.randperm(pix.numel(), device=dev)[:K]]
+        if pw is None:
+            pix = pix[torch.randperm(pix.numel(), device=dev)[:K]]
+        else:
+            pix = pix[torch.multinomial(pw, K, replacement=False)]           # 缺越多抽越多
         rows, cols = pix // W, pix % W
         zm = 1.0 / inv.clamp_min(1e-6)
         fx, fy, cx, cy = (float(cam.fx), float(cam.fy), float(cam.cx), float(cam.cy))
@@ -2205,6 +2243,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if torch.is_tensor(_t) and _t.shape[0] == N:
                 _t[slots] = 0
         dead_mask = dead_mask.clone(); dead_mask[slots] = False                   # 用掉的死顆粒不再交給 relocation
+        if dem:
+            self._hfd_report(global_step, pl_module, Wm, holes, K)
         if not getattr(self, "_hf_announced", False) or global_step % 2000 == 0:
             fac = float((Rn[:, 2, 2].abs() < 0.3).float().mean())
             print(f"[hole-fill] {'✅ 首次觸發' if not getattr(self, '_hf_announced', False) else '　'} step {global_step}："
@@ -2212,6 +2252,23 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                   f"（死顆粒 {min(n_dead, K):,}、低 opacity 改用 {max(K - n_dead, 0):,}）；大小中位 {float(s.median()):.4f}、立面 {100 * fac:.0f}%", flush=True)
             self._hf_announced = True
         return dead_mask
+
+    def _hfd_report(self, global_step, pl_module, Wm, holes, K):
+        """★ 11-11 需求地圖補貨的可觀測性：首次與每 2000 步印——有上限的像素比例、W 平均、W > 0.05 的像素比例、這次放了幾顆。"""
+        if getattr(self, "_hfd_announced", False) and global_step % 2000 != 0:
+            return
+        cap = getattr(getattr(pl_module, "metric", None), "_cap_map_cur", None)
+        if cap is not None and Wm is not None and cap.numel() == Wm.numel():
+            has = cap.reshape(Wm.shape) > 0
+            fr = float(has.float().mean())
+            wm = float(Wm[has].mean()) if bool(has.any()) else 0.0
+            w5 = float((Wm[has] > 0.05).float().mean()) if bool(has.any()) else 0.0
+            st = f"有上限的像素 {100 * fr:.1f}%、其中 W 平均 {wm:.4f}、W>0.05 {100 * w5:.2f}%"
+        else:
+            st = "⚠⚠ 拿不到 W" if Wm is None else f"W 平均 {float(Wm.mean()):.4f}（拿不到上限圖 => 以全畫面計）"
+        print(f"[hole-fill-demand] {'✅ 首次觸發' if not getattr(self, '_hfd_announced', False) else '　'} step {global_step}：{st}、"
+              f"α<0.5 的洞 {int(holes.sum()):,} => 放 {K:,} 顆", flush=True)
+        self._hfd_announced = True
 
     def _merge_window(self, global_step: int) -> bool:
         c = self.config

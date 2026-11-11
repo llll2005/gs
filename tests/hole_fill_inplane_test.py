@@ -171,6 +171,75 @@ class HoleFillTest(unittest.TestCase):
         self.assertTrue(bool(out.all()))
 
 
+class HoleFillDemandTest(unittest.TestCase):
+    """★ 11-11 規格 2 §2 需求地圖補貨（hole_fill_demand）。"""
+    H, W = 30, 40
+
+    def _fill(self, Wm=None, alpha=None, seed=0, n=50, frac=0.2):
+        torch.manual_seed(seed)
+        cam = _cam()
+        gm, opts = _gm(n)
+        impl = _impl(hole_fill_frac=frac, hole_fill_demand=True)
+        alpha = torch.ones(1, self.H, self.W) if alpha is None else alpha
+        out = {"rend_alpha": alpha, "surf_depth": torch.full((1, self.H, self.W), 2.0)}
+        if Wm is not None:
+            out["rend_capw"] = Wm[None]
+        pl = SimpleNamespace(metric=SimpleNamespace(_bm_cur=torch.ones(self.H, self.W, dtype=torch.uint8), _cap_map_cur=torch.full((self.H, self.W), 0.5)))
+        dead = torch.zeros(n, dtype=torch.bool); dead[:20] = True
+        res = impl._hole_fill(gm, opts, out, (cam, ("x", torch.rand(3, self.H, self.W)), torch.full((self.H, self.W), 0.5)), pl, dead, 3000)
+        placed = torch.nonzero(dead & ~res, as_tuple=True)[0]
+        P = gm.gaussians["means"][placed].detach()
+        pc = torch.cat([P, torch.ones(P.shape[0], 1)], 1) @ cam.world_to_camera
+        u = cam.fx * pc[:, 0] / pc[:, 2] + cam.cx; v = cam.fy * pc[:, 1] / pc[:, 2] + cam.cy
+        return placed, u, v, pc[:, 2]
+
+    def test_zero_demand_and_no_holes_places_nothing(self):
+        placed, _, _, _ = self._fill(Wm=torch.zeros(self.H, self.W))
+        self.assertEqual(placed.numel(), 0)
+
+    def test_places_only_where_demand(self):
+        Wm = torch.zeros(self.H, self.W); Wm[20:25, 30:35] = 0.8
+        placed, u, v, z = self._fill(Wm=Wm)
+        self.assertEqual(placed.numel(), 10)                                # frac 0.2 x 50
+        self.assertTrue(bool(((u >= 30) & (u <= 35) & (v >= 20) & (v <= 25)).all()))
+        self.assertTrue(torch.allclose(z, torch.full_like(z, 2.0), atol=1e-4))   # 放在先驗深度
+
+    def test_weighting_prefers_high_demand(self):
+        Wm = torch.full((self.H, self.W), 0.002); Wm[20:25, 30:35] = 0.9   # 高需求 25 像素 x 0.9 vs 其餘 1175 x 0.002
+        placed, u, v, _ = self._fill(Wm=Wm, n=200, frac=0.1)               # 20 顆
+        hit = int(((u >= 30) & (u <= 35) & (v >= 20) & (v <= 25)).sum())
+        self.assertGreaterEqual(hit, 12)                                    # 期望約 0.9x25／(0.9x25＋0.002x1175)＝91% 的前幾抽
+
+    def test_holes_kept_and_missing_W_falls_back_to_holes(self):
+        alpha = torch.ones(1, self.H, self.W); alpha[0, 5:8, 5:8] = 0.1   # 9 個洞
+        placed, u, v, _ = self._fill(Wm=None, alpha=alpha)
+        self.assertEqual(placed.numel(), 9)
+        self.assertTrue(bool(((u >= 5) & (u <= 8) & (v >= 5) & (v <= 8)).all()))
+        placed2, _, _, _ = self._fill(Wm=torch.zeros(self.H, self.W), alpha=alpha)   # W 全 0 但有洞 => 照補洞
+        self.assertEqual(placed2.numel(), 9)
+
+    def test_demand_map_step(self):
+        impl = _impl(hole_fill_demand=True, hole_fill_frac=0.002, densification_interval=100, hole_fill_from_iter=1000, densify_until_iter=15000)
+        self.assertEqual([impl.demand_map_step(s) for s in (500, 3000, 3050, 14900, 15000)], [False, True, False, True, False])
+        self.assertFalse(_impl(hole_fill_demand=False, hole_fill_frac=0.002, densification_interval=100, hole_fill_from_iter=1000,
+                               densify_until_iter=15000).demand_map_step(3000))
+
+    def test_metric_map_without_loss(self):
+        from internal.metrics.mcmc_citygsv2_metrics import MCMCCityGSV2Metrics
+        H, W = 6, 8
+        batch = (None, ("x.png", torch.rand(3, H, W)), torch.full((H, W), 0.5))
+        m = MCMCCityGSV2Metrics(depth_cap_reg=0.0).instantiate()
+        self.assertIsNone(m.depth_cap_map(batch, 3000))                     # 沒開、不是補貨步
+        cap = m.depth_cap_map(batch, 3000, demand=True)                     # 補貨步：只出地圖
+        self.assertTrue(torch.allclose(cap, torch.full((H, W), 0.5 / 1.01)))
+        self.assertIsNone(m._cap_cur)                                       # 不加 loss
+        self.assertIs(m._cap_map_cur, cap)
+        m2 = MCMCCityGSV2Metrics(depth_cap_reg=0.5, depth_cap_interval=8, depth_cap_from_iter=0).instantiate()
+        self.assertIsNotNone(m2.depth_cap_map(batch, 16)) ; self.assertIsNotNone(m2._cap_cur)   # loss 步照舊
+        self.assertIsNone(m2.depth_cap_map(batch, 17))
+        m2.depth_cap_map(batch, 17, demand=True); self.assertIsNone(m2._cap_cur)               # 非 loss 步的補貨圖不加 loss
+
+
 class InplaneTest(unittest.TestCase):
     def test_birth_offset_stays_in_plane(self):
         gm, _ = _gm(20)

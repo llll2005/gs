@@ -18,6 +18,8 @@
 #     trigate  tri＋深度支撐閘門收緊：不要 SfM 豁免、前方 3%、從未貼面 1.5%（原本 5%／5%）
 #     tribh    tri＋只擋後面的增生限制：多數有效視角裡落在校正深度表面後 1%～5% 的顆粒，MCMC 幾乎不抽它當母點（不關熵、不刪不搬；
 #              SfM 豁免不套用；後 5% 以上＝隔著樓看過去，不算）。規格 紀錄/規格_組合臂_表面起點增生限制深度上限_1111.md §2
+#     hfd      tri＋需求地圖補貨：補洞事件依落後權重 W(p)（這個像素有多少顏色靠表面後面的顆粒撐）抽像素、新顆粒放在校正深度表面上
+#              （＋原本的 α<0.5 洞；可單獨開、不加 loss）。規格 紀錄/規格2_表面補貨與落後貢獻計價_1111.md §2
 #     tricap<W>[m<N>][g] tri＋逐貢獻的單側深度上限（光柵器 CAP_OFFSET；每一份混合貢獻落在校正深度後面超過 margin 就依混合權重罰）、每 8 步
 #              W＝權重（小數點寫 p：tricap0p5）、m<N>＝margin N%（預設 1）、g＝只在增生期（到 densify_until 為止）
 #     dense    起點換成稠密初始化（tools/make_tri_dense_init.py：SfM＋補點之外，把可靠像素沿校正深度反投影、多視角一致的體素質心補滿到 0.9 cap）
@@ -44,9 +46,9 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|dense|sni|trimask) XT+=("$t") ;;
+        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|dense|sni|trimask) XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／tricap<W>／dense／sni／trimask）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／tricap<W>／dense／sni／trimask）"; return 2 ;;
       esac
     fi
   done
@@ -55,7 +57,7 @@ parse() {
   for t in "${XT[@]:-}"; do
     case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
-      tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;;
+      tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; esac
   done
@@ -102,7 +104,7 @@ for t in "${XT[@]:-}"; do
                  --model.density.init_args.sfm_vis_behind_max 10 --model.density.init_args.sfm_vis_behind_max_above_nn 16)
             [ "$t" = mvugrow ] && XA+=(--model.density.init_args.merge_vis_under_harvest false)
             [ "$t" = mvugnd ] && XA+=(--model.density.init_args.merge_vis_under_ground true) ;;
-    tri|trihf|trist|trigate|tribh|tricap*)
+    tri|trihf|trist|trigate|tribh|hfd|tricap*)
             _TD=data/matrix_city/aerial/train/block_all/estimated_depths_tri
             [ -d "$_TD" ] && [ -d "${_TD}_rel" ] || { echo "⛔ 缺 $_TD（先跑 tools/make_tri_depths.py）"; exit 2; }
             XA+=(--data.parser.depth_dir estimated_depths_tri --data.parser.depth_scale_name estimated_depth_scales_tri
@@ -116,6 +118,7 @@ for t in "${XT[@]:-}"; do
               XA+=(--model.metric.init_args.depth_cap_reg "$_cw" --model.metric.init_args.depth_cap_margin "$_cm" --model.metric.init_args.depth_cap_interval 8)
               [ -n "${BASH_REMATCH[6]}" ] && XA+=(--model.metric.init_args.depth_cap_until_iter $((ST * G / 100)))
             fi
+            [ "$t" = hfd ] && XA+=(--model.density.init_args.hole_fill_demand true)
             [ "$t" = tribh ] && XA+=(--model.metric.init_args.depth_support_behind true --model.metric.init_args.depth_support_behind_margin 0.01
                                      --model.metric.init_args.depth_support_behind_max 0.05)
             [ "$t" = trigate ] && XA+=(--model.metric.init_args.depth_support_sfm_radius_nn 0 --model.metric.init_args.depth_support_sfm_radius 0
