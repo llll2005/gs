@@ -24,6 +24,31 @@ class RhoTest(unittest.TestCase):
         self.assertTrue(torch.allclose(f, torch.tensor([0.0, 0.5, 1.0])))
 
 
+class FlatTest(unittest.TestCase):
+    def test_only_mask_and_flat_mask(self):
+        import math
+        from internal.renderers.sep_depth_trim_2dgs_renderer import flat_mask
+        Vc = torch.tensor([10.0, 10.0]); Vb = torch.tensor([10.0, 10.0])
+        q_flat = torch.tensor([1.0, 0, 0, 0])                                        # 法向 +z（躺平）
+        q_wall = torch.tensor([math.cos(math.pi / 4), math.sin(math.pi / 4), 0, 0])  # 繞 x 轉 90 度 => 法向水平（牆）
+        m = flat_mask(torch.stack([q_flat, q_wall]), 0.8)
+        self.assertEqual(m.tolist(), [True, False])
+        self.assertIsNone(flat_mask(torch.stack([q_flat]), 0.0))
+        f, rho, _ = behind_price_factor(Vc, Vb, 1.0, 0.1, 0.01, only=m)
+        self.assertTrue(torch.allclose(f, torch.tensor([0.01, 1.0])))                # 牆不計價
+
+    def test_density_flat(self):
+        import math
+        from internal.density_controllers.mcmc_2dgs_density_controller import MCMC2DGSDensityControllerImpl
+        impl = object.__new__(MCMC2DGSDensityControllerImpl)
+        impl.config = SimpleNamespace(sample_behind_price=1.0, behind_price_evidence=0.1, behind_price_flat=0.8)
+        q = torch.stack([torch.tensor([1.0, 0, 0, 0]), torch.tensor([math.cos(math.pi / 4), math.sin(math.pi / 4), 0, 0])])
+        gm = SimpleNamespace(n_gaussians=2, _trim_state={"BVc": torch.tensor([10.0, 10.0]), "BVb": torch.tensor([10.0, 10.0])},
+                             get_rotations=lambda: q)
+        out = impl._behind_price_probs(gm, torch.ones(2))
+        self.assertTrue(torch.allclose(out, torch.tensor([0.01, 1.0])))
+
+
 class _PC:
     def __init__(self, V, C, BVc=None, BVb=None):
         self.get_xyz = torch.zeros(V.shape[0], 3)

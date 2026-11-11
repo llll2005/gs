@@ -535,6 +535,8 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 2026-11-11 規格 2 §3 B2 落後貢獻計價進 MCMC 抽母點（新增與搬遷目標）：機率再乘 max(1 − λ·ρ, 0.01)，ρ＝這顆的貢獻落在表面後面的比例
     （renderer 在有上限圖的完整路徑步記的帳 `_trim_state["BVc"／"BVb"]`；需要 metric depth_cap_reg > 0 或 hole_fill_demand 才有上限圖）。0＝關（逐位元不變）。"""
     behind_price_evidence: float = 0.1
+    behind_price_flat: float = 0.0
+    """★ 11-11 >0：抽母點的計價只算躺平的顆粒（面元法向 z 分量絕對值 > 這個值；與 renderer.behind_price_flat 同義）。"""
     """證據門檻：Vc < 這個比例 × 「Vc > 0 的顆粒的 Vc 中位數」的顆粒 ρ＝0（相對量；與 renderer.behind_price_evidence 同義、預設相同）。"""
     hole_fill_demand: bool = False
     """★ 2026-11-11 規格 2 §2 需求地圖補貨（`紀錄/規格2_表面補貨與落後貢獻計價_1111.md`；需要 hole_fill_frac > 0 與重編過的光柵器）。
@@ -1720,8 +1722,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if Vc.shape[0] < n:                                                   # 新顆粒接在尾端 => 沒帳＝ρ 0
             z = torch.zeros(n - Vc.shape[0], device=Vc.device, dtype=Vc.dtype)
             Vc, Vb = torch.cat([Vc, z]), torch.cat([Vb, z])
-        from internal.renderers.sep_depth_trim_2dgs_renderer import behind_price_factor
-        fac, rho, ok = behind_price_factor(Vc, Vb, lam, float(getattr(self.config, "behind_price_evidence", 0.1)), 0.01)
+        from internal.renderers.sep_depth_trim_2dgs_renderer import behind_price_factor, flat_mask
+        _fl = float(getattr(self.config, "behind_price_flat", 0.0) or 0.0)
+        fac, rho, ok = behind_price_factor(Vc, Vb, lam, float(getattr(self.config, "behind_price_evidence", 0.1)), 0.01,
+                                           only=flat_mask(gaussian_model.get_rotations(), _fl) if _fl > 0 else None)
         f = fac if indices is None else fac[indices]
         if f.shape[0] != probs.shape[0]:
             return probs

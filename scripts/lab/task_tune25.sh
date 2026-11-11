@@ -22,8 +22,9 @@
 #              （＋原本的 α<0.5 洞；可單獨開、不加 loss）。規格 紀錄/規格2_表面補貨與落後貢獻計價_1111.md §2
 #     vcb      落後貢獻計價進 V/C 剪枝：分數 x max(1 − ρ, 0)，ρ＝貢獻落在校正深度表面後面的比例（光柵器逐顆帳；要有上限圖＝tricap 或 hfd）。規格 2 §3 B1
 #     sbp      落後貢獻計價進 MCMC 抽母點：機率 x max(1 − ρ, 0.01)。規格 2 §3 B2
+#     bpf      落後計價只算躺平的顆粒（面元法向 z 分量絕對值 > 0.8；牆與斜面的 ρ 一律 0）。11-11 §4 離線檢查：margin 1.5%＋躺平 兩條件都過（`37` §7）
 #     tricap<W>[m<N>][g] tri＋逐貢獻的單側深度上限（光柵器 CAP_OFFSET；每一份混合貢獻落在校正深度後面超過 margin 就依混合權重罰）、每 8 步
-#              W＝權重（小數點寫 p：tricap0p5）、m<N>＝margin N%（預設 1）、g＝只在增生期（到 densify_until 為止）
+#              W＝權重（小數點寫 p：tricap0p5）、m<N>＝margin N%（預設 1；小數同樣寫 p：m1p5＝1.5%）、g＝只在增生期（到 densify_until 為止）
 #     dense    起點換成稠密初始化（tools/make_tri_dense_init.py：SfM＋補點之外，把可靠像素沿校正深度反投影、多視角一致的體素質心補滿到 0.9 cap）
 #     sni      初始化的面元朝向用 SfM 近鄰平面（sfm_normal_init；11-08 在 30k 效果被洗掉，短排程重測）
 #     trimask  塊外遮罩換成用校正深度判的那一份（block_masks44_tri；tools/block_mask44.py --depth_dir estimated_depths_tri --depth_raw）
@@ -48,9 +49,9 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|dense|sni|trimask) XT+=("$t") ;;
-        tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／tricap<W>／dense／sni／trimask）"; return 2 ;;
+        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask) XT+=("$t") ;;
+        tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask）"; return 2 ;;
       esac
     fi
   done
@@ -59,7 +60,7 @@ parse() {
   for t in "${XT[@]:-}"; do
     case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
-      tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;;
+      tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; esac
   done
@@ -114,11 +115,15 @@ for t in "${XT[@]:-}"; do
             [ "$t" = trihf ] && XA+=(--model.density.init_args.hole_fill_margin 0.02 --model.density.init_args.hole_fill_frac 0.005)
             [ "$t" = trist ] && XA+=(--model.metric.init_args.depth_see_through_reg 0.5 --model.metric.init_args.depth_see_through_margin 0.02
                                      --model.metric.init_args.depth_see_through_hole 0 --model.metric.init_args.depth_see_through_interval 8)
-            if [[ $t =~ ^tricap([0-9]+)(p([0-9]+))?(m([0-9]+))?(g)?$ ]]; then
+            if [[ $t =~ ^tricap([0-9]+)(p([0-9]+))?(m([0-9]+)(p([0-9]+))?)?(g)?$ ]]; then
               _cw=${BASH_REMATCH[1]}; [ -n "${BASH_REMATCH[3]}" ] && _cw="$_cw.${BASH_REMATCH[3]}"
-              _cm=$(printf '0.%02d' "${BASH_REMATCH[5]:-1}")
+              if [ -n "${BASH_REMATCH[7]}" ]; then                     # m1p5＝1.5%（整數寫法的輸出與 11-11 前相同）
+                _cm=$(awk -v a="${BASH_REMATCH[5]}" -v b="${BASH_REMATCH[7]}" 'BEGIN{printf "%g", (a + ("0." b)) / 100}')
+              else
+                _cm=$(printf '0.%02d' "${BASH_REMATCH[5]:-1}")
+              fi
               XA+=(--model.metric.init_args.depth_cap_reg "$_cw" --model.metric.init_args.depth_cap_margin "$_cm" --model.metric.init_args.depth_cap_interval 8)
-              [ -n "${BASH_REMATCH[6]}" ] && XA+=(--model.metric.init_args.depth_cap_until_iter $((ST * G / 100)))
+              [ -n "${BASH_REMATCH[8]}" ] && XA+=(--model.metric.init_args.depth_cap_until_iter $((ST * G / 100)))
             fi
             [ "$t" = hfd ] && XA+=(--model.density.init_args.hole_fill_demand true)
             [ "$t" = tribh ] && XA+=(--model.metric.init_args.depth_support_behind true --model.metric.init_args.depth_support_behind_margin 0.01
@@ -127,6 +132,7 @@ for t in "${XT[@]:-}"; do
                                        --model.metric.init_args.depth_support_delta_front 0.03 --model.metric.init_args.depth_support_delta_back 0.015) ;;
     vcb)    XA+=(--model.renderer.init_args.trim_behind_price 1) ;;
     sbp)    XA+=(--model.density.init_args.sample_behind_price 1) ;;
+    bpf)    XA+=(--model.renderer.init_args.behind_price_flat 0.8 --model.density.init_args.behind_price_flat 0.8) ;;
     dense)  [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44_crop/dup1/block_$B.ply" ] || { echo "⛔ 缺稠密初始化（tools/make_tri_dense_init.py --blocks $B）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44_crop); CITYGS_DUP44=1 ;;
     sni)    XA+=(--model.density.init_args.sfm_normal_init true) ;;

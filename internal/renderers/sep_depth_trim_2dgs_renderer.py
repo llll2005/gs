@@ -22,11 +22,22 @@ def behind_rho(Vc, Vb, evidence: float = 0.1):
     return rho, ok
 
 
-def behind_price_factor(Vc, Vb, lam: float, evidence: float = 0.1, floor: float = 0.0):
-    """計價係數 max(1 − λ·ρ, floor)（剪枝用 floor 0、抽母點用 0.01）。λ <= 0 => None（呼叫端不乘，行為與之前逐位元相同）。"""
+def flat_mask(rotations, thr: float):
+    """★ 11-11 面元法向（2DGS 局部 z 軸）的世界 z 分量絕對值 > thr 的顆粒（躺平；無因次）。thr <= 0 => None（不限）。"""
+    if thr <= 0:
+        return None
+    from internal.metrics.geom_gate import quat_normals
+    return quat_normals(rotations.detach()).abs()[:, 2] > float(thr)
+
+
+def behind_price_factor(Vc, Vb, lam: float, evidence: float = 0.1, floor: float = 0.0, only=None):
+    """計價係數 max(1 − λ·ρ, floor)（剪枝用 floor 0、抽母點用 0.01）。λ <= 0 => None（呼叫端不乘，行為與之前逐位元相同）。
+    only（bool／0-1 [N]）：只對這些顆粒計價、其餘 ρ＝0（11-11 behind_price_flat：只算躺平的顆粒）。"""
     if lam <= 0:
         return None
     rho, ok = behind_rho(Vc, Vb, evidence)
+    if only is not None:
+        rho = rho * only.to(rho.dtype)
     return (1.0 - float(lam) * rho).clamp_min(float(floor)), rho, ok
 from ..cameras import Camera
 from ..models.gaussian import GaussianModel
@@ -74,6 +85,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_behind_price: float = 0.0,
             behind_price_evidence: float = 0.1,
             behind_price_decay: float = 0.5,
+            behind_price_flat: float = 0.0,
             trim_hidden: bool = False,
             alpha_max_999: bool = False,
             t_sat_1e3: bool = False,
@@ -179,6 +191,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
         self.trim_behind_price = trim_behind_price
         self.behind_price_evidence = behind_price_evidence
         self.behind_price_decay = behind_price_decay
+        # ★ 11-11 >0：ρ 只算躺平的顆粒（面元法向 z 分量絕對值 > 這個值；牆與斜面一律 ρ＝0）。§4 離線檢查 margin 1.5%＋0.8 兩條件都過（`紀錄/實驗分析/37` §7）
+        self.behind_price_flat = behind_price_flat
         # ★ 2026-11-07 trim_hidden（使用者「把光度低的、沒貢獻的都刪掉」「trim 不清除固定 %，而是清除未達標的」）：
         #   累加 V／C 時另記 F＝在畫面內（radii > 0）的次數。光柵器的覆蓋數 C 不計已飽和（T < 1e-4）像素後面的顆粒
         #   => 完全被擋的顆粒 C＝0，原本被當「未觀測」（score＝inf）永遠不剪；增生結束後 trim 又整個停掉（30k 配方後半 15k 步沒有任何刪除）。
@@ -902,12 +916,14 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if _rs == "inv_vc":
                 raise ValueError("trim_behind_price 只支援 trim_running_score vc／v（inv_vc 的分數是負的，乘係數意義相反）")
             sb = self._trim_state(pc, ("BVc", "BVb"))
-            fac, rho, okev = behind_price_factor(sb["BVc"], sb["BVb"], _lam, float(getattr(self, "behind_price_evidence", 0.1)), 0.0)
+            _fl = float(getattr(self, "behind_price_flat", 0.0) or 0.0)
+            fac, rho, okev = behind_price_factor(sb["BVc"], sb["BVb"], _lam, float(getattr(self, "behind_price_evidence", 0.1)), 0.0,
+                                                 only=flat_mask(pc.get_rotations(), _fl) if _fl > 0 else None)
             _score0 = score
             score = torch.where(C > 0, _base * fac, score)      # 只動有覆蓋的（未觀測 inf、trim_hidden 的被擋 −1 不動；避免 inf×0）
             _n_ev = int(okev.sum())
             _q = torch.quantile(rho[okev][:1_000_000].float(), torch.tensor([0.5, 0.9], device=rho.device)).tolist() if _n_ev else [float("nan")] * 2
-            _bp_msg = (f"｜落後計價 λ {_lam:g}：有證據 {100 * _n_ev / max(rho.numel(), 1):.1f}%、ρ 中位／p90 {_q[0]:.3f}／{_q[1]:.3f}、"
+            _bp_msg = (f"｜落後計價 λ {_lam:g}{f'（只算躺平 |n_z|>{_fl:g}）' if _fl > 0 else ''}：有證據 {100 * _n_ev / max(rho.numel(), 1):.1f}%、ρ 中位／p90 {_q[0]:.3f}／{_q[1]:.3f}、"
                        f"ρ>0.5 {100 * float((okev & (rho > 0.5)).float().mean()):.2f}%")
             _low0 = (_score0, okev & (rho > 0.5))
         if _rs != "vc" and not getattr(self, "_rs_announced", False):
