@@ -283,7 +283,7 @@ for lab, md in models.items():
     for mg in MR[:3]:
         r_, o_ = behind_rho(md["vc"], md["vb"][mg], a.evidence); rho[mg] = r_; ok = o_
     nzg = torch.from_numpy(nrm_z(m.get_rotations().detach().double().cpu().numpy())).to(dev)
-    op = m.get_opacities().reshape(-1)
+    op = m.get_opacities().reshape(-1).detach()
     xyz = m.get_xyz.detach().double().cpu().numpy(); inbox = torch.from_numpy(inb(xyz, bb0)).to(dev)
     md.update(rho=rho, ok=ok, nzg=nzg, op=op, inbox=inbox)
     flat_g = nzg > 0.8
