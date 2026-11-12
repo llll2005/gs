@@ -4,6 +4,8 @@
 這裡把「盒內、本塊訓練影像觀測到的可靠 SfM 點」（＝真的第一個表面）依 離地高度 × 到最近接縫的距離 分組，查它在該影像遮罩裡的類別比例。
 純 CPU、只讀（lab：遮罩在 <data>/block_masks44/block_<B>/<影像名>）。
 用法：python tools/probe/mask_tall_seam_1109.py --blocks 1 2 5 6
+★ 11-12 規格 4 §3：--masks block_masks44_tri 量校正深度遮罩；--gt_stride N 改用 MatrixCity 真深度在遮罩上每 N px 抽一個像素反投影當樣本
+  （SfM 點上校正深度本來就準，用 SfM 點當樣本會偏袒新遮罩；真深度只診斷，不進任何機制）。
 """
 import argparse
 import os
@@ -21,7 +23,11 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--blocks", type=int, nargs="+", default=list(range(16)))
 ap.add_argument("--part", default="partition/partitions-dim_4_4_visibility_0.08")
 ap.add_argument("--masks", default="block_masks44")
+ap.add_argument("--gt_stride", type=int, default=0, help=">0：樣本改成遮罩上每 N px 一個像素、用真深度反投影（0＝SfM 觀測）")
 a = ap.parse_args()
+if a.gt_stride > 0:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+    import monodepth_sea_1102 as MGT
 
 p = torch.load(f"{D}/{a.part}/partitions.pt", map_location="cpu", weights_only=False)
 Rp = p["extra_data"]["rotation_transform"][:3, :3].double().numpy()
@@ -71,11 +77,31 @@ for b in a.blocks:
             continue
         cls = np.asarray(Image.open(mp)); H, W = cls.shape
         cam = cams[im.camera_id]
-        pi = im.point3D_ids; ok = (pi >= 0) & (pi < mx)
-        ok[ok] &= OK[pi[ok]]
-        if not ok.any():
-            continue
-        X = XYZ[pi[ok]]; q = X @ Rp.T
+        if a.gt_stride > 0:                      # 真深度像素樣本
+            dg = MGT.load_gt(nm)
+            if dg is None:
+                continue
+            H0, W0 = dg.shape[:2]
+            vv, uu = np.meshgrid(np.arange(0, H, a.gt_stride), np.arange(0, W, a.gt_stride), indexing="ij")
+            vv, uu = vv.ravel(), uu.ravel()
+            V0 = np.clip(((vv + 0.5) * H0 / H).astype(int), 0, H0 - 1); U0 = np.clip(((uu + 0.5) * W0 / W).astype(int), 0, W0 - 1)
+            z = dg[V0, U0].astype(np.float64)
+            g = np.isfinite(z) & (z > 0) & (z < 1e8)
+            vv, uu, z = vv[g], uu[g], z[g] * MGT.K_UNIT
+            fx, fy, cx, cy = cam.params[:4]
+            Uc = (uu + 0.5) * cam.width / W; Vc = (vv + 0.5) * cam.height / H
+            Xc = np.stack([z * (Uc - cx) / fx, z * (Vc - cy) / fy, z], 1)
+            from internal.utils.colmap import qvec2rotmat
+            Rm = qvec2rotmat(im.qvec)
+            X = (Xc - np.asarray(im.tvec)) @ Rm
+            q = X @ Rp.T
+            ui, vi = uu, vv
+        else:
+            pi = im.point3D_ids; ok = (pi >= 0) & (pi < mx)
+            ok[ok] &= OK[pi[ok]]
+            if not ok.any():
+                continue
+            X = XYZ[pi[ok]]; q = X @ Rp.T
         x, y = q[:, 0], q[:, 1]
         d = np.stack([x - BMIN[b, 0], BMAX[b, 0] - x, y - BMIN[b, 1], BMAX[b, 1] - y], 1)
         inb = (d >= 0).all(1)
@@ -87,8 +113,9 @@ for b in a.blocks:
         okc = (c2[:, 0] >= 0) & (c2[:, 0] < shp[0]) & (c2[:, 1] >= 0) & (c2[:, 1] < shp[1])
         gz = np.full(len(X), np.nanpercentile(S[:, 2], 10)); gz[okc] = GZ10[c2[okc, 0], c2[okc, 1]]
         hz = (X[:, 2] - gz) * 100
-        xy = im.xys[ok]
-        ui = np.clip((xy[:, 0] * W / cam.width).astype(int), 0, W - 1); vi = np.clip((xy[:, 1] * H / cam.height).astype(int), 0, H - 1)
+        if a.gt_stride <= 0:
+            xy = im.xys[ok]
+            ui = np.clip((xy[:, 0] * W / cam.width).astype(int), 0, W - 1); vi = np.clip((xy[:, 1] * H / cam.height).astype(int), 0, H - 1)
         lab = cls[vi, ui]
         for i, (h0, h1, _) in enumerate(HB):
             for j, (s0, s1, _) in enumerate(SB):
@@ -97,7 +124,7 @@ for b in a.blocks:
                     cnt[i, j] += np.bincount(lab[k], minlength=3)[:3]
         nimg += 1
     TOT += cnt
-    print(f"\n== b{b}（{nimg} 張遮罩）｜盒內 SfM 觀測被標成 A（監督）／B（強制透明）／C（不監督）%（觀測數）")
+    print(f"\n== b{b}（{nimg} 張遮罩 {a.masks}）｜盒內{'真深度像素（每 ' + str(a.gt_stride) + ' px）' if a.gt_stride > 0 else ' SfM 觀測'}被標成 A（監督）／B（強制透明）／C（不監督）%（樣本數）")
     print("  離地高度    " + "".join(f"{nm:>28}" for _, _, nm in SB))
     for i, (_, _, hn) in enumerate(HB):
         cells = []
