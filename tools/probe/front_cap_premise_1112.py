@@ -3,8 +3,9 @@ MatrixCity 真深度只用來分類（海面像素、誤差），不進機制。
   (1) 海面像素（真深度世界 z 在海平面 ±0.004、真深度法向躺平；定義同 monodepth_sea_1102）裡有可靠先驗的比例、先驗誤差，
       以及「真的海面本身會被罰」的比例（z_真 < z_p／(1+f)，先驗太深）；全部 A 像素的同一個比例＝這條規則對真表面的誤傷率。
   (2) 我方模型（--ours，例：上限 0.5）：海面上方浮塊所在的像素（真表面是海、渲染的期望深度反投影後高於海平面 5 m、α > 0.5）有多少有可靠先驗、多少會被命中。
-  (3) CityGS 同塊：渲染表面落在路燈帶（開闊地面格、離地 3～15 m）、車輛帶（0.5～2.5 m）、樓頂突出物（建築格、高於該格 SfM 最高點 3 m 以上）的像素被命中的比例，
-      要 <= 約 3%（規格 4 §2）。f＝5%（規格預設）、3%、10% 各算一次。
+  (3) 細物像素（**真表面**落在路燈帶＝開闊地面格離地 3～15 m、車輛帶 0.5～2.5 m、樓頂突出物＝建築格高於該格 SfM 最高點 3 m 以上；真深度只分類）被命中的比例：
+      「完美模型」（渲染深度＝真深度）與 CityGS 同塊各一欄，要 <= 約 3%（規格 4 §2）。f＝5%（規格預設）、3%、10% 各算一次。
+      （11-12 第一版用 CityGS 自己的渲染表面分類 => 半透明筆觸浮在路面上方也被算成路燈帶，循環論證，改成用真表面。）
 (1) 很低或 (3) 沒過 => 數字貼給使用者，不要硬排（規格 4 §2）。
 用法（lab，佇列 [solo]）：
   conda run -n gspl --no-capture-output python -u tools/probe/front_cap_premise_1112.py --block 1 \
@@ -111,7 +112,7 @@ acc = {k: 0 for k in ("A", "Ap", "sea", "sea_p", "flt", "flt_p")}
 acc["true_hit"] = np.zeros(NF); acc["sea_hit"] = np.zeros(NF); acc["flt_hit"] = np.zeros(NF)
 e_sea = []
 CG = ["路燈帶 3～15m", "車輛帶 0.5～2.5m", "樓頂突出物 >3m", "全部"]
-cg_n = np.zeros(len(CG)); cg_p = np.zeros(len(CG)); cg_hit = np.zeros((len(CG), NF))
+cg_n = np.zeros(len(CG)); cg_p = np.zeros(len(CG)); cg_hit = np.zeros((len(CG), NF)); tr_hit = np.zeros((len(CG), NF))
 bg = torch.zeros(3, device=dev)
 
 
@@ -168,18 +169,19 @@ with torch.no_grad():
         acc["flt"] += int(flt.sum()); acc["flt_p"] += int((flt & pv).sum())
         for k, f in enumerate(FR):
             acc["flt_hit"][k] += int((flt & pv & (zr < zp / (1 + f))).sum())
-        # (3) CityGS：細物像素
+        # (3) 細物像素（真表面分類）：完美模型與 CityGS
         oc = renderer(cam, m_cg, bg_color=bg)
         zc = oc["surf_depth"].reshape(H, W); ac = oc["rend_alpha"].reshape(H, W)
-        xc = backproject(cam, zc, H, W)
-        h, iso, isb, above = cell_info(xc)
+        h, iso, isb, above = cell_info(xt.reshape(-1, 3))
         h = h.reshape(H, W); iso = iso.reshape(H, W); isb = isb.reshape(H, W); above = above.reshape(H, W)
-        base_ok = A & (ac > 0.5) & (zc > 0)
+        base_ok = A & (zt > 0)
         cls = [base_ok & iso & (h > 3) & (h < 15), base_ok & iso & (h > 0.5) & (h < 2.5), base_ok & isb & (above > 3), base_ok]
+        cg_ok = (ac > 0.5) & (zc > 0)
         for j, mk in enumerate(cls):
             cg_n[j] += int(mk.sum()); cg_p[j] += int((mk & pv).sum())
             for k, f in enumerate(FR):
-                cg_hit[j, k] += int((mk & pv & (zc < zp / (1 + f))).sum())
+                tr_hit[j, k] += int((mk & pv & (zt < zp / (1 + f))).sum())
+                cg_hit[j, k] += int((mk & pv & cg_ok & (zc < zp / (1 + f))).sum())
         if (ii + 1) % 50 == 0:
             print(f"  相機 {ii + 1}／{len(sel)}（{time.time() - t0:.0f} s）", flush=True)
 
@@ -194,9 +196,10 @@ for k, f in enumerate(FR):
 print(f"\n== (2) 我方模型海面上方的浮塊像素（真表面是海、渲染表面高於海平面 5 m、α>0.5）：{acc['flt']:,}（佔海面像素 {pc(acc['flt'], acc['sea']):.2f}%）｜其中有可靠先驗 {pc(acc['flt_p'], acc['flt']):.1f}%")
 for k, f in enumerate(FR):
     print(f"  f {100 * f:g}%：命中 {pc(acc['flt_hit'][k], acc['flt_p']):.1f}%（佔有先驗的浮塊像素）＝佔全部浮塊像素 {pc(acc['flt_hit'][k], acc['flt']):.1f}%")
-print(f"\n== (3) CityGS 細物像素被命中的比例（要 <= 約 3%）")
-print(f"  {'類別':18}{'像素':>12}{'有先驗%':>9}" + "".join(f"{'f ' + format(100 * f, 'g') + '% 命中%':>14}" for f in FR))
+print(f"\n== (3) 細物像素（真表面分類）被命中的比例（佔有先驗的像素；要 <= 約 3%）｜每格：完美模型／CityGS")
+print(f"  {'類別':18}{'像素':>12}{'有先驗%':>9}" + "".join(f"{'f ' + format(100 * f, 'g') + '%':>18}" for f in FR))
 for j, nm in enumerate(CG):
-    print(f"  {nm:18}{int(cg_n[j]):>12,}{pc(cg_p[j], cg_n[j]):>9.1f}" + "".join(f"{pc(cg_hit[j, k], cg_p[j]):>14.2f}" for k in range(NF)), flush=True)
+    print(f"  {nm:18}{int(cg_n[j]):>12,}{pc(cg_p[j], cg_n[j]):>9.1f}"
+          + "".join(f"{pc(tr_hit[j, k], cg_p[j]):>9.2f}／{pc(cg_hit[j, k], cg_p[j]):<8.2f}" for k in range(NF)), flush=True)
 print(f"\n判讀（規格 4 §2）：(1) 海面有可靠先驗的比例很低，或 (3) 任一類 > 約 3% => 數字貼給使用者，不排臂｜{time.time() - t0:.0f} s")
 print("DONE")
