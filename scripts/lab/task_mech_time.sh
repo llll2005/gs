@@ -9,6 +9,10 @@
 #   結果：logs/mech_time_b<塊>_<時間>.log（最後一節是彙總表）；跑次 outputs/lab/mechtime_<臂>（不進任何家族、不跑圖表資料包）
 # 用法（佇列）：[solo] bash scripts/lab/task_mech_time.sh 4
 #               MT_ARMS="cur noV4 cur" MT_STEPS=4600 MT_WARMUP=1550 [solo] bash scripts/lab/task_mech_time.sh 4
+# ★ 11-13 規格 5 §1「底」模式：MT_TUNE_ARMS="<task_tune25 臂> ..."（例 "s30g50+np16+tricap0p5+cmflat s30g50+np16+tricap0p5+cmflat"＝底跑兩次估雜訊）
+#   旗標全部由 task_tune25.sh 解析（TUNE_PROFILE_* 模式；不手抄）；排程照臂的全長，訓練到 MT_STEPS 停、穩態取 MT_WARMUP 之後。
+#   增生期：MT_STEPS=4600 MT_WARMUP=1550（預設）｜收割期：MT_STEPS=23000 MT_WARMUP=20000（整跑、只取 20k → 23k）
+#   step_cost.txt 多一張「依步型」表（lean／dist／full＋增生事件；internal/gaussian_splatting.py _StepProfiler.cls_report）
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac
 set -u
 cd "$(dirname "$0")/../.." || exit 1
@@ -27,6 +31,27 @@ for i in $(seq 1 240); do
 done
 [ "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l)" -eq 0 ] && echo "✅ 卡上無其他行程，開始量 $(date)" || echo "⚠⚠ 等滿 2 h 仍有其他行程 => 這次時間可能被污染"
 gpu () { echo "（整卡已用 $(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1) MiB、計算行程 $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l) 個）"; }
+if [ -n "${MT_TUNE_ARMS:-}" ]; then
+  L=logs/mech_time_tune_b${B}_s${STEPS_RUN}_$(date +%m%d_%H%M).log
+  {
+    echo "=== 底的逐段計時（規格 5 §1）：block $B、訓練到 $STEPS_RUN 步、穩態取 $WARM 步之後、臂 [$MT_TUNE_ARMS] $(date) ==="
+    i=0
+    for arm in $MT_TUNE_ARMS; do
+      i=$((i + 1))
+      NAME="${RUN_PREFIX}mechtime_tune${i}_s${STEPS_RUN}"
+      echo "════ [$i] $arm $(date)"; gpu
+      _s0=$(date +%s)
+      TUNE_PROFILE_STEPS=$STEPS_RUN TUNE_PROFILE_WARMUP=$WARM TUNE_PROFILE_NAME="$NAME" bash scripts/lab/task_tune25.sh "$B" "$arm" 2>&1 \
+        | grep -E "${MT_SHOW:-Error|error|⛔|❌|Traceback|\[profile\]|^臂 }" | head -${MT_SHOW_N:-12}
+      gpu
+      echo "── 整個任務牆鐘（含啟動、資料載入、收尾；不含圖表資料包）：$(( $(date +%s) - _s0 )) s"
+      echo "── step_cost（$arm）"; cat "outputs/$NAME/blocks/block_$B/step_cost.txt" 2>/dev/null | sed -n '1,/^判讀/p' || echo "⛔ 沒有 step_cost.txt"
+      rm -f "outputs/$NAME/blocks/block_$B/checkpoints/"*.ckpt
+    done
+  } 2>&1 | grep -vE 'pkg_resources|declare_namespace|caching images|appearance group|loading colmap|down sample|colmap dataparser|depth maps' | tee "$L"
+  echo "log：$L"
+  exit 0
+fi
 source scripts/lab/_cur_recipe.sh                 # CUR＝現行配方的旗標（11-09 全場景 g44s30ksfm10nuPF2DB2_）
 # 各項的「關掉」寫法（同 11-09 拆解臂 g44s30ksfm10loo<項>_）
 OFF_V4=(--model.density.init_args.sfm_vis false --model.density.init_args.sfm_vis_noup false)

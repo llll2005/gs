@@ -747,6 +747,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
                     print(f"⚠ [sh-adam-bwd] 不能在 backward 裡做 SH 的 Adam：{why} => 退回一般 optimizer.step（sh_split 照舊）", flush=True)
             else:
                 kwargs["_sh_adam"] = opts[0].sh_adam_args(step_key=step)
+        # ★ 11-13 規格 5 §1：記這一步走哪條路（只給逐段計時 CITYGS_STEP_PROFILE 分步型用；不影響渲染）
+        self._prof_path = ("full" if (kwargs.get("_geo", False) or not getattr(self, "lean_train", False))
+                           else "dist" if kwargs.get("_lean_dist", False) else "lean")
         return self(viewpoint_camera=viewpoint_camera, pc=pc, bg_color=bg_color, render_types=render_types,
                     _lean=True, **kwargs)
 

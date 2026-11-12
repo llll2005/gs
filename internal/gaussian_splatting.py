@@ -63,6 +63,13 @@ class _StepProfiler:
         self.pk_alloc = {}     # 段落 -> 段內峰值配置 MiB（取最大）
         self.pk_resv = {}      # 段落 -> 段末保留 MiB（取最大）
         self.global_pk = 0.0   # 全程最大段內峰值配置 MiB（不被 reset 影響）
+        # ★ 11-13 規格 5 §1：依步型分帳（步型＝這一步光柵器走 lean／dist／full，加「增生事件」；由 end_step(cls) 帶進來）
+        self._cur_cls = None   # 目前這一步的步型（end_step 之後的收尾段 11／12 記到它）
+        self._pending_out = None
+        self.cls_seg = {}      # 步型 -> {段落 -> 累計 wall ms}
+        self.cls_n = {}        # 步型 -> 步數
+        self.cls_real = {}     # 步型 -> 累計真實步時間（同 real_step_ms 的定義）
+        self.sub = {}          # 「其中」項：段落 -> [累計 wall ms, 次數]（已含在別的段落裡，不另加總）
 
     WARMUP = int(os.environ.get("CITYGS_STEP_PROFILE_WARMUP", "20"))
 
@@ -73,7 +80,8 @@ class _StepProfiler:
         now = time.perf_counter()
         self._step_t0 = self._prev_end if self._prev_end is not None else now
         if self._prev_end is not None:
-            self._acc("0 迴圈外（dataloader/Lightning）", None, (now - self._prev_end) * 1e3)
+            self._acc("0 迴圈外（dataloader/Lightning）", None, (now - self._prev_end) * 1e3, cls=False)
+            self._pending_out = (now - self._prev_end) * 1e3     # 步型要等這一步跑完才知道 => end_step 再記進分帳
         self._marks = []
         self.mark("__begin__")
         if self._prev_end is not None:          # __begin__ 讀到的峰值 = 上一步結束到這裡（迴圈外）
@@ -112,10 +120,11 @@ class _StepProfiler:
         self.pk_resv[name] = max(self.pk_resv.get(name, 0.0), r)
         self.global_pk = max(self.global_pk, a)
 
-    def end_step(self):
+    def end_step(self, cls=None):
         if not self.on:
             return
         import time
+        self._cur_cls = cls if cls is not None else "?"
         self.mark("__end__")
         torch.cuda.synchronize()                       # 每步只同步一次
         for i in range(1, len(self._marks)):
@@ -125,10 +134,16 @@ class _StepProfiler:
                 continue
             self._acc(name, pev.elapsed_time(ev), (t - pt) * 1e3)
             self._accmem(name, a, r)
+        if self._pending_out is not None:
+            _d = self.cls_seg.setdefault(self._cur_cls, {})
+            _d["0 迴圈外（dataloader/Lightning）"] = _d.get("0 迴圈外（dataloader/Lightning）", 0.0) + self._pending_out
+            self._pending_out = None
         self.steps += 1
+        self.cls_n[self._cur_cls] = self.cls_n.get(self._cur_cls, 0) + 1
         _now = time.perf_counter()
         if self._step_t0 is not None:
             self.real_step_ms += (_now - self._step_t0) * 1e3
+            self.cls_real[self._cur_cls] = self.cls_real.get(self._cur_cls, 0.0) + (_now - self._step_t0) * 1e3
         self._prev_end = _now
         if self.warm is None and self.steps == self.WARMUP:   # ⚠ 只能做一次：
         # 重置後 steps 歸零，少了 `self.warm is None` 就會每 WARMUP 步再重置一遍，
@@ -142,12 +157,45 @@ class _StepProfiler:
             self.pk_alloc, self.pk_resv = {}, {}   # 穩態另計（暖機含起始 trim 的一次性峰值）
             self.gpu, self.cpu, self.count, self.steps = {}, {}, {}, 0
             self.real_step_ms = 0.0
+            self.cls_seg, self.cls_n, self.cls_real, self.sub = {}, {}, {}, {}
 
-    def _acc(self, name, gpu_ms, cpu_ms):
+    def _acc(self, name, gpu_ms, cpu_ms, cls=None):
         if gpu_ms is not None:
             self.gpu[name] = self.gpu.get(name, 0.0) + gpu_ms
         self.cpu[name] = self.cpu.get(name, 0.0) + cpu_ms
         self.count[name] = self.count.get(name, 0) + 1
+        if cls is not False and self._cur_cls is not None:   # cls=False＝不進分帳（迴圈外由 end_step 補記）
+            _d = self.cls_seg.setdefault(cls or self._cur_cls, {})
+            _d[name] = _d.get(name, 0.0) + cpu_ms
+
+    def sub_acc(self, name, cpu_ms):
+        """「其中」項（已含在別的段落裡，例：迴圈外裡的 on_train_batch_end hooks）。"""
+        if not self.on:
+            return
+        v = self.sub.setdefault(name, [0.0, 0])
+        v[0] += cpu_ms; v[1] += 1
+
+    def cls_report(self):
+        """★ 11-13 規格 5 §1：依步型分帳的表（wall ms；收尾＝11 trim＋12 hook，記在同一步）。"""
+        if not self.cls_n:
+            return []
+        L = []
+        tot_steps = sum(self.cls_n.values())
+        tot = {c: self.cls_real.get(c, 0.0) + sum(v for k, v in self.cls_seg.get(c, {}).items() if k.startswith(("11 ", "12 ")))
+               for c in self.cls_n}
+        T_all = sum(tot.values())
+        def seg(c, pre):
+            return sum(v for k, v in self.cls_seg.get(c, {}).items() if k.startswith(pre)) / max(self.cls_n[c], 1)
+        L.append("依步型（wall ms／步；步型＝光柵器路徑 lean／dist（每 4 步）／full（法向＋上限＋閘門，每 8 步），＋增生事件＝density 每 densification_interval 步）")
+        L.append(f"{'步型':<16} {'步數':>8} {'佔步數':>7} {'真實ms/步':>10} {'含收尾':>8} {'佔總時間':>8} | {'迴圈外':>7} {'forward':>8} {'loss':>6} {'backward':>9} {'density':>8} {'hooks':>6} {'optim':>6} {'trim':>6}")
+        for c in sorted(self.cls_n, key=lambda c: -tot[c]):
+            n = self.cls_n[c]
+            L.append(f"{c:<16} {n:>8,} {100*n/tot_steps:>6.1f}% {self.cls_real.get(c,0)/n:>10.2f} {tot[c]/n:>8.2f} {100*tot[c]/max(T_all,1e-9):>7.1f}% | "
+                     f"{seg(c,'0 '):>7.2f} {seg(c,'3 '):>8.2f} {seg(c,'4 '):>6.2f} {seg(c,'6 '):>9.2f} {seg(c,'7 '):>8.2f} {seg(c,'8 '):>6.2f} {seg(c,'9 '):>6.2f} {seg(c,'11 '):>6.2f}")
+        L.append(f"{'（全部）':<16} {tot_steps:>8,} {'':>7} {sum(self.cls_real.values())/tot_steps:>10.2f} {T_all/tot_steps:>8.2f}")
+        for k, (v, n) in sorted(self.sub.items()):
+            L.append(f"  其中 {k}：{v/max(tot_steps,1):.2f} ms／步（{n:,} 次；已含在『迴圈外』裡）")
+        return L
 
     def report(self, out_path, n_gaussians):
         if not self.on or self.steps == 0:
@@ -175,6 +223,10 @@ class _StepProfiler:
         A(f"{'（各段之和·序列化）':<34} {sum(self.gpu.values())/self.steps:>10.2f} {tot_cpu:>11.2f}")
         A(f"{'（真實步時間·含重疊）':<34} {'':>10} {self.real_step_ms/self.steps:>11.2f}"
           f"   = {1000*self.steps/max(self.real_step_ms,1e-9):.2f} it/s")
+        _cr = self.cls_report()
+        if _cr:
+            A("")
+            lines.extend(_cr)
         if self.pk_alloc:
             A(f"  VRAM：穩態最大段內峰值配置 {max(self.pk_alloc.values()):,.0f} MiB（{max(self.pk_alloc, key=self.pk_alloc.get)}）"
               f"／最大段末保留 {max(self.pk_resv.values()):,.0f} MiB／全程含暖機 {self.global_pk:,.0f} MiB")
@@ -971,7 +1023,7 @@ class GaussianSplatting(LightningModule):
             if self._train_log_due(global_step):
                 self.log_metrics(metrics, prog_bar, prefix="train", on_step=True, on_epoch=False)
             self._finish_training_step(optimizers, schedulers, outputs, batch, global_step)
-            _prof.end_step()
+            _prof.end_step("strip")
             return
 
         # ★ 2026-11-05 renderer.skip_unscored_pixels：渲染前先取本影像的 C 區（metric 的同一張遮罩），lean 訓練 forward 略過
@@ -1024,10 +1076,24 @@ class GaussianSplatting(LightningModule):
         _prof.mark("6 backward")
 
         self._finish_training_step(optimizers, schedulers, outputs, batch, global_step)
-        _prof.end_step()
+        _prof.end_step(self._prof_cls(global_step) if _prof.on else None)
         if _prof.on and _prof.steps % 200 == 0:
             _prof.report(os.path.join(self.hparams["output_path"], "step_cost.txt"),
                          self.gaussian_model.get_xyz.shape[0])
+
+    def _prof_cls(self, global_step) -> str:
+        """★ 11-13 規格 5 §1：逐段計時的步型＝光柵器路徑（renderer._prof_path）＋這一步是不是 density 的增生事件步。"""
+        p = getattr(self.renderer, "_prof_path", "?")
+        dc = self.density_controller
+        cfg = getattr(dc, "config", None)
+        iv = int(getattr(cfg, "densification_interval", 0) or 0)
+        try:
+            grow = dc._growing(global_step) if hasattr(dc, "_growing") else global_step < int(getattr(cfg, "densify_until_iter", 0) or 0)
+        except Exception:
+            grow = False
+        if iv > 0 and global_step % iv == 0 and grow and global_step > int(getattr(cfg, "densify_from_iter", 0) or 0):
+            return p + "＋增生事件"
+        return p
 
     def _split_backward_needed(self, metrics) -> bool:
         """Does anything downstream read the viewspace gradient this step?
@@ -1361,6 +1427,12 @@ class GaussianSplatting(LightningModule):
 
         for i in self.on_train_batch_end_hooks:
             i(outputs, batch, self.gaussian_model, global_step, self)
+        if _prof is not None and _prof.on and _prof._prev_end is not None:
+            # ★ 11-13 規格 5 §1：trim 之後的 light_gaussian_prune＋on_train_batch_end hooks（MCMC 雜訊、兩輪流程的面內限制等）
+            #   原本整段算在下一步的『迴圈外』裡；這裡只另記一個「其中」數（不移動 _prev_end => 真實步時間的定義不變）
+            import time as _t
+            torch.cuda.synchronize()
+            _prof.sub_acc("on_train_batch_end hooks（MCMC 雜訊／面內限制等）", (_t.perf_counter() - _prof._prev_end) * 1e3)
 
         if self.hparams.get("cap_ctrl", False):
             _f, _iv = int(self.hparams.get("cap_ctrl_from", 6000)), max(1, int(self.hparams.get("cap_ctrl_interval", 1500)))

@@ -34,6 +34,10 @@
 #              熵只往 0 推（權重回 0.002）、不剪枝（V/C 只在第一輪）、合併只到 S1
 #     r2c<NN>  第一輪顆數 NN% cap（預設 70）｜r2s<NN> S1 佔全長 NN%（預設 60）｜r2free 第二輪不限母點與平面（拆因）｜r2ent0 第二輪熵全關
 #              （r2c／r2s／r2free／r2ent0 都要和 r2 一起用）
+#     規格 5 §2 配方瘦身（每個只關底的一項）：nogate 深度支撐閘門＋增生取樣｜nohf 補洞放點｜noip 增生方向限面內｜nonm 法向一致性｜
+#              nonp 不帶 np16（拿掉鄰域平面；只是名字，旗標同不寫 np16）｜nomg 合併整個關掉｜nol2 L1 混 L2｜nopx 點精靈下限｜nohp 刪死顆粒｜
+#              mge1 合併改成只併渲染誤差 < 0.1、不設額度、不透明質量守恆（11-08 MMR）
+#   TUNE_PROFILE_STEPS／TUNE_PROFILE_WARMUP／TUNE_PROFILE_NAME：逐段計時模式（task_mech_time.sh MT_TUNE_ARMS 用；規格 5 §1）
 #   合併窗口跟著全長縮放（3k ～ 全長 x 0.9；現行配方寫死 27k＝30k 的 90%）；二元熵切雙向（全長／3）與位置 lr 排程由 task_cmp 跟著全長縮放。
 # 用法：[solo] bash scripts/lab/task_tune25.sh <塊> <臂>
 #       [solo] bash scripts/lab/task_tune25.sh eval <塊> <標籤> <臂>...   （只比跑完的臂；對照新基準 30k、A＋dist4）
@@ -56,9 +60,10 @@ parse() {
     else
       case "$t" in
         lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0) XT+=("$t") ;;
+        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1) XT+=("$t") ;;
         r2c[0-9]*|r2s[0-9]*) [[ $t =~ ^r2[cs][0-9]+$ ]] || { echo "⛔ 寫法：r2c<NN>／r2s<NN>（例 r2c50、r2s50）"; return 2; }; XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1）"; return 2 ;;
       esac
     fi
   done
@@ -70,7 +75,9 @@ parse() {
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
-      r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; esac
+      r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;;
+      nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
+      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; esac
   done
 }
 
@@ -163,6 +170,17 @@ for t in "${XT[@]:-}"; do
                  --model.metric.init_args.opacity_entropy_round2_from $S1 --model.metric.init_args.opacity_entropy_round2_reg 0.002)
             echo "[r2] 兩輪：S1 $S1（${R2S}%）｜第一輪增生到 $D1、顆數 ${R2C}% cap｜第二輪增生 $S1 → $U2｜合併只到 $S1" ;;
     r2free) XA+=(--model.density.init_args.round2_free true) ;;
+    # ★ 11-13 規格 5 §2 配方瘦身：每個元件只關底的一項（旗標蓋在 NB／其他元件之後 => 後者勝）
+    nogate) XA+=(--model.metric.init_args.depth_support false --model.density.init_args.geom_gate_sampling false) ;;
+    nohf)   XA+=(--model.density.init_args.hole_fill_frac 0) ;;
+    noip)   XA+=(--model.density.init_args.inplane_offset 0 --model.density.init_args.inplane_hold 0) ;;
+    nonm)   XA+=(--model.metric.init_args.lambda_normal 0) ;;
+    nonp)   [[ " ${XT[*]} " =~ \ np16\  ]] && { echo "⛔ nonp＝不帶 np16（兩個不能一起寫）"; exit 2; } ;;
+    nomg)   XA+=(--model.density.init_args.merge_interval 0) ;;    # 整個合併關掉（merge_prune false 只是改成交給 relocation 搬，合併照做）
+    nol2)   XA+=(--model.metric.init_args.rgb_l2_weight 0) ;;
+    nopx)   XA+=(--model.density.init_args.px_floor 0) ;;
+    nohp)   XA+=(--model.density.init_args.harvest_prune_dead false) ;;
+    mge1)   XA+=(--model.density.init_args.merge_render_eps 0.1 --model.density.init_args.merge_opacity mass --model.density.init_args.merge_max_frac 1.0) ;;
     r2ent0) XA+=(--model.metric.init_args.opacity_entropy_round2_reg 0) ;;
     cmflat) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ cmflat 要和 tricap<W> 一起用（沒有上限就沒有遮罩可套）"; exit 2; }
             _CM=data/matrix_city/aerial/train/block_all/cap_masks_flat
@@ -171,6 +189,14 @@ for t in "${XT[@]:-}"; do
   esac
 done
 CAP=$(python3 -c "import json;print(int(round(1e6 * json.load(open('configs/cap_alloc_sfm_g44.json'))['weights']['$B'])))")
+# ★ 11-13 規格 5 §1 逐段計時模式（task_mech_time.sh 的 MT_TUNE_ARMS 用）：TUNE_PROFILE_STEPS＝訓練到這一步就停（排程仍照全長）、
+#   CITYGS_STEP_PROFILE（穩態從 TUNE_PROFILE_WARMUP 步起）、不跑圖表資料包、跑次名＝TUNE_PROFILE_NAME（不進任何家族）
+if [ -n "${TUNE_PROFILE_STEPS:-}" ]; then
+  ENVX+=(CITYGS_STEP_PROFILE=1 CITYGS_STEP_PROFILE_WARMUP="${TUNE_PROFILE_WARMUP:-1550}" CITYGS_POSTDATA=0
+         CITYGS_RUN_NAME="${TUNE_PROFILE_NAME:?TUNE_PROFILE_NAME}")
+  XA+=(--trainer.max_steps "$TUNE_PROFILE_STEPS")
+  echo "[profile] 逐段計時：訓練到 $TUNE_PROFILE_STEPS 步、穩態從 ${TUNE_PROFILE_WARMUP:-1550} 步起、跑次 $TUNE_PROFILE_NAME"
+fi
 echo "臂 $ARM => $LBL：全長 $ST、增生到 $((ST * G / 100))、合併到 $((ST * 9 / 10))、cap $CAP、家族 $FAM"
 env "${ENVX[@]}" CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=$ST CITYGS_CAP=$CAP CITYGS_DUP44=${CITYGS_DUP44:-2} CITYGS_FAMILY=$FAM \
   bash scripts/lab/task_cmp.sh "$B" $SUF "${NB[@]}" "${XA[@]}"
