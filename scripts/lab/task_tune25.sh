@@ -90,7 +90,9 @@ if [ "$1" = eval ]; then
     r=$FAM$SUF
     if [ -d outputs/lab/$r/blocks/block_$B ]; then R+=($r); ARGS+=("$LBL=$r"); else echo "⚠ 缺 $a（$r）"; fi
   done
-  bash scripts/lab/task_full44.sh swap "$B" "${SW[@]}" "${R[@]}"
+  # ★ 11-12 TUNE_NOSWAP=1：跳過換塊評測（要載約 4 GB 的合併模型；lab 被外部行程佔卡、共用卡時放不下）＝只算 CPU 那幾項
+  if [ "${TUNE_NOSWAP:-0}" = 1 ]; then echo "[eval] TUNE_NOSWAP=1：跳過換塊評測（之後卡空時補）"
+  else bash scripts/lab/task_full44.sh swap "$B" "${SW[@]}" "${R[@]}"; fi
   EVAL_ONLY=time,f1,ground,facade,orient,sea,smallobj bash scripts/lab/eval_arms_lab.sh "$B" tune_${TAG}_b${B} "${ARGS[@]}"
   exit $?
 fi
