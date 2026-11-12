@@ -194,8 +194,8 @@ lab 3090、現行配方（A＋dist4、b3、N 2.25M；`g44s30km25fssh16di4prof_` 
 
 ## 14. 11-12 現行的底：和 A＋dist4 差在哪（單塊；全場景還沒跑）
 
-跑法：`[solo] bash scripts/lab/task_tune25.sh <塊> s30g50+np16+tricap0p5`（旗標陣列 `scripts/lab/_cur_recipe.sh` CUR → `_nb_recipe.sh` NB → 元件 `np16`、`tricap0p5`；`task_tune25.sh --help` 列全部元件）。
-數字（b1／b4 對 A＋dist4）：換塊 −0.035／−0.029、F1 +.10／+.11、地下覆蓋 −69／−71%、時間 −7%（`研究總覽.md` §0；`實驗分析/37` §3.1）。
+跑法：`[solo] bash scripts/lab/task_tune25.sh <塊> s30g50+np16+tricap0p5+cmflat`（旗標陣列 `scripts/lab/_cur_recipe.sh` CUR → `_nb_recipe.sh` NB → 元件 `np16`、`tricap0p5`、`cmflat`；`task_tune25.sh --help` 列全部元件）。
+數字（b1／b4 對 A＋dist4）：換塊 −0.012／−0.023、F1 +.11／+.11、地下覆蓋 −73／−75%、時間 −4%（b4）（`研究總覽.md` §0；`實驗分析/37` §3.1、§8）。
 
 | 部分 | 現行的底 | 旗標（`--model.*.init_args.`） | 出處 |
 |---|---|---|---|
@@ -213,6 +213,7 @@ lab 3090、現行配方（A＋dist4、b3、N 2.25M；`g44s30km25fssh16di4prof_` 
 | 鄰域平面約束 | 每 16 步、平面每 400 步重算、權重 0.01 | `metric.surf_reg 0.01`、`surf_orient 1.0`、`surf_interval 16`、`surf_every 400` | `過程/34` §5 |
 | 深度先驗 | SfM 三角形校正單目深度，只留可靠像素（斜率級 <= 1、大小級 <= 3） | `data.parser.depth_dir estimated_depths_tri`、`depth_rel_dir estimated_depths_tri_rel` | `37` §1～2 |
 | 逐貢獻深度上限 | 見下 | `metric.depth_cap_reg 0.5`、`depth_cap_margin 0.01`、`depth_cap_interval 8` | `37` §3.1 |
+| 上限只罰躺平 | 只在先驗表面躺平（校正深度反投影的法向 \|n_z\| > 0.8）的像素設上限；約保留 67% 的上限像素 | `metric.depth_cap_mask_dir data/…/cap_masks_flat`（`tools/make_cap_masks.py --kind flat`） | `37` §8 |
 | 顆數 | 塊內 SfM 點數分配（平均 1M）；增生到 15k、合併到 27k | `configs/cap_alloc_sfm_g44.json` | `研究總覽.md` §4 |
 
 逐貢獻深度上限（光柵器 `CAP_OFFSET`，完整路徑才算；與法向同一步）：
@@ -223,4 +224,4 @@ loss   += w * k * sum_{p: icap > 0} B(p) / #{p: icap > 0}       w 0.5、k 8
 ```
 => 這條光線上每一份落在先驗表面後面超過 1% 的混合貢獻，依它的混合權重罰；中位深度的 loss 碰不到的「躲在貼地層後面補顏色」的地下層，這裡每一份都算得到。
 
-**實驗中（預設關，`實驗分析/37` §8～9）**：上限遮罩 `depth_cap_mask_dir`（只罰躺平的先驗表面，元件 `cmflat`）、兩輪流程 `round2_*`＋`opacity_entropy_round2_*`（元件 `r2`）、需求地圖補貨 `hole_fill_demand`、落後計價 `trim_behind_price`／`sample_behind_price`（後兩者不採用）。
+**實驗中（預設關，`實驗分析/37` §8～9）**：兩輪流程 `round2_*`＋`opacity_entropy_round2_*`（元件 `r2`）、需求地圖補貨 `hole_fill_demand`、落後計價 `trim_behind_price`／`sample_behind_price`（後兩者不採用）。
