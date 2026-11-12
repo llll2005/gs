@@ -54,6 +54,7 @@ ap.add_argument("--merged_run", default="outputs/lab/full44_best")
 ap.add_argument("--test_dir", default="data/matrix_city/aerial/test/block_all_test_official2")
 ap.add_argument("--max_cams", type=int, default=0)
 ap.add_argument("--no_d2", action="store_true")
+ap.add_argument("--no_heldout", action="store_true", help="D2 只做訓練視角（冒煙測試用；換塊要多載約 4 GB 的合併模型）")
 a = ap.parse_args()
 B = a.block; D = "data/matrix_city/aerial/train/block_all"; MU = 100.0; dev = torch.device("cuda")
 t0 = time.time()
@@ -397,6 +398,7 @@ if do_d2:
               + " ".join(f"{CLS[c]}{100 * dd[gi, :, :, c].sum() / tot_:.0f}" for c in range(4)), flush=True)
 
     # ---- D2 換塊 held-out ----
+if do_d2 and not a.no_heldout:
     import eval_official_test as eot
     from swap_block_eval import block_mask
     for lab_ in list(models):                  # 只留 D2 的模型，其他放掉（換塊的合併模型約 4 GB）
