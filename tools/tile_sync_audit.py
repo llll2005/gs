@@ -12,7 +12,7 @@
   另外不同配對的成本不同（被跳過的 alpha<1/255 配對便宜、真的混合的貴）。
 backward 的逐像素工作量是「最後貢獻者」以前的配對，與 n_proc 同級；這裡只用 n_proc。
 --mask_dir：另外報「C 區像素不跑」（skip_unscored_pixels）之後的同一組數字。
-★ 11-13 規格 5 §1：另印每視角 Load（Σ 顆粒蓋到的 tile 數）、每像素平均迴圈次數／混合次數，有 --mask_dir 時再分 A／B／C（1／2／0）
+★ 11-13 規格 5 §1：另印每視角 Load（Σ 顆粒蓋到的 tile 數）、每像素平均迴圈次數／混合次數，有 --mask_dir 時再分 A 塊內／B 塊外／C 接縫帶不計分（1／2／0）
    報像素比例、工作量（迴圈次數）佔比、混合次數佔比與每像素平均。
 
 用法：PYTHONPATH=<有 audit_tiles 的光柵器> python tools/tile_sync_audit.py --ckpt <ckpt> [--nview 24] [--mask_dir <block_masks44/block_B>]
@@ -106,7 +106,7 @@ def main():
     _tp = sum(v[0] for v in reg.values())
     if _tp > 0:
         _tw = sum(v[1] for v in reg.values()); _tb = sum(v[2] for v in reg.values())
-        print("A／B／C（塊內／接縫帶／塊外不計分）：")
+        print("A／B／C（A 塊內計分／B 塊外、目標＝隨機背景（學透明）／C 接縫帶不計分；skip_unscored_pixels 略過的是 C）：")
         for r, (n, w, b) in reg.items():
             print(f"  {r}：像素 {100 * n / _tp:5.1f}%｜迴圈次數佔 {100 * w / max(_tw, 1):5.1f}%｜混合次數佔 {100 * b / max(_tb, 1):5.1f}%"
                   f"｜每像素 迴圈 {w / max(n, 1):.1f}、混合 {b / max(n, 1):.1f}")
