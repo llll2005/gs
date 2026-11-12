@@ -1794,6 +1794,16 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                   f"N {n:,}｜表面顆粒現存 {int(self._r2_surf.sum()) if self._r2_surf.shape[0] == n else -1:,}"
                   + (f"｜上一步位移被面內限制擋下 {100 * hold:.1f}%（法向分量／總位移）" if hold is not None else ""), flush=True)
 
+    @staticmethod
+    def _vlast_extend(gaussian_model, n0: int, n1: int) -> None:
+        """★ 11-12 兩輪流程：renderer 在 trim 存的 `_trim_state["Vlast"]` 跟著新增的顆粒在尾端補 0（新生的在上一個窗口沒出力）。
+        沒補的話長度落後 N，之後的剪枝（`_prune_points` 只同步長度等於 N 的）就跳過它 => S1 時對不上（11-12 lab R b1 實際發生，退回只看 o > 0.5）。
+        只動 Vlast（沒開兩輪流程就沒有這個鍵）=> 關的時候逐位元不變。"""
+        st = getattr(gaussian_model, "_trim_state", None)
+        vl = st.get("Vlast") if st else None
+        if vl is not None and torch.is_tensor(vl) and vl.shape[0] == n0 and n1 > n0:
+            st["Vlast"] = torch.cat([vl, torch.zeros(n1 - n0, dtype=vl.dtype, device=vl.device)])
+
     def _round2_probs(self, gaussian_model, probs, indices=None):
         """第二輪：母點只能是表面顆粒或第二輪出生的（round2_free 時不限）。"""
         surf = getattr(self, "_r2_surf", None)
@@ -2242,6 +2252,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         n1 = gaussian_model.n_gaussians
         if n1 > n0:
             self._per_particle_extend(n0, n1)
+            self._vlast_extend(gaussian_model, n0, n1)
             t = getattr(self, "_pxf_log", None); par = getattr(self, "_last_parent_idx", None)
             if t is not None and t.shape[0] == n1:
                 if par is not None and par.shape[0] == n1 - n0:

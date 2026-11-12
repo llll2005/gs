@@ -84,6 +84,21 @@ class Round2ScheduleTest(unittest.TestCase):
         self.assertIs(impl._round2_probs(gm, p), p)
 
 
+class Round2VlastSyncTest(unittest.TestCase):
+    def test_vlast_padded_on_add_then_pruned_in_sync(self):
+        impl = _on()
+        gm, opts = _gm(4)
+        gm._trim_state = {"Vlast": torch.tensor([1.0, 0.0, 2.0, 3.0])}
+        impl._vlast_extend(gm, 4, 6)                                       # 新增 2 顆 => 尾端補 0
+        self.assertEqual(gm._trim_state["Vlast"].tolist(), [1.0, 0.0, 2.0, 3.0, 0.0, 0.0])
+        impl._vlast_extend(gm, 5, 7)                                       # 長度對不上（不是剛好 n0）=> 不動
+        self.assertEqual(gm._trim_state["Vlast"].shape[0], 6)
+        gm2, _ = _gm(3)
+        gm2._trim_state = {}
+        impl._vlast_extend(gm2, 3, 5)                                      # 沒開兩輪流程（沒有 Vlast）=> 不新增鍵
+        self.assertNotIn("Vlast", gm2._trim_state)
+
+
 class Round2PlaneHoldTest(unittest.TestCase):
     def test_born_moves_only_in_plane(self):
         impl = _on()
