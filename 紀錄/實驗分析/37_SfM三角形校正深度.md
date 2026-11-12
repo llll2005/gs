@@ -296,6 +296,49 @@ loss = 權重 x k x Σ_{設了上限的像素} B(p) ／ 像素數        每 k�
 | `tricap0p5m1p5+vcb+sbp+bpf` | 1 | 剪枝＋抽母點 |
 | `hfd+tricap0p5m1p5+vcb+sbp+bpf` | 1 | 全開 |
 
+## §8 規格 3：落後貢獻從哪來＋上限只罰躺平（11-12；`紀錄/規格3_落後貢獻從哪來與只罰躺平近帶的深度上限_1112.md`）
+> 使用者 11-12：規格 3 與規格 4 由實作 session（citygaussian-b1）一起做；照規格 4 §6，規格 3 只做 §1（離線拆解）與 §3 的 `cmflat` 第一臂，
+> 對照底換成 `tricap0p5`（使用者看 viewer 後採用的新底）；§4 改光柵器等 §1 結果再問使用者；§3.4 真深度遮罩不做。
+- **實作**
+  - 上限遮罩（a00e48f）：metric `depth_cap_mask_dir`＋`tools/make_cap_masks.py --kind flat`＋元件 `cmflat`；測試 6 項。
+    - 沒給目錄時上限圖不變；缺檔該張不設上限並計數；場景放大 10 倍遮罩逐像素相同。
+    - 上限圖同時餵給 loss、逐顆帳、需求地圖。
+  - `flat` 遮罩已在 lab 產生（b1／b4／b3；`cap_masks_flat/stats_block_<B>.json`）。訓練時設上限的可靠像素裡，留下 65.3／66.0／64.7%。
+  - 離線拆解 `tools/probe/behind_cause_1112.py`（09e68bb～dacf080）：D1 落後權重分桶、逐顆 ρ／Vb 分桶／SH 比；D2 拿掉一群顆粒。
+    - lab 冒煙（2 台相機）D1、逐顆、D2 訓練視角都跑通。
+    - 換塊 held-out 那段要多載約 4 GB 的合併模型，外部行程佔卡時沒測，佇列 [solo] 跑時才會走到。
+    - 規格外的改動：D1 的模型是 CityGS、鄰域平面 30k、`tricap0p5`（規格寫 `tricap0p5m3`；新底換成 `tricap0p5`）。
+      像素類別用先驗表面（校正深度反投影）分，不是基準渲染的表面。
+- **已排（lab，11-12 早）**
+  - `tricap0p5+cmflat` b1／b4，評估 `capmask`（底＝`tricap0p5`，另帶鄰域平面 30k 與 `tricap0p5m3`）；
+  - `behind_cause_1112` b1／b4（log `logs/behind_cause_1112_b{1,4}.log`）。
+- 規格 3 §2 不用寫程式的三臂（`tricap0p5m3` b3、`tricap0p5g`、`tricap0p5m1p5g`）：**沒排**。規格 4 §6 只列 §1 與 `cmflat`，新底已定。
+  其中只增生期的 `tricap0p5g` 可能降低新底的代價，要不要跑交使用者。
+
+## §9 規格 4：新的底（`tricap0p5`）之上——兩輪流程、海面前方上限、高塔遮罩（11-12；`紀錄/規格4_兩輪流程_海面前方上限_高塔遮罩_1112.md`）
+- **兩輪流程（§1）實作**（dacf080；測試 10 項；關的時候逐位元不變）：
+  - density `round2_*`：
+    - 第一輪名額 `_round_cut`；S1 時定表面顆粒＝o > 0.5 且 `Vlast > 0`（renderer 每次 trim 存剪枝後的 V）。
+    - 第二輪增生窗口 `_growing`；morton 重排跟著每段增生期的結尾。
+    - 母點只限表面＋第二輪出生；第二輪出生的顆粒每步在 optimizer 與 MCMC 雜訊之後投影回出生平面。
+      用投影不用梯度投影：Adam 的逐軸正規化會帶出法向位移。
+  - metric `opacity_entropy_round2_*`（第二輪只往 0）。
+  - 元件 `r2`／`r2c<NN>`／`r2s<NN>`／`r2free`／`r2ent0`。預設排程：S1 18000、第一輪增生到 10800、第二輪增生 18000 → 24000、合併只到 18000。
+  - 第一輪合併扣掉的名額（`_cap_cut`）第二輪不補回，跟現在的語意一樣。
+- **已排**：兩輪流程冒煙 2k 步 b1（佇列第一個）。過了才排六臂（b1／b4）。
+- **高塔（§3）**：
+  - 已排：`tricap0p5+trimask` b1／b2／b6，b2／b6 先補 `tricap0p5` 底；評估 `trimask`。
+  - 遮罩量測 `mask_tall_seam_1109.py`（加 `--gt_stride`，用真深度像素當樣本）：新舊遮罩 x SfM／真深度樣本，lab 背景在跑。
+- **海面（§2）**：
+  - 前提檢查 `tools/probe/front_cap_premise_1112.py` b1 在跑（log `logs/front_cap_premise_1112_b1.log`）。
+  - b3 要等 `tricap0p5` 底跑完。
+  - 第一版的細物分類用 CityGS 自己的渲染表面，是循環論證（浮在路面上方的半透明筆觸被算成路燈帶），已改用真表面分類。
+- **補量（§4）**：
+  - 逐棟破洞 `tower_probe_1105.py`（b1／b4，頂高 > 50 m，CityGS／鄰域平面 30k／上限 0.5）lab 背景在跑；
+  - 低角度透空 `lowangle_1030.py` 已排（佇列最後）。
+  - b3 底跑完後補海面與玻璃塔欄（已排評估 `capb3`）。
+- ⚠ 11-12 早上 lab 的 GPU 被容器外的行程佔用（約 20 GB、100%），佇列在等卡空。
+
 ## 下一步與沒做的構想
 | 項目 | 狀態 | 理由／條件 |
 |---|---|---|
