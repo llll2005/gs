@@ -295,8 +295,11 @@ for lab, md in models.items():
           + "／".join(f"{100 * float((rho[mg] > 0.5).float().mean()):.2f}%" for mg in MR[:3]))
     for g, k in grp.items():
         print(f"    {g:7}{int(k.sum()):>10,} 顆（塊內 {int((k & inbox).sum()):,}、塊內 o>0.5 {int((k & inbox & (op > 0.5)).sum()):,}）", flush=True)
-    pr = m.properties
-    dc = pr["shs_dc"].reshape(md["n"], -1).pow(2).sum(1); rest = pr["shs_rest"].reshape(md["n"], -1).pow(2).sum(1) if "shs_rest" in pr else torch.zeros_like(dc)
+    pr = m.properties                      # 載入時已 pre-activate：shs 合併成一個 [N, K, 3]、opacities 是 sigmoid 後的值
+    if "shs" in pr:
+        dc = pr["shs"][:, :1].float().pow(2).sum((1, 2)); rest = pr["shs"][:, 1:].float().pow(2).sum((1, 2))
+    else:
+        dc = m.get_shs_dc().float().pow(2).reshape(md["n"], -1).sum(1); rest = m.get_shs_rest().float().pow(2).reshape(md["n"], -1).sum(1)
     ratio = rest / dc.clamp_min(1e-12)
     print("    SH 高階／DC 能量比（中位）：朝向類別｜ρ(3%)>0.5｜ρ(3%)<0.1（有證據）")
     for nm_, kk in (("躺平", nzg > 0.8), ("立面", nzg < 0.3), ("斜的", (nzg >= 0.3) & (nzg <= 0.8))):
@@ -313,7 +316,7 @@ G2 = ["S3", "S3F", "S3N", "S_near", "S_far"]
 vbk = {lab: {k: torch.zeros(models[lab]["n"], device=dev) for k in (0, 2, 3)} for lab in ours}
 if do_d2:
     md2 = models[d2lab]
-    op_logit0 = md2["m"].properties["opacities"].detach().clone()
+    op_logit0 = md2["m"].properties["opacities"].detach().clone()      # pre-activate 後是 [0,1] 的值（不是 logit）=> 拿掉＝設 0
     se_tot = torch.zeros(1 + len(G2), dtype=torch.float64, device=dev); n_px = 0
     # 誤差增量分解：key＝桶(6，margin 3%；7＝沒設上限的 A 像素)x 躺平 x 類別
     dse = torch.zeros(len(G2), 7 * 2 * 4, dtype=torch.float64, device=dev)
@@ -351,7 +354,7 @@ with torch.no_grad():
                 key = ((kb * 2 + at["flat"].long()) * 4 + at["cls"])[Am]
                 props = dict(md["m"].properties)
                 for gi, g in enumerate(G2):
-                    opl = op_logit0.clone(); opl[md["grp"][g]] = -30.0
+                    opl = op_logit0.clone(); opl[md["grp"][g]] = 0.0
                     md["m"].properties = {**props, "opacities": opl}
                     sg = ((renderer(cam, md["m"], bg_color=bg)["render"].clamp(0, 1) - gt) ** 2).mean(0)
                     se_tot[1 + gi] += float(sg[Am].double().sum())
@@ -448,7 +451,7 @@ if do_d2 and not a.no_heldout:
             se_f[0] += float(s0.double().sum()); se_r[0] += float(s0[region].double().sum()); nf += s0.numel(); nr += int(region.sum())
             for gi, g in enumerate(G2):
                 opl = opm0.clone(); idx = torch.nonzero(md["grp"][g][cmask]).reshape(-1) + n_other
-                opl[idx] = -30.0
+                opl[idx] = 0.0
                 mm.properties = {**merged, "opacities": opl}
                 sg = ((rr(cam, mm, bg_color=bg)["render"].clamp(0, 1) - gt) ** 2).mean(0)
                 se_f[1 + gi] += float(sg.double().sum()); se_r[1 + gi] += float(sg[region].double().sum())
