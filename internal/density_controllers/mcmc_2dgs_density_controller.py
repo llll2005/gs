@@ -1329,7 +1329,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if int(getattr(self.config, "occl_recycle_min", 0) or 0) > 0 and global_step >= int(getattr(self.config, "occl_from_iter", 3000)):
                 dead_mask = self._occl_step(gaussian_model, outputs, batch, dead_mask, global_step)
             dead_mask = self._anchor_exclude(dead_mask, gaussian_model)        # 錨點不給補洞拿去用（relocate_gs 也會再擋一次）
-            if float(getattr(self.config, "hole_fill_frac", 0.0) or 0.0) > 0 and global_step >= int(getattr(self.config, "hole_fill_from_iter", 1000)):
+            # ★ 11-12 兩輪流程：補洞只在第一輪的增生期（第二輪的新顆粒只能從表面顆粒生；renderer 也只在 < densify_until 的補洞步強制完整路徑）
+            if float(getattr(self.config, "hole_fill_frac", 0.0) or 0.0) > 0 and global_step >= int(getattr(self.config, "hole_fill_from_iter", 1000)) \
+                    and global_step < int(self.config.densify_until_iter):
                 dead_mask = self._hole_fill(gaussian_model, optimizers, outputs, batch, pl_module, dead_mask, global_step)
             self.relocate_gs(gaussian_model, optimizers, dead_mask)
             if _nf_idx is not None:
