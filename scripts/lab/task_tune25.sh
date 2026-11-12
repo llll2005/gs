@@ -28,6 +28,7 @@
 #     dense    起點換成稠密初始化（tools/make_tri_dense_init.py：SfM＋補點之外，把可靠像素沿校正深度反投影、多視角一致的體素質心補滿到 0.9 cap）
 #     sni      初始化的面元朝向用 SfM 近鄰平面（sfm_normal_init；11-08 在 30k 效果被洗掉，短排程重測）
 #     trimask  塊外遮罩換成用校正深度判的那一份（block_masks44_tri；tools/block_mask44.py --depth_dir estimated_depths_tri --depth_raw）
+#     cmflat   深度上限只罰躺平的先驗表面（上限遮罩 cap_masks_flat；tools/make_cap_masks.py --kind flat）；要和 tricap<W> 一起用。規格 3 §3
 #   合併窗口跟著全長縮放（3k ～ 全長 x 0.9；現行配方寫死 27k＝30k 的 90%）；二元熵切雙向（全長／3）與位置 lr 排程由 task_cmp 跟著全長縮放。
 # 用法：[solo] bash scripts/lab/task_tune25.sh <塊> <臂>
 #       [solo] bash scripts/lab/task_tune25.sh eval <塊> <標籤> <臂>...   （只比跑完的臂；對照新基準 30k、A＋dist4）
@@ -49,9 +50,9 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask) XT+=("$t") ;;
+        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat) XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat）"; return 2 ;;
       esac
     fi
   done
@@ -62,7 +63,7 @@ parse() {
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
-      dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; esac
+      dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; esac
   done
 }
 
@@ -138,6 +139,10 @@ for t in "${XT[@]:-}"; do
     sni)    XA+=(--model.density.init_args.sfm_normal_init true) ;;
     trimask) [ -f "data/matrix_city/aerial/train/block_all/block_masks44_tri/block_$B/stats.json" ] || { echo "⛔ 缺校正深度遮罩 block_masks44_tri/block_$B"; exit 2; }
             ENVX+=(CITYGS_MASK_DIR=block_masks44_tri) ;;
+    cmflat) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ cmflat 要和 tricap<W> 一起用（沒有上限就沒有遮罩可套）"; exit 2; }
+            _CM=data/matrix_city/aerial/train/block_all/cap_masks_flat
+            [ -f "$_CM/stats_block_$B.json" ] || { echo "⛔ 缺上限遮罩 $_CM/stats_block_$B.json（tools/make_cap_masks.py --kind flat --blocks $B）"; exit 2; }
+            XA+=(--model.metric.init_args.depth_cap_mask_dir "$_CM") ;;
   esac
 done
 CAP=$(python3 -c "import json;print(int(round(1e6 * json.load(open('configs/cap_alloc_sfm_g44.json'))['weights']['$B'])))")

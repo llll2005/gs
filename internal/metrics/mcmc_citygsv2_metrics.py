@@ -209,6 +209,11 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_cap_until_iter: int = 0
     """★ 2026-11-11 >0 時只算到這一步（不含）。11-11 b1：全程開、權重 2／8 地下覆蓋 4.46 → 1.22／0.69，但換塊 −0.22／−0.40 dB
     => 地下層是增生期長出來的，試「只在增生期壓、收割期放手讓光度精修」。0＝全程。"""
+    depth_cap_mask_dir: str = ""
+    """★ 2026-11-12 規格 3 §3.1 上限遮罩：每張影像一個 uint8 PNG（檔名同影像），0＝這個像素不設上限（`tools/make_cap_masks.py`）。
+    在 depth_cap_map 套完塊外遮罩之後再乘上去 => loss、逐顆帳（vcb）、需求地圖補貨（hfd）都跟著遮罩走。路徑＝絕對路徑或相對工作目錄。
+    找不到檔 => 該張不設上限（⚠⚠ 一次、之後計數，每 2000 步印缺幾張；缺超過 1% 就是 bug）。""＝關（上限圖與之前逐位元相同）。
+    為什麼（規格 3 §0 線索 1）：B 臂的抽母點計價不限朝向時多掉 −0.134／−0.082 dB、只算躺平時 ≈ 0；上限掉分 40% 在立面（`37` §3.1、§7）。"""
     surf_reg: float = 0.0
     """★ 2026-11-01 鄰域平面約束（使用者 11-01：不增加計算、從 0 漸增到定值、用周遭高斯讓深度一致的表面平滑、取絕對值免得抹掉細節）。0＝關。
     不渲染：每 surf_every 步用 Morton 近鄰算每顆的鄰域平面（opacity 加權 PCA，`geom_gate.surf_planes`），只對平坦鄰域（e3/e2 < surf_flat）
@@ -263,6 +268,14 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 print("⚠⚠ [depth-support] depth_support_behind 有開，但 metric depth_support="
                       f"{bool(getattr(self.config, 'depth_support', False))}、density geom_gate_sampling={bool(getattr(_dc, 'geom_gate_sampling', False))}"
                       " => behind 票不會影響抽樣（兩個都要 true）", flush=True)
+        _cmd = str(getattr(self.config, "depth_cap_mask_dir", "") or "")
+        if _cmd:
+            import os
+            _dc = getattr(getattr(pl_module, "density_controller", None), "config", None)
+            if float(getattr(self.config, "depth_cap_reg", 0.0) or 0.0) <= 0 and not bool(getattr(_dc, "hole_fill_demand", False)):
+                print("⚠⚠ [cap-mask] depth_cap_mask_dir 有給，但 depth_cap_reg=0 且沒開 hole_fill_demand => 沒有上限圖，遮罩不會有作用", flush=True)
+            if not os.path.isdir(_cmd):
+                raise FileNotFoundError(f"[cap-mask] depth_cap_mask_dir 不存在：{_cmd}（tools/make_cap_masks.py 先產生）")
         self._sfm_xyz = None
         self._sfm_r = float(getattr(self.config, "depth_support_sfm_radius", 0.0))
         k_nn = float(getattr(self.config, "depth_support_sfm_radius_nn", 0.0) or 0.0)
@@ -596,10 +609,56 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             m = self._block_mask_get(name, hw, gt.device)
             if m is not None:
                 cap = cap * (m == 1)
+        if getattr(c, "depth_cap_mask_dir", ""):
+            cap = self._cap_mask_apply(cap, name, hw, step)
         cap = cap.contiguous()
         self._cap_map_cur = cap
         self._cap_cur = cap if want_loss else None
         return cap
+
+    def _cap_mask_apply(self, cap, name, hw, step):
+        """★ 11-12 規格 3 §3.1：上限圖 x 上限遮罩（config.depth_cap_mask_dir）。CPU 快取存遮罩原解析度的 bool（約 0.5 MB／張），
+        用到時搬上 device 再 nearest 放大到 hw。缺檔 => 回傳全 0（該張不設上限）。可觀測性：保留的上限像素比例（本步＋累計）。"""
+        import os
+        import numpy as np
+        from PIL import Image
+        cache = self.__dict__.setdefault("_cm_cache", {})
+        seen = self.__dict__.setdefault("_cm_seen", set())
+        miss = self.__dict__.setdefault("_cm_miss", set())
+        acc = self.__dict__.setdefault("_cm_acc", [0.0, 0.0])      # [遮罩前的上限像素, 遮罩後]
+        d = str(self.config.depth_cap_mask_dir)
+        key = str(name)
+        seen.add(key)
+        m = cache.get(key)
+        if m is None and key not in miss:
+            p = os.path.join(d, os.path.basename(key))
+            if os.path.exists(p):
+                m = torch.from_numpy(np.array(Image.open(p)) > 0)
+                cache[key] = m
+            else:
+                if not miss:
+                    print(f"⚠⚠ [cap-mask] 找不到上限遮罩 {p}（該張不設上限；之後只計數）", flush=True)
+                miss.add(key)
+        before = int((cap > 0).sum())
+        if m is None:
+            out = torch.zeros_like(cap)
+        else:
+            md = m.to(cap.device, non_blocking=True)
+            if tuple(md.shape) != tuple(hw):
+                md = torch.nn.functional.interpolate(md[None, None].float(), size=tuple(hw), mode="nearest")[0, 0] > 0.5
+            out = cap * md
+        after = int((out > 0).sum())
+        acc[0] += before; acc[1] += after
+        bucket = step // 2000
+        if not getattr(self, "_cm_announced", False) or bucket != getattr(self, "_cm_bucket", -1):
+            first = not getattr(self, "_cm_announced", False)
+            self._cm_announced = True
+            self._cm_bucket = bucket
+            fm = len(miss) / max(len(seen), 1)
+            warn = "  ⚠⚠ 缺檔超過 1%（bug，這一跑不能拿來比）" if fm > 0.01 else ""
+            print(f"[cap-mask] {'✅ 首次觸發' if first else '　'} step={step} {os.path.basename(key)}：遮罩保留的上限像素 本步 "
+                  f"{after / max(before, 1):.3f}、累計 {acc[1] / max(acc[0], 1):.3f}｜缺檔 {len(miss)}／{len(seen)} 張{warn}（{d}）", flush=True)
+        return out
 
     def _depth_cap_step(self, step, batch, outputs, metrics, pbar):
         """逐貢獻深度上限的 loss（config.depth_cap_*）；這一步沒有上限圖或渲染器沒交出 rend_cap 就不動 loss。"""
