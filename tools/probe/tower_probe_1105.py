@@ -18,6 +18,7 @@ ap.add_argument("--block", type=int, default=3)
 ap.add_argument("--models", nargs="+", required=True)
 ap.add_argument("--top", type=float, default=1.0, help="頂高門檻（場景單位；1＝100 m）")
 ap.add_argument("--R", type=float, default=0.01, help="覆蓋半徑（場景單位；0.01＝1 m）")
+ap.add_argument("--detail_top", type=float, default=1.5, help="★ 11-12 逐棟細表的頂高門檻（場景單位；預設 1.5＝150 m，量測用）")
 a = ap.parse_args()
 D = "data/matrix_city/aerial/train/block_all"; B = a.block; M = 100.0
 p = torch.load(f"{D}/partition/partitions-dim_4_4_visibility_0.08/partitions.pt", map_location="cpu", weights_only=False)
@@ -70,8 +71,8 @@ def load(spec):
     return lab, m[k], o[k]
 models = [load(s) for s in a.models]
 ref_cg = models[0][1][models[0][2] > 0.5] if models[0][0].lower().startswith("citygs") else None
-tall = [b for b in bld if b[1] > 1.5]
-print(f"\n=== 高樓（頂高 > 150 m）逐棟、逐高度帶（中心在該棟 10 m 格膨脹 1 格內）===")
+tall = [b for b in bld if b[1] > a.detail_top]
+print(f"\n=== 高樓（頂高 > {a.detail_top * M:.0f} m）逐棟、逐高度帶（中心在該棟 10 m 格膨脹 1 格內）===")
 print("欄：不透明顆粒／半透明顆粒｜SfM 參考點 R 內無本模型不透明顆粒（破洞）%｜CityGS 不透明中心 R 內無本模型不透明（破洞）%")
 foot = {k: maximum_filter(lab_ == k, size=3) for k, _, _ in tall}
 for k, zt, blue in sorted(tall, key=lambda x: -x[2]):
