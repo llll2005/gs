@@ -1,6 +1,6 @@
 ---
 id: R-pipeline
-狀態: 有效（現行配方 A＋dist4 的完整流程與公式）
+狀態: 有效（A＋dist4 的完整流程與公式；11-12 現行的底 => §14）
 年代: 新年代（2026-09-13 影像↔姿態修正之後；4x4）
 摘要: 從資料到部署的每一步：做什麼、數學、參數值、對應程式碼；另列實驗中的模組與狀態。數字的出處在 `實驗分析/`。
 依賴: [研究總覽 §0, 實驗分析/15, 17, 19, 21, 23, 24]
@@ -9,6 +9,8 @@ id: R-pipeline
 ---
 
 # 完整 Pipeline —— 現行配方 A＋dist4（每塊 30k、4x4）
+
+> ⚠ **2026-11-12**：本文 §1～§13 寫的是 A＋dist4（全場景最佳）。單塊實驗現在的底已改成「新基準＋鄰域平面＋校正深度＋逐貢獻深度上限」，差在哪 => **§14**。
 
 > 一句話：**4x4 分塊 × 每塊 30k 步的 2DGS＋MCMC**，用塊外遮罩讓每塊只學自己的內容，二元熵把 opacity 推向 0／1，
 > 累加式 V/C trim 邊訓練邊剪低價值顆粒；16 塊各留盒內顆粒合併成全場景。
@@ -189,3 +191,36 @@ lab 3090、現行配方（A＋dist4、b3、N 2.25M；`g44s30km25fssh16di4prof_` 
 ```
 - 光柵化的兩個逐像素混合 kernel 佔 80%；前處理、排序、binning 合計約 2%。
 - 11-05 無損加速：V/C warp 先加總（增生期 −8.5%）、零梯度略過（−1.7%）。上一次拆解是 10 月初的 best1（`實驗分析/01`、`10`）。
+
+## 14. 11-12 現行的底：和 A＋dist4 差在哪（單塊；全場景還沒跑）
+
+跑法：`[solo] bash scripts/lab/task_tune25.sh <塊> s30g50+np16+tricap0p5`（旗標陣列 `scripts/lab/_cur_recipe.sh` CUR → `_nb_recipe.sh` NB → 元件 `np16`、`tricap0p5`；`task_tune25.sh --help` 列全部元件）。
+數字（b1／b4 對 A＋dist4）：換塊 −0.035／−0.029、F1 +.10／+.11、地下覆蓋 −69／−71%、時間 −7%（`研究總覽.md` §0；`實驗分析/37` §3.1）。
+
+| 部分 | 現行的底 | 旗標（`--model.*.init_args.`） | 出處 |
+|---|---|---|---|
+| 法向一致性 | 每 8 步、權重 0.0125（每 k 步 ×k） | `metric.lambda_normal 0.0125`、`lambda_normal_interval 8` | 11-04 候選、11-07 起預設 |
+| 深度支撐閘門 | 投票規則、每 8 步累積、SfM 豁免（8 倍 SfM 近鄰間距）、只影響抽母點 | `metric.depth_support true`、`depth_support_rule vote`、`depth_support_interval 8`、`depth_support_sfm_radius_nn 8`；`density.geom_gate_sampling true` | `過程/34` §3 |
+| 補洞 | 每個增生事件最多 0.2% 顆，放在深度表面 | `density.hole_fill_frac 0.002` | `過程/34` §4 |
+| 合併後刪除 | 3k～27k 每 1500 步、只併同色、每次最多 2% | `density.merge_interval 1500`、`merge_prune true`、`merge_from_iter 3000`、`merge_until_iter 27000` | `過程/34` §6 |
+| 增生方向限面內 | 新點在母點平面內錯開 1 x 長軸、出生 1000 步內只准面內移動 | `density.inplane_offset 1.0`、`inplane_hold 1000` | `過程/34` §7 |
+| L1 混 L2 | 光度 loss 加 2 x L2（救回超高塔頂、省 8% 時間） | `metric.rgb_l2_weight 2.0` | `33` §2 |
+| 無損加速 | V/C warp 先加總、零梯度略過 | `renderer.trim_running_warp true`、`bwd_zero_grad_skip true` | `定案/28` §3～4 |
+| 點精靈下限 | 尺度不低於約 1 px（每 1000 步重算、新點繼承母點） | `density.px_floor 1.0`、`px_floor_interval 1000` | `定案/35` §5 |
+| 刪死顆粒 | 增生結束後每 500 步刪 o <= 0.005 | `density.harvest_prune_dead`（預設 true） | 11-07 起預設 |
+| 位置學習率 | **×1**（6.4e-5 → 6.4e-7；11-07～08 的 ×2 是全場景退步主因） | `gaussian.optimization.means_lr_init 6.4e-05` | `研究總覽.md` §5.3 |
+| 視線一致性 v4 | **關**（把少 SfM 的牆判成地下） | `density.sfm_vis false`、`sfm_vis_noup false` | 已關閉的線 I |
+| 鄰域平面約束 | 每 16 步、平面每 400 步重算、權重 0.01 | `metric.surf_reg 0.01`、`surf_orient 1.0`、`surf_interval 16`、`surf_every 400` | `過程/34` §5 |
+| 深度先驗 | SfM 三角形校正單目深度，只留可靠像素（斜率級 <= 1、大小級 <= 3） | `data.parser.depth_dir estimated_depths_tri`、`depth_rel_dir estimated_depths_tri_rel` | `37` §1～2 |
+| 逐貢獻深度上限 | 見下 | `metric.depth_cap_reg 0.5`、`depth_cap_margin 0.01`、`depth_cap_interval 8` | `37` §3.1 |
+| 顆數 | 塊內 SfM 點數分配（平均 1M）；增生到 15k、合併到 27k | `configs/cap_alloc_sfm_g44.json` | `研究總覽.md` §4 |
+
+逐貢獻深度上限（光柵器 `CAP_OFFSET`，完整路徑才算；與法向同一步）：
+```
+icap(p) = 1 / ((1 + margin) * z_prior(p))           z_prior＝校正深度（不可靠、塊外 => icap 0＝不設上限）
+B(p)    = sum_i T_i * alpha_i * max(z_i * icap(p) - 1, 0)      z_i＝光線與面元的交點深度
+loss   += w * k * sum_{p: icap > 0} B(p) / #{p: icap > 0}       w 0.5、k 8
+```
+=> 這條光線上每一份落在先驗表面後面超過 1% 的混合貢獻，依它的混合權重罰；中位深度的 loss 碰不到的「躲在貼地層後面補顏色」的地下層，這裡每一份都算得到。
+
+**實驗中（預設關，`實驗分析/37` §8～9）**：上限遮罩 `depth_cap_mask_dir`（只罰躺平的先驗表面，元件 `cmflat`）、兩輪流程 `round2_*`＋`opacity_entropy_round2_*`（元件 `r2`）、需求地圖補貨 `hole_fill_demand`、落後計價 `trim_behind_price`／`sample_behind_price`（後兩者不採用）。

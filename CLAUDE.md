@@ -29,6 +29,7 @@ every closed line + reopen condition => `紀錄/new_archived/已關閉的線.md`
 retired manual sections => `紀錄/new_archived/完整指令手冊_退役段落_至2026-10-19.md`. New analyses 16 (steps/SH), 17 (out-of-block mask), 18 (road underground splats).
 `_ctx.md`, the indexes, the survival list and the speed Q&A are also in `new_archived/` (one-line reason per file).
 Read those before proposing mechanisms — this section is a summary and goes stale.**
+**2026-11-12 reorganisation (user): open lines are now only 30 (frontier, permanent), 32 (sea), 33 (tall buildings), 36 (steps), 37 (SfM-triangle-calibrated depth + per-contribution depth cap = main line, underground lives here); 28/29/35 moved to `new_archived/實驗分析_定案/`, 31/34 to `new_archived/實驗分析_過程/`, specs 1–2 + handoff to `new_archived/規格與交接/` (specs 3–4 still in `紀錄/`); new direction-level closures = `已關閉的線.md` §I; old-number lookup = `紀錄/實驗分析/README.md`.**
 **2026-11-05 reorganisation (user) — filing rules:** `紀錄/實驗分析/` holds ONLY open lines, one doc per line (28 speed, 29 per-block
 count, 30 current frontier [permanent], 31 underground, 32 sea floaters, 33 tall buildings, 34 next-recipe candidates); settled results go into
 `研究總覽.md` §1–§8 (one-line conclusion + key numbers; index §8.1) with the original doc+figure moved to `new_archived/實驗分析_定案/`;
@@ -54,12 +55,13 @@ pre-reduction (= every adopted speed-up; `task_cmp.sh` prefix `best1*`; referenc
 VRAM are all neighbour-independent (only wall time and it/s are, and those have dedicated `[solo]` tools).
 The laptop = absolute verification: re-run the stage winner there to claim the envelope.**
 
+**★★★★★ 2026-11-12 current single-block base (user adopted after viewer check; no full scene yet):** `[solo] bash scripts/lab/task_tune25.sh <blk> s30g50+np16+tricap0p5` = 11-10 new base (11-07~08 defaults with position lr back to x1 and SfM visibility v4 OFF — lr x2 caused 87% of the 11-09 full-scene −0.33 dB) + neighbourhood-plane every 16 steps + SfM-triangle-calibrated depth + per-contribution depth cap (`depth_cap_reg 0.5`, margin 1%). b1/b4 vs A+dist4: swap −0.035/−0.029 dB, F1 +.10/+.11, underground −69/−71%, time −7%. Per-block caps follow SfM-point allocation (user rule). Differences from A+dist4 => `紀錄/完整Pipeline數學詳解.md` §14; status => `紀錄/研究總覽.md` §0. Validate candidates on b1/b4.
 **★★★★ Current recipe (2026-11-02) — read `紀錄/完整Pipeline數學詳解.md` (rewritten 11-02) before changing anything:**
 A＋dist4 = 4x4, 30k steps/block, arm `best1maskdistrfed10b4` (out-of-block A/B/C mask + random background + cropped dup init,
 dist 100 every 4 steps, opacity binary entropy one-sided until STEPS/3 then both ×4, accumulative V/C trim, FusedAdam) + flags
 `record_reduce absgrad_gate fused_ssim sh_rest_interval 16 lambda_dist_interval 4`, cap 2.5M => full scene 28.058/.8824/.1142,
 27.75M, 5.04 h (CityGS release 27.261). Light version: adaptive cap avg 1M 27.828, 3.19 h. Status/candidates: `紀錄/研究總覽.md` §0;
-open lines `紀錄/實驗分析/28`–`34` (settled/process docs 01–27 archived 11-05, see the filing rules above). 11-04: strongest candidate = normal consistency every 8 steps
+open lines as of 11-12 are listed above (30, 32, 33, 36, 37; settled/process docs archived 11-05 and 11-12). 11-04: strongest candidate = normal consistency every 8 steps
 (`lambda_normal 0.0125 lambda_normal_interval 8`); main open problem = road surfaces live underground (5–9 coverage layers below SfM ground),
 mono depth (±10%) too coarse to detect it => SfM-depth see-through is the next mechanism. Judge by goals, not resemblance to CityGS (user 11-04).
 **11-05** (`紀錄/實驗分析/28`–`29`; SfM five arms in 31–33): lossless speed flags `trim_running_warp` (growth phase −8.5%/step) and `bwd_zero_grad_skip` (−1.7%) — rasterizer rebuilt

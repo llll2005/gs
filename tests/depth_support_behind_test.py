@@ -1,5 +1,5 @@
 """★ 2026-11-11 深度支撐閘門的 behind 票（`geom_gate.DepthSupport`、`MCMCCityGSV2MetricsModule._geom_gate_step`、
-`MCMCDensityControllerImpl._geom_gate_probs`）——規格 `紀錄/規格_組合臂_表面起點增生限制深度上限_1111.md` §2 的四項測試＋抽樣接線。純 CPU。"""
+`MCMCDensityControllerImpl._geom_gate_probs`）——規格 `紀錄/new_archived/規格與交接/規格_組合臂_表面起點增生限制深度上限_1111.md` §2 的四項測試＋抽樣接線。純 CPU。"""
 import unittest
 from types import SimpleNamespace
 

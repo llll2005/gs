@@ -184,7 +184,7 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     r＝(顆粒深度 − 表面深度)／表面深度 落在 (depth_support_behind_margin, depth_support_behind_max) 記一票；看過 >= 3 次且過半 => 地下層候選，
     **只影響 MCMC 抽母點**（density `geom_gate_sampling true` 那條路，與「無支撐」同一個係數 1e-3）——不關二元熵、不刪不搬（11-10～11 兩版「搬走」都掉畫質，
     `紀錄/實驗分析/31` §4.7）；SfM 豁免不套用（地下顆粒多半就在 SfM 點附近）。在表面前面的（路燈、車、陽台）一律不管。
-    深度用 dataparser 給的那份（`tri` 元件＝校正深度＋可靠度過濾；不可靠像素是 0＝不算觀測）。規格 `紀錄/規格_組合臂_表面起點增生限制深度上限_1111.md` §2。"""
+    深度用 dataparser 給的那份（`tri` 元件＝校正深度＋可靠度過濾；不可靠像素是 0＝不算觀測）。規格 `紀錄/new_archived/規格與交接/規格_組合臂_表面起點增生限制深度上限_1111.md` §2。"""
     depth_support_behind_margin: float = 0.01
     """窄帶下緣（相對深度，無因次）：校正深度在可靠三角形內誤差中位 0.05%、|e| > 1% 7.6%（`37` §1）。"""
     depth_support_behind_max: float = 0.05

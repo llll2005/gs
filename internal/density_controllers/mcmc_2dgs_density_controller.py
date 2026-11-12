@@ -539,7 +539,7 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 11-11 >0：抽母點的計價只算躺平的顆粒（面元法向 z 分量絕對值 > 這個值；與 renderer.behind_price_flat 同義）。"""
     """證據門檻：Vc < 這個比例 × 「Vc > 0 的顆粒的 Vc 中位數」的顆粒 ρ＝0（相對量；與 renderer.behind_price_evidence 同義、預設相同）。"""
     hole_fill_demand: bool = False
-    """★ 2026-11-11 規格 2 §2 需求地圖補貨（`紀錄/規格2_表面補貨與落後貢獻計價_1111.md`；需要 hole_fill_frac > 0 與重編過的光柵器）。
+    """★ 2026-11-11 規格 2 §2 需求地圖補貨（`紀錄/new_archived/規格與交接/規格2_表面補貨與落後貢獻計價_1111.md`；需要 hole_fill_frac > 0 與重編過的光柵器）。
     開的時候補洞事件那一步：metric 交出上限圖（不加 loss），光柵器交出落後權重 W(p)＝Σ T·α·[交點深度 > (1+depth_cap_margin)·先驗深度]
     ＝這個像素的顏色有多少靠「表面後面的顆粒」在撐（＝表面缺多少貨）。候選像素＝A 像素且先驗深度有效：依 W(p)＋[α<0.5 的洞] 當權重抽
     （W 全 0 且沒有洞 => 不放）；原本的「看穿」判準不用。放的位置／朝向／大小／顏色／不透明度與名額來源沿用原本（死顆粒優先、不動 cap、不刪活的不透明顆粒）。

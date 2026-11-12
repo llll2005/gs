@@ -184,7 +184,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if trim_running_score not in ("vc", "v", "inv_vc"):
             raise ValueError(f"trim_running_score 只能是 vc／v／inv_vc（收到 {trim_running_score!r}）")
         self.trim_running_score = trim_running_score
-        # ★ 2026-11-11 規格 2 §3 B1 落後貢獻計價（`紀錄/規格2_表面補貨與落後貢獻計價_1111.md`）：λ＞0 時累加式 trim 的分數＝(V/C)·max(1 − λ·ρ, 0)，
+        # ★ 2026-11-11 規格 2 §3 B1 落後貢獻計價（`紀錄/new_archived/規格與交接/規格2_表面補貨與落後貢獻計價_1111.md`）：λ＞0 時累加式 trim 的分數＝(V/C)·max(1 − λ·ρ, 0)，
         #   ρ＝這顆在「有可靠表面深度」的像素上的貢獻裡、交點深度落在上限（metric depth_cap_map）後面的比例（光柵器逐顆兩筆帳，只在有上限圖的完整路徑步累加）。
         #   λ＝1＝落在表面後面的貢獻不算價值。帳存在 `_trim_state["BVc"／"BVb"]`（剪枝／搬家／補洞／重排都跟著同步）；每次 trim 後乘 behind_price_decay（不歸零）。
         #   證據不足（Vc < behind_price_evidence × 中位）＝ρ 0。只支援 vc／v 判準。不刪不搬（只改 trim 的排序）、不關二元熵。
