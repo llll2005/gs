@@ -390,13 +390,13 @@ if do_d2:
         print(f"    {g:7}{int(k.sum()):>10,}{int((k & ib & (o > 0.5)).sum()):>12,}{psnr(s[1 + gi], n_px) - p0:>+18.3f}"
               f"{100 * cov[ug & k].sum() / max(cov[ug].sum(), 1e-12):>14.1f}{100 * cov[ng & k].sum() / max(cov[ng].sum(), 1e-12):>14.1f}", flush=True)
     dd = dse.cpu().numpy().reshape(len(G2), 7, 2, 4)
-    BK7 = BK + ["沒設上限"]
+    BKS = ["①淺", "②深", "③空", "④漏", "⑤擋", "⑥無真深度", "沒設上限"]
     print("    誤差增量的去處（%，佔該群 ΣΔSE）：桶（margin 3%）｜躺平／不躺平｜類別")
     for gi, g in enumerate(G2):
         tot_ = dd[gi].sum()
         if tot_ <= 0:
             print(f"    {g}：誤差沒有增加"); continue
-        print(f"    {g:7}桶 " + " ".join(f"{BK7[b][:3]}{100 * dd[gi, b].sum() / tot_:.0f}" for b in range(7))
+        print(f"    {g:7}桶 " + " ".join(f"{BKS[b]}{100 * dd[gi, b].sum() / tot_:.0f}" for b in range(7))
               + f"｜躺 {100 * dd[gi, :, 1].sum() / tot_:.0f}／不躺 {100 * dd[gi, :, 0].sum() / tot_:.0f}｜"
               + " ".join(f"{CLS[c]}{100 * dd[gi, :, :, c].sum() / tot_:.0f}" for c in range(4)), flush=True)
 

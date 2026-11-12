@@ -29,6 +29,11 @@
 #     sni      初始化的面元朝向用 SfM 近鄰平面（sfm_normal_init；11-08 在 30k 效果被洗掉，短排程重測）
 #     trimask  塊外遮罩換成用校正深度判的那一份（block_masks44_tri；tools/block_mask44.py --depth_dir estimated_depths_tri --depth_raw）
 #     cmflat   深度上限只罰躺平的先驗表面（上限遮罩 cap_masks_flat；tools/make_cap_masks.py --kind flat）；要和 tricap<W> 一起用。規格 3 §3
+#     r2       兩輪流程（規格 4 §1）：第一輪 0 → S1（預設 0.6 全長）增生到 0.6 S1、顆數 0.7 cap、熵加強（雙向從 S1/6 起、權重 x2）；
+#              第二輪 S1 → 全長：增生到 S1＋0.5(全長−S1)、長到 cap、母點只限表面顆粒＋第二輪出生、出生後只准沿平面移動、
+#              熵只往 0 推（權重回 0.002）、不剪枝（V/C 只在第一輪）、合併只到 S1
+#     r2c<NN>  第一輪顆數 NN% cap（預設 70）｜r2s<NN> S1 佔全長 NN%（預設 60）｜r2free 第二輪不限母點與平面（拆因）｜r2ent0 第二輪熵全關
+#              （r2c／r2s／r2free／r2ent0 都要和 r2 一起用）
 #   合併窗口跟著全長縮放（3k ～ 全長 x 0.9；現行配方寫死 27k＝30k 的 90%）；二元熵切雙向（全長／3）與位置 lr 排程由 task_cmp 跟著全長縮放。
 # 用法：[solo] bash scripts/lab/task_tune25.sh <塊> <臂>
 #       [solo] bash scripts/lab/task_tune25.sh eval <塊> <標籤> <臂>...   （只比跑完的臂；對照新基準 30k、A＋dist4）
@@ -50,9 +55,10 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat) XT+=("$t") ;;
+        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0) XT+=("$t") ;;
+        r2c[0-9]*|r2s[0-9]*) [[ $t =~ ^r2[cs][0-9]+$ ]] || { echo "⛔ 寫法：r2c<NN>／r2s<NN>（例 r2c50、r2s50）"; return 2; }; XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0）"; return 2 ;;
       esac
     fi
   done
@@ -63,7 +69,8 @@ parse() {
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
-      dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; esac
+      dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
+      r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; esac
   done
 }
 
@@ -94,6 +101,12 @@ ST=$((S * 1000))
 XA=(--model.density.init_args.densify_until_iter $((ST * G / 100))
     --model.density.init_args.merge_until_iter $((ST * 9 / 10)))
 ENVX=()
+R2C=70; R2S=60
+for t in "${XT[@]:-}"; do
+  case "$t" in r2c*) R2C=${t#r2c} ;; r2s*) R2S=${t#r2s} ;; r2free|r2ent0)
+    [[ " ${XT[*]} " =~ \ r2\  ]] || { echo "⛔ $t 要和 r2 一起用"; exit 2; } ;; esac
+done
+if [[ " ${XT[*]} " =~ \ r2[cs][0-9] ]] && ! [[ " ${XT[*]} " =~ \ r2\  ]]; then echo "⛔ r2c／r2s 要和 r2 一起用"; exit 2; fi
 for t in "${XT[@]:-}"; do
   case "$t" in
     lowres) XA+=(--model.train_res_schedule "$((ST / 4)):0.5,$((ST / 2)):0.75" --model.metric.init_args.lambda_dist_lowres 0) ;;
@@ -139,6 +152,16 @@ for t in "${XT[@]:-}"; do
     sni)    XA+=(--model.density.init_args.sfm_normal_init true) ;;
     trimask) [ -f "data/matrix_city/aerial/train/block_all/block_masks44_tri/block_$B/stats.json" ] || { echo "⛔ 缺校正深度遮罩 block_masks44_tri/block_$B"; exit 2; }
             ENVX+=(CITYGS_MASK_DIR=block_masks44_tri) ;;
+    r2)     S1=$((ST * R2S / 100)); D1=$((S1 * 6 / 10)); D1=$((D1 / 100 * 100)); U2=$((S1 + (ST - S1) / 2)); U2=$((U2 / 100 * 100))
+            XA+=(--model.density.init_args.densify_until_iter $D1 --model.density.init_args.merge_until_iter $S1
+                 --model.density.init_args.round2_from $S1 --model.density.init_args.round2_densify_until $U2
+                 --model.density.init_args.round2_cap_frac "$(awk -v c="$R2C" 'BEGIN{printf "%g", c / 100}')"
+                 --model.metric.init_args.opacity_entropy_reg 0.004 --model.metric.init_args.opacity_entropy_both_from_iter $((S1 / 6))
+                 --model.metric.init_args.opacity_entropy_both_reg 0.016
+                 --model.metric.init_args.opacity_entropy_round2_from $S1 --model.metric.init_args.opacity_entropy_round2_reg 0.002)
+            echo "[r2] 兩輪：S1 $S1（${R2S}%）｜第一輪增生到 $D1、顆數 ${R2C}% cap｜第二輪增生 $S1 → $U2｜合併只到 $S1" ;;
+    r2free) XA+=(--model.density.init_args.round2_free true) ;;
+    r2ent0) XA+=(--model.metric.init_args.opacity_entropy_round2_reg 0) ;;
     cmflat) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ cmflat 要和 tricap<W> 一起用（沒有上限就沒有遮罩可套）"; exit 2; }
             _CM=data/matrix_city/aerial/train/block_all/cap_masks_flat
             [ -f "$_CM/stats_block_$B.json" ] || { echo "⛔ 缺上限遮罩 $_CM/stats_block_$B.json（tools/make_cap_masks.py --kind flat --blocks $B）"; exit 2; }

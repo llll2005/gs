@@ -991,6 +991,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 pc._trim_state.pop("lam", None); pc._trim_state.pop("off", None); pc._trim_state.pop("off_n", None)
         print(f"[{tag}] step {step}：{n_views} 個訓練視角累加、看到 {n_seen:,}／{seen.numel():,} 顆、未觀測 {seen.numel() - n_seen:,} 顆不剪；"
               f"門檻（{_rs}）{float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}{_hid_msg}{_bp_msg}", flush=True)
+        if int(getattr(getattr(module.density_controller, "config", None), "round2_from", 0) or 0) > 0 and "V" in pc._trim_state:
+            pc._trim_state["Vlast"] = pc._trim_state["V"].detach().clone()   # ★ 11-12 兩輪流程：S1 的表面顆粒＝不透明且最後一個 V/C 窗口有出力（剪枝後的 V）
         # 重設累加器（剪枝後 N 變了 => 以新 N 重建）
         pc._trim_state["V"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         pc._trim_state["C"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)

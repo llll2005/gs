@@ -101,6 +101,12 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     """>=0 時，`opacity_entropy_both_from_iter` 切回雙向之後改用這個權重（-1＝沿用 `opacity_entropy_reg`）。
     ★ 2026-10-24：10k 切回在 0.002 下兩極化不夠快（訓練後段仍比現行慢 12～19%）=> 測切回後加大權重。"""
 
+    opacity_entropy_round2_from: int = 0
+    """★ 2026-11-12 規格 4 §1 兩輪流程的第二輪（>0＝S1；0＝關，逐位元不變）：這一步起二元熵**只往 0 推**、權重改成 opacity_entropy_round2_reg，不往 1 推
+    （讓表面上長半透明顆粒補細節）。第一輪的加強（雙向段提早、權重 x2）用既有的 opacity_entropy_* 設定（task 腳本給）。"""
+    opacity_entropy_round2_reg: float = -1.0
+    """第二輪的熵權重；-1＝沿用 opacity_entropy_reg、0＝第二輪熵全關（r2ent0）。"""
+
     exposure_comp: bool = False
     """★ 2026-10-15 使用者同意（研究總覽 §3.4、§11）：逐影像曝光補償。MatrixCity GT 有逐幀曝光不一致（場景越暗越被提亮，
     log-log 斜率約 −0.5），靜態 3D 模型表達不了 => 每張訓練影像學一個 log 增益 la_k 與偏移 b_k，**只在算訓練光度 loss 時**
@@ -616,6 +622,24 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         self._cap_cur = cap if want_loss else None
         return cap
 
+    def _entropy_mode(self, step):
+        """二元熵這一步的 (權重, 方向, 階段)。階段 ""＝原本、"both"＝單向切回雙向之後、"r2"＝兩輪流程的第二輪（只往 0、權重 opacity_entropy_round2_reg）。
+        沒開第二輪時與原本逐位元相同：opacity_entropy_reg <= 0 => 權重 0（原本外層就跳過，不看 both_reg）。"""
+        c = self.config
+        ew = float(getattr(c, "opacity_entropy_reg", 0.0))
+        r2f = int(getattr(c, "opacity_entropy_round2_from", 0) or 0)
+        if r2f > 0 and step >= r2f:
+            w2 = float(getattr(c, "opacity_entropy_round2_reg", -1.0))
+            return (w2 if w2 >= 0 else ew), "down", "r2"
+        side = str(getattr(c, "opacity_entropy_side", "both"))
+        if ew <= 0:
+            return 0.0, side, ""
+        bf = int(getattr(c, "opacity_entropy_both_from_iter", -1))
+        if side == "down" and 0 <= bf <= step:
+            bw = float(getattr(c, "opacity_entropy_both_reg", -1.0))
+            return (bw if bw >= 0 else ew), "both", "both"
+        return ew, side, ""
+
     def _cap_mask_apply(self, cap, name, hw, step):
         """★ 11-12 規格 3 §3.1：上限圖 x 上限遮罩（config.depth_cap_mask_dir）。CPU 快取存遮罩原解析度的 bool（約 0.5 MB／張），
         用到時搬上 device 再 nearest 放大到 hw。缺檔 => 回傳全 0（該張不設上限）。可觀測性：保留的上限像素比例（本步＋累計）。"""
@@ -860,20 +884,16 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
 
         self._surf_step(gaussian_model, step, metrics, pbar, opacities)
 
-        _ew = float(getattr(self.config, "opacity_entropy_reg", 0.0))
+        _ew, _side, _phase = self._entropy_mode(step)
+        if _phase == "r2" and not getattr(self, "_ent_r2_announced", False):
+            self._ent_r2_announced = True
+            print(f"[opacity-entropy] ✅ step={step} 第二輪：只往 0 推、權重={_ew:g}{'（熵全關）' if _ew <= 0 else ''}", flush=True)
+        if _phase == "both" and _ew > 0 and not getattr(self, "_ent_both_announced", False):
+            self._ent_both_announced = True
+            print(f"[opacity-entropy] ✅ step={step} 單向（down）改回雙向，權重={_ew:g}", flush=True)
         if _ew > 0 and step >= int(getattr(self.config, "opacity_entropy_from_iter", 0)):
             _o = opacities.clamp(1e-6, 1 - 1e-6)
             _Hi = -(_o * torch.log(_o) + (1 - _o) * torch.log(1 - _o))
-            _side = str(getattr(self.config, "opacity_entropy_side", "both"))
-            _bf = int(getattr(self.config, "opacity_entropy_both_from_iter", -1))
-            if _side == "down" and 0 <= _bf <= step:
-                _side = "both"
-                _bw = float(getattr(self.config, "opacity_entropy_both_reg", -1.0))
-                if _bw >= 0:
-                    _ew = _bw
-                if not getattr(self, "_ent_both_announced", False):
-                    self._ent_both_announced = True
-                    print(f"[opacity-entropy] ✅ step={step} 單向（down）改回雙向，權重={_ew:g}", flush=True)
             if _side == "down":
                 _Hi = _Hi * (_o.detach() < 0.5)
             elif _side != "both":

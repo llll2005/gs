@@ -553,6 +553,21 @@ class MCMC2DGSDensityController(MCMCDensityController):
     （2DGS 的 MCMC 雜訊本來就只在面元平面內：共變異法向那軸是 0；跑出牆面的是光度梯度。）"""
     inplane_ramp_from: int = 1000
     inplane_ramp_until: int = 10000
+    round2_from: int = 0
+    """★ 2026-11-12 規格 4 §1 兩輪流程（使用者提案：第一輪逼出不透明表面，第二輪放鬆、讓表面上長半透明顆粒補細節）。>0＝第二輪起點 S1；0＝關（逐位元不變）。
+    第一輪 0 → S1：增生到 densify_until_iter、之後收割到 S1；顆數上限＝round2_cap_frac x cap_max。
+    第二輪 S1 → 全長：增生期 [S1, round2_densify_until)、顆數長到 cap_max；**新顆粒的母點只能是表面顆粒**（S1 時 o > round2_surface_opacity
+    且上一個 V/C 累加窗口有出力，renderer 在最後一次 trim 存 `_trim_state["Vlast"]`）或第二輪生出來的；第二輪生的顆粒整個第二輪**只准沿出生時的平面移動**
+    （每步 optimizer＋MCMC 雜訊之後投影回平面，`_r2_plane_hold`；Adam 的逐軸正規化不會帶出法向位移）。
+    V/C 剪枝照 densify_until_iter（只在第一輪）；合併窗口由 merge_until_iter 控制（task 腳本設成 S1）；死顆粒回收照常；熵在 metric 的 opacity_entropy_round2_*。
+    為什麼：路面掉分的像素 78% 深度沒變、是紋理變差；補貨與計價都沒救回（`37` §7）=> 單層不透明單色圓片畫不出細紋理，給它「貼著表面的半透明顆粒」這條合法的路。"""
+    round2_cap_frac: float = 0.7
+    """第一輪（S1 之前）的顆數上限＝這個比例 x cap_max（cap 仍照 SfM 分配）。"""
+    round2_densify_until: int = 0
+    """第二輪增生期的結束步（task 腳本：S1 + 0.5 x (全長 − S1)）；之後回到收割（死顆粒照常刪）。"""
+    round2_surface_opacity: float = 0.5
+    round2_free: bool = False
+    """拆因：第二輪不限母點、不限平面（只留名額與增生窗口）。預期清掉的內容會長回來。"""
     sfm_normal_init: bool = False
     """★ 2026-11-08（使用者「高處沒轉向」「用 SfM 近鄰擬平面給初始朝向」）開訓時把顆粒的面元法向轉到最近可靠 SfM 點的 k 近鄰 PCA 平面
     （`sfm_normals.SfMNormals`；有效＝在那個 SfM 點的近鄰半徑內、而且鄰域平坦 λ3/λ2 < 0.1；沒有場景單位常數）。init 的旋轉原本是隨機的。
@@ -1011,9 +1026,19 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if self.config.dar_lambda > 0:
                 # runs after optimizer.step() -> Adam moments stay photometric-only
                 pl_module.on_train_batch_end_hooks.append(self._dar_cost_decay)
+            if self._r2_on():
+                c = self.config
+                if int(c.round2_densify_until or 0) <= int(c.round2_from):
+                    raise ValueError(f"round2_densify_until（{c.round2_densify_until}）要大於 round2_from（{c.round2_from}）")
+                if int(c.densify_until_iter) > int(c.round2_from):
+                    raise ValueError(f"densify_until_iter（{c.densify_until_iter}）要 <= round2_from（{c.round2_from}）：第一輪的增生要在 S1 前結束")
+                if not bool(getattr(c, "round2_free", False)):
+                    pl_module.on_train_batch_end_hooks.append(self._r2_plane_hold)   # 排在雜訊之後 => 雜訊的法向分量也投影掉
 
     def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
         self._ip_step = global_step                     # relocate_gs／add_new_gs 的平面錯開要用（漸增係數）
+        if self._r2_on():
+            self._round2_tick(gaussian_model, global_step)
         if self._sfm_on():
             if not getattr(self, "_sfm_ready", False):  # 第一次（還沒做任何 optimizer step）=> 位置＝初始化
                 self._sfm_setup(gaussian_model, pl_module)
@@ -1105,7 +1130,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"Gaussians (radius > {self.config.screen_prune_emergency_px}px, "
                       f"max {int(self._max_radii2D.max())}px)")
                 with torch.no_grad():
-                    if global_step < self.config.densify_until_iter:
+                    if self._growing(global_step):
                         self.relocate_gs(gaussian_model, optimizers, hot)  # recycle into supply
                     else:
                         self._prune_points(hot, gaussian_model, optimizers)  # harvest: just remove
@@ -1115,7 +1140,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if self.config.freeze_opacity_after_densify and global_step >= self.config.densify_until_iter:
             gaussian_model.gaussians["opacities"].grad = None
 
-        if global_step >= self.config.densify_until_iter:
+        if not self._growing(global_step):              # ★ 11-12 兩輪流程：第二輪的增生期也算（關的時候＝global_step >= densify_until_iter）
             _mi = int(getattr(self.config, "merge_interval", 0) or 0)
             if _mi > 0 and global_step % _mi == 0 and self._merge_window(global_step):
                 if bool(getattr(self.config, "merge_prune", False)):
@@ -1345,18 +1370,20 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             self._err_score = None                 # window restarts with the next interval
             _mi = int(getattr(self.config, "morton_reorder_interval", 0) or 0)
             if _mi > 0 and (global_step % _mi == 0
-                            or global_step + self.config.densification_interval >= self.config.densify_until_iter):
+                            or global_step + self.config.densification_interval >= self._grow_end(global_step)):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
 
     _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_noup_z": float("inf"),
-                     "_pxf_log": float("-inf"), "_sfm_under": 0}
+                     "_pxf_log": float("-inf"), "_sfm_under": 0,
+                     "_r2_surf": False, "_r2_born": True, "_r2_p0": 0.0, "_r2_n0": 0.0}
     # 跟著 N 走的逐顆狀態 => 新增時補的值（_pxf_log：px_floor 的 log 下限，-inf＝不夾；_sfm_under：v4 地下票，0＝沒判／等下次投票）
 
     def _per_particle_extend(self, n0: int, n1: int) -> None:
         for k, fill in self._PER_PARTICLE.items():
             t = getattr(self, k, None)
             if t is not None:
-                setattr(self, k, torch.cat([t, torch.full((n1 - n0,), fill, dtype=t.dtype, device=t.device)]) if t.shape[0] == n0 else None)
+                setattr(self, k, torch.cat([t, torch.full((n1 - n0,) + tuple(t.shape[1:]), fill, dtype=t.dtype, device=t.device)])
+                        if t.shape[0] == n0 else None)
 
     # ────────── 增生方向限制（inplane_*）
     def _sfmn_setup(self, pl_module) -> None:
@@ -1704,7 +1731,121 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         probs = super()._geom_gate_probs(gaussian_model, probs, indices)
         probs = self._sfm_birth_probs(gaussian_model, probs, indices)
         probs = self._sfm_vis_probs(gaussian_model, probs, indices)
-        return self._behind_price_probs(gaussian_model, probs, indices)
+        probs = self._behind_price_probs(gaussian_model, probs, indices)
+        return self._round2_probs(gaussian_model, probs, indices)
+
+    # ────────── 兩輪流程（round2_*；規格 4 §1，2026-11-12）
+    def _r2_on(self) -> bool:
+        return int(getattr(self.config, "round2_from", 0) or 0) > 0
+
+    def _growing(self, step: int) -> bool:
+        """這一步在不在增生期（第一輪 < densify_until_iter；開兩輪時再加第二輪的 [round2_from, round2_densify_until)）。"""
+        if step < int(self.config.densify_until_iter):
+            return True
+        if self._r2_on():
+            return int(self.config.round2_from) <= step < int(getattr(self.config, "round2_densify_until", 0) or 0)
+        return False
+
+    def _grow_end(self, step: int) -> int:
+        """目前這段增生期的結束步（morton 重排在每段增生期最後一次事件補一次）。"""
+        if self._r2_on() and step >= int(self.config.densify_until_iter):
+            return int(getattr(self.config, "round2_densify_until", 0) or 0)
+        return int(self.config.densify_until_iter)
+
+    @torch.no_grad()
+    def _round2_tick(self, gaussian_model, step: int) -> None:
+        """每步：第一輪的名額（_round_cut，add_new_gs 從 cap_max 扣掉）；第一次到 S1 時定表面顆粒；第二輪每 2000 步印狀態。"""
+        c = self.config
+        s1 = int(c.round2_from)
+        n = gaussian_model.n_gaussians
+        self._round_cut = int(round((1.0 - float(c.round2_cap_frac)) * int(c.cap_max))) if step < s1 else 0
+        if step < s1:
+            return
+        dev = gaussian_model.gaussians["means"].device
+        if getattr(self, "_r2_surf", None) is None:
+            o = gaussian_model.get_opacities().reshape(-1)
+            st = getattr(gaussian_model, "_trim_state", None) or {}
+            vl = st.get("Vlast")
+            if vl is not None and vl.shape[0] == n:
+                surf = (o > float(c.round2_surface_opacity)) & (vl > 0)
+                why = f"o > {float(c.round2_surface_opacity):g} 且上一個 V/C 窗口有出力（Vlast > 0：{int((vl > 0).sum()):,}）"
+            else:
+                surf = o > float(c.round2_surface_opacity)
+                why = (f"⚠⚠ 沒有 Vlast（{'長度 ' + str(vl.shape[0]) + ' ≠ N' if vl is not None else '沒存'}）=> 只用 o > {float(c.round2_surface_opacity):g}")
+            self._r2_surf = surf.clone()
+            self._r2_born = torch.zeros(n, dtype=torch.bool, device=dev)
+            self._r2_p0 = torch.zeros(n, 3, dtype=torch.float32, device=dev)
+            self._r2_n0 = torch.zeros(n, 3, dtype=torch.float32, device=dev)
+            self._r2_births = 0
+            cap = int(c.cap_max) - int(getattr(self, "_cap_cut", 0) or 0)
+            print(f"[round2] ✅ 首次觸發 step {step}（S1）：表面顆粒 {int(surf.sum()):,}／{n:,}（{100 * float(surf.float().mean()):.1f}%；{why}）｜"
+                  f"此刻不透明（o > 0.5）{100 * float((o > 0.5).float().mean()):.1f}%｜名額 cap {cap:,} − N {n:,} = {max(cap - n, 0):,}｜"
+                  f"增生到 {int(c.round2_densify_until):,}｜{'⚠ 拆因：不限母點、不限平面' if bool(getattr(c, 'round2_free', False)) else '母點只限表面＋第二輪出生、出生後只准沿平面移動'}",
+                  flush=True)
+        elif step % 2000 == 0:
+            o = gaussian_model.get_opacities().reshape(-1)
+            b = self._r2_born if self._r2_born.shape[0] == n else torch.zeros(n, dtype=torch.bool, device=dev)
+            nb = int(b.sum())
+            semi = int((b & (o > 0.05) & (o < 0.5)).sum())
+            hold = getattr(self, "_r2_hold_ratio", None)
+            print(f"[round2] step {step}：第二輪出生累計 {int(getattr(self, '_r2_births', 0)):,}、現存 {nb:,}（其中半透明 0.05<o<0.5 {100 * semi / max(nb, 1):.1f}%）｜"
+                  f"N {n:,}｜表面顆粒現存 {int(self._r2_surf.sum()) if self._r2_surf.shape[0] == n else -1:,}"
+                  + (f"｜上一步位移被面內限制擋下 {100 * hold:.1f}%（法向分量／總位移）" if hold is not None else ""), flush=True)
+
+    def _round2_probs(self, gaussian_model, probs, indices=None):
+        """第二輪：母點只能是表面顆粒或第二輪出生的（round2_free 時不限）。"""
+        surf = getattr(self, "_r2_surf", None)
+        if surf is None or bool(getattr(self.config, "round2_free", False)):
+            return probs
+        born = getattr(self, "_r2_born", None)
+        n = gaussian_model.n_gaussians
+        if surf.shape[0] != n or born is None or born.shape[0] != n:
+            if not getattr(self, "_r2_len_warned", False):
+                self._r2_len_warned = True
+                print(f"⚠⚠ [round2] 表面標記長度 {surf.shape[0]:,} ≠ N {n:,} => 這次不限母點（同步漏了？）", flush=True)
+            return probs
+        ok = surf | born
+        ok = ok if indices is None else ok[indices]
+        out = probs * ok.to(probs.dtype)
+        if float(out.sum()) <= 0:
+            if not getattr(self, "_r2_zero_warned", False):
+                self._r2_zero_warned = True
+                print("⚠⚠ [round2] 可當母點的顆粒機率全是 0 => 這次不限（不然 multinomial 會壞）", flush=True)
+            return probs
+        return out
+
+    def _r2_birth(self, gaussian_model, idx: torch.Tensor) -> None:
+        """第二輪出生（搬家或新增）：記成第二輪出生（之後也可以當母點）；不是拆因臂時記下出生位置與法向（之後只准沿這個平面移動）。"""
+        if idx.numel() == 0 or self._r2_born.shape[0] != gaussian_model.n_gaussians:
+            return
+        self._r2_born[idx] = True
+        self._r2_surf[idx] = False
+        self._r2_births = int(getattr(self, "_r2_births", 0)) + int(idx.numel())
+        if not bool(getattr(self.config, "round2_free", False)):
+            from internal.metrics.geom_gate import quat_normals
+            g = gaussian_model.gaussians
+            self._r2_p0[idx] = g["means"][idx].detach().float()
+            self._r2_n0[idx] = quat_normals(g["rotations"][idx].detach().float())
+
+    @torch.no_grad()
+    def _r2_plane_hold(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
+        """on_train_batch_end（optimizer step 與 MCMC 雜訊之後）：第二輪出生的顆粒投影回出生平面 p ← p − ((p − p0)·n0) n0（其他顆粒 n0＝0，不動）。"""
+        n0 = getattr(self, "_r2_n0", None)
+        m = gaussian_model.gaussians["means"]
+        if n0 is None or n0.shape[0] != m.shape[0]:
+            return
+        p0 = self._r2_p0
+        d = ((m.float() - p0) * n0).sum(-1, keepdim=True)
+        if global_step % 2000 == 0:
+            prev = getattr(self, "_r2_prev", None)
+            if prev is not None and prev.shape == m.shape:
+                b = n0.norm(dim=-1) > 0
+                mv = (m.float() - prev)[b]
+                tot = float(mv.norm(dim=-1).sum())
+                self._r2_hold_ratio = float(((mv * n0[b]).sum(-1).abs()).sum()) / max(tot, 1e-30)
+        m.sub_((d * n0).to(m.dtype))
+        if (global_step + 1) % 2000 == 0:
+            self._r2_prev = m.detach().float().clone()
 
     def _behind_price_probs(self, gaussian_model, probs, indices=None):
         """★ 11-11 規格 2 §3 B2（config.sample_behind_price）。沒有帳（還沒到有上限圖的步）=> 不乘、印一次 ⚠⚠。"""
@@ -2085,6 +2226,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if (self._inplane_on() or self._price_on() or getattr(self, "_sfmn", None) is not None) and bool(dead_mask.any()):
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, dead_mask.nonzero(as_tuple=True)[0])   # 搬家的＝新點（宿主留在原地）
+        if getattr(self, "_r2_surf", None) is not None and bool(dead_mask.any()):
+            with torch.no_grad():
+                self._r2_birth(gaussian_model, dead_mask.nonzero(as_tuple=True)[0])
 
     def add_new_gs(self, gaussian_model, optimizers):
         n0 = gaussian_model.n_gaussians
@@ -2110,6 +2254,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if (self._inplane_on() or self._price_on() or getattr(self, "_sfmn", None) is not None) and n1 > n0:
             with torch.no_grad():
                 self._inplane_birth(gaussian_model, torch.arange(n0, n1, device=gaussian_model.gaussians["means"].device))
+        if getattr(self, "_r2_surf", None) is not None and n1 > n0:
+            with torch.no_grad():
+                self._r2_birth(gaussian_model, torch.arange(n0, n1, device=gaussian_model.gaussians["means"].device))
         return out
 
     # ────────── 遮擋回收（occl_*）
