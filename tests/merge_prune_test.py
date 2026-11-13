@@ -285,3 +285,31 @@ class MergeBorrowedTest(unittest.TestCase):
         long_axis = torch.where((S[:, :1] >= S[:, 1:]), R[:, :, 0], R[:, :, 1])
         self.assertTrue(bool((long_axis[:, 2].abs() > 0.95).all()))             # 併完的長軸沿桿子（z）
         self.assertTrue(bool((S.max(1).values > 0.006).all()))                  # 變長了
+
+
+class MergePxTest(unittest.TestCase):
+    """★ 2026-11-13 merge_px：距離門檻用「最近可見相機裡 1 像素」的長度（px_floor 的量）。"""
+
+    def test_plane_pixel_threshold(self):
+        from internal.density_controllers.merge_ops import merge_step
+        gm_a, _ = _plane(); gm_b, _ = _plane()                                  # 格距 0.01
+        n = gm_a.n_gaussians
+        Ia, _, _ = merge_step(gm_a, k=12, max_frac=1.0, color_tol=1.0, px=torch.full((n,), 0.02), px_k=1.0)    # 1 px＝0.02 => 相鄰兩顆 < 1 px
+        Ib, _, _ = merge_step(gm_b, k=12, max_frac=1.0, color_tol=1.0, px=torch.full((n,), 0.005), px_k=1.0)   # 1 px＝0.005 => 相鄰兩顆 2 px 遠
+        self.assertGreater(Ia.numel(), 0)
+        self.assertEqual(Ib.numel(), 0)
+        gm_c, _ = _plane()
+        Ic, _, _ = merge_step(gm_c, k=12, max_frac=1.0, color_tol=1.0, px=torch.zeros(n), px_k=1.0)          # 沒有相機看得到 => 不併
+        self.assertEqual(Ic.numel(), 0)
+
+    def test_controller_reads_px_floor_cache(self):
+        gm, opts = _plane()
+        n0 = gm.n_gaussians
+        impl = _impl(merge_px_k=1.0, px_floor=1.0)
+        impl._pxf_log = torch.full((n0,), math.log(0.02))
+        impl._merge_event(gm, opts, 3000, prune=True)
+        self.assertGreater(impl._cap_cut, 0)
+        gm2, opts2 = _plane()
+        impl2 = _impl(merge_px_k=1.0, px_floor=1.0)                             # 沒有快取 => 不併、不崩
+        impl2._merge_event(gm2, opts2, 3000, prune=True)
+        self.assertEqual(int(getattr(impl2, "_cap_cut", 0) or 0), 0)

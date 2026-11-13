@@ -527,6 +527,9 @@ class MCMC2DGSDensityController(MCMCDensityController):
     merge_line: bool = False
     """★ 2026-11-13 True＝再加線狀配對（燈桿上下段；線狀鄰域、線方向平行、面元法向同向、沿線相鄰；`merge_ops` 檔頭）。"""
     merge_line_tol: float = 0.1
+    merge_px_k: float = -1.0
+    """★ 2026-11-13 > 0：合併的距離門檻改用像素（`merge_ops` 檔頭 merge_px）：中心（線狀＝端點縫）在最近可見訓練相機裡相距 < 此值像素才併。
+    像素長度取 px_floor 的快取（`_pxf_log`；需要 px_floor > 0）。<= 0＝原規則（1.5 x 長軸和）。"""
     """線狀鄰域判準：k 近鄰 PCA 的 λ2/λ1 < 此值（無因次）。"""
     """★ 2026-11-13（使用者「一樣用合併的門檻，分別使用合併跟 trim，結果的差別」）：True＝合併事件照同樣的規則選配對，但不合併——
     留下兩顆中不透明質量大的那顆（參數、Adam 狀態都不動），小的那顆直接刪（搭配 merge_prune＝true 時 cap 照樣扣）。
@@ -2487,6 +2490,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         hi = int(getattr(c, "merge_until_iter", -1) or -1)
         return global_step >= int(getattr(c, "merge_from_iter", 3000)) and (hi <= 0 or global_step <= hi)
 
+    def _merge_px_len(self, gaussian_model, n0: int):
+        """merge_px 用：每顆「最近可見訓練相機裡 1 像素」的長度（px_floor 快取 exp(_pxf_log)/px_floor）；沒開 merge_px 或拿不到 => None。"""
+        if float(getattr(self.config, "merge_px_k", -1.0)) <= 0:
+            return None
+        fl = getattr(self, "_pxf_log", None); kappa = float(getattr(self.config, "px_floor", 0.0) or 0.0)
+        if fl is None or fl.shape[0] != n0 or kappa <= 0:
+            if not getattr(self, "_mpx_warned", False):
+                self._mpx_warned = True
+                print("⚠⚠ [merge-px] 拿不到 px_floor 的像素長度（沒開 px_floor 或長度不對）=> 這次合併不併任何配對", flush=True)
+            return torch.zeros(n0, device=gaussian_model.gaussians["means"].device)
+        return torch.exp(fl) / kappa
+
     def _merge_event(self, gaussian_model, optimizers, global_step: int, prune: bool):
         """一次訓練中合併（`merge_ops.merge_step`）。合併結果寫回 i、i 的 Adam 狀態重設。
         prune=False：回傳 j 的遮罩（呼叫端併進 dead_mask 交給 relocation；N 不變）。
@@ -2511,7 +2526,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                                       as_trim=bool(getattr(self.config, "merge_as_trim", False)),
                                       tex_tol=float(getattr(self.config, "merge_tex_tol", -1.0)),
                                       line=bool(getattr(self.config, "merge_line", False)),
-                                      line_tol=float(getattr(self.config, "merge_line_tol", 0.1)))
+                                      line_tol=float(getattr(self.config, "merge_line_tol", 0.1)),
+                                      px=self._merge_px_len(gaussian_model, n0), px_k=float(getattr(self.config, "merge_px_k", -1.0)))
         out = None
         _as_trim = bool(_minfo.get("trim", False))
         if _mI.numel() > 0 and _as_trim:                                                      # ★ 11-13 只刪不併：留下的 i 一個參數都沒動

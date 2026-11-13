@@ -1,7 +1,9 @@
 """★ 2026-11-13 合併借鑑三點＋線狀合併的離線前提檢查（使用者「三點採用、記得標來源，排實驗跟測試」；cwd＝repo 根；只渲染、不訓練）。
-對一個我方單塊 ckpt（原始參數，不 pre-activate），每個變體從原樣重新載入、跑一次 merge_step（max_frac 1＝所有互為最佳的配對一次併完、顏色門檻同底 0.1），
+對一個我方單塊 ckpt（原始參數，不 pre-activate），每個變體從原樣重新載入、跑一次 merge_step（★ 11-13 使用者：一次併完會高估傷害（不補點、不再訓練）
+=> 預設 --max_frac 0.02＝訓練裡「一次合併事件」的額度；顏色門檻同底 0.1），
 刪掉 j，然後用本塊訓練相機（--stride）量塊外遮罩 A 像素的 PSNR 變化。=> 「同樣減掉 1% 顆數，畫質掉多少」就是合併規則的好壞。
-變體：現行（union 不透明度）｜L2 最佳不透明度｜只在平滑區（tex_tol 0.02／0.03／0.05）｜線狀合併｜線狀＋L2。
+變體：現行（union 不透明度）｜L2 最佳不透明度｜只在平滑區（tex_tol 0.03／0.05／0.08）｜線狀合併｜線狀＋L2｜
+     ★ merge_px（距離門檻用像素：最近可見訓練相機裡 1 像素的長度＝px_floor 的量）1／2 像素｜merge_px＋L2｜merge_px＋線狀。
 另外印：平面候選的 k 近鄰顏色平均絕對偏差分位數（校準 tex_tol 用）、配對的高度帶（離 SfM 地面；只是量測分類）、合併誤差中位（L2 版＝sin²α）。
 用法（lab，佇列 [solo]）：conda run -n gspl --no-capture-output python tools/probe/merge_variants_1113.py --block 1 --ckpt '<ckpt 樣式>'
 """
@@ -23,12 +25,14 @@ from internal.utils.citygs_partitioning_utils import PartitionCoordinates, CityG
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 from internal.density_controllers.merge_ops import merge_step
 from internal.metrics.geom_gate import morton_neighbors
+from internal.density_controllers.mcmc_2dgs_density_controller import MCMC2DGSDensityControllerImpl
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--block", type=int, required=True)
 ap.add_argument("--ckpt", required=True)
 ap.add_argument("--stride", type=int, default=2)
 ap.add_argument("--color_tol", type=float, default=0.1)
+ap.add_argument("--max_frac", type=float, default=0.02, help="一次合併的額度（0.02＝訓練裡一次事件；1＝全部併完）")
 a = ap.parse_args()
 B = a.block; D = "data/matrix_city/aerial/train/block_all"; MU = 100.0; dev = torch.device("cuda")
 t0 = time.time()
@@ -125,16 +129,24 @@ with torch.no_grad():
     mad = torch.cat([(rgb[nb[c:c + 65536]] - rgb[nb[c:c + 65536]].mean(1, keepdim=True)).abs().mean((1, 2)) for c in range(0, cand.numel(), 65536)])
     qs = torch.quantile(mad[:2_000_000].float(), torch.tensor([.1, .25, .5, .75, .9], device=dev)).tolist()
 print("不透明顆粒的 k 近鄰顏色平均絕對偏差（RGB 0～1）分位 10/25/50/75/90%：" + "／".join(f"{q:.4f}" for q in qs), flush=True)
+with torch.no_grad():                    # merge_px 用的像素長度（全部訓練相機；同 px_floor）
+    PX = torch.exp(MCMC2DGSDensityControllerImpl._px_floor_log(m0.gaussians["means"].detach(), cams, 1.0, 1.0)).nan_to_num(0.0, posinf=0.0)
+    pq = torch.quantile(PX[PX > 0][:2_000_000].float(), torch.tensor([.1, .5, .9], device=dev)).tolist()
+print(f"1 像素的長度（最近可見訓練相機）分位 10/50/90%：{pq[0] * 100:.2f}／{pq[1] * 100:.2f}／{pq[2] * 100:.2f} cm（量測；機制只用像素）", flush=True)
 del m0; torch.cuda.empty_cache()
 
 VARS = [("現行（union）", {}), ("L2 最佳不透明度", {"opacity_mode": "l2"}),
-        ("平滑區 0.02", {"tex_tol": 0.02}), ("平滑區 0.03", {"tex_tol": 0.03}), ("平滑區 0.05", {"tex_tol": 0.05}),
-        ("線狀", {"line": True}), ("線狀＋L2", {"line": True, "opacity_mode": "l2"})]
+        ("平滑區 0.03", {"tex_tol": 0.03}), ("平滑區 0.05", {"tex_tol": 0.05}), ("平滑區 0.08", {"tex_tol": 0.08}),
+        ("線狀", {"line": True}), ("線狀＋L2", {"line": True, "opacity_mode": "l2"}),
+        ("像素 1", {"px": "PX", "px_k": 1.0}), ("像素 2", {"px": "PX", "px_k": 2.0}),
+        ("像素 1＋L2", {"px": "PX", "px_k": 1.0, "opacity_mode": "l2"}), ("像素 1＋線狀", {"px": "PX", "px_k": 1.0, "line": True})]
+print(f"\n一次合併的額度 max_frac {a.max_frac:g}（顆數 x 這個比例＝這次最多併幾對）")
 print(f"\n{'變體':16}{'配對':>9}{'其中線狀':>9}{'N 減少':>9}{'訓練視角 ΔPSNR ↑':>18}{'每減 1% 掉 dB':>14}{'合併誤差中位':>13}  配對的高度帶（留下那顆）：" + "／".join(b[0] for b in BANDS), flush=True)
 for nm, kw in VARS:
     m = load()
     with torch.no_grad():
-        I, J, info = merge_step(m, k=12, max_frac=1.0, color_tol=a.color_tol, chunk=65536, render_eps=1e9, **kw)
+        kw = {k_: (PX if v_ == "PX" else v_) for k_, v_ in kw.items()}
+        I, J, info = merge_step(m, k=12, max_frac=a.max_frac, color_tol=a.color_tol, chunk=65536, render_eps=1e9, **kw)
         keep = torch.ones(N0, dtype=torch.bool, device=dev); keep[J] = False
         hI = height(m.gaussians["means"][I].double().cpu().numpy()) if I.numel() else np.zeros(0)
         m.properties = {k: v[keep] for k, v in m.properties.items()}

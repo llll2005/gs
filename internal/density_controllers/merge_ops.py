@@ -24,6 +24,9 @@ MCMC 只有「搬」與「增」，沒有「併」。這裡在增生期每隔幾
     兩顆的線方向平行（|a_i·a_j| > 0.9）、面元自己的法向同向（|n_i·n_j| > 0.9，只併同向的上下段，不併圍著圓柱一圈的）、
     垂直線方向的偏移 < 0.5 x 兩顆短軸和、沿線間隙 < 1.5 x 兩顆長軸和、顏色差 < color_tol；合併沿用同一套矩匹配，平面改用兩顆自己的法向（線狀鄰域沒有唯一法向）。
     🟨 surfel fusion（ElasticFusion 類：相鄰＋法向＋點到平面）的線狀版；NanoGS（arXiv 2603.16103）在 3D 體積高斯上做同類的兩兩矩匹配合併。
+  px／px_k > 0（★ 11-13 merge_px，使用者「門檻看現有結果的點精靈參數」）：距離門檻改用像素——px[i]＝看得到第 i 顆的最近訓練相機裡 1 像素的長度
+    （＝點精靈下限 px_floor 的那個量，深度／fx）。平面：兩顆中心相距 < px_k 像素；線狀：垂直偏移與兩段端點之間的縫 < px_k 像素。
+    => 只併「在所有訓練視角裡本來就分不開」的配對；合併後的長軸由矩匹配自動滿足 sigma_m <= max(sigma_i, sigma_j) + |d|/2，不會長出原本沒有的覆蓋。
 """
 import torch
 
@@ -65,7 +68,7 @@ def _mat2q(R):
 def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, flat_tol: float = 0.1,
                min_opacity: float = 0.5, chunk: int = 1 << 19, exclude=None, prio=None,
                opacity_mode: str = "union", render_eps: float = -1.0, as_trim: bool = False,
-               tex_tol: float = -1.0, line: bool = False, line_tol: float = 0.1):
+               tex_tol: float = -1.0, line: bool = False, line_tol: float = 0.1, px=None, px_k: float = -1.0):
     """as_trim＝True（★ 2026-11-13 使用者「一樣用合併的門檻，分別用合併跟 trim」）：配對規則完全一樣（同平面、相鄰、互為最佳、額度、渲染誤差門檻），
     但不合併——留下兩顆中不透明質量（o·s1·s2）大的那顆、參數一個都不改，回傳小的那顆當 J 給呼叫端刪掉。False＝原行為（逐位元不變）。
     exclude（[N] bool，可省）：不參與合併的顆粒（SfM 錨點）。prio（[N] float，可省）：每顆的成本倍率，
@@ -101,6 +104,9 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
         if line:                                                         # ★ 11-13 線狀鄰域：λ2/λ1 小、方向＝最大特徵向量
             axis[c0:c0 + chunk] = evec[:, :, 2]; lin[c0:c0 + chunk] = ev[:, 1] / ev[:, 2].clamp_min(1e-18)
     flat_ok = flat < flat_tol
+    use_px = px is not None and px_k > 0
+    if use_px:                                                           # ★ 11-13 merge_px：每顆「最近可見訓練相機裡 1 像素」的長度（px_floor 的量；0＝沒有相機看得到 => 不併）
+        pxc = px[cand].float().nan_to_num(0.0, posinf=0.0, neginf=0.0)
     if tex_tol > 0:                                                      # ★ 11-13 局部顏色一致性（LocoADC 式）：k 近鄰 DC 顏色的平均絕對偏差
         tex = torch.empty(n, device=dev)
         for c0 in range(0, n, chunk):
@@ -120,15 +126,25 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
         off = (d * ni).sum(-1).abs(); inpl = (d - (d * ni).sum(-1, keepdim=True) * ni).norm(dim=-1)
         ssum = smax[ii][:, None] + smax[jj]
         dcol = (rgb[ii][:, None] - rgb[jj]).abs().mean(-1)
-        ok = (jj != ii[:, None]) & (flat[ii][:, None] < flat_tol) & (flat[jj] < flat_tol) & ((ni * nj).sum(-1).abs() > 0.9) \
-            & (off < 0.5 * ssum) & (inpl < 1.5 * ssum) & (dcol < color_tol)
+        if use_px:                                                       # 中心在最近相機裡相距不到 px_k 像素（兩顆的像素長度取平均）
+            pxp = 0.5 * (pxc[ii][:, None] + pxc[jj])
+            near = (pxp > 0) & (d.norm(dim=-1) < px_k * pxp)
+            ok = (jj != ii[:, None]) & (flat[ii][:, None] < flat_tol) & (flat[jj] < flat_tol) & ((ni * nj).sum(-1).abs() > 0.9) \
+                & near & (dcol < color_tol)
+        else:
+            ok = (jj != ii[:, None]) & (flat[ii][:, None] < flat_tol) & (flat[jj] < flat_tol) & ((ni * nj).sum(-1).abs() > 0.9) \
+                & (off < 0.5 * ssum) & (inpl < 1.5 * ssum) & (dcol < color_tol)
         cst = inpl / ssum + dcol
         if line:                                                         # ★ 11-13 線狀配對（燈桿上下段）
             ai = axis[ii][:, None].expand_as(d)
             along = (d * ai).sum(-1).abs(); perp = (d - (d * ai).sum(-1, keepdim=True) * ai).norm(dim=-1)
+            if use_px:                                                   # 線狀：垂直偏移與「兩段端點之間的縫」都不到 px_k 像素（段長取 2 x 長軸 sigma）
+                gap = along - 2.0 * ssum
+                geo = (pxp > 0) & (perp < px_k * pxp) & (gap < px_k * pxp)
+            else:
+                geo = (perp < 0.5 * (smin[ii][:, None] + smin[jj])) & (along < 1.5 * ssum)
             oki = (jj != ii[:, None]) & line_ok[ii][:, None] & line_ok[jj] & ((ai * axis[jj]).sum(-1).abs() > 0.9) \
-                & ((nown[ii][:, None] * nown[jj]).sum(-1).abs() > 0.9) & (perp < 0.5 * (smin[ii][:, None] + smin[jj])) \
-                & (along < 1.5 * ssum) & (dcol < color_tol)
+                & ((nown[ii][:, None] * nown[jj]).sum(-1).abs() > 0.9) & geo & (dcol < color_tol)
             oki = oki & ~ok
             cst = torch.where(oki, along / ssum + dcol, cst)
             ok = ok | oki
