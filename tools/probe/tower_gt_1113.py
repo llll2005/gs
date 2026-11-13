@@ -11,6 +11,8 @@ CPU；cwd＝repo 根；只讀。
   完整度   GT 立面點 r 內有不透明顆粒的比例（r＝1 m；另列 2 m）
   朝向     GT 立面點 1.5 m 內最近不透明顆粒的 |n·n_gt| > 0.9 的比例（只算 1.5 m 內有顆粒的點）
   離表面   足跡內該帶不透明顆粒離最近 GT 點 > 2 m 的比例（煙柱／浮在外面）
+  牆後／牆前 該帶 GT 立面 15 m 內的不透明顆粒，沿 GT 法向（用該帶水平重心定朝外）在牆後 > 1 m／牆前 > 1 m 的比例
+           （★ 11-13 深藍大樓棟 4 高層破洞：300～360 m CityGS 32%、舊底 28% 在牆後 1～6 m，低樓層只有 11%）
   拉長     GT 立面 1 m 內不透明顆粒：長短軸比中位數；長短軸比 > 3 且長軸近垂直（|a_z| > 0.9）的比例
   半透明   足跡內該帶 0.05 < o <= 0.5 的顆粒數
 另列每棟：GT 頂高（最高點、99.9 分位）、SfM 頂高、各模型不透明顆粒頂高，以及頂部 30 m 的 GT 點數、在畫面內的訓練相機數
@@ -200,7 +202,7 @@ for k, zt, blue, ctr, zmax_sfm in sorted([t for t in tall], key=lambda t: -t[1])
         tops.append(f"{md['lab']} {md['m'][s, 2].max() * M:.0f}／99.9% {np.percentile(md['m'][s, 2], 99.9) * M:.0f}" if s.sum() > 10 else f"{md['lab']} —")
     print("  不透明顆粒頂高（m）：" + "｜".join(tops))
     hdr = f"  {'':14}" + "".join(f"{bl(i):>14}" for i in range(len(BANDS) - 1) if BANDS[i] < gtop)
-    rows = {key: [] for key in ["GT 立面點", "面元覆蓋", "中心1m內", "朝向對齊", "離表面>2m", "長短軸比", "直的拉長", "半透明數"]}
+    rows = {key: [] for key in ["GT 立面點", "面元覆蓋", "中心1m內", "朝向對齊", "牆後>1m", "牆前>1m", "離表面>2m", "長短軸比", "直的拉長", "半透明數"]}
     per = []
     for md in models:
         mo = on(md["m"], k)
@@ -238,8 +240,17 @@ for k, zt, blue, ctr, zmax_sfm in sorted([t for t in tall], key=lambda t: -t[1])
                 r["長短軸比"].append("—"); r["直的拉長"].append("—")
             semi = mo & (md["o"] > 0.05) & (md["o"] <= 0.5) & (md["m"][:, 2] >= BANDS[i]) & (md["m"][:, 2] < BANDS[i + 1])
             r["半透明數"].append(f"{int(semi.sum()):,}")
-            SUM.setdefault((md["lab"], i), [0, 0, 0, 0]); sm = SUM[(md["lab"], i)]
+            # ★ 11-13 深藍大樓（棟 4）高層破洞：不透明面元在 GT 立面的前面／後面（法向用該帶 GT 立面點的水平重心定朝外；凹口處可能判反）
+            Gb, Nb = X[gb], N[gb].copy()
+            sg_ = np.sign(((Gb[:, :2] - Gb[:, :2].mean(0)) * Nb[:, :2]).sum(1)); Nb *= np.where(sg_ == 0, 1, sg_)[:, None]
+            dfb, jfb = cKDTree(Gb).query(mm[mb], k=1) if mb.sum() else (np.zeros(0), np.zeros(0, int))
+            nb_ = dfb < 0.15
+            sdv = ((mm[mb][nb_] - Gb[jfb[nb_]]) * Nb[jfb[nb_]]).sum(1)
+            r["牆後>1m"].append(f"{100 * (sdv < -0.01).mean():.0f}%" if len(sdv) >= 10 else "—")
+            r["牆前>1m"].append(f"{100 * (sdv > 0.01).mean():.0f}%" if len(sdv) >= 10 else "—")
+            SUM.setdefault((md["lab"], i), [0, 0, 0, 0, 0, 0]); sm = SUM[(md["lab"], i)]
             sm[0] += int(cov[gb].sum()); sm[1] += ng; sm[2] += int(al.sum()); sm[3] += int(near.sum())
+            sm[4] += int((sdv < -0.01).sum()); sm[5] += len(sdv)
         per.append((md["lab"], r))
     print(hdr)
     print(f"  {'GT 立面點':14}" + "".join(f"{x:>14}" for x in per[0][1]["GT 立面點"]))
@@ -252,7 +263,7 @@ print(f"{'':14}" + "".join(f"{bl(i):>14}" for i in range(len(BANDS) - 1)))
 def pct(lab, i, a_, b_):
     v = SUM.get((lab, i))
     return f"{100 * v[a_] / max(v[b_], 1):.0f}%" if v else "—"
-for name, a_, b_ in [("面元覆蓋", 0, 1), ("朝向對齊", 2, 3)]:
+for name, a_, b_ in [("面元覆蓋", 0, 1), ("朝向對齊", 2, 3), ("牆後>1m", 4, 5)]:
     for md in models:
         print(f"{(name + ' ' + md['lab'])[:14]:14}" + "".join(f"{pct(md['lab'], i, a_, b_):>14}" for i in range(len(BANDS) - 1)))
 print("DONE tower_gt")
