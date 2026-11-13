@@ -405,9 +405,12 @@ class GaussianSplatting(LightningModule):
 
     def _train_log_due(self, global_step: int) -> bool:
         """★ 2026-11-05 `train_log_interval`（使用者 11-05：log 做成開關，量總時間時再關）：
-        1＝每步記錄 train/* 指標（原行為）；k > 1＝每 k 步一次；0＝訓練中不記錄 train/*（val／test 照常）。
+        1＝每步記錄 train/* 指標（原行為）；k > 1＝每 k 步一次；0＝訓練中不記錄 train/*（val／test 照常）；
+        k < 0（11-13）＝只在 global_step＝|k| 與最後一步記（log0 臂用 −50：與每步記錄的底同一對起訖步，tfevents 首尾計時可比）。
         每步記錄要把指標交給 Lightning（lab 11-02 計時：log_metrics 0.81 ms／步）；train_status 的 loss 也跟著這個節奏更新。"""
         k = int(self.hparams.get("train_log_interval", 1) or 0)
+        if k < 0:   # ★ 11-13 只記兩筆：global_step＝|k|（Lightning 預設每 50 步才寫 => 取 50 剛好落在第一個會寫的步）與最後一步 => 純訓練計時與每步記錄的底同起訖
+            return global_step == -k or global_step == int(getattr(self.trainer, "max_steps", -1) or -1)
         return k == 1 or (k > 1 and global_step % k == 0)
 
     # ────────── 採樣控制顆數（cap_ctrl_*；2026-11-05 使用者）

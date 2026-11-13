@@ -49,7 +49,7 @@
 #     合併借鑑（11-13 使用者「三點採用、記得標來源」；出處 紀錄/機制出處.md）：mgl2 合併後不透明度用 L2 最佳值 o*＝<f,G_m>／<G_m,G_m>｜
 #              mgtex 只在 k 近鄰顏色平均絕對偏差 < 0.03 的平滑區域合併（LocoADC 的局部顏色一致性）｜mgrel 併掉的名額不扣、交給 MCMC 搬到需要的地方（merge_prune false）｜
 #              mgline 再加線狀合併（燈桿上下段；使用者 11-13）｜mgpx 距離門檻改用像素（最近可見相機裡 MG_PX＝1 像素；px_floor 的量；使用者 11-13）
-#     規格 5 §3 加速組合（11-13 使用者「排」）：log0 訓練中不每步記 train/*（只在第一步與最後一步記，eval 的「純訓練」計時照舊可用）｜
+#     規格 5 §3 加速組合（11-13 使用者「排」）：log0 訓練中不每步記 train/*（只在第 50 步與最後一步記，eval 的「純訓練」計時與底同起訖）｜
 #              geo8 dist 每 4 步 -> 每 8 步（權重自動 x 8＝相對 x2，與法向、深度上限落在同一步）｜lowres、s20g70 是現成的
 #   TUNE_PROFILE_STEPS／TUNE_PROFILE_WARMUP／TUNE_PROFILE_NAME：逐段計時模式（task_mech_time.sh MT_TUNE_ARMS 用；規格 5 §1）
 #   合併窗口跟著全長縮放（3k ～ 全長 x 0.9；現行配方寫死 27k＝30k 的 90%）；二元熵切雙向（全長／3）與位置 lr 排程由 task_cmp 跟著全長縮放。
@@ -198,7 +198,7 @@ for t in "${XT[@]:-}"; do
     r2ent0) XA+=(--model.metric.init_args.opacity_entropy_round2_reg 0) ;;
     # ★ 11-13 規格 5 §3：log0＝train/* 只在第 0 步與最後一步記（k＝全長−1；0 % k、(全長−1) % k 都是 0）=> 每步不交指標給 Lightning、
     #   進度列的 loss 最多每秒讀一次；eval 的純訓練時間（train/loss 首尾）照樣量得到、與底同一個起訖點
-    log0)   XA+=(--model.train_log_interval $((ST - 1))) ;;
+    log0)   XA+=(--model.train_log_interval -50) ;;   # ★ 11-13 改：k＝全長−1 時 Lightning 每 50 步才寫，只剩最後一筆、量不到時間 => 只記第 50 步與最後一步（底的 tfevents 首尾＝49／29999）
     capfc)  [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ capfc 要和 tricap<W> 一起用（沒有上限就沒有 B）"; exit 2; }
             XA+=(--model.metric.init_args.depth_cap_grad_mode 3) ;;
     geo8)   XA+=(--model.metric.init_args.lambda_dist_interval 8) ;;
