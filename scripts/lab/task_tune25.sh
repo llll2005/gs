@@ -51,6 +51,9 @@
 #              mgline 再加線狀合併（燈桿上下段；使用者 11-13）｜mgpx 距離門檻改用像素（最近可見相機裡 MG_PX＝1 像素；px_floor 的量；使用者 11-13）
 #     規格 5 §3 加速組合（11-13 使用者「排」）：log0 訓練中不每步記 train/*（只在第 50 步與最後一步記，eval 的「純訓練」計時與底同起訖）｜
 #              geo8 dist 每 4 步 -> 每 8 步（權重自動 x 8＝相對 x2，與法向、深度上限落在同一步）｜lowres、s20g70 是現成的
+#     noev<k>  ★ 11-13 視線一致性「沒證據」投票＋不准往上，任何階段每 k 步投一次（sfm_vis，不改抽樣：eps 1）｜sink<p> 沒證據就往下沉：每次投票上限再降 p 像素長度
+#   TUNE_RESUME_SRC／TUNE_RESUME_NAME／TUNE_RESUME_STEPS：接續模式（使用者 11-13「把機制打開接在已經有的 ckpt 跑幾百步」）——
+#     把 outputs/lab/<SRC>/blocks/block_<B> 的終點 ckpt 硬連結到 outputs/lab/<NAME>，從那一步再跑 STEPS 步（Lightning --ckpt_path；不跑圖表資料包）
 #   TUNE_PROFILE_STEPS／TUNE_PROFILE_WARMUP／TUNE_PROFILE_NAME：逐段計時模式（task_mech_time.sh MT_TUNE_ARMS 用；規格 5 §1）
 #   合併窗口跟著全長縮放（3k ～ 全長 x 0.9；現行配方寫死 27k＝30k 的 90%）；二元熵切雙向（全長／3）與位置 lr 排程由 task_cmp 跟著全長縮放。
 # 用法：[solo] bash scripts/lab/task_tune25.sh <塊> <臂>
@@ -75,9 +78,10 @@ parse() {
       case "$t" in
         lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
         nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx) XT+=("$t") ;;
+        noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         r2c[0-9]*|r2s[0-9]*) [[ $t =~ ^r2[cs][0-9]+$ ]] || { echo "⛔ 寫法：r2c<NN>／r2s<NN>（例 r2c50、r2s50）"; return 2; }; XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／r2wl／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc／mgtrim／mgl2／mgtex／mgrel／mgline／mgpx）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／r2wl／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc／mgtrim／mgl2／mgtex／mgrel／mgline／mgpx／noev<k>／sink<p>）"; return 2 ;;
       esac
     fi
   done
@@ -91,7 +95,7 @@ parse() {
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
       r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;; r2wl) LBL+="只關第二輪增生留後段弱熵" ;;
       nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
-      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; esac
+      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; esac
   done
 }
 
@@ -207,7 +211,13 @@ for t in "${XT[@]:-}"; do
     mgtex)  XA+=(--model.density.init_args.merge_tex_tol "${MG_TEX:-0.03}") ;;
     mgrel)  XA+=(--model.density.init_args.merge_prune false) ;;
     mgline) XA+=(--model.density.init_args.merge_line true) ;;
-    mgpx)   XA+=(--model.density.init_args.merge_px_k "${MG_PX:-1}") ;;   # 權重乘 k 是 metric 自己做的（gs2d_metrics）；(step+1) % 8 與法向、深度上限同一步
+    mgpx)   XA+=(--model.density.init_args.merge_px_k "${MG_PX:-1}") ;;
+    noev*)  XA+=(--model.density.init_args.sfm_vis true --model.density.init_args.sfm_vis_cams 0 --model.density.init_args.sfm_vis_cell 8
+                 --model.density.init_args.sfm_vis_px 4 --model.density.init_args.sfm_vis_free_frac 0.5 --model.density.init_args.sfm_vis_rep 0.1
+                 --model.density.init_args.sfm_vis_eps 1.0 --model.density.init_args.sfm_birth_from_iter 0
+                 --model.density.init_args.sfm_vis_noup true --model.density.init_args.sfm_noev_every "${t#noev}") ;;
+    sink*)  [[ " ${XT[*]} " =~ \ noev[0-9] ]] || { echo "⛔ sink 要和 noev<k> 一起用"; exit 2; }
+            XA+=(--model.density.init_args.sfm_noup_sink_px "${t#sink}") ;;   # 權重乘 k 是 metric 自己做的（gs2d_metrics）；(step+1) % 8 與法向、深度上限同一步
     cmflat) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ cmflat 要和 tricap<W> 一起用（沒有上限就沒有遮罩可套）"; exit 2; }
             _CM=data/matrix_city/aerial/train/block_all/cap_masks_flat
             [ -f "$_CM/stats_block_$B.json" ] || { echo "⛔ 缺上限遮罩 $_CM/stats_block_$B.json（tools/make_cap_masks.py --kind flat --blocks $B）"; exit 2; }
@@ -232,6 +242,16 @@ if [ -n "${TUNE_PROFILE_STEPS:-}" ]; then
          CITYGS_RUN_NAME="${TUNE_PROFILE_NAME:?TUNE_PROFILE_NAME}")
   XA+=(--trainer.max_steps "$TUNE_PROFILE_STEPS")
   echo "[profile] 逐段計時：訓練到 $TUNE_PROFILE_STEPS 步、穩態從 ${TUNE_PROFILE_WARMUP:-1550} 步起、跑次 $TUNE_PROFILE_NAME"
+fi
+if [ -n "${TUNE_RESUME_STEPS:-}" ]; then   # ★ 11-13 接續模式
+  _src=outputs/lab/${TUNE_RESUME_SRC:?TUNE_RESUME_SRC}/blocks/block_$B/checkpoints
+  _ck=$(ls -t "$_src"/*.ckpt 2>/dev/null | grep -v xyz_rgb | head -1); [ -n "$_ck" ] || { echo "⛔ 缺 $_src 的 ckpt"; exit 2; }
+  _st0=$(echo "$_ck" | grep -oE 'step=[0-9]+' | cut -d= -f2)
+  _dst=outputs/lab/${TUNE_RESUME_NAME:?TUNE_RESUME_NAME}/blocks/block_$B/checkpoints; mkdir -p "$_dst"
+  [ "${CITYGS_DRY:-0}" = 1 ] || ln -f "$_ck" "$_dst/" 2>/dev/null || cp "$_ck" "$_dst/"
+  ENVX+=(CITYGS_RESUME=1 CITYGS_POSTDATA=0 CITYGS_RUN_NAME=lab/$TUNE_RESUME_NAME)
+  XA+=(--trainer.max_steps $((_st0 + TUNE_RESUME_STEPS)))
+  echo "[resume] 從 $_ck（step $_st0）接續 $TUNE_RESUME_STEPS 步 => lab/$TUNE_RESUME_NAME"
 fi
 echo "臂 $ARM => $LBL：全長 $ST、增生到 $((ST * G / 100))、合併到 $((ST * 9 / 10))、cap $CAP、家族 $FAM"
 env "${ENVX[@]}" CITYGS_GRID=44 CITYGS_LEAN=1 STEPS=$ST CITYGS_CAP=$CAP CITYGS_DUP44=${CITYGS_DUP44:-2} CITYGS_FAMILY=$FAM \

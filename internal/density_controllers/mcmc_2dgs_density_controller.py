@@ -662,6 +662,12 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 2026-11-06 noup v2：新增與搬家的顆粒繼承母點的高度上限（原本要等下一次投票、約 150 步內可以往上飄）。
     v1 在 b3 留下的海面上方顆粒 79.7% 仍是「沒證據」=> 是在被標記前就飄高了。"""
     sfm_vis_noup_vote_every: int = 0
+    sfm_noev_every: int = 0
+    """★ 2026-11-13（使用者「把機制打開接在已經有的 ckpt 跑幾百步」）> 0：任何階段都每 k 步投一次視線一致性票、更新「沒證據」的高度上限
+    （原本只在增生事件與增生開始前投票 => 接在收割期的 ckpt 上不會觸發）。需要 sfm_vis；配 sfm_vis_eps 1.0＝不改抽樣、只用 noup。"""
+    sfm_noup_sink_px: float = 0.0
+    """★ 2026-11-13「沒證據就往下沉」（紀錄 32 列過的候選；不准往上管不到已經在高處的）：> 0 時每次投票，仍是「沒證據」的顆粒
+    高度上限再往下降 此值 x 它的像素長度（最近可見訓練相機裡 1 像素的長度，px_floor 的量；沒有公尺常數）=> 一路沉到投票說「有證據」為止。"""
     """★ 2026-11-06 noup v2：增生開始前（step < densify_from_iter）每 k 步、以及第 1 步也投票標記；0＝只在增生事件投票（v1：第一次在 1,050 步）。"""
     px_floor: float = 1.0
     """★ 2026-11-07 點精靈下限（自主研究，紀錄/實驗分析/35、30）。★ 11-07 晚使用者「可以作為預設」=> 預設 1.0（原 0.0）。>0 時每步（optimizer step 之後）：長軸小於
@@ -2055,6 +2061,13 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         new = noev & ~was
         zmax = torch.where(new, z.float(), zmax)
         zmax = torch.where(noev, zmax, torch.full_like(zmax, float("inf")))     # 有了證據 => 解除
+        _sk = float(getattr(self.config, "sfm_noup_sink_px", 0.0) or 0.0)
+        if _sk > 0:                                                            # ★ 11-13 沒證據就往下沉：上限每次投票再降 _sk 像素長度
+            fl = getattr(self, "_pxf_log", None); kappa = float(getattr(self.config, "px_floor", 0.0) or 0.0)
+            if fl is not None and fl.shape[0] == z.shape[0] and kappa > 0:
+                pxl = (torch.exp(fl) / kappa).nan_to_num(0.0, posinf=0.0).float()
+                zmax = torch.where(noev, torch.minimum(zmax, z.float()) - _sk * pxl, zmax)
+                self._sink_n = int(noev.sum())
         self._noup_z = zmax
         first = not getattr(self, "_noup_announced", False)
         if first or step // 1500 != getattr(self, "_noup_last", -1):
@@ -2069,8 +2082,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     def _sfm_noup_clamp(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
         """每步結束（optimizer step 與 MCMC 雜訊之後）：沒證據的顆粒 z 夾在上限以下，上限只降不升。"""
         _k = int(getattr(self.config, "sfm_vis_noup_vote_every", 0) or 0)
-        if _k > 0 and global_step < int(self.config.densify_from_iter) and (global_step == 1 or global_step % _k == 0) \
-                and getattr(self, "_vis", None) is not None:
+        _ke = int(getattr(self.config, "sfm_noev_every", 0) or 0)
+        if getattr(self, "_vis", None) is not None and (
+                (_k > 0 and global_step < int(self.config.densify_from_iter) and (global_step == 1 or global_step % _k == 0))
+                or (_ke > 0 and global_step % _ke == 0)):          # ★ 11-13 sfm_noev_every：任何階段都定期投票
             n = gaussian_model.n_gaussians                              # ★ 11-06 noup v2：增生開始前也投票標記（第 1 步起）
             self._sfm_vis_probs(gaussian_model, torch.ones(n, device=gaussian_model.gaussians["means"].device), None)
         zmax = getattr(self, "_noup_z", None)
