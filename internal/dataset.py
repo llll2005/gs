@@ -195,7 +195,10 @@ class CacheDataLoader(torch.utils.data.DataLoader):
         if self.max_cache_num < 0:
             # cache all data
             print("cache all images")
+            from internal.utils.stage_timer import mark
+            mark("快取全部影像 開始（{} 張）".format(len(self.indices)))
             self.cached = self._cache_data(self.indices)
+            mark("快取全部影像 完成")
 
         # use dedicated random number generator foreach dataloader
         if self.shuffle is True:
@@ -404,6 +407,8 @@ class DataModule(LightningDataModule):
             raise ValueError("Can not detect dataset type, please specify via '--data.parser'")
 
     def setup(self, stage: str) -> None:
+        from internal.utils.stage_timer import mark
+        mark("資料 setup 開始")
         super().setup(stage)
 
         output_path = self.trainer.lightning_module.hparams["output_path"]
@@ -415,6 +420,7 @@ class DataModule(LightningDataModule):
 
         # load dataset
         self.dataparser_outputs = dataparser.get_outputs()
+        mark("dataparser 完成（相機、影像清單、深度圖、遮罩）")
         if self.hparams.get("skip_unused_depth", False):
             self._skip_unused_depth()
 

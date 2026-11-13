@@ -625,6 +625,8 @@ class GaussianSplatting(LightningModule):
         print(f"initialize from {load_from}: sh_degree={self.gaussian_model.max_sh_degree}, overwrite_config={overwrite_config}")
 
     def setup(self, stage: str):
+        from internal.utils.stage_timer import mark
+        mark("模型 setup 開始")
 
         self.renderer.setup(stage=stage, lightning_module=self)
 
@@ -642,8 +644,11 @@ class GaussianSplatting(LightningModule):
             if self.hparams["save_val_metrics"] is None:
                 self.hparams["save_val_metrics"] = True
 
+        mark("模型初始化完成（init 點雲／ckpt、renderer）")
         self.metric.setup(stage=stage, pl_module=self)
+        mark("metric setup 完成（深度支撐、SfM 豁免等）")
         self.density_controller.setup(stage=stage, pl_module=self)
+        mark("density setup 完成")
 
         # use different image log method based on the logger type
         self.log_image = None
@@ -678,6 +683,8 @@ class GaussianSplatting(LightningModule):
         super().on_load_checkpoint(checkpoint)
 
     def on_save_checkpoint(self, checkpoint) -> None:
+        from internal.utils.stage_timer import mark
+        mark("存 ckpt（step {}）".format(self.trainer.global_step))
         # store some extra parameters
         # checkpoint["gaussian_model_extra_state_dict"] = {
         #     "max_radii2D": self.gaussian_model.max_radii2D,
@@ -799,6 +806,8 @@ class GaussianSplatting(LightningModule):
 
     def on_train_start(self) -> None:
         super().on_train_start()
+        from internal.utils.stage_timer import mark
+        mark("on_train_start")
 
         # kernel/color-representation banner: which rasterizer + color rep + floats/point
         if self.trainer.global_rank == 0:
@@ -839,6 +848,10 @@ class GaussianSplatting(LightningModule):
             i(self.gaussian_model, self)
 
     def on_train_batch_start(self, batch: Any, batch_idx: int):
+        if self.trainer.global_step == 0 and not getattr(self, "_stage_first", False):
+            self._stage_first = True
+            from internal.utils.stage_timer import mark
+            mark("第一步開始（拿到第一個 batch）")
         if self.web_viewer is not None:
             self.web_viewer.training_step(
                 self.gaussian_model,
@@ -1395,6 +1408,9 @@ class GaussianSplatting(LightningModule):
         # the value of `trainer.global_step` here
         # is the same as the local variable `global_step` in training_step
         global_step = self.trainer.global_step
+        if global_step in (1, 50, 500) or self.is_final_step(global_step):
+            from internal.utils.stage_timer import mark
+            mark("第 {:,} 步結束".format(global_step))
         if getattr(self, "_skip_this_batch", False):
             # ★ 2026-11-05 採樣控制顆數跳過的那批：沒有 optimizer step（global_step 沒前進）=> trim 等「每 N 步」的事件不可再跑一次
             self._skip_this_batch = False

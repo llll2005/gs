@@ -133,6 +133,7 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
     echo "  舊輸出搬到 $moved（$(du -sh "$moved" 2>/dev/null | cut -f1)）"
   fi
   echo "=== $name / block $blk / cap ${CITYGS_VRAM_CAP_GB:-不限制} / $(date) ==="
+  echo "[階段] $(date +%T) shell：conda run 前（python 行程開始前）"   # ★ 11-14 啟動時間拆解（internal/utils/stage_timer.py 同格式）
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config "$CFG" \
     --data.parser.block_id "$blk" \
@@ -140,7 +141,9 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local rc=$?
   [ "$rc" -ne 0 ] && { echo "❌ $name block $blk 失敗 rc=$rc"; return "$rc"; }
   echo "=== $name / block $blk 完成 $(date) ==="
+  echo "[階段] $(date +%T) shell：python 行程結束"
   conda run -n gspl python tools/audit_geometry.py "$name" --block "$blk" 2>&1 | tail -6
+  echo "[階段] $(date +%T) shell：audit_geometry 完成"
   # ★★ 比分數之前 diff 兩份 resolved config（使用者 2026-09-13 要求加進腳本）
   #   為什麼：`speed3_sfminit_b12` 以為唯一變數是 init，實際 resolved config 差**四項**，
   #   其中 `dynamic_strips=true` 讓 77.7% 的訓練步跑在被改過的 loss 上
@@ -162,9 +165,11 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   # ★ 2026-10-03 使用者：每個跑次都要輸出所有圖表要用的數據，要用時才不用重跑 => 圖表資料包
   #   （離線 Load、塊內 held-out、幾何、儲存；60k 另加 @1,499、失敗區、tau；計時登記給 [solo] solo_batch）
   #   失敗不影響這個訓練的結果與 rc（缺的之後用 `post_run_data.sh backfill` 補）。CITYGS_POSTDATA=0 可關。
+  echo "[階段] $(date +%T) shell：config diff 完成"
   if [ "${CITYGS_POSTDATA:-1}" = 1 ]; then
     bash scripts/lab/post_run_data.sh run "$name" "$blk" 2>&1 | tail -30 \
       || echo "⚠ 圖表資料包有項目失敗（不影響訓練結果；可用 post_run_data.sh backfill 補）"
+    echo "[階段] $(date +%T) shell：圖表資料包完成"
   fi
   return 0
 }
