@@ -2337,8 +2337,9 @@ DOCS = {
     "32_海面浮塊": ["n22_b12hist", "n22_b0var", "n24_geom", "n25_arms", "n27_arms"],
     "33_高樓_塔頂玻璃塔與上半部": ["n23_tower", "n24_mono", "n27_tower", "n22_orient"],
     "34_下一版配方候選元件": ["n25_arms", "n24_swap", "n26_arms", "n27_arms"],
-    "37_SfM三角形校正深度": ["n37_round2", "n37_trimask", "n37_d1"],
-    "38_時間拆解與配方瘦身": ["n38_seg", "n38_slim", "n38_overhead"],
+    "37_SfM三角形校正深度": ["n37_d1"],
+    "37_SfM三角形校正深度_至1113": ["n37_round2", "n37_trimask", "n37_d1"],
+    "38_時間拆解與配方瘦身": ["n38_seg", "n38_slim", "n37_round2", "n38_overhead"],
 }
 
 
