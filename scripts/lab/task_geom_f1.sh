@@ -21,7 +21,9 @@ GT=data/geometry_gt/MC_Aerial
 OUT=outputs/lab/geom_f1
 OURS=outputs/lab/full44_best/checkpoints/merged.ckpt
 OFF=../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/checkpoints/epoch=6-step=30000.ckpt
-ck_of () { case "$1" in ours) echo "$OURS" ;; official) echo "$OFF" ;; *) echo "" ;; esac; }
+# ★ 11-13 使用者「CityGS full blk merge 的 F1 跟各項數據，沒有就補量」：ours_a＝A＋dist4 全場景合併模型（相機照舊取 full44 那份，與 CityGS 同一組）
+OURS_A=outputs/lab/g44s30ksfm10fssh16di4_best1maskdistrfed10b4/checkpoints/merged.ckpt
+ck_of () { case "$1" in ours) echo "$OURS" ;; ours_a) echo "$OURS_A" ;; official) echo "$OFF" ;; *) echo "" ;; esac; }
 MODE=$1; NAME=${2:-}; DIRN="$NAME${STRIDE:+_s$STRIDE}"
 case "$MODE" in
   prep)
@@ -41,6 +43,8 @@ case "$MODE" in
     [ -f "$GT/Block_all_ds.ply" ] || { echo "⛔ 先跑 prep"; exit 2; }
     $PY tools/eval_tnt/run.py --scene Block_all_ds --dataset-dir "$GT" --ply-path "$OUT/$DIRN/fuse_post.ply" 2>&1 \
       | grep -v -i warn | tee "$OUT/$DIRN/f1.log"
-    grep -E 'precision|recall|f-score' "$OUT/$DIRN/f1.log" ;;
+    grep -E 'precision|recall|f-score' "$OUT/$DIRN/f1.log"
+    # ★ 11-13 另算不配準（跨模型比較用這個；eval_tnt 的 ICP 會把我方移歪，`參考_CityGS參考線.md` §6.1）
+    $PY tools/block_f1.py --block -1 --mesh "$OUT/$DIRN/fuse_post.ply" --out "$OUT/$DIRN/noreg" 2>&1 | grep -E 'F1 [0-9]|P [0-9]' | tee "$OUT/$DIRN/f1_noreg.log" ;;
   *) echo "⛔ 模式只能是 prep／mesh／f1"; exit 2 ;;
 esac
