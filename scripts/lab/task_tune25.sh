@@ -40,6 +40,8 @@
 #     規格 5 §2 配方瘦身（每個只關底的一項）：nogate 深度支撐閘門＋增生取樣｜nohf 補洞放點｜noip 增生方向限面內｜nonm 法向一致性｜
 #              nonp 不帶 np16（拿掉鄰域平面；只是名字，旗標同不寫 np16）｜nomg 合併整個關掉｜nol2 L1 混 L2｜nopx 點精靈下限｜nohp 刪死顆粒｜
 #              mge1 合併改成只併渲染誤差 < 0.1、不設額度、不透明質量守恆（11-08 MMR）
+#     capfc    ★ 11-13 規格 3 §4-3「只補前面」（使用者 11-13「作」；光柵器 depth_cap_grad_mode 3，要重編）：深度上限 B 的梯度只給在上限前面的貢獻、
+#              只經由 α（前面變更不透明 => 後面分到的 T 變小）；落在上限後面的貢獻收不到 B 的梯度。loss 與 forward 不變。要和 tricap<W> 一起用
 #     規格 5 §3 加速組合（11-13 使用者「排」）：log0 訓練中不每步記 train/*（只在第一步與最後一步記，eval 的「純訓練」計時照舊可用）｜
 #              geo8 dist 每 4 步 -> 每 8 步（權重自動 x 8＝相對 x2，與法向、深度上限落在同一步）｜lowres、s20g70 是現成的
 #   TUNE_PROFILE_STEPS／TUNE_PROFILE_WARMUP／TUNE_PROFILE_NAME：逐段計時模式（task_mech_time.sh MT_TUNE_ARMS 用；規格 5 §1）
@@ -65,10 +67,10 @@ parse() {
     else
       case "$t" in
         lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w) XT+=("$t") ;;
-        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8) XT+=("$t") ;;
+        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc) XT+=("$t") ;;
         r2c[0-9]*|r2s[0-9]*) [[ $t =~ ^r2[cs][0-9]+$ ]] || { echo "⛔ 寫法：r2c<NN>／r2s<NN>（例 r2c50、r2s50）"; return 2; }; XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc）"; return 2 ;;
       esac
     fi
   done
@@ -82,7 +84,7 @@ parse() {
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
       r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;;
       nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
-      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; esac
+      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; esac
   done
 }
 
@@ -190,6 +192,8 @@ for t in "${XT[@]:-}"; do
     # ★ 11-13 規格 5 §3：log0＝train/* 只在第 0 步與最後一步記（k＝全長−1；0 % k、(全長−1) % k 都是 0）=> 每步不交指標給 Lightning、
     #   進度列的 loss 最多每秒讀一次；eval 的純訓練時間（train/loss 首尾）照樣量得到、與底同一個起訖點
     log0)   XA+=(--model.train_log_interval $((ST - 1))) ;;
+    capfc)  [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ capfc 要和 tricap<W> 一起用（沒有上限就沒有 B）"; exit 2; }
+            XA+=(--model.metric.init_args.depth_cap_grad_mode 3) ;;
     geo8)   XA+=(--model.metric.init_args.lambda_dist_interval 8) ;;   # 權重乘 k 是 metric 自己做的（gs2d_metrics）；(step+1) % 8 與法向、深度上限同一步
     cmflat) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ cmflat 要和 tricap<W> 一起用（沒有上限就沒有遮罩可套）"; exit 2; }
             _CM=data/matrix_city/aerial/train/block_all/cap_masks_flat

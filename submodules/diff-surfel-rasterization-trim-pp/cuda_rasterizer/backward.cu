@@ -19,6 +19,10 @@ __device__ float g_alpha_max_b = 0.99f;
 // ★ 2026-11-11 逐像素深度上限圖（與 forward.cu 的 g_cap_inv／g_cap_n 同一份，呼叫端在 backward 前後設定與清掉）
 __device__ const float* g_cap_inv_b = nullptr;
 __device__ int g_cap_n_b = 0;
+// ★ 2026-11-13 規格 3 §4-3（使用者 11-13「只補前面作」）：上限 B 的梯度模式。0＝現狀；3＝只補前面（capfc）：
+//   B 的梯度只給在上限前面的貢獻（z·icap <= 1），而且只經由 α（前面變更不透明 => 後面分到的 T 變小 => B 變小）；
+//   落在上限後面的貢獻收不到 B 的任何梯度（不經 α 變透明、也不經 z 往前推）。其他通道的梯度一律不動。
+__device__ int g_cap_grad_mode_b = 0;
 namespace cg = cooperative_groups;
 
 // Backward pass for conversion of spherical harmonics to RGB for
@@ -380,6 +384,7 @@ renderCUDA(
 		icap = g_cap_inv_b[pix_id];
 		dL_dcap = dL_depths[CAP_OFFSET * H * W + pix_id];
 	}
+	const bool cap_front_only = (g_cap_grad_mode_b == 3);   // ★ 11-13 只補前面
 #endif
 
 	if (inside){
@@ -524,7 +529,8 @@ renderCUDA(
 			if (icap > 0.f) cap_v = fmaxf(c_d * icap - 1.f, 0.f);
 			accum_cap_rec = last_alpha * last_cap + (1.f - last_alpha) * accum_cap_rec;
 			last_cap = cap_v;
-			dL_dalpha += (cap_v - accum_cap_rec) * dL_dcap;
+			if (!(cap_front_only && cap_v > 0.f))                  // ★ 11-13 只補前面：後面的貢獻不拿 B 的 α 梯度（前面的照舊：−accum·dL_dcap）
+				dL_dalpha += (cap_v - accum_cap_rec) * dL_dcap;
 			// Propagate gradients w.r.t. color ray-splat alphas
 			accum_alpha_rec = last_alpha * 1.0 + (1.f - last_alpha) * accum_alpha_rec;
 			dL_dalpha += (1 - accum_alpha_rec) * dL_daccum;
@@ -555,7 +561,7 @@ renderCUDA(
 			const float dL_dG = nor_o.w * dL_dalpha;
 #if RENDER_AXUTILITY
 			if (GEOM) dL_dz += alpha * T * dL_ddepth; 
-			if (GEOM && cap_v > 0.f) dL_dz += alpha * T * dL_dcap * icap;   // ★ 11-11 dB/dz_i = T·α·icap（超出上限時）
+			if (GEOM && cap_v > 0.f && !cap_front_only) dL_dz += alpha * T * dL_dcap * icap;   // ★ 11-11 dB/dz_i = T·α·icap（超出上限時）
 #endif
 
 			if (rho3d <= rho2d) {
@@ -1313,6 +1319,12 @@ void BACKWARD::setDepthCap(const float* cap_inv, int n)
 {
 	cudaMemcpyToSymbol(g_cap_inv_b, &cap_inv, sizeof(const float*));
 	cudaMemcpyToSymbol(g_cap_n_b, &n, sizeof(int));
+}
+
+// ★ 2026-11-13 規格 3 §4-3：B 的梯度模式（0＝現狀、3＝只補前面）
+void BACKWARD::setDepthCapGradMode(int mode)
+{
+	cudaMemcpyToSymbol(g_cap_grad_mode_b, &mode, sizeof(int));
 }
 
 void BACKWARD::setAlphaMax(float a)

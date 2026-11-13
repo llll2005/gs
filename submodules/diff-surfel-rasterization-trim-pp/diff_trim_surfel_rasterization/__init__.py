@@ -256,8 +256,11 @@ class _RasterizeGaussians(torch.autograd.Function):
                 sh_rest, a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp)
 
         _cap = _depth_cap_of(raster_settings) if geom_grad else None    # ★ 11-11 逐貢獻深度上限：backward 期間再把上限圖交給光柵器
+        _cgm = int(getattr(raster_settings, "depth_cap_grad_mode", 0) or 0) if _cap is not None else 0   # ★ 11-13 只補前面
         if _cap is not None:
             _C.set_depth_cap(_cap)
+            if _cgm:
+                _C.set_depth_cap_grad_mode(_cgm)
         try:
             # Compute gradients for relevant tensors by invoking backward method
             if raster_settings.debug:
@@ -273,6 +276,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         finally:
             if _cap is not None:
                 _C.set_depth_cap(_empty_like_dev(means3D))
+            if _cgm:
+                _C.set_depth_cap_grad_mode(0)
 
         if sh_adam is not None and len(sh_adam) > 6 and isinstance(sh_adam[6], dict):
             sh_adam[6]["g_dc"], sh_adam[6]["g_rest"] = grad_sh, grad_sh_rest
@@ -337,6 +342,8 @@ class GaussianRasterizationSettings(NamedTuple):
     # ★ 2026-11-11 逐顆累加（需要 depth_cap）：(bh, tot) 兩個 float32 [P] CUDA 張量，forward 時就地加上
     #   bh[i] += Σ_{像素} T·α（這份貢獻的光線—面元交點深度 > 上限）、tot[i] += Σ_{有上限的像素} T·α。None＝不累加（逐位元不變）。
     depth_cap_acc : Optional[tuple] = None
+    # ★ 2026-11-13 規格 3 §4-3：B 的梯度模式（只在 backward、只在有 depth_cap 時作用）。0＝現狀；3＝只補前面（capfc）
+    depth_cap_grad_mode : int = 0
     # ★ 2026-10-02：剃除沒人用的計算（見 forward.cu 的 MODE 與 backward.cu 的 GEOM）。
     #   訓練：只算顏色＋alpha、backward 跳過幾何梯度；record（trim pass）：只算 T*alpha 與覆蓋數。
     #   預設 False => 與舊行為完全相同（舊 kernel 的原始碼一字未動，只是多了模板參數）。

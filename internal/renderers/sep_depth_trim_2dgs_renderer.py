@@ -394,6 +394,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 print(f"[skip-unscored] ✅ 首次觸發：lean 訓練 forward 略過不計分像素 {float(_pix.float().mean()):.3f}（這張）", flush=True)
         # ★ 2026-11-11 逐貢獻深度上限：training_forward 從 module._depth_cap 帶進來（float32 [H, W]；None＝這一步不算）；只在完整路徑有作用
         _cap = kwargs.get("_depth_cap") if (not _lean and not record_transmittance) else None
+        _cgm = int(kwargs.get("_depth_cap_grad_mode", 0) or 0)     # ★ 11-13 只補前面（training_forward 從 metric 設定帶進來）
         if _cap is not None:
             if "depth_cap" not in GaussianRasterizationSettings._fields:
                 raise RuntimeError("設了 metric.depth_cap_reg 但光柵器不認得 depth_cap 欄位 —— 沒重編")
@@ -406,6 +407,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 if not getattr(self, "_acct_announced", False):
                     self._acct_announced = True
                     print(f"[behind-price] ✅ 首次觸發：有上限圖的完整路徑步逐顆累加 Vc／Vb（N {pc.get_xyz.shape[0]:,}）", flush=True)
+            if _cgm and "depth_cap_grad_mode" not in GaussianRasterizationSettings._fields:
+                raise RuntimeError("設了 metric.depth_cap_grad_mode 但光柵器不認得 depth_cap_grad_mode 欄位 —— 沒重編")
+            if _cgm and not getattr(self, "_cgm_announced", False):
+                self._cgm_announced = True
+                print(f"[depth-cap] ✅ 首次觸發：B 的梯度模式 {_cgm}（3＝只補前面：後面的貢獻收不到 B 的梯度、前面的只經由 α）", flush=True)
             if tuple(_cap.shape[-2:]) != (int(viewpoint_camera.height), int(viewpoint_camera.width)):
                 raise RuntimeError(f"depth_cap 大小 {tuple(_cap.shape)} != 渲染 {(int(viewpoint_camera.height), int(viewpoint_camera.width))}")
         raster_settings = GaussianRasterizationSettings(
@@ -442,6 +448,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"bwd_zero_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_zero_grad_skip", False)) else {}),
             **({"pix_skip": _pix} if (_lean and not record_transmittance and _pix is not None) else {}),
             **({"depth_cap": _cap} if _cap is not None else {}),
+            # ★ 2026-11-13 規格 3 §4-3 只補前面（metric depth_cap_grad_mode；只在有上限圖的完整路徑、backward 作用）
+            **({"depth_cap_grad_mode": _cgm} if (_cap is not None and _cgm) else {}),
             # ★ 2026-11-11 逐顆累加落在上限後面的 T·α（kwargs `_depth_cap_acc`＝(bh, tot)；只在有上限圖時）
             **({"depth_cap_acc": kwargs["_depth_cap_acc"]} if (_cap is not None and kwargs.get("_depth_cap_acc") is not None) else {}),
             **({"train_record": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
@@ -723,6 +731,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             # ★ 2026-11-11 逐貢獻深度上限（metric depth_cap_reg）：這一步有上限圖 => 走完整路徑
             if "_depth_cap" not in kwargs:
                 kwargs["_depth_cap"] = getattr(module, "_depth_cap", None)
+            if "_depth_cap_grad_mode" not in kwargs:   # ★ 11-13 規格 3 §4-3 只補前面
+                kwargs["_depth_cap_grad_mode"] = int(getattr(getattr(getattr(module, "metric", None), "config", None), "depth_cap_grad_mode", 0) or 0)
             if "_cap_acct" not in kwargs:      # ★ 11-11 規格 2 §3：剪枝或抽母點要計價 => 有上限圖的步記兩筆帳
                 _dcc = getattr(getattr(module, "density_controller", None), "config", None)
                 kwargs["_cap_acct"] = (float(getattr(self, "trim_behind_price", 0.0) or 0.0) > 0

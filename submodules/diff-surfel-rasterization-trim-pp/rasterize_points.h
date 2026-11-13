@@ -80,6 +80,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
 // ★ 2026-11-11 逐像素深度上限圖（rasterize_points.cu 末尾）
 void SetDepthCap(const torch::Tensor& cap);
+void SetDepthCapGradMode(int mode);   // ★ 2026-11-13 規格 3 §4-3
 
 void SetDepthCapAcc(const torch::Tensor& bh, const torch::Tensor& tot);
 

@@ -8,7 +8,10 @@
   base／cmp 另外比「設了上限圖」的完整路徑：渲染與前 9 個通道（含 B）逐位元相同、梯度在重跑雜訊內
   acc    設了逐顆帳：渲染／10 個通道逐位元不變、梯度在重跑雜訊內；Σ Vc＝Σ_{有上限} alpha；Σ_{有上限} W＝Σ Vb；
          上限極近 => Vb＝Vc、W＝alpha；極遠 => W、Vb 全 0；上限圖全 0 => 全 0；計時（有上限圖的 forward，開帳 vs 不開）
-用法：python tools/check_depth_cap.py base|cmp|grad|acc
+  ★ 11-13 規格 3 §4-3 只補前面（depth_cap_grad_mode 3）：
+  fc     渲染／10 個通道與模式 0 逐位元相同；L＝Σ B·w 的梯度：全在上限前面的顆粒（Vb＝0）與模式 0 相同（前面的本來就只經由 α）、
+         全在上限後面的顆粒（Vb＝Vc）全部參數梯度恰為 0；不含 B 的 loss 梯度與模式 0 相同；用完模式回到 0（再跑模式 0 與基準相同）
+用法：python tools/check_depth_cap.py base|cmp|grad|acc|fc
 """
 import sys, math, os
 import torch
@@ -163,6 +166,65 @@ def main():
 
     if mode == "acc":
         acc_checks()
+    if mode == "fc":
+        fc_checks()
+
+
+def fc_checks():
+    """★ 11-13 規格 3 §4-3 只補前面：depth_cap_grad_mode＝3。上限放在中位深度 x 1.15（前面、後面、兩邊都有的顆粒都夠多）。"""
+    ok = True
+    n = 4000
+    cap = cap_map(scale=1.15)
+    wB = torch.rand(H, W, generator=torch.Generator().manual_seed(5)).to(DEV)
+    tgt = torch.rand(3, H, W, generator=torch.Generator().manual_seed(1)).to(DEV)
+    wgt = torch.rand(8, H, W, generator=torch.Generator().manual_seed(2)).to(DEV)
+
+    def run(gm, with_B=True, acc=None):
+        q = scene()
+        kw = dict(depth_cap=cap, **({"depth_cap_grad_mode": gm} if gm else {}), **({"depth_cap_acc": acc} if acc is not None else {}))
+        col, oth = render(q, **kw)
+        loss = (oth[8] * wB).sum() if with_B else (col - tgt).abs().mean() + (oth[:8] * wgt).mean()
+        return col.detach(), oth.detach(), grads_of(loss, q)
+    vb, vc = torch.zeros(n, device=DEV), torch.zeros(n, device=DEV)
+    c0, o0, g0 = run(0, acc=(vb, vc))
+    _, _, g0b = run(0)
+    c3, o3, g3 = run(3)
+    fwd = torch.equal(c0, c3) and torch.equal(o0, o3)
+    print(f"1. 模式 3 的渲染／{o0.shape[0]} 個通道與模式 0 逐位元相同 {'✅' if fwd else '⛔'}"); ok &= fwd
+    seen = vc > 1e-6
+    front = seen & (vb == 0)
+    behind = seen & ((vc - vb).abs() <= 1e-6 * vc.clamp_min(1e-12))
+    mixed = seen & ~front & ~behind
+    print(f"   有上限像素裡出現的顆粒 {int(seen.sum()):,}：全在前面 {int(front.sum()):,}、全在後面 {int(behind.sum()):,}、兩邊都有 {int(mixed.sum()):,}")
+    noise = max(float((a - b).abs().max()) for a, b in zip(g0, g0b))
+    names = ("means", "scales", "rots", "opac", "cols")
+    for i, nm in enumerate(names):
+        if nm == "cols":
+            continue
+        d_front = float((g3[i][front] - g0[i][front]).abs().max()) if front.any() else 0.0
+        s_front = float(g0[i][front].abs().max()) if front.any() else 0.0
+        z_behind = float(g3[i][behind].abs().max()) if behind.any() else 0.0
+        nz0 = float(g0[i][behind].abs().max()) if behind.any() else 0.0
+        good = d_front <= max(10 * noise, 1e-6 * max(s_front, 1e-12)) and z_behind == 0.0
+        ok &= good
+        print(f"2. grad {nm:6}：全在前面 與模式 0 最大差 {d_front:.2e}（最大值 {s_front:.2e}、重跑雜訊 {noise:.2e}）｜全在後面 模式 3 最大 {z_behind:.1e}（模式 0 是 {nz0:.2e}）{'✅' if good else '⛔'}")
+    # 3. 不含 B 的 loss：梯度與模式 0 相同（只動 B 的梯度）
+    _, _, h0 = run(0, with_B=False)
+    _, _, h0b = run(0, with_B=False)
+    _, _, h3 = run(3, with_B=False)
+    nz = max(float((a - b).abs().max()) for a, b in zip(h0, h0b))
+    dd = max(float((a - b).abs().max()) for a, b in zip(h0, h3))
+    good = dd <= max(10 * nz, 1e-7); ok &= good
+    print(f"3. 不含 B 的 loss：模式 3 對模式 0 梯度最大差 {dd:.2e}（重跑雜訊 {nz:.2e}）{'✅' if good else '⛔'}")
+    # 4. 用完回到 0：再跑模式 0，B 的梯度與一開始的模式 0 相同
+    _, _, g0c = run(0)
+    dd = max(float((a - b).abs().max()) for a, b in zip(g0, g0c))
+    good = dd <= max(10 * noise, 1e-7); ok &= good
+    print(f"4. 模式 3 跑完後再跑模式 0：B 的梯度對最初的模式 0 最大差 {dd:.2e} {'✅' if good else '⛔'}")
+    # 5. 方向（只印）：模式 3 下 L 對「全在前面」顆粒不透明度的方向導數 < 0（變更不透明 => 後面分到的少 => B 變小）
+    gf = g3[3][front]
+    print(f"5. 全在前面且梯度非 0 的顆粒：dL/d不透明度 < 0 的比例 {float((gf[gf != 0] < 0).float().mean()) if (gf != 0).any() else float('nan'):.3f}（要接近 1）")
+    print("✅ 通過" if ok else "⛔ 沒過"); sys.exit(0 if ok else 1)
 
 
 def acc_checks():

@@ -438,6 +438,13 @@ void SetDepthCap(const torch::Tensor& cap)
 	}
 }
 
+// ★ 2026-11-13 規格 3 §4-3（使用者 11-13「只補前面作」）：上限 B 的梯度模式。0＝現狀；3＝只補前面（後面的貢獻收不到 B 的梯度、前面的只經由 α）。
+void SetDepthCapGradMode(int mode)
+{
+	TORCH_CHECK(mode == 0 || mode == 3, "depth_cap_grad_mode 只支援 0（現狀）與 3（只補前面）");
+	CudaRasterizer::Rasterizer::setDepthCapGradMode(mode);
+}
+
 
 // ★ 2026-11-11 逐顆累加（forward.cu g_cacc_*）：bh／tot＝CUDA 上連續的 float32、元素數＝顆數 P（呼叫端歸零、自己保證活到 forward 結束）；空張量＝清掉。
 void SetDepthCapAcc(const torch::Tensor& bh, const torch::Tensor& tot)
