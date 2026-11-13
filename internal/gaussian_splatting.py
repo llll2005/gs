@@ -944,10 +944,12 @@ class GaussianSplatting(LightningModule):
         # ★ 11-06：額外資料（單目逆深度）與影像同大小時跟著縮小。大小不同時原樣保留：現有的使用端都按比例取樣
         #   （深度支撐閘門 geom_gate.update 用 深度圖寬／相機寬 換算座標；補洞 _hole_fill 先 interpolate 到渲染大小），
         #   所以低解析度步也對得上。新加的使用端若直接用相機像素座標索引深度圖，要自己處理。
+        # ★ 11-13 規格 5 §3 lowres 檢查：額外資料是逆深度（校正深度把不可靠像素設 0＝無效），area 會把無效的 0 與跨深度邊界的值平均掉
+        #   => 深度上限圖在邊界拿到假的中間深度。改 nearest：每個低解析度像素取一個原像素的值，有效／無效與深度都不混（只影響 lowres 臂）
         def _rs_t(t):
             if torch.is_tensor(t) and t.dim() >= 2 and tuple(t.shape[-2:]) == (H, W):
                 lead = t.shape[:-2]
-                y = F.interpolate(t.reshape(1, -1, H, W).float(), size=(h, w), mode="area")
+                y = F.interpolate(t.reshape(1, -1, H, W).float(), size=(h, w), mode="nearest")
                 return y.reshape(*lead, h, w).to(t.dtype)
             return t
         if isinstance(extra, (tuple, list)):
