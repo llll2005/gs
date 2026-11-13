@@ -2167,6 +2167,145 @@ def n25_arms(d):
     save(fig, d, "n25_arms.png")
 
 
+# ══════════════ 11-13：37（校正深度主線：兩輪流程、高塔遮罩、離線拆解）與 38（時間拆解、瘦身、跑次時間） ══════════════
+N37_R2 = [  # 臂, 換塊 Δ (b1, b4)（對新底）, 純訓練 Δ% (b1, b4)（b1 參考 12.3 分、b4 13.2 分；None＝共用卡不可比）
+    ("R 名額 70%", (-0.011, -0.026), (-11, -12)), ("Rc50 名額 50%", (-0.055, -0.067), (-19, -20)),
+    ("Rc85 名額 85%", (0.000, -0.012), (-9, -9)), ("Rc95 名額 95%", (-0.001, -0.014), (-7, -5)),
+    ("Rc100 名額 100%", (0.002, -0.021), (-6, -5)), ("Rs50 S1 50%", (-0.020, -0.020), (-11, -11)),
+    ("Rfree 不限出身", (-0.015, -0.030), (-13, -13)), ("Rent0 第二輪熵關", (-0.033, -0.036), (-13, -14)),
+    ("Rc85＋S1 70%", (-0.020, -0.018), (None, -11)),
+]
+N37_TRIMASK = [("b1", -0.001, -0.021, 17), ("b2", 0.058, 0.151, -6), ("b6", 0.019, 0.176, 16)]   # 塊, 換塊 Δ, 幾何區域 Δ, 地下覆蓋 Δ%（對新底）
+N37_D1 = [  # 模型, ΣW 佔比 % (①先驗太淺, ③前面是空的, ④前面漏光, ⑤前面擋住)（b1, b4）, 平均 W (b1, b4)
+    ("CityGS", ((6.5, 3.6, 69.7, 19.3), (9.5, 0.7, 60.9, 28.6)), (.064, .041)),
+    ("舊底（鄰域平面 30k）", ((10.0, 11.1, 59.6, 18.8), (11.3, 12.0, 53.8, 22.7)), (.050, .041)),
+    ("上限 0.5", ((41.0, 2.8, 17.7, 37.4), (41.3, 0.9, 13.5, 44.0)), (.010, .010)),
+    ("新底（上限 0.5＋只罰躺平）", ((26.1, 5.7, 35.5, 32.0), (30.2, 1.1, 27.3, 41.2)), (.017, .014)),
+]
+
+
+def n37_round2(d):
+    """兩輪流程九臂：換塊 Δ 對 純訓練 Δ%（對新底；判準＝時間降、分數在雜訊內打平，使用者 11-13）。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.8))
+    for ax, k, blk in zip(axs, (0, 1), ("b1（參考 12.3 分）", "b4（新底 13.2 分）")):
+        ax.axhspan(-0.03, 0.03, color="#e9e7e1", zorder=0); ax.axhline(0, color=MUTED, lw=0.8)
+        for name, sw, tm in N37_R2:
+            if tm[k] is None:
+                continue
+            c = C3 if abs(sw[k]) <= 0.03 else C2
+            ax.scatter(tm[k], sw[k], color=c, s=34, zorder=3)
+            ax.text(tm[k], sw[k], " " + name, fontsize=7.4, color=INK2, va="center")
+        ax.set_xlabel("純訓練時間 Δ%（對底）"); ax.set_ylabel("換塊 ΔPSNR（對底；灰帶＝雜訊 ±0.03）")
+        ax.set_title(f"{blk}：綠＝打平；名額 85% 兩塊 −9%、70% −11～12%", fontsize=9.2)
+        ax.set_xlim(-22, 0)
+    fig.suptitle("兩輪流程＝省時間的機制（11-13 重判）：名額越少越快也越差；b4 F1 每臂 −.007～−.015", fontsize=9.6)
+    save(fig, d, "n37_round2.png")
+
+
+def n37_trimask(d):
+    """高塔遮罩（塊外遮罩改用校正深度判）對新底：換塊、幾何區域、地下覆蓋。"""
+    fig, axs = plt.subplots(1, 3, figsize=(18, 4.0))
+    x = np.arange(3); lab = [r[0] for r in N37_TRIMASK]
+    for ax, j, title, fmt in zip(axs, (1, 2, 3), ("換塊 ΔPSNR ↑（雜訊 ±0.03）", "幾何區域 ΔPSNR ↑", "地下覆蓋 Δ% ↓"), ("{:+.3f}", "{:+.3f}", "{:+.0f}%")):
+        v = [r[j] for r in N37_TRIMASK]
+        barlabels(ax, ax.bar(x, v, color=[C3 if (vv > 0) == (j != 3) else C2 for vv in v]), fmt, size=8)
+        ax.axhline(0, color=MUTED, lw=0.8); ax.set_xticks(x, lab); ax.set_title(title, fontsize=9.2)
+        if j == 1:
+            ax.axhspan(-0.03, 0.03, color="#e9e7e1", zorder=0)
+    fig.suptitle("高塔遮罩：b2（接縫上高樓最多）+0.058 過關、b6 同向、b1 打平；時間不變 => 11-13 使用者「進底」", fontsize=9.6)
+    save(fig, d, "n37_trimask.png")
+
+
+def n37_d1(d):
+    """離線拆解 D1：落後權重 ΣW 落在哪一桶（margin 3%）。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.4))
+    cols = (C2, MUTED, C1, C3); names = ("① 先驗太淺", "③ 前面是空的", "④ 前面漏光", "⑤ 前面擋住")
+    for ax, k, blk in zip(axs, (0, 1), ("b1", "b4")):
+        y = np.arange(len(N37_D1))
+        for i, (m, sh, w) in enumerate(N37_D1):
+            left = 0
+            for v, c, nm in zip(sh[k], cols, names):
+                ax.barh(i, v, left=left, color=c, label=nm if i == 0 else None)
+                if v >= 6:
+                    ax.text(left + v / 2, i, f"{v:.0f}", ha="center", va="center", fontsize=7.5, color="white")
+                left += v
+            ax.text(101, i, f" 平均 W {w[k]:.3f}", va="center", fontsize=7.6, color=INK2)
+        ax.set_yticks(y, [r[0] for r in N37_D1], fontsize=8.4); ax.invert_yaxis(); ax.set_xlim(0, 118)
+        ax.set_xlabel("ΣW 佔比 %（落後權重＝落在先驗表面 1+margin 後面的混合權重）"); ax.set_title(blk, fontsize=9.2)
+    h_, l_ = axs[0].get_legend_handles_labels()
+    fig.legend(h_, l_, loc="upper center", ncol=4, fontsize=8, bbox_to_anchor=(0.5, 0.93), frameon=False)
+    fig.subplots_adjust(top=0.80)
+    fig.suptitle("CityGS 的落後權重也七成在「前面漏光」（半透明筆觸）；上限把我方壓到 1/4～1/5，新底放回一部分牆面的 ④ —— 只補前面（capfc）11-13 已排", fontsize=9.6)
+    save(fig, d, "n37_d1.png")
+
+
+N38_SEG = [  # 段, 增生期 ms, 收割期 ms
+    ("光柵器 backward", 16.15, 11.71), ("光柵器 forward", 7.50, 5.81), ("迴圈外（hooks 1.3～1.7＋dataloader／Lightning）", 2.66, 2.24),
+    ("loss", 2.45, 2.10), ("density", 0.97, 0.43), ("記 log", 0.93, 0.87), ("optimizer", 0.67, 0.63), ("trim 前 hook／其他", 0.98, 0.97)]
+N38_CLS = [("一般步（lean）", (80.6, 66), (75.0, 64)), ("完整路徑步（每 8 步）", (12.3, 24), (12.5, 21)), ("dist 步（每 4 步）", (6.4, 7), (12.5, 15)), ("增生事件步", (0.7, 2), (0, 0))]
+N38_SLIM = [  # 元件, 換塊 Δ (b1, b4), 純訓練 Δ% (b1, b4)（b1 參考 12.3 分、b4 13.2 分）
+    ("閘門", (-0.004, 0.001), (-2, -1)), ("補洞", (-0.006, 0.002), (-1, -1)), ("面內增生", (-0.003, -0.003), (0, 0)),
+    ("法向", (0.001, 0.005), (-3, -2)), ("鄰域平面", (0.004, 0.007), (-2, -2)), ("合併（整個關）", (0.023, 0.037), (6, 5)),
+    ("L2", (-0.026, -0.017), (0, 0)), ("點精靈下限", (-0.022, -0.007), (-1, -2)), ("刪死顆粒", (0.003, 0.003), (0, 0)), ("合併只併誤差 0.1", (-0.001, 0.013), (3, 2))]
+
+
+def n38_seg(d):
+    """新底 b4 逐段時間（增生期／收割期）與依步型的佔比。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.6), gridspec_kw={"width_ratios": [1.4, 1]})
+    ax = axs[0]; y = np.arange(len(N38_SEG)); h = 0.38
+    ax.barh(y - h / 2, [r[1] for r in N38_SEG], h, color=C2, label="增生期（N 1.37M；一步 32.3 ms）")
+    ax.barh(y + h / 2, [r[2] for r in N38_SEG], h, color=C1, label="收割期（N 1.09M；一步 24.7 ms）")
+    for i, r in enumerate(N38_SEG):
+        ax.text(r[1], i - h / 2, f" {r[1]:.2f}", va="center", fontsize=7.2, color=INK2)
+        ax.text(r[2], i + h / 2, f" {r[2]:.2f}", va="center", fontsize=7.2, color=INK2)
+    ax.set_yticks(y, [r[0] for r in N38_SEG], fontsize=8.2); ax.invert_yaxis(); ax.set_xlabel("ms／步"); ax.legend(fontsize=8)
+    ax.set_title("光柵器 backward 一半、forward 四分之一；不在光柵器上的約 9～11%", fontsize=9.2)
+    ax = axs[1]; x = np.arange(len(N38_CLS)); w = 0.2
+    for k, (lab, c) in enumerate((("增生期 佔步數", MUTED), ("增生期 佔時間", C2), ("收割期 佔步數", "#c9c7c0"), ("收割期 佔時間", C1))):
+        v = [r[1 + k // 2][k % 2] for r in N38_CLS]
+        barlabels(ax, ax.bar(x + (k - 1.5) * w, v, w, color=c, label=lab), "{:.0f}", size=7)
+    ax.set_xticks(x, [r[0] for r in N38_CLS], fontsize=8.2); ax.set_ylabel("%"); ax.legend(fontsize=7.5)
+    ax.set_title("每 8 步的完整路徑步：佔步數 12.5%、佔時間 21～24%（一步 2.0～2.4 倍）", fontsize=9.2)
+    save(fig, d, "n38_seg.png")
+
+
+def n38_slim(d):
+    """瘦身二十臂（b1／b4）：每個元件拿掉後的換塊 Δ 與時間 Δ%。"""
+    fig, axs = plt.subplots(1, 2, figsize=(18, 4.8))
+    R = N38_SLIM; y = np.arange(len(R)); h = 0.38
+    for ax, j, title, fmt in zip(axs, (1, 2), ("換塊 ΔPSNR（對底；灰帶＝雜訊 ±0.03）", "純訓練時間 Δ%（對底）"), ("{:+.3f}", "{:+.0f}%")):
+        if j == 1:
+            ax.axvspan(-0.03, 0.03, color="#e9e7e1", zorder=0)
+        for k, c in enumerate((C1, C2)):
+            v = [r[j][k] for r in R]
+            ax.barh(y + (k - 0.5) * h, v, h, color=c, label=("b1", "b4")[k])
+            for i, vv in enumerate(v):
+                ax.text(vv, i + (k - 0.5) * h, (" " if vv >= 0 else "") + fmt.format(vv) + ("" if vv >= 0 else " "), va="center",
+                        ha="left" if vv >= 0 else "right", fontsize=6.8, color=INK2)
+        ax.axvline(0, color=MUTED, lw=0.8); ax.set_yticks(y, [("拿掉 " + r[0]) if ax is axs[0] else "" for r in R], fontsize=8.2)
+        ax.invert_yaxis(); ax.set_title(title, fontsize=9.2); ax.legend(fontsize=7.5, loc="lower right")
+    fig.suptitle("瘦身：單拿掉任何一項，時間只省 <= 3%；L2／點精靈下限撐畫質；合併是省時間的機制（關掉慢 5～6%、畫質 +0.02～0.04、顆數變多）", fontsize=9.6)
+    save(fig, d, "n38_slim.png")
+
+
+N38_OVER = [  # 塊, 純訓練 分, 整個任務 分（11-12～13 lab 單槽、底系列與瘦身臂的中位）
+    ("b1 瘦身十臂", 12.2, 15.6), ("b4 瘦身十臂", 13.2, 16.6), ("b6 新底", 8.9, 13.2), ("b2 新底", 10.9, 15.7), ("b3 新底", 11.5, 16.5)]
+
+
+def n38_overhead(d):
+    """純訓練 vs 整個任務（含啟動與圖表資料包）。"""
+    fig, ax = plt.subplots(figsize=(18, 3.8))
+    y = np.arange(len(N38_OVER))
+    ax.barh(y, [r[1] for r in N38_OVER], color=C1, label="純訓練（tfevents 首尾）")
+    ax.barh(y, [r[2] - r[1] for r in N38_OVER], left=[r[1] for r in N38_OVER], color=MUTED, label="啟動＋存檔＋圖表資料包")
+    for i, r in enumerate(N38_OVER):
+        ax.text(r[2], i, f" {r[1]:.1f} + {r[2] - r[1]:.1f} = {r[2]:.1f} 分", va="center", fontsize=8, color=INK2)
+    ax.set_yticks(y, [r[0] for r in N38_OVER], fontsize=8.6); ax.invert_yaxis(); ax.set_xlabel("分鐘"); ax.legend(fontsize=8, loc="lower right")
+    ax.set_xlim(0, 21)
+    ax.set_title("整個任務比純訓練多 3.3～6.3 分（純訓練的 25～50%）=> 一塊 5 分鐘的目標要把這段一起算（規格 5 §3：先照實報）", fontsize=9.2)
+    save(fig, d, "n38_overhead.png")
+
+
 DOCS = {
     "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -2198,6 +2337,8 @@ DOCS = {
     "32_海面浮塊": ["n22_b12hist", "n22_b0var", "n24_geom", "n25_arms", "n27_arms"],
     "33_高樓_塔頂玻璃塔與上半部": ["n23_tower", "n24_mono", "n27_tower", "n22_orient"],
     "34_下一版配方候選元件": ["n25_arms", "n24_swap", "n26_arms", "n27_arms"],
+    "37_SfM三角形校正深度": ["n37_round2", "n37_trimask", "n37_d1"],
+    "38_時間拆解與配方瘦身": ["n38_seg", "n38_slim", "n38_overhead"],
 }
 
 
@@ -2238,7 +2379,8 @@ def main():
               n10_lean_loop, n10_kernels, n11_tiles, n12_recheck, n12_heldout, n13_struct, n13_race, n13_tiny, n13_swap,
               n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof,
               n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full, n26_arms, n26_ground, n26_thick, n26_mono,
-              n27_arms, n27_fate, n27_tower, n28_steps, n28_flags, n28_sync, n29_pred, n29_price, n29_holdout, n25_arms):
+              n27_arms, n27_fate, n27_tower, n28_steps, n28_flags, n28_sync, n29_pred, n29_price, n29_holdout, n25_arms,
+              n37_round2, n37_trimask, n37_d1, n38_seg, n38_slim, n38_overhead):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
