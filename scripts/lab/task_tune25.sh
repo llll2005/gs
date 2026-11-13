@@ -36,6 +36,8 @@
 #              （r2c／r2s／r2free／r2ent0 都要和 r2 一起用）
 #     r2w      ★ 11-13 對照：只留 r2 改的窗口與熵（第一輪增生到 0.6 S1、合併只到 S1、熵 x2 雙向從 S1/6 起），**不開第二輪**（round2_from 0、
 #              熵的第二輪段也關）、名額 100% cap => 拆「兩輪流程省的時間是窗口還是第二輪」；要和 r2 一起用（寫在哪個位置都一樣，旗標最後才加）
+#     r2wl     ★ 11-13 r2w 的重測（r2w 連 S1 之後「熵只往 0、0.002」也關了，不是乾淨對照）：只關第二輪的增生（round2_from 0），
+#              S1 之後的弱熵照兩輪流程；名額 100%。要和 r2 一起用、不能和 r2w／r2c 一起用
 #              r2w＋r2s<NN>＝不分輪次、窗口依比例縮放：合併到 NN%、增生到 0.6 x NN%、熵雙向從 NN%／6 起（11-13 使用者「分配不同比例的跑次」）
 #     規格 5 §2 配方瘦身（每個只關底的一項）：nogate 深度支撐閘門＋增生取樣｜nohf 補洞放點｜noip 增生方向限面內｜nonm 法向一致性｜
 #              nonp 不帶 np16（拿掉鄰域平面；只是名字，旗標同不寫 np16）｜nomg 合併整個關掉｜nol2 L1 混 L2｜nopx 點精靈下限｜nohp 刪死顆粒｜
@@ -68,11 +70,11 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w) XT+=("$t") ;;
+        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
         nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim) XT+=("$t") ;;
         r2c[0-9]*|r2s[0-9]*) [[ $t =~ ^r2[cs][0-9]+$ ]] || { echo "⛔ 寫法：r2c<NN>／r2s<NN>（例 r2c50、r2s50）"; return 2; }; XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc／mgtrim）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／r2wl／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc／mgtrim）"; return 2 ;;
       esac
     fi
   done
@@ -84,7 +86,7 @@ parse() {
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
-      r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;;
+      r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;; r2wl) LBL+="只關第二輪增生留後段弱熵" ;;
       nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
       nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; esac
   done
@@ -121,7 +123,7 @@ XA=(--model.density.init_args.densify_until_iter $((ST * G / 100))
 ENVX=()
 R2C=70; R2S=60
 for t in "${XT[@]:-}"; do
-  case "$t" in r2c*) R2C=${t#r2c} ;; r2s*) R2S=${t#r2s} ;; r2free|r2ent0|r2w)
+  case "$t" in r2c*) R2C=${t#r2c} ;; r2s*) R2S=${t#r2s} ;; r2free|r2ent0|r2w|r2wl)
     [[ " ${XT[*]} " =~ \ r2\  ]] || { echo "⛔ $t 要和 r2 一起用"; exit 2; } ;; esac
 done
 if [[ " ${XT[*]} " =~ \ r2[cs][0-9] ]] && ! [[ " ${XT[*]} " =~ \ r2\  ]]; then echo "⛔ r2c／r2s 要和 r2 一起用"; exit 2; fi
@@ -208,6 +210,11 @@ if [[ " ${XT[*]} " =~ \ r2w\  ]]; then   # 放在所有元件之後 => 不管 r2
   [[ " ${XT[*]} " =~ \ r2c[0-9] ]] && { echo "⛔ r2w 是名額 100% 的單輪對照，不能和 r2c 一起用"; exit 2; }
   XA+=(--model.density.init_args.round2_from 0 --model.metric.init_args.opacity_entropy_round2_from 0)
   echo "[r2w] 只留兩輪流程的窗口與熵、不開第二輪：增生到 $D1、合併到 $S1、熵 x2 雙向從 $((S1 / 6)) 起、cap 100%"
+fi
+if [[ " ${XT[*]} " =~ \ r2wl\  ]]; then   # 放在所有元件之後
+  [[ " ${XT[*]} " =~ \ r2c[0-9] ]] || [[ " ${XT[*]} " =~ \ r2w\  ]] && { echo "⛔ r2wl 不能和 r2c／r2w 一起用（名額 100% 的單輪對照）"; exit 2; }
+  XA+=(--model.density.init_args.round2_from 0)
+  echo "[r2wl] 只關第二輪的增生：增生到 $D1、合併到 $S1、熵 x2 雙向從 $((S1 / 6)) 起、S1（$S1）之後熵只往 0（0.002）、cap 100%"
 fi
 CAP=$(python3 -c "import json;print(int(round(1e6 * json.load(open('configs/cap_alloc_sfm_g44.json'))['weights']['$B'])))")
 # ★ 11-13 規格 5 §1 逐段計時模式（task_mech_time.sh 的 MT_TUNE_ARMS 用）：TUNE_PROFILE_STEPS＝訓練到這一步就停（排程仍照全長）、
