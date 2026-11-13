@@ -132,7 +132,7 @@ print("不透明顆粒的 k 近鄰顏色平均絕對偏差（RGB 0～1）分位 
 with torch.no_grad():                    # merge_px 用的像素長度（全部訓練相機；同 px_floor）
     PX = torch.exp(MCMC2DGSDensityControllerImpl._px_floor_log(m0.gaussians["means"].detach(), cams, 1.0, 1.0)).nan_to_num(0.0, posinf=0.0)
     pq = torch.quantile(PX[PX > 0][:2_000_000].float(), torch.tensor([.1, .5, .9], device=dev)).tolist()
-print(f"1 像素的長度（最近可見訓練相機）分位 10/50/90%：{pq[0] * 100:.2f}／{pq[1] * 100:.2f}／{pq[2] * 100:.2f} cm（量測；機制只用像素）", flush=True)
+print(f"1 像素的長度（最近可見訓練相機）分位 10/50/90%：{pq[0] * 100:.3f}／{pq[1] * 100:.3f}／{pq[2] * 100:.3f} m（場景 1 單位＝100 m；量測，機制只用像素）", flush=True)
 del m0; torch.cuda.empty_cache()
 
 VARS = [("現行（union）", {}), ("L2 最佳不透明度", {"opacity_mode": "l2"}),
