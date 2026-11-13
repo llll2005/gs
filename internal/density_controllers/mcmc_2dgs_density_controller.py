@@ -516,11 +516,18 @@ class MCMC2DGSDensityController(MCMCDensityController):
     結果與批次大小無關（逐顆的 3x3 eigh）；6 GB 卡用 65536（2026-11-03 本機 1M 在第一次合併 OOM）。"""
     merge_opacity: str = "union"
     """★ 2026-11-07 晚（使用者「合併能不能符合 MCMC 的算式」）：合併後 opacity 的算法。union＝1−(1−o_i)(1−o_j)（原行為；只對疊在一起的兩顆成立）；
+    ★ 11-13 l2＝合併後形狀固定時讓渲染誤差最小的 o*＝<f,G_m>／<G_m,G_m>（誤差＝sin²α；`merge_ops` 檔頭）；
     mass＝不透明質量守恆 o_m·s1_m·s2_m = o_i·s1_i·s2_i + o_j·s1_j·s2_j（並排的兩顆合併後渲染不變；relocation Eq.9 的反向精神）。"""
     merge_render_eps: float = -1.0
     """>0 時：互為最佳的配對只在「合併前後渲染的相對 L2 誤差 < 這個值」時合併（`merge_ops` 檔頭）；搭配 merge_max_frac >= 1＝不設額度、讓狀態決定併多少。"""
     merge_until_iter: int = -1
     merge_as_trim: bool = False
+    merge_tex_tol: float = -1.0
+    """★ 2026-11-13 > 0：兩顆的 k 近鄰 DC 顏色平均絕對偏差都 < 此值才合併（只在平滑區域併；🟨 LocoADC 的局部顏色一致性約束；`merge_ops` 檔頭）。RGB [0,1] 單位。"""
+    merge_line: bool = False
+    """★ 2026-11-13 True＝再加線狀配對（燈桿上下段；線狀鄰域、線方向平行、面元法向同向、沿線相鄰；`merge_ops` 檔頭）。"""
+    merge_line_tol: float = 0.1
+    """線狀鄰域判準：k 近鄰 PCA 的 λ2/λ1 < 此值（無因次）。"""
     """★ 2026-11-13（使用者「一樣用合併的門檻，分別使用合併跟 trim，結果的差別」）：True＝合併事件照同樣的規則選配對，但不合併——
     留下兩顆中不透明質量大的那顆（參數、Adam 狀態都不動），小的那顆直接刪（搭配 merge_prune＝true 時 cap 照樣扣）。
     => 與合併同顆數、同時機，只差「併成一顆」還是「刪掉一顆」。False＝原行為。"""
@@ -2501,7 +2508,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                                       exclude=self._merge_exclude(gaussian_model, n0), prio=_prio,
                                       opacity_mode=str(getattr(self.config, "merge_opacity", "union") or "union"),
                                       render_eps=float(getattr(self.config, "merge_render_eps", -1.0)),
-                                      as_trim=bool(getattr(self.config, "merge_as_trim", False)))
+                                      as_trim=bool(getattr(self.config, "merge_as_trim", False)),
+                                      tex_tol=float(getattr(self.config, "merge_tex_tol", -1.0)),
+                                      line=bool(getattr(self.config, "merge_line", False)),
+                                      line_tol=float(getattr(self.config, "merge_line_tol", 0.1)))
         out = None
         _as_trim = bool(_minfo.get("trim", False))
         if _mI.numel() > 0 and _as_trim:                                                      # ★ 11-13 只刪不併：留下的 i 一個參數都沒動
@@ -2538,6 +2548,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         print(f"[merge] {'✅ 首次觸發' if not getattr(self, '_merge_announced', False) else '　'} step {global_step}："
               f"{'只刪不併（merge_as_trim）' if _as_trim else '合併'} {_minfo.get('pairs', 0):,} 對（立面 {100 * _minfo.get('facade', 0):.0f}%；長軸中位 {_minfo.get('len_before', 0):.4f} -> "
               f"{_minfo.get('len_after', 0):.4f}；互為最佳 {_minfo.get('mutual', 0):,} 對"
+              f"{'（其中線狀 %d 對）' % _minfo['line_pairs'] if _minfo.get('line_pairs') else ''}"
               f"{'、渲染誤差中位 %.3f' % _minfo['err_med'] if _minfo.get('err_med') == _minfo.get('err_med') else ''}），{tail}", flush=True)
         self._merge_announced = True
         if bool(getattr(self.config, "merge_vis_under", False)):                            # ★ 11-10 v4 判準搬進合併事件

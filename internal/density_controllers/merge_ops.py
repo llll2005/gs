@@ -14,6 +14,16 @@ MCMC 只有「搬」與「增」，沒有「併」。這裡在增生期每隔幾
   opacity_mode="mass"：合併後 opacity 由不透明質量守恆決定 o_m·|Σ_m|^½ = o_i·|Σ_i|^½ + o_j·|Σ_j|^½（舊的聯集公式只對完全疊在一起的兩顆成立，
   並排的兩顆會讓質量變多）；render_eps > 0：在合併平面上算 f = o_i·G_i + o_j·G_j 與 g = o_m·G_m 的相對 L2 誤差
   ||f−g||²／||f||²（2D 高斯乘積積分有封閉式），誤差 < render_eps 的互為最佳配對全部合併；額度 max_frac >= 1 時不設上限。
+
+★ 2026-11-13（使用者「三點採用、記得標來源，排實驗跟測試」；機制出處 => 紀錄/機制出處.md 合併列）
+  opacity_mode="l2"：合併後形狀固定時，讓 ||f − o·G_m||² 最小的 o* = <f, G_m>／<G_m, G_m>（夾到 [1e−4, 0.999]）；此時相對誤差＝sin²(α)，
+    α＝f 與 G_m 在 L2 空間的夾角（Hilbert 空間投影的一般性質；Gemini 11-13 轉述的「Gaussian splat 合併誤差 L2 框架」查不到原文，只用這個數學事實）。
+  tex_tol > 0：兩顆的 k 近鄰 DC 顏色平均絕對偏差都 < tex_tol 才合併（只在平滑、低紋理的區域併；🟨 LocoADC arXiv 2607.17896 的局部顏色一致性約束，
+    改成 3D k 近鄰；對準 11-09 牆面窗格與樓頂紋理被抹平的教訓）。單位＝RGB [0,1]，不是場景單位。
+  line=True：再加「線狀」配對（燈桿上下段等；使用者 11-13）：k 近鄰中心的 PCA 第二／第一特徵值 < line_tol（線狀鄰域；平面判準 λ3/λ2 < flat_tol 對線狀恆不過），
+    兩顆的線方向平行（|a_i·a_j| > 0.9）、面元自己的法向同向（|n_i·n_j| > 0.9，只併同向的上下段，不併圍著圓柱一圈的）、
+    垂直線方向的偏移 < 0.5 x 兩顆短軸和、沿線間隙 < 1.5 x 兩顆長軸和、顏色差 < color_tol；合併沿用同一套矩匹配，平面改用兩顆自己的法向（線狀鄰域沒有唯一法向）。
+    🟨 surfel fusion（ElasticFusion 類：相鄰＋法向＋點到平面）的線狀版；NanoGS（arXiv 2603.16103）在 3D 體積高斯上做同類的兩兩矩匹配合併。
 """
 import torch
 
@@ -54,7 +64,8 @@ def _mat2q(R):
 @torch.no_grad()
 def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, flat_tol: float = 0.1,
                min_opacity: float = 0.5, chunk: int = 1 << 19, exclude=None, prio=None,
-               opacity_mode: str = "union", render_eps: float = -1.0, as_trim: bool = False):
+               opacity_mode: str = "union", render_eps: float = -1.0, as_trim: bool = False,
+               tex_tol: float = -1.0, line: bool = False, line_tol: float = 0.1):
     """as_trim＝True（★ 2026-11-13 使用者「一樣用合併的門檻，分別用合併跟 trim」）：配對規則完全一樣（同平面、相鄰、互為最佳、額度、渲染誤差門檻），
     但不合併——留下兩顆中不透明質量（o·s1·s2）大的那顆、參數一個都不改，回傳小的那顆當 J 給呼叫端刪掉。False＝原行為（逐位元不變）。
     exclude（[N] bool，可省）：不參與合併的顆粒（SfM 錨點）。prio（[N] float，可省）：每顆的成本倍率，
@@ -81,10 +92,25 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
     nb = morton_neighbors(Xc, k).long()                                  # [n, 2k]
     n = Xc.shape[0]
     nrm = torch.empty(n, 3, device=dev); flat = torch.empty(n, device=dev)
+    if line:
+        axis = torch.empty(n, 3, device=dev); lin = torch.empty(n, device=dev)
     for c0 in range(0, n, chunk):
         P = Xc[nb[c0:c0 + chunk]]; P = P - P.mean(1, keepdim=True)
         ev, evec = torch.linalg.eigh(torch.einsum("nki,nkj->nij", P, P))
         nrm[c0:c0 + chunk] = evec[:, :, 0]; flat[c0:c0 + chunk] = ev[:, 0] / ev[:, 1].clamp_min(1e-18)
+        if line:                                                         # ★ 11-13 線狀鄰域：λ2/λ1 小、方向＝最大特徵向量
+            axis[c0:c0 + chunk] = evec[:, :, 2]; lin[c0:c0 + chunk] = ev[:, 1] / ev[:, 2].clamp_min(1e-18)
+    flat_ok = flat < flat_tol
+    if tex_tol > 0:                                                      # ★ 11-13 局部顏色一致性（LocoADC 式）：k 近鄰 DC 顏色的平均絕對偏差
+        tex = torch.empty(n, device=dev)
+        for c0 in range(0, n, chunk):
+            cn = rgb[nb[c0:c0 + chunk]]
+            tex[c0:c0 + chunk] = (cn - cn.mean(1, keepdim=True)).abs().mean((1, 2))
+    if line:
+        nown = torch.cross(t1, t2, dim=-1); nown = nown / nown.norm(dim=-1, keepdim=True).clamp_min(1e-12)
+        smin = S.min(dim=-1).values
+        line_ok = lin < line_tol                                         # 線狀鄰域（兩條規則都過時平面規則優先）
+        best_line = torch.zeros(n, dtype=torch.bool, device=dev)
     best = torch.full((n,), -1, dtype=torch.long, device=dev); bestc = torch.full((n,), float("inf"), device=dev)
     for c0 in range(0, n, chunk):
         ii = torch.arange(c0, min(c0 + chunk, n), device=dev)
@@ -96,15 +122,35 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
         dcol = (rgb[ii][:, None] - rgb[jj]).abs().mean(-1)
         ok = (jj != ii[:, None]) & (flat[ii][:, None] < flat_tol) & (flat[jj] < flat_tol) & ((ni * nj).sum(-1).abs() > 0.9) \
             & (off < 0.5 * ssum) & (inpl < 1.5 * ssum) & (dcol < color_tol)
-        cost = torch.where(ok, inpl / ssum + dcol, torch.full_like(inpl, float("inf")))
+        cst = inpl / ssum + dcol
+        if line:                                                         # ★ 11-13 線狀配對（燈桿上下段）
+            ai = axis[ii][:, None].expand_as(d)
+            along = (d * ai).sum(-1).abs(); perp = (d - (d * ai).sum(-1, keepdim=True) * ai).norm(dim=-1)
+            oki = (jj != ii[:, None]) & line_ok[ii][:, None] & line_ok[jj] & ((ai * axis[jj]).sum(-1).abs() > 0.9) \
+                & ((nown[ii][:, None] * nown[jj]).sum(-1).abs() > 0.9) & (perp < 0.5 * (smin[ii][:, None] + smin[jj])) \
+                & (along < 1.5 * ssum) & (dcol < color_tol)
+            oki = oki & ~ok
+            cst = torch.where(oki, along / ssum + dcol, cst)
+            ok = ok | oki
+        if tex_tol > 0:
+            ok = ok & (tex[ii][:, None] < tex_tol) & (tex[jj] < tex_tol)
+        cost = torch.where(ok, cst, torch.full_like(inpl, float("inf")))
         cb, ci = cost.min(dim=1)
         best[ii] = torch.where(torch.isfinite(cb), jj.gather(1, ci[:, None])[:, 0], torch.full_like(ci, -1)); bestc[ii] = cb
+        if line:
+            best_line[ii] = oki.gather(1, ci[:, None])[:, 0] & torch.isfinite(cb)
     has = best >= 0
     ar = torch.arange(n, device=dev)
     bb = best.clamp_min(0)
     mutual = has & has[bb] & (best[bb] == ar) & (ar < bb)
     pi = torch.nonzero(mutual, as_tuple=True)[0]; pj = best[pi]
     n_mutual = int(pi.numel())
+    n_line = 0
+    if line:                                                             # 線狀配對：鄰域沒有唯一法向 => 合併平面改用兩顆自己的法向
+        lp = best_line[pi] & best_line[pj]
+        if bool(lp.any()):
+            nrm = nrm.clone(); nrm[pi[lp]] = nown[pi[lp]]; nrm[pj[lp]] = nown[pj[lp]]
+        n_line = int(lp.sum())
     err_med = float("nan")
     if render_eps > 0 and pi.numel() > 0:
         err = _pair_params(O, S, t1, t2, nrm, Xc, cand, pi, pj, opacity_mode)["err"]
@@ -120,7 +166,7 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
             key = key * torch.minimum(prio[cand[pi]], prio[cand[pj]]).to(key.dtype)
         keep = torch.topk(key, lim, largest=False).indices
         pi, pj = pi[keep], pj[keep]
-    extra = {"mutual": n_mutual, "err_med": err_med}
+    extra = {"mutual": n_mutual, "err_med": err_med, "line_pairs": n_line}
     if pi.numel() == 0:
         return empty, empty, {"pairs": 0, **extra}
     if as_trim:
@@ -171,20 +217,24 @@ def _pair_params(O, S, t1, t2, nrm, Xc, cand, pi, pj, opacity_mode="union"):
     a1 = evec2[:, 0, 1:2] * u + evec2[:, 1, 1:2] * v; a1 = a1 / a1.norm(dim=-1, keepdim=True).clamp_min(1e-12)
     a2 = torch.cross(nn, a1, dim=-1)
     qn = _mat2q(torch.stack([a1, a2, nn], -1))
-    if opacity_mode == "mass":                                            # 不透明質量守恆：o·s1·s2（2π 約掉）
-        on = ((wi + wj) / (sc[:, 0] * sc[:, 1]).clamp_min(1e-30)).clamp(1e-4, 0.999)
-    elif opacity_mode == "union":
-        on = (1 - (1 - oi) * (1 - oj)).clamp(1e-4, 0.999)
-    else:
-        raise ValueError(f"opacity_mode={opacity_mode!r}（只接受 union／mass）")
     # 渲染誤差（合併平面上、加法近似；float64）：f = o_i G_i + o_j G_j，g = o_m G_m
     D = torch.float64
     Ai, Aj, Am = S2[0].to(D), S2[1].to(D), cov.to(D)
     qi, qj, z = Q2[0].to(D), Q2[1].to(D), torch.zeros_like(Q2[0], dtype=D)
-    oi_, oj_, om_ = oi.to(D), oj.to(D), on.to(D)
+    oi_, oj_ = oi.to(D), oj.to(D)
     ff = oi_ ** 2 * _gauss_overlap(Ai, qi, Ai, qi) + oj_ ** 2 * _gauss_overlap(Aj, qj, Aj, qj) + 2 * oi_ * oj_ * _gauss_overlap(Ai, qi, Aj, qj)
     fg = oi_ * _gauss_overlap(Ai, qi, Am, z) + oj_ * _gauss_overlap(Aj, qj, Am, z)
-    gg = om_ ** 2 * _gauss_overlap(Am, z, Am, z)
+    gmm = _gauss_overlap(Am, z, Am, z)
+    if opacity_mode == "mass":                                            # 不透明質量守恆：o·s1·s2（2π 約掉）
+        on = ((wi + wj) / (sc[:, 0] * sc[:, 1]).clamp_min(1e-30)).clamp(1e-4, 0.999)
+    elif opacity_mode == "union":
+        on = (1 - (1 - oi) * (1 - oj)).clamp(1e-4, 0.999)
+    elif opacity_mode == "l2":                                            # ★ 11-13 L2 最佳振幅：o* = <f,G_m>／<G_m,G_m>（誤差＝sin²α）
+        on = (fg / gmm.clamp_min(1e-60)).float().clamp(1e-4, 0.999)
+    else:
+        raise ValueError(f"opacity_mode={opacity_mode!r}（只接受 union／mass／l2）")
+    om_ = on.to(D)
+    gg = om_ ** 2 * gmm
     err = ((ff - 2 * om_ * fg + gg).clamp_min(0) / ff.clamp_min(1e-60)).float()
     return {"I": I, "J": J, "c": c, "sc": sc, "qn": qn, "on": on, "nn": nn,
             "fi": (wi / ws)[:, None, None], "fj": (wj / ws)[:, None, None], "err": err}

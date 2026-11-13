@@ -232,3 +232,56 @@ class MergeAsTrimTest(unittest.TestCase):
         self.assertTrue(torch.equal(kept, means_before[idx]))
         p = gm_t.gaussians["means"]
         self.assertTrue(torch.equal(opts_t[0].state[p]["exp_avg"], st_before["means"][idx]))
+
+
+class MergeBorrowedTest(unittest.TestCase):
+    """★ 2026-11-13 借鑑三點：L2 最佳不透明度、局部紋理一致才合併、線狀合併（燈桿上下段）。"""
+
+    def test_l2_opacity_has_smallest_error(self):
+        from internal.density_controllers.merge_ops import merge_step
+        errs = {}
+        for mode in ("union", "mass", "l2"):
+            gm, _ = _plane()
+            with torch.no_grad():
+                gm.gaussians["opacities"].copy_(torch.logit(torch.linspace(0.55, 0.95, gm.n_gaussians))[:, None])
+            _, _, info = merge_step(gm, k=12, max_frac=1.0, color_tol=1.0, opacity_mode=mode, render_eps=10.0)
+            errs[mode] = info["err_med"]
+        self.assertLessEqual(errs["l2"], errs["union"] + 1e-9)
+        self.assertLessEqual(errs["l2"], errs["mass"] + 1e-9)
+
+    def test_texture_gate_blocks_textured_plane(self):
+        from internal.density_controllers.merge_ops import merge_step
+        gm_s, _ = _plane(); gm_t, _ = _plane()
+        with torch.no_grad():                                                   # 棋盤格顏色＝高紋理
+            n = gm_t.n_gaussians; side = int(round(n ** 0.5))
+            chk = ((torch.arange(n) // side + torch.arange(n) % side) % 2).float()
+            gm_t.gaussians["shs_dc"][:, 0, :] = (chk[:, None] - 0.5) / 0.28209479177387814 * 0.6
+        I_s, _, _ = merge_step(gm_s, k=12, max_frac=1.0, color_tol=1.0, tex_tol=0.05)
+        I_t, _, _ = merge_step(gm_t, k=12, max_frac=1.0, color_tol=1.0, tex_tol=0.05)
+        self.assertGreater(I_s.numel(), 0)                                      # 平滑的照樣併
+        self.assertEqual(I_t.numel(), 0)                                        # 高紋理的不併
+
+    def test_line_merge_pole_segments(self):
+        from internal.density_controllers.merge_ops import merge_step
+        def pole():
+            n = 120                                                             # 一根沿 z 的燈桿：面元朝 +x、上下相接（merge_step 要 >= 100 顆候選）
+            jit = torch.randn(n, 2, generator=torch.Generator().manual_seed(0)) * 0.0004    # 桿子有粗細：x、y 小抖動（完全共線時 PCA 退化）
+            props = {"means": torch.stack([jit[:, 0], jit[:, 1], torch.arange(n, dtype=torch.float) * 0.01], -1),
+                     "scales": torch.log(torch.tensor([[0.006, 0.002]])).repeat(n, 1),
+                     # 四元數：繞 y 轉 90°（面元 t1→−z…，法向 → x）
+                     "rotations": torch.tensor([[math.cos(math.pi / 4), 0.0, math.sin(math.pi / 4), 0.0]]).repeat(n, 1),
+                     "opacities": torch.full((n, 1), math.log(0.9 / 0.1)), "shs_dc": torch.zeros(n, 1, 3), "shs_rest": torch.zeros(n, 15, 3)}
+            props = {k: torch.nn.Parameter(v) for k, v in props.items()}
+            return _FakeGM(props)
+        I0, _, _ = merge_step(pole(), k=8, max_frac=1.0, color_tol=1.0)
+        gm = pole()
+        I1, J1, info = merge_step(gm, k=8, max_frac=1.0, color_tol=1.0, line=True)
+        self.assertLess(I0.numel(), 6)                                          # 平面規則對線狀鄰域幾乎都不過（偶爾抖動湊出一個扁鄰域）
+        self.assertGreater(I1.numel(), 5 * max(I0.numel(), 1))                  # 線狀規則把上下段併起來
+        self.assertGreater(info["line_pairs"], 0)
+        from internal.density_controllers.merge_ops import _qmat
+        R = _qmat(gm.gaussians["rotations"].detach()[I1])
+        S = torch.exp(gm.gaussians["scales"].detach()[I1])
+        long_axis = torch.where((S[:, :1] >= S[:, 1:]), R[:, :, 0], R[:, :, 1])
+        self.assertTrue(bool((long_axis[:, 2].abs() > 0.95).all()))             # 併完的長軸沿桿子（z）
+        self.assertTrue(bool((S.max(1).values > 0.006).all()))                  # 變長了

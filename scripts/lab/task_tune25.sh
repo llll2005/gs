@@ -46,6 +46,9 @@
 #              只經由 α（前面變更不透明 => 後面分到的 T 變小）；落在上限後面的貢獻收不到 B 的梯度。loss 與 forward 不變。要和 tricap<W> 一起用
 #     mgtrim   ★ 11-13 合併事件照同樣的規則選配對，但不合併：留下兩顆中不透明質量大的那顆（參數、Adam 狀態不動）、小的直接刪（cap 照樣扣）
 #              => 與合併同顆數、同時機，只差「併成一顆」還是「刪掉一顆」（使用者「一樣用合併的門檻，分別使用合併跟 trim」）
+#     合併借鑑（11-13 使用者「三點採用、記得標來源」；出處 紀錄/機制出處.md）：mgl2 合併後不透明度用 L2 最佳值 o*＝<f,G_m>／<G_m,G_m>｜
+#              mgtex 只在 k 近鄰顏色平均絕對偏差 < 0.03 的平滑區域合併（LocoADC 的局部顏色一致性）｜mgrel 併掉的名額不扣、交給 MCMC 搬到需要的地方（merge_prune false）｜
+#              mgline 再加線狀合併（燈桿上下段；使用者 11-13）
 #     規格 5 §3 加速組合（11-13 使用者「排」）：log0 訓練中不每步記 train/*（只在第一步與最後一步記，eval 的「純訓練」計時照舊可用）｜
 #              geo8 dist 每 4 步 -> 每 8 步（權重自動 x 8＝相對 x2，與法向、深度上限落在同一步）｜lowres、s20g70 是現成的
 #   TUNE_PROFILE_STEPS／TUNE_PROFILE_WARMUP／TUNE_PROFILE_NAME：逐段計時模式（task_mech_time.sh MT_TUNE_ARMS 用；規格 5 §1）
@@ -71,10 +74,10 @@ parse() {
     else
       case "$t" in
         lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
-        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim) XT+=("$t") ;;
+        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline) XT+=("$t") ;;
         r2c[0-9]*|r2s[0-9]*) [[ $t =~ ^r2[cs][0-9]+$ ]] || { echo "⛔ 寫法：r2c<NN>／r2s<NN>（例 r2c50、r2s50）"; return 2; }; XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／r2wl／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc／mgtrim）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／r2wl／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc／mgtrim／mgl2／mgtex／mgrel／mgline）"; return 2 ;;
       esac
     fi
   done
@@ -88,7 +91,7 @@ parse() {
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
       r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;; r2wl) LBL+="只關第二輪增生留後段弱熵" ;;
       nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
-      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; esac
+      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; esac
   done
 }
 
@@ -199,7 +202,11 @@ for t in "${XT[@]:-}"; do
     capfc)  [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ capfc 要和 tricap<W> 一起用（沒有上限就沒有 B）"; exit 2; }
             XA+=(--model.metric.init_args.depth_cap_grad_mode 3) ;;
     geo8)   XA+=(--model.metric.init_args.lambda_dist_interval 8) ;;
-    mgtrim) XA+=(--model.density.init_args.merge_as_trim true) ;;   # 權重乘 k 是 metric 自己做的（gs2d_metrics）；(step+1) % 8 與法向、深度上限同一步
+    mgtrim) XA+=(--model.density.init_args.merge_as_trim true) ;;
+    mgl2)   XA+=(--model.density.init_args.merge_opacity l2) ;;
+    mgtex)  XA+=(--model.density.init_args.merge_tex_tol "${MG_TEX:-0.03}") ;;
+    mgrel)  XA+=(--model.density.init_args.merge_prune false) ;;
+    mgline) XA+=(--model.density.init_args.merge_line true) ;;   # 權重乘 k 是 metric 自己做的（gs2d_metrics）；(step+1) % 8 與法向、深度上限同一步
     cmflat) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ cmflat 要和 tricap<W> 一起用（沒有上限就沒有遮罩可套）"; exit 2; }
             _CM=data/matrix_city/aerial/train/block_all/cap_masks_flat
             [ -f "$_CM/stats_block_$B.json" ] || { echo "⛔ 缺上限遮罩 $_CM/stats_block_$B.json（tools/make_cap_masks.py --kind flat --blocks $B）"; exit 2; }
