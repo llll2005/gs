@@ -193,3 +193,42 @@ class MergeRenderEpsTest(unittest.TestCase):
         gm2, _ = _plane()
         _, _, info0 = merge_step(gm2, k=12, max_frac=1.0, color_tol=1.0, opacity_mode="mass", render_eps=1e-6)
         self.assertEqual(info0["pairs"], 0)                                                 # 門檻極小 => 一對都不併
+
+
+class MergeAsTrimTest(unittest.TestCase):
+    """★ 2026-11-13 merge_as_trim（使用者「一樣用合併的門檻，分別使用合併跟 trim」）：同樣的配對、只刪不併。"""
+
+    def test_same_pairs_no_param_change_drop_smaller(self):
+        from internal.density_controllers.merge_ops import merge_step
+        gm_m, _ = _plane(); gm_t, _ = _plane()
+        with torch.no_grad():                                                   # 讓每對大小不同 => 看留下的是不是大的那顆
+            sc = torch.linspace(-0.2, 0.2, gm_t.n_gaussians)[:, None]
+            gm_t.gaussians["scales"].add_(sc); gm_m.gaussians["scales"].add_(sc)
+        before = {k: v.detach().clone() for k, v in gm_t.gaussians.items()}
+        Im, Jm, _ = merge_step(gm_m, k=12, max_frac=0.2, color_tol=1.0)
+        It, Jt, info = merge_step(gm_t, k=12, max_frac=0.2, color_tol=1.0, as_trim=True)
+        self.assertTrue(info.get("trim"))
+        self.assertEqual(Im.numel(), It.numel())                               # 同一批配對
+        self.assertEqual(set(map(frozenset, zip(Im.tolist(), Jm.tolist()))), set(map(frozenset, zip(It.tolist(), Jt.tolist()))))
+        for k, v in gm_t.gaussians.items():                                     # 一個參數都沒改
+            self.assertTrue(torch.equal(v.detach(), before[k]), k)
+        S = torch.exp(before["scales"]); O = torch.sigmoid(before["opacities"]).reshape(-1)
+        w = O * S[:, 0] * S[:, 1]
+        self.assertTrue(bool((w[It] >= w[Jt]).all()))                           # 留下不透明質量大的
+
+    def test_event_prunes_same_count_keeps_adam_state(self):
+        gm_m, opts_m = _plane(); gm_t, opts_t = _plane()
+        n0 = gm_t.n_gaussians
+        impl_m = _impl(); impl_t = _impl(merge_as_trim=True)
+        impl_m._merge_event(gm_m, opts_m, 3000, prune=True)
+        st_before = {g["name"]: opts_t[0].state[g["params"][0]]["exp_avg"].clone() for g in opts_t[0].param_groups}
+        means_before = gm_t.gaussians["means"].detach().clone()
+        impl_t._merge_event(gm_t, opts_t, 3000, prune=True)
+        self.assertEqual(impl_t._cap_cut, impl_m._cap_cut)                      # 同顆數、cap 一樣扣
+        self.assertEqual(gm_t.n_gaussians, n0 - impl_t._cap_cut)
+        # 留下的顆粒：位置與 Adam 狀態都是原本那一份（只是刪掉了一些列）
+        kept = gm_t.gaussians["means"].detach()
+        idx = torch.cdist(kept, means_before).argmin(1)
+        self.assertTrue(torch.equal(kept, means_before[idx]))
+        p = gm_t.gaussians["means"]
+        self.assertTrue(torch.equal(opts_t[0].state[p]["exp_avg"], st_before["means"][idx]))

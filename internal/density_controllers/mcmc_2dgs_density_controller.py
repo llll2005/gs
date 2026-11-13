@@ -520,6 +520,10 @@ class MCMC2DGSDensityController(MCMCDensityController):
     merge_render_eps: float = -1.0
     """>0 時：互為最佳的配對只在「合併前後渲染的相對 L2 誤差 < 這個值」時合併（`merge_ops` 檔頭）；搭配 merge_max_frac >= 1＝不設額度、讓狀態決定併多少。"""
     merge_until_iter: int = -1
+    merge_as_trim: bool = False
+    """★ 2026-11-13（使用者「一樣用合併的門檻，分別使用合併跟 trim，結果的差別」）：True＝合併事件照同樣的規則選配對，但不合併——
+    留下兩顆中不透明質量大的那顆（參數、Adam 狀態都不動），小的那顆直接刪（搭配 merge_prune＝true 時 cap 照樣扣）。
+    => 與合併同顆數、同時機，只差「併成一顆」還是「刪掉一顆」。False＝原行為。"""
     """>0 時合併只在 [merge_from_iter, merge_until_iter] 內做；<=0＝不設上限（relocate 模式本來就只在增生期）。"""
     hole_fill_frac: float = 0.0
     """★ 2026-11-02 MCMC 補洞放點（使用者「排 1」：把單側不能看穿改成 MCMC 機制）。>0 時每個增生事件（densify 期、hole_fill_from_iter 之後）：
@@ -2496,9 +2500,14 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                                       chunk=int(getattr(self.config, "merge_chunk", 1 << 19)),
                                       exclude=self._merge_exclude(gaussian_model, n0), prio=_prio,
                                       opacity_mode=str(getattr(self.config, "merge_opacity", "union") or "union"),
-                                      render_eps=float(getattr(self.config, "merge_render_eps", -1.0)))
+                                      render_eps=float(getattr(self.config, "merge_render_eps", -1.0)),
+                                      as_trim=bool(getattr(self.config, "merge_as_trim", False)))
         out = None
-        if _mI.numel() > 0:
+        _as_trim = bool(_minfo.get("trim", False))
+        if _mI.numel() > 0 and _as_trim:                                                      # ★ 11-13 只刪不併：留下的 i 一個參數都沒動
+            dead = torch.zeros(n0, dtype=torch.bool, device=_mJ.device)
+            dead[_mJ] = True
+        if _mI.numel() > 0 and not _as_trim:
             self._sfmn_snap(gaussian_model, _mI, "合併", global_step)
             self.replace_tensors_to_optimizers(gaussian_model, optimizers, inds=_mI)          # 合併後的 i 重設 Adam 狀態
             _nz = getattr(self, "_noup_z", None)                                              # 合併後的 i 位置變了 => 高度上限解除（sfm_vis_noup）
@@ -2509,8 +2518,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 _su[_mI] = 0
             dead = torch.zeros(n0, dtype=torch.bool, device=_mJ.device)
             dead[_mJ] = True
+        if _mI.numel() > 0:
             if prune:
-                self._prune_reason = "合併刪掉"
+                self._prune_reason = "合併刪掉" if not _as_trim else "合併配對只刪不併"
                 try:
                     self._prune_points(dead, gaussian_model, optimizers)
                 finally:
@@ -2526,7 +2536,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         tail = (f"j 刪掉 => N {n0:,} -> {gaussian_model.n_gaussians:,}；cap 累計扣 {int(getattr(self, '_cap_cut', 0) or 0):,}"
                 if prune else "j 交給 relocation 搬走")
         print(f"[merge] {'✅ 首次觸發' if not getattr(self, '_merge_announced', False) else '　'} step {global_step}："
-              f"合併 {_minfo.get('pairs', 0):,} 對（立面 {100 * _minfo.get('facade', 0):.0f}%；長軸中位 {_minfo.get('len_before', 0):.4f} -> "
+              f"{'只刪不併（merge_as_trim）' if _as_trim else '合併'} {_minfo.get('pairs', 0):,} 對（立面 {100 * _minfo.get('facade', 0):.0f}%；長軸中位 {_minfo.get('len_before', 0):.4f} -> "
               f"{_minfo.get('len_after', 0):.4f}；互為最佳 {_minfo.get('mutual', 0):,} 對"
               f"{'、渲染誤差中位 %.3f' % _minfo['err_med'] if _minfo.get('err_med') == _minfo.get('err_med') else ''}），{tail}", flush=True)
         self._merge_announced = True

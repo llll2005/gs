@@ -54,8 +54,10 @@ def _mat2q(R):
 @torch.no_grad()
 def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, flat_tol: float = 0.1,
                min_opacity: float = 0.5, chunk: int = 1 << 19, exclude=None, prio=None,
-               opacity_mode: str = "union", render_eps: float = -1.0):
-    """exclude（[N] bool，可省）：不參與合併的顆粒（SfM 錨點）。prio（[N] float，可省）：每顆的成本倍率，
+               opacity_mode: str = "union", render_eps: float = -1.0, as_trim: bool = False):
+    """as_trim＝True（★ 2026-11-13 使用者「一樣用合併的門檻，分別用合併跟 trim」）：配對規則完全一樣（同平面、相鄰、互為最佳、額度、渲染誤差門檻），
+    但不合併——留下兩顆中不透明質量（o·s1·s2）大的那顆、參數一個都不改，回傳小的那顆當 J 給呼叫端刪掉。False＝原行為（逐位元不變）。
+    exclude（[N] bool，可省）：不參與合併的顆粒（SfM 錨點）。prio（[N] float，可省）：每顆的成本倍率，
     配對取兩顆中較小的；只在候選對超過 max_frac 額度時改變「先併哪些」（2026-11-05 sfm_merge_eps）。兩者省略＝原行為。
     opacity_mode／render_eps：見檔頭「MCMC 一致版」；預設＝原行為。"""
     g = gm.gaussians
@@ -121,6 +123,13 @@ def merge_step(gm, k: int = 12, max_frac: float = 0.02, color_tol: float = 1.0, 
     extra = {"mutual": n_mutual, "err_med": err_med}
     if pi.numel() == 0:
         return empty, empty, {"pairs": 0, **extra}
+    if as_trim:
+        wi = O[cand[pi]] * S[pi, 0] * S[pi, 1]; wj = O[cand[pj]] * S[pj, 0] * S[pj, 1]
+        big = wi >= wj
+        keep_l, drop_l = torch.where(big, pi, pj), torch.where(big, pj, pi)
+        fac = (nrm[keep_l, 2].abs() < 0.3).float().mean()
+        return cand[keep_l], cand[drop_l], {"pairs": int(pi.numel()), "facade": float(fac), "len_before": float(smax[pi].median()),
+                                            "len_after": float(smax[keep_l].median()), "trim": True, **extra}
     I, J, info = _pair_merge(g, O, S, t1, t2, nrm, Xc, smax, cand, pi, pj, opacity_mode)
     return I, J, {**info, **extra}
 
