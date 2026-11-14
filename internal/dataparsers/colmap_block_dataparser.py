@@ -67,7 +67,10 @@ class ColmapBlockDataParser(ColmapDataParser):
         # load colmap sparse model
         sparse_model_dir = self.detect_sparse_model_dir()
         cameras = colmap_utils.read_cameras_binary(os.path.join(sparse_model_dir, "cameras.bin"))
-        images = colmap_utils.read_images_binary(os.path.join(sparse_model_dir, "images.bin"))
+        # ★ 11-14 demo 模式（CITYGS_SFM_FAST=1）：跳過 2D 點的快速讀法，位姿／名稱逐值相同（internal/utils/colmap_fast.py）
+        from internal.utils import colmap_fast
+        images = (colmap_fast.read_images_binary_light if colmap_fast.enabled() else colmap_utils.read_images_binary)(
+            os.path.join(sparse_model_dir, "images.bin"))
 
         # sort images
         images = dict(sorted(images.items(), key=lambda item: item[0]))

@@ -151,6 +151,10 @@ class ColmapDataParser(DataParser):
             void Reconstruction::WritePoints3DBinary(const std::string& path)
         """
 
+        # ★ 11-14 demo 模式（CITYGS_SFM_FAST=1）：陣列化＋快取，回傳逐值相同（internal/utils/colmap_fast.py）
+        from internal.utils import colmap_fast
+        if colmap_fast.enabled():
+            return colmap_fast.read_points3D_xyz_rgb_err(path_to_model_file, selected_image_ids)
         with open(path_to_model_file, "rb") as fid:
             num_points = colmap_utils.read_next_bytes(fid, 8, "Q")[0]
 
@@ -193,7 +197,9 @@ class ColmapDataParser(DataParser):
         # load colmap sparse model
         sparse_model_dir = self.detect_sparse_model_dir()
         cameras = colmap_utils.read_cameras_binary(os.path.join(sparse_model_dir, "cameras.bin"))
-        images = colmap_utils.read_images_binary(os.path.join(sparse_model_dir, "images.bin"))
+        from internal.utils import colmap_fast
+        images = (colmap_fast.read_images_binary_light if colmap_fast.enabled() else colmap_utils.read_images_binary)(
+            os.path.join(sparse_model_dir, "images.bin"))
 
         # sort images
         images = dict(sorted(images.items(), key=lambda item: item[0]))

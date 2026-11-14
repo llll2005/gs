@@ -625,8 +625,11 @@ class GaussianSplatting(LightningModule):
         print(f"initialize from {load_from}: sh_degree={self.gaussian_model.max_sh_degree}, overwrite_config={overwrite_config}")
 
     def setup(self, stage: str):
-        from internal.utils.stage_timer import mark
+        from internal.utils.stage_timer import mark, record
         mark("模型 setup 開始")
+        if stage == "fit":
+            record("output_path", self.hparams["output_path"])
+            record("run", os.path.basename(os.path.dirname(os.path.dirname(os.path.abspath(self.hparams["output_path"])))) if "/blocks/" in self.hparams["output_path"] else os.path.basename(os.path.abspath(self.hparams["output_path"])))
 
         self.renderer.setup(stage=stage, lightning_module=self)
 
@@ -1285,7 +1288,7 @@ class GaussianSplatting(LightningModule):
 
     def _finish_training_step(self, optimizers, schedulers, outputs, batch, global_step):
         # log learning rate and gaussian count every 100 iterations (without plus one step)
-        if self.trainer.global_step % 100 == 0:
+        if self.trainer.global_step % 100 == 0 and self.logger is not None:   # ★ 11-14 demo 模式 logger=false 時不記
             metrics_to_log = {
                 "train/gaussians_count": self.gaussian_model.get_xyz.shape[0],
             }
@@ -1409,8 +1412,14 @@ class GaussianSplatting(LightningModule):
         # is the same as the local variable `global_step` in training_step
         global_step = self.trainer.global_step
         if global_step in (1, 50, 500) or self.is_final_step(global_step):
-            from internal.utils.stage_timer import mark
+            from internal.utils.stage_timer import mark, record
             mark("第 {:,} 步結束".format(global_step))
+            if self.is_final_step(global_step):
+                record("steps", int(global_step))
+                record("n_final", int(self.gaussian_model.n_gaussians))
+                if torch.cuda.is_available():
+                    record("peak_alloc_gb", round(torch.cuda.max_memory_allocated() / 2**30, 3))
+                    record("peak_reserved_gb", round(torch.cuda.max_memory_reserved() / 2**30, 3))
         if getattr(self, "_skip_this_batch", False):
             # ★ 2026-11-05 採樣控制顆數跳過的那批：沒有 optimizer step（global_step 沒前進）=> trim 等「每 N 步」的事件不可再跑一次
             self._skip_this_batch = False

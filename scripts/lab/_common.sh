@@ -133,15 +133,46 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
     echo "  舊輸出搬到 $moved（$(du -sh "$moved" 2>/dev/null | cut -f1)）"
   fi
   echo "=== $name / block $blk / cap ${CITYGS_VRAM_CAP_GB:-不限制} / $(date) ==="
+  # ★ 2026-11-14 demo 模式（CITYGS_DEMO=1；使用者「做一個 demo 模式，開這個選項就套用你說的這些，並且不產生 log，
+  #   但依然要有訓練總時間、顆數、各項分數等寫論文需要的資訊」）——全部不改訓練結果：
+  #   A SfM 快速讀取＋快取（CITYGS_SFM_FAST=1；internal/utils/colmap_fast.py，tests/colmap_fast_test.py 逐值相同）
+  #   B 關訓練中的驗證（limit_val_batches 0、num_sanity_val_steps 0；ValidateOnTrainEnd 也跳過）——評估一律用離線工具
+  #   C 改讀預先縮好的影像 input_r1.2（tools/make_resized_images.py；與現縮逐位元相同；沒有就照舊現縮）
+  #   不產生 log：不開 TensorBoard／lightning_logs、不跑 audit／config diff／圖表資料包；
+  #   保留：run 台帳一行（logs/quad_progress.log）、<輸出>/run_summary.json（時間拆解、顆數、VRAM 峰值；task_total_s 由這裡補）
+  local demo=()
+  if [ "${CITYGS_DEMO:-0}" = 1 ]; then
+    export CITYGS_SFM_FAST=1
+    demo+=(--trainer.limit_val_batches 0 --trainer.num_sanity_val_steps 0 --trainer.logger false)
+    if [ -d "data/matrix_city/aerial/train/block_all/input_r1.2" ]; then
+      demo+=(--data.parser.image_dir input_r1.2)
+    else
+      echo "⚠ [demo] 缺 data/matrix_city/aerial/train/block_all/input_r1.2（tools/make_resized_images.py）=> 影像照舊現縮"
+    fi
+    echo "[demo] ★ demo 模式：SfM 快速讀取、關驗證、$( [[ " ${demo[*]} " == *input_r1.2* ]] && echo 讀預縮影像 || echo 影像現縮 )、不產生 log（只留台帳與 run_summary.json）"
+  fi
+  local _t_start; _t_start=$(date +%s.%N)
   echo "[階段] $(date +%T) shell：conda run 前（python 行程開始前）"   # ★ 11-14 啟動時間拆解（internal/utils/stage_timer.py 同格式）
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config "$CFG" \
     --data.parser.block_id "$blk" \
-    -n "$name" "${resume[@]}" "$@"
+    -n "$name" "${resume[@]}" "$@" "${demo[@]}"
   local rc=$?
   [ "$rc" -ne 0 ] && { echo "❌ $name block $blk 失敗 rc=$rc"; return "$rc"; }
   echo "=== $name / block $blk 完成 $(date) ==="
   echo "[階段] $(date +%T) shell：python 行程結束"
+  local _sum="outputs/$name/blocks/block_$blk/run_summary.json"
+  [ -f "$_sum" ] && python3 - "$_sum" "$_t_start" <<'PYEOF'
+import json, sys, time
+p, t0 = sys.argv[1], float(sys.argv[2])
+s = json.load(open(p, encoding="utf-8")); s["task_total_s"] = round(time.time() - t0, 1)
+json.dump(s, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+print(f"[run-summary] 整個訓練任務（conda run 前 → python 結束）{s['task_total_s']} s｜啟動 {s.get('startup_s')}／純訓練 {s.get('train_s')}／存檔 {s.get('save_exit_s')} s｜N {s.get('n_final')}")
+PYEOF
+  if [ "${CITYGS_DEMO:-0}" = 1 ]; then
+    echo "[demo] 跳過 audit／config diff／圖表資料包（分數用離線評估：task_tune25.sh eval、task_fullscene.sh）"
+    return 0
+  fi
   conda run -n gspl python tools/audit_geometry.py "$name" --block "$blk" 2>&1 | tail -6
   echo "[階段] $(date +%T) shell：audit_geometry 完成"
   # ★★ 比分數之前 diff 兩份 resolved config（使用者 2026-09-13 要求加進腳本）

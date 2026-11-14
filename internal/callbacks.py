@@ -95,6 +95,8 @@ class ProgressBar(TQDMProgressBar):
 
 class ValidateOnTrainEnd(Callback):
     def on_train_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
+        if trainer.limit_val_batches == 0:   # ★ 11-14 demo 模式關驗證：不建驗證資料（省快取驗證影像）
+            return
         if trainer.is_last_batch is False or trainer.current_epoch % trainer.check_val_every_n_epoch != 0:
             trainer.validating = True
             trainer._evaluation_loop.run()

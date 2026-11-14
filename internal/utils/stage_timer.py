@@ -28,9 +28,55 @@ def _t0() -> float:
 def mark(name: str) -> None:
     global _LAST
     if not _ON:
+        _mark_store(name, time.time())
         return
     now = time.time()
     t0 = _t0()
     d = now - (_LAST if _LAST is not None else t0)
     _LAST = now
+    _mark_store(name, now)
     print(f"[階段] {time.strftime('%H:%M:%S', time.localtime(now))} +{now - t0:7.1f}s（+{d:6.1f}s）{name}", flush=True)
+
+
+# ── ★ 11-14 每塊結束寫 run_summary.json（使用者：demo 模式不產生 log，但要有訓練總時間、顆數等寫論文要的資訊）──
+#   mark() 的時間點＋record() 記的值，cli 結束時由 main.py 呼叫 write_summary() 寫到 <輸出目錄>/run_summary.json。
+#   時間定義：startup_s＝行程開始 → 第一步開始；train_s＝第一步開始 → 最後一步結束（純訓練）；
+#             save_exit_s＝最後一步結束 → cli 結束；python_total_s＝行程開始 → cli 結束。外層 shell 另外補 task_total_s。
+_MARKS = {}
+_REC = {}
+
+
+def record(key: str, value) -> None:
+    _REC[key] = value
+
+
+def _mark_store(name: str, t: float) -> None:
+    _MARKS.setdefault(name, t)
+
+
+def write_summary() -> None:
+    import json
+    out = _REC.get("output_path")
+    if not out:
+        return
+    t0 = _t0()
+    m = {k: v - t0 for k, v in _MARKS.items()}
+    fs = m.get("第一步開始（拿到第一個 batch）")
+    last = max((v for k, v in m.items() if k.startswith("第 ") and k.endswith("步結束")), default=None)
+    end = m.get("cli 結束（訓練與存檔完成，行程即將結束）")
+    s = dict(_REC)
+    s.update({
+        "startup_s": round(fs, 1) if fs is not None else None,
+        "train_s": round(last - fs, 1) if (fs is not None and last is not None) else None,
+        "save_exit_s": round(end - last, 1) if (end is not None and last is not None) else None,
+        "python_total_s": round(end, 1) if end is not None else None,
+        "marks_s": {k: round(v, 1) for k, v in sorted(m.items(), key=lambda kv: kv[1])},
+        "demo": os.environ.get("CITYGS_DEMO", "0") == "1",
+    })
+    try:
+        with open(os.path.join(out, "run_summary.json"), "w", encoding="utf-8") as f:
+            json.dump(s, f, ensure_ascii=False, indent=1)
+        print(f"[run-summary] {os.path.join(out, 'run_summary.json')}｜啟動 {s['startup_s']} s、純訓練 {s['train_s']} s、"
+              f"存檔結束 {s['save_exit_s']} s｜N {s.get('n_final')}｜峰值 {s.get('peak_alloc_gb')} GB", flush=True)
+    except Exception as e:
+        print(f"[run-summary] ⚠ 寫不進：{e}", flush=True)
