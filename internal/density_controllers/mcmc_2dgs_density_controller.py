@@ -693,6 +693,9 @@ class MCMC2DGSDensityController(MCMCDensityController):
       absorb：同 delete，但判死前先用 merge_ops.absorb_step 併進同平面、顏色相近的最佳鄰居（吸收者的面積與顏色變大、Adam 重設），找不到鄰居的照樣判死。
     點精靈的定義不變（長軸 < px_floor 個像素長度，最近可見訓練相機、目前的訓練解析度）；沒有公尺常數。"""
     px_sprite_interval: int = 500
+    px_sprite_full_res_only: bool = False
+    """★ 2026-11-14 刪除／吸收只在全解析度（訓練解析度倍率 1.0）時做，低解析度期照常撐大（使用者 11-14「排」）。
+    原因：點精靈用「目前訓練解析度的像素」判；x0.5 期一個像素是全解析度的 2 倍 => 第 1,000 步的刪除臂一次判掉 82% 的顆粒（全解析度期每次只有約 1.3%）。"""
     """px_floor_mode＝delete／absorb 時每幾步處理一次。"""
     px_floor_interval: int = 1000
     """（11-07 晚預設 50 => 1000＝v2 實測用的值）px_floor 的「最近可見深度」每幾步全量重算一次；中間用快取。新增與搬家的顆粒繼承母點的下限（11-07 v2：原本顆數一變就重算，
@@ -2214,8 +2217,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             low = s.max(1).values < fl.to(s.dtype)                  # 長軸不到下限（兩軸都在濾波以下＝吸收態）
             n_low = int(low.sum())
             _mode = str(getattr(self.config, "px_floor_mode", "inflate") or "inflate")
-            if _mode != "inflate":                                   # ★ 11-14 刪除／吸收臂：不撐，定期處理
-                self._px_sprite_event(low, n_low, gaussian_model, global_step, pl_module, _mode)
+            if _mode != "inflate" and not (bool(getattr(self.config, "px_sprite_full_res_only", False)) and res < 1.0):
+                self._px_sprite_event(low, n_low, gaussian_model, global_step, pl_module, _mode)   # ★ 11-14 刪除／吸收臂：不撐，定期處理
                 return
             if n_low:
                 s.copy_(torch.where(low[:, None], torch.maximum(s, lo), s))

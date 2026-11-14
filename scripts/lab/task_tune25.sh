@@ -77,12 +77,12 @@ parse() {
     else
       case "$t" in
         lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
-        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs) XT+=("$t") ;;
+        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf) XT+=("$t") ;;
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
         r2c[0-9]*|r2s[0-9]*) [[ $t =~ ^r2[cs][0-9]+$ ]] || { echo "⛔ 寫法：r2c<NN>／r2s<NN>（例 r2c50、r2s50）"; return 2; }; XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
-        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／r2wl／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc／mgtrim／mgl2／mgtex／mgrel／mgline／mgpx／fp16／cskip／pxdel／pxabs／noev<k>／sink<p>）"; return 2 ;;
+        *) echo "⛔ 不認得的元件 $t（s<NN>／g<NN>／s<NN>g<NN>／lowres／coarse／np16／lr050／mvu／mvugrow／mvugnd／tri／trihf／trist／trigate／tribh／hfd／vcb／sbp／bpf／tricap<W>／dense／sni／trimask／cmflat／r2／r2c<NN>／r2s<NN>／r2free／r2ent0／r2w／r2wl／nogate／nohf／noip／nonm／nonp／nomg／nol2／nopx／nohp／mge1／log0／geo8／capfc／mgtrim／mgl2／mgtex／mgrel／mgline／mgpx／fp16／cskip／pxdel／pxabs／pxdelf／pxabsf／noev<k>／sink<p>）"; return 2 ;;
       esac
     fi
   done
@@ -96,7 +96,7 @@ parse() {
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
       r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;; r2wl) LBL+="只關第二輪增生留後段弱熵" ;;
       nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
-      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; fp16) LBL+="完整路徑每16步" ;; cskip) LBL+="C區不跑" ;; pxdel) LBL+="點精靈刪除" ;; pxabs) LBL+="點精靈吸收" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sinkh*) LBL+="只沉離下方${t#sinkh}px以上" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; esac
+      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; fp16) LBL+="完整路徑每16步" ;; cskip) LBL+="C區不跑" ;; pxdel) LBL+="點精靈刪除" ;; pxabs) LBL+="點精靈吸收" ;; pxdelf) LBL+="點精靈全解析度才刪" ;; pxabsf) LBL+="點精靈全解析度才吸收" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sinkh*) LBL+="只沉離下方${t#sinkh}px以上" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; esac
   done
 }
 
@@ -216,6 +216,9 @@ for t in "${XT[@]:-}"; do
     # ★ 11-14 點精靈刪除／吸收（使用者「撐大嗎，為啥不刪掉或用合併機制併起來」）：取代 px_floor 的「撐大」；每 500 步處理一次
     pxdel)  XA+=(--model.density.init_args.px_floor_mode delete) ;;
     pxabs)  XA+=(--model.density.init_args.px_floor_mode absorb) ;;
+    # ★ 11-14 公平版：低解析度期照常撐大，全解析度（新底 3 是第 10,000 步起）才刪／吸收
+    pxdelf) XA+=(--model.density.init_args.px_floor_mode delete --model.density.init_args.px_sprite_full_res_only true) ;;
+    pxabsf) XA+=(--model.density.init_args.px_floor_mode absorb --model.density.init_args.px_sprite_full_res_only true) ;;
     mgtrim) XA+=(--model.density.init_args.merge_as_trim true) ;;
     mgl2)   XA+=(--model.density.init_args.merge_opacity l2) ;;
     mgtex)  XA+=(--model.density.init_args.merge_tex_tol "${MG_TEX:-0.03}") ;;

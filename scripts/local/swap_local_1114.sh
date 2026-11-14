@@ -12,6 +12,9 @@ L=(本機新底3=g44tn_s20g70${R}_$S 重跑=rep2_g44tn_s20g70${R}_$S 17k=g44tn_s
    稠密起點=g44tn_s20g70${R}dense_$S 稠密起點不增生=g44tn_s20g0${R}dense_$S 點精靈刪除=g44tn_s20g70${R}pxdel_$S 點精靈吸收=g44tn_s20g70${R}pxabs_$S
    海面接續對照=seadose_b${B}_ctl 往下沉6px=seadose_b${B}_p6 往下沉24px=seadose_b${B}_p24 往下沉48px=seadose_b${B}_p48 沉48px保護H200=seadose_b${B}_p48h200)
 L[4]=15k增生80=g44tn_s15g80${R}_$S
+# ★ 11-14 SWAP_SET=sprite2：點精靈公平版（全解析度才刪／吸收）
+[ "${SWAP_SET:-}" = sprite2 ] && L=(本機新底3=g44tn_s20g70${R}_$S 點精靈刪除=g44tn_s20g70${R}pxdel_$S 點精靈吸收=g44tn_s20g70${R}pxabs_$S
+   全解析度才刪=g44tn_s20g70${R}pxdelf_$S 全解析度才吸收=g44tn_s20g70${R}pxabsf_$S)
 C=(); N=()
 for kv in "${L[@]}"; do
   d=outputs/local/${kv#*=}/blocks/block_$B/checkpoints
@@ -19,7 +22,7 @@ for kv in "${L[@]}"; do
   [ -n "$c" ] && { C+=("$c"); N+=("${kv%%=*}"); } || echo "⚠ 缺 ${kv%%=*}（$d）"
 done
 echo "候選 ${#C[@]} 個：${N[*]}"
-LOG=logs/swap_local_b${B}_$(date +%m%d_%H%M).log
+LOG=logs/swap_local_b${B}${SWAP_SET:+_$SWAP_SET}_$(date +%m%d_%H%M).log
 conda run -n gspl --no-capture-output python -u tools/swap_block_eval.py --merged_run outputs/local/full44_best_nb14 --block "$B" \
   --cand "${C[@]}" --names "${N[@]}" 2>&1 | grep -v "pkg_resources\|declare_namespace" | tee "$LOG"
 exit "${PIPESTATUS[0]}"
