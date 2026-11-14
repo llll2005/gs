@@ -8,7 +8,7 @@
 大小：相機大小用 dataparser 同一個算法（torch.round(寬或高 / down_sample_factor)）。
 用法（lab，cwd＝repo 根目錄，CPU）：
   conda run -n gspl --no-capture-output python -u tools/make_resized_images.py data/matrix_city/aerial/train/block_all --nproc 12
-  => <dataset>/input_r1.2/<影像名>；demo 模式（CITYGS_DEMO=1）看到這個目錄就用 --data.parser.image_dir input_r1.2
+  => <dataset>/input_r1.2/<影像名>＋全部到齊時寫 .complete；demo 模式（CITYGS_DEMO=1）看到 .complete 才用 --data.parser.image_dir input_r1.2
 """
 import argparse
 import os
@@ -87,6 +87,9 @@ def main():
     if bad:
         print("⛔ 不一致：", bad[:5], flush=True)
         sys.exit(1)
+    if not a.limit and all(os.path.exists(j[1]) for j in jobs):   # 全部到齊才寫完成標記（demo 模式只認有標記的目錄）
+        open(os.path.join(out, ".complete"), "w").write(f"{len(jobs)}\n")
+        print(f"[resize] ✅ 寫完成標記 {os.path.join(out, '.complete')}", flush=True)
 
 
 if __name__ == "__main__":

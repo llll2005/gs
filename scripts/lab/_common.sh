@@ -144,10 +144,10 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   if [ "${CITYGS_DEMO:-0}" = 1 ]; then
     export CITYGS_SFM_FAST=1
     demo+=(--trainer.limit_val_batches 0 --trainer.num_sanity_val_steps 0 --trainer.logger false)
-    if [ -d "data/matrix_city/aerial/train/block_all/input_r1.2" ]; then
+    if [ -f "data/matrix_city/aerial/train/block_all/input_r1.2/.complete" ]; then   # 產生到一半的目錄不能用
       demo+=(--data.parser.image_dir input_r1.2)
     else
-      echo "⚠ [demo] 缺 data/matrix_city/aerial/train/block_all/input_r1.2（tools/make_resized_images.py）=> 影像照舊現縮"
+      echo "⚠ [demo] 缺 data/matrix_city/aerial/train/block_all/input_r1.2/.complete（tools/make_resized_images.py 跑完才有）=> 影像照舊現縮"
     fi
     echo "[demo] ★ demo 模式：SfM 快速讀取、關驗證、$( [[ " ${demo[*]} " == *input_r1.2* ]] && echo 讀預縮影像 || echo 影像現縮 )、不產生 log（只留台帳與 run_summary.json）"
   fi
