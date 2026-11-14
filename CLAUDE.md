@@ -273,6 +273,11 @@ SfM-init is the same command with `--model.initialize_from null`.
 All blocks: `python utils/train_citygs_partitions.py -n <name> --config <cfg> --init_mode depth
 --depth_init_dir <dir> [--blocks 0 6 7]`
 
+**Demo mode (2026-11-14, user):** prefix any training command with `CITYGS_DEMO=1` (handled in `scripts/lab/_common.sh` run_fit): fast SfM reading + cache,
+no in-training validation, pre-resized images (`input_r1.2/`, needs `.complete`; `tools/make_resized_images.py`), no logs (no tfevents/lightning_logs/audit/chart pack) —
+none of it changes training results. Every run (demo or not) writes `<out>/run_summary.json` (startup / pure training / save / task seconds, final N, peak VRAM);
+aggregate with `python tools/run_summary_report.py <run>`. Scores still come from the offline evaluation. Details: `紀錄/實驗分析/38` §7.
+
 **Merge / eval / deploy:**
 ```bash
 python utils/merge_citygs_ckpts.py outputs/$NAME
