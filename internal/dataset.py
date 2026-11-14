@@ -527,6 +527,8 @@ class DataModule(LightningDataModule):
                 pass
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
+        from internal.utils.stage_timer import mark
+        mark("train_dataloader 開始（建 Dataset、算抽樣權重）")
         return CacheDataLoader(
             Dataset(
                 self.dataparser_outputs.train_set,

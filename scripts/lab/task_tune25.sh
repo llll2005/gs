@@ -108,17 +108,17 @@ if [ "$1" = eval ]; then
   ARGS+=(A+dist4=$A_RUN)
   # TUNE_EXTRA="名稱=跑次 ..."：另外帶幾個現成跑次一起比（例：合併地下 v1＝g44s30ksfm10nbmvu_best1maskdistrfed10b4）
   for kv in ${TUNE_EXTRA:-}; do
-    [ -d "outputs/lab/${kv#*=}/blocks/block_$B" ] && { ARGS+=("$kv"); SW+=("${kv#*=}"); } || echo "⚠ 缺 $kv"
+    [ -d "outputs/${TUNE_ROOT:-lab}/${kv#*=}/blocks/block_$B" ] && { ARGS+=("$kv"); SW+=("${kv#*=}"); } || echo "⚠ 缺 $kv"
   done
   for a in "$@"; do
     parse "$a" || exit 2
     r=$FAM$SUF
-    if [ -d outputs/lab/$r/blocks/block_$B ]; then R+=($r); ARGS+=("$LBL=$r"); else echo "⚠ 缺 $a（$r）"; fi
+    if [ -d outputs/${TUNE_ROOT:-lab}/$r/blocks/block_$B ]; then R+=($r); ARGS+=("$LBL=$r"); else echo "⚠ 缺 $a（$r）"; fi
   done
   # ★ 11-12 TUNE_NOSWAP=1：跳過換塊評測（要載約 4 GB 的合併模型；lab 被外部行程佔卡、共用卡時放不下）＝只算 CPU 那幾項
   if [ "${TUNE_NOSWAP:-0}" = 1 ]; then echo "[eval] TUNE_NOSWAP=1：跳過換塊評測（之後卡空時補）"
   else bash scripts/lab/task_full44.sh swap "$B" "${SW[@]}" "${R[@]}"; fi
-  EVAL_ONLY=time,f1,ground,facade,orient,sea,smallobj bash scripts/lab/eval_arms_lab.sh "$B" tune_${TAG}_b${B} "${ARGS[@]}"
+  EVAL_ROOT=outputs/${TUNE_ROOT:-lab} EVAL_ONLY=${TUNE_EVAL_ONLY:-time,f1,ground,facade,orient,sea,smallobj} bash scripts/lab/eval_arms_lab.sh "$B" tune_${TAG}_b${B} "${ARGS[@]}"
   exit $?
 fi
 

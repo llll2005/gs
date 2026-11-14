@@ -1662,7 +1662,13 @@ class GaussianSplatting(LightningModule):
     def test_step(self, batch, batch_idx):
         return self.validation_step(batch, batch_idx, name="test")
 
+    def on_fit_start(self) -> None:   # ★ 11-14 啟動拆解：setup 之後、建 loader 之前那段
+        from internal.utils.stage_timer import mark
+        mark("on_fit_start（模型已上 GPU、優化器已建）")
+
     def configure_optimizers(self):
+        from internal.utils.stage_timer import mark
+        mark("configure_optimizers 開始")
         # initialize lists that store optimizers and schedulers
         optimizers = []
         schedulers = []

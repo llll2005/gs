@@ -143,7 +143,7 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local demo=()
   if [ "${CITYGS_DEMO:-0}" = 1 ]; then
     export CITYGS_SFM_FAST=1
-    demo+=(--trainer.limit_val_batches 0 --trainer.num_sanity_val_steps 0 --trainer.logger false)
+    demo+=(--trainer.limit_val_batches 0 --trainer.num_sanity_val_steps 0 --logger none)   # ⚠ internal/cli.py 的 --logger 會蓋掉 --trainer.logger
     if [ -f "data/matrix_city/aerial/train/block_all/input_r1.2/.complete" ]; then   # 產生到一半的目錄不能用
       demo+=(--data.parser.image_dir input_r1.2)
     else
