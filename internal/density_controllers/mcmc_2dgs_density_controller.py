@@ -666,6 +666,12 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 2026-11-13（使用者「把機制打開接在已經有的 ckpt 跑幾百步」）> 0：任何階段都每 k 步投一次視線一致性票、更新「沒證據」的高度上限
     （原本只在增生事件與增生開始前投票 => 接在收割期的 ckpt 上不會觸發）。需要 sfm_vis；配 sfm_vis_eps 1.0＝不改抽樣、只用 noup。"""
     sfm_noup_sink_px: float = 0.0
+    sfm_noup_sink_min_h_px: float = 0.0
+    """★ 2026-11-14 往下沉的細物保護（使用者「往下沉加劑量＋保護細物」）：> 0 時只有「離下方 SfM 表面超過這麼多個像素長度」的沒證據顆粒會往下沉，
+    其餘沒證據的只不准往上。下方 SfM 表面＝可靠 SfM 在格子裡的 10% 分位高度、再取 3x3 鄰域最小（空格由鄰格的最小值往外補）；
+    格子邊長＝8 x 可靠 SfM 最近鄰間距中位（同深度支撐的 SfM 豁免半徑規則；沒有公尺常數）。
+    量測（11-14 新底 3 b1，tools 見 紀錄/實驗分析/38）：離下方表面的高度（像素長度）海面浮塊中位 504、路燈帶 81、車輛帶 11；
+    > 200 時海面浮塊 74%、路燈帶 1%、車輛帶 0%。"""
     """★ 2026-11-13「沒證據就往下沉」（紀錄 32 列過的候選；不准往上管不到已經在高處的）：> 0 時每次投票，仍是「沒證據」的顆粒
     高度上限再往下降 此值 x 它的像素長度（最近可見訓練相機裡 1 像素的長度，px_floor 的量；沒有公尺常數）=> 一路沉到投票說「有證據」為止。"""
     """★ 2026-11-06 noup v2：增生開始前（step < densify_from_iter）每 k 步、以及第 1 步也投票標記；0＝只在增生事件投票（v1：第一次在 1,050 步）。"""
@@ -680,6 +686,14 @@ class MCMC2DGSDensityController(MCMCDensityController):
     量測（b3 本機）：不透明顆粒的點精靈比例 30k 26.3%、60k 16.0%、前段低解析度 67.9%、CityGS 0.0%；地面層 58.9%、車輛帶 71.8%、路燈帶 65.6%；
     跟地面覆蓋、低角度破洞、區塊 F1 同排序。從空拍訓練距離看是一個像素，viewer 拉近／低角度就只剩一個點（路燈、車消失、地面透空）。
     🟨 借用改造自 Mip-Splatting 的 3D 平滑濾波（用可見訓練相機的最高取樣率限制最小尺寸）；這裡是硬下限、不改渲染器。單位是像素，沒有公尺常數。"""
+    px_floor_mode: str = "inflate"
+    """★ 2026-11-14 點精靈的處理（使用者 11-13「撐大嗎，為啥不刪掉或者使用我們的合併機制併起來」、11-14「排點精靈刪除／吸收臂」）：
+      inflate（預設＝原行為，逐位元不變）：每步把長軸不到下限的顆粒撐到下限。
+      delete：不撐；每 px_sprite_interval 步（densify_from_iter 起）把當下的點精靈全部判死——增生期壓成 o≈0 交給 MCMC 搬家回收，收割期直接刪。
+      absorb：同 delete，但判死前先用 merge_ops.absorb_step 併進同平面、顏色相近的最佳鄰居（吸收者的面積與顏色變大、Adam 重設），找不到鄰居的照樣判死。
+    點精靈的定義不變（長軸 < px_floor 個像素長度，最近可見訓練相機、目前的訓練解析度）；沒有公尺常數。"""
+    px_sprite_interval: int = 500
+    """px_floor_mode＝delete／absorb 時每幾步處理一次。"""
     px_floor_interval: int = 1000
     """（11-07 晚預設 50 => 1000＝v2 實測用的值）px_floor 的「最近可見深度」每幾步全量重算一次；中間用快取。新增與搬家的顆粒繼承母點的下限（11-07 v2：原本顆數一變就重算，
     增生期每 100 步一次、每次 0.4～0.7 s => 30k 多 9%）；剪枝、排序跟著 _PER_PARTICLE 走；補洞放的顆粒 -inf（不夾）到下次重算。"""
@@ -1578,6 +1592,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     def _reliable_sfm(path: str):
         """可靠 SfM 點（track>=3、重投影誤差<1.5 px；同 geom_gate／研究總覽的定義）=> [M,3] float64。"""
         import numpy as np
+        from internal.utils import colmap_fast
+        if colmap_fast.enabled():                                    # ★ 11-14 demo 模式：陣列化＋快取（同樣的點、同樣的順序）
+            d = colmap_fast.points3D_arrays(path)
+            keep = (np.diff(d["off"]) >= 3) & (d["err"] < 1.5)
+            return np.ascontiguousarray(d["xyz"][keep], dtype=np.float64).reshape(-1, 3)
         from internal.utils.colmap import read_points3D_binary
         pts = read_points3D_binary(path)
         return np.array([p.xyz for p in pts.values() if len(p.image_ids) >= 3 and p.error < 1.5], dtype=np.float64).reshape(-1, 3)
@@ -1635,7 +1654,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if f is None:
             print(f"⚠⚠ [sfm] 找不到 points3D.bin（{cands}）=> sfm_* 不會生效", flush=True)
             return
-        self._sfm_build(self._reliable_sfm(f), gaussian_model.gaussians["means"])
+        _rel = self._reliable_sfm(f)
+        self._sfm_rel = _rel                                       # ★ 11-14 往下沉的細物保護要用（下方 SfM 表面）
+        self._sfm_build(_rel, gaussian_model.gaussians["means"])
         if bool(getattr(self.config, "sfm_vis", False)) or bool(getattr(self.config, "merge_vis_under", False)):
             self._sfm_vis_build(os.path.dirname(f), pl_module, gaussian_model.gaussians["means"].device)
 
@@ -2066,8 +2087,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             fl = getattr(self, "_pxf_log", None); kappa = float(getattr(self.config, "px_floor", 0.0) or 0.0)
             if fl is not None and fl.shape[0] == z.shape[0] and kappa > 0:
                 pxl = (torch.exp(fl) / kappa).nan_to_num(0.0, posinf=0.0).float()
-                zmax = torch.where(noev, torch.minimum(zmax, z.float()) - _sk * pxl, zmax)
-                self._sink_n = int(noev.sum())
+                sink = noev
+                _H = float(getattr(self.config, "sfm_noup_sink_min_h_px", 0.0) or 0.0)
+                if _H > 0:                                                     # ★ 11-14 細物保護：只沉離下方 SfM 表面夠高的
+                    zb = self._sfm_below_z(X)
+                    if zb is not None:
+                        sink = noev & ((z.float() - zb) > _H * pxl) & (pxl > 0)
+                        if not getattr(self, "_sinkh_announced", False):
+                            self._sinkh_announced = True
+                            print(f"[sfm-noup-sink] ✅ 首次觸發 step {step}：細物保護 離下方 SfM 表面 > {_H:g} 像素長度才沉｜沒證據 {int(noev.sum()):,} 顆，"
+                                  f"其中會沉 {int(sink.sum()):,}、只不准往上 {int((noev & ~sink).sum()):,}｜格子 {self._below['cell'] * 100:.2f} m", flush=True)
+                zmax = torch.where(sink, torch.minimum(zmax, z.float()) - _sk * pxl, zmax)
+                self._sink_n = int(sink.sum())
         self._noup_z = zmax
         first = not getattr(self, "_noup_announced", False)
         if first or step // 1500 != getattr(self, "_noup_last", -1):
@@ -2078,6 +2109,42 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                   f"平均每次夾掉 {100 * st[2] / max(st[1], 1):.2f} m"
                   + (f"｜新顆粒繼承上限 {getattr(self, '_noup_inh', 0):,} 顆" if bool(getattr(self.config, 'sfm_vis_noup_inherit', False)) else ""), flush=True)
             self._noup_inh = 0
+
+    def _sfm_below_z(self, X):
+        """★ 11-14 每顆正下方的 SfM 表面高度（見 config.sfm_noup_sink_min_h_px）；第一次呼叫時建格子。拿不到 SfM => None。"""
+        b = getattr(self, "_below", None)
+        if b is None:
+            S = getattr(self, "_sfm_rel", None)
+            if S is None or len(S) < 100:
+                return None
+            import numpy as np
+            from scipy.spatial import cKDTree
+            from scipy.ndimage import minimum_filter
+            sub = S[np.random.default_rng(0).choice(len(S), min(len(S), 200_000), replace=False)]
+            d, _ = cKDTree(sub).query(sub, k=2)
+            cell = 8.0 * float(np.median(d[:, 1]))
+            o0 = np.floor(S[:, :2].min(0) / cell).astype(np.int64) - 2
+            ci = np.floor(S[:, :2] / cell).astype(np.int64) - o0
+            shp = tuple(int(v) for v in ci.max(0) + 3)
+            cid = ci[:, 0] * shp[1] + ci[:, 1]
+            o = np.lexsort((S[:, 2], cid))
+            u, f, c = np.unique(cid[o], return_index=True, return_counts=True)
+            g = np.full(shp[0] * shp[1], np.inf)
+            g[u] = S[o, 2][f + c // 10]                                  # 格內 10% 分位
+            g = g.reshape(shp)
+            for _ in range(256):                                         # 空格：由鄰格最小值往外補
+                if np.isfinite(g).all():
+                    break
+                g = np.where(np.isfinite(g), g, minimum_filter(g, size=3))
+            g = minimum_filter(g, size=3)                                # 3x3 鄰域最小＝下方表面的下包絡
+            g[~np.isfinite(g)] = float(np.min(S[:, 2]))
+            b = {"o0": torch.tensor(o0, device=X.device), "cell": cell, "shp": shp,
+                 "g": torch.tensor(g, dtype=torch.float32, device=X.device), "zmin": float(np.min(S[:, 2]))}
+            self._below = b
+        ci = torch.floor(X[:, :2].detach().double() / b["cell"]).long() - b["o0"]
+        ok = (ci[:, 0] >= 0) & (ci[:, 0] < b["shp"][0]) & (ci[:, 1] >= 0) & (ci[:, 1] < b["shp"][1])
+        ci0 = ci[:, 0].clamp(0, b["shp"][0] - 1); ci1 = ci[:, 1].clamp(0, b["shp"][1] - 1)
+        return torch.where(ok, b["g"][ci0, ci1], torch.full_like(b["g"][ci0, ci1], b["zmin"]))
 
     def _sfm_noup_clamp(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
         """每步結束（optimizer step 與 MCMC 雜訊之後）：沒證據的顆粒 z 夾在上限以下，上限只降不升。"""
@@ -2146,6 +2213,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             lo = fl[:, None].to(s.dtype)
             low = s.max(1).values < fl.to(s.dtype)                  # 長軸不到下限（兩軸都在濾波以下＝吸收態）
             n_low = int(low.sum())
+            _mode = str(getattr(self.config, "px_floor_mode", "inflate") or "inflate")
+            if _mode != "inflate":                                   # ★ 11-14 刪除／吸收臂：不撐，定期處理
+                self._px_sprite_event(low, n_low, gaussian_model, global_step, pl_module, _mode)
+                return
             if n_low:
                 s.copy_(torch.where(low[:, None], torch.maximum(s, lo), s))
             st = getattr(self, "_pxf_stat", [0, 0])
@@ -2158,6 +2229,42 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                       f"｜沒有相機看得到（不夾）{int((~fin).sum()):,}｜近 {st[0]} 步平均每步拉回 {st[1] / max(st[0], 1):,.0f} 顆"
                       f"｜重算下限 {getattr(self, '_pxf_ms', float('nan')):.0f} ms（每 {k} 步）", flush=True)
                 self._pxf_announced = True; self._pxf_stat = [0, 0]
+
+    def _px_sprite_event(self, low, n_low: int, gaussian_model, global_step: int, pl_module, mode: str) -> None:
+        """★ 11-14 點精靈刪除／吸收（config.px_floor_mode）。增生期判死＝opacity 壓到 sigmoid(-30)（MCMC 每次增生事件搬走 o <= min_opacity 的），
+        收割期直接刪（_prune_points；N 變了 px_floor 快取下一步自動重算）。"""
+        k = max(1, int(getattr(self.config, "px_sprite_interval", 500) or 500))
+        if global_step < int(self.config.densify_from_iter) or global_step % k != 0 or n_low == 0:
+            return
+        opt = getattr(pl_module, "gaussian_optimizers", None)
+        n0 = int(low.shape[0]); n_abs = 0; info = {}
+        if mode == "absorb":
+            from .merge_ops import absorb_step
+            _I, _J, info = absorb_step(gaussian_model, low, color_tol=0.1, min_opacity_src=0.0)   # 顏色門檻同 trim_merge_first
+            n_abs = int(_J.numel())
+            if _I.numel() > 0 and opt is not None:
+                self.replace_tensors_to_optimizers(gaussian_model, opt, inds=_I)          # 吸收者 Adam 重設（同 trim_merge_first）
+        grow = self._growing(global_step)
+        if grow or opt is None:
+            raw_o = gaussian_model.gaussians["opacities"]
+            raw_o[low] = -30.0
+            how = "判死（o≈0，等增生事件搬走）"
+        else:
+            self._prune_reason = f"點精靈{'吸收' if mode == 'absorb' else '刪除'}"
+            try:
+                self._prune_points(low, gaussian_model, opt)
+            finally:
+                self._prune_reason = None
+            self._max_radii2D = None
+            self._max_tiles2D = None
+            how = f"直接刪（N {n0:,} -> {gaussian_model.n_gaussians:,}）"
+        tot = getattr(self, "_pxs_total", [0, 0]); tot[0] += n_low; tot[1] += n_abs; self._pxs_total = tot
+        first = not getattr(self, "_pxs_announced", False)
+        if first or global_step % 1500 == 0:
+            self._pxs_announced = True
+            print(f"[px-sprite] {'✅ 首次觸發 ' if first else ''}step {global_step}（{mode}）：點精靈 {n_low:,}／{n0:,} 顆"
+                  + (f"，其中 {n_abs:,} 顆先併進同平面鄰居（立面 {100 * info.get('facade', 0):.0f}%）" if mode == "absorb" else "")
+                  + f"｜{how}｜累計處理 {tot[0]:,}、吸收 {tot[1]:,}", flush=True)
 
     def _harvest_prune_dead(self, gaussian_model, optimizers, global_step: int) -> int:
         """增生後刪 MCMC 判死的顆粒（config.harvest_prune_dead）。回傳刪掉的顆數。"""
