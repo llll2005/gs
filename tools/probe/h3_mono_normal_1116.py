@@ -77,14 +77,16 @@ for name in names:
             m = ok & fac & bm & rm
             if m.sum() < 50:
                 continue
-            k = (band, rname); e = acc.setdefault(k, {"mono": [], "tri": [], "n": 0})
-            e["mono"].append(am[m][::7]); e["n"] += int(m.sum())
-            mt = m & np.isfinite(zt)
-            if mt.sum() >= 50:
-                e["tri"].append(at[mt][::7])
+            k = (band, rname); e = acc.setdefault(k, {"mono": [], "tri": [], "n": 0, "nt": 0})
+            # 11-16 修：鄰點是 NaN（無效深度）時法向是 NaN => 只收有限值，另記校正深度有法向的比例
+            xm = am[m]; e["mono"].append(xm[np.isfinite(xm)][::7]); e["n"] += int(m.sum())
+            xt = at[m]; xt = xt[np.isfinite(xt)]; e["nt"] += int(xt.size)
+            if xt.size >= 50:
+                e["tri"].append(xt[::7])
 print(f"b{a.block}：抽 {len(names)} 張訓練影像；立面像素（GT |n_z| < 0.3），深度不連續排除；夾角＝與 GT 法向（度）")
-print(f"{'':30}{'像素':>10}{'單目 中位':>10}{'單目 <20°':>10}{'校正 中位':>10}{'校正 <20°':>10}")
+print(f"{'':30}{'像素':>10}{'單目 中位':>10}{'單目 <20°':>10}{'校正有法向':>10}{'校正 中位':>10}{'校正 <20°':>10}")
 for k, e in sorted(acc.items()):
     mo = np.concatenate(e["mono"]) if e["mono"] else np.zeros(0); tr = np.concatenate(e["tri"]) if e["tri"] else np.zeros(0)
     f = lambda x: (f"{np.median(x):.0f}", f"{100 * np.mean(x < 20):.0f}%") if len(x) else ("—", "—")
-    print(f"{k[0] + '｜' + k[1]:30}{e['n']:>10,}{f(mo)[0]:>10}{f(mo)[1]:>10}{f(tr)[0]:>10}{f(tr)[1]:>10}")
+    cov = f"{100 * e['nt'] / max(e['n'], 1):.0f}%"
+    print(f"{k[0] + '｜' + k[1]:30}{e['n']:>10,}{f(mo)[0]:>10}{f(mo)[1]:>10}{cov:>10}{f(tr)[0]:>10}{f(tr)[1]:>10}")
