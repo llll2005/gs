@@ -123,5 +123,47 @@ class DepthSupportFallbackTest(unittest.TestCase):
             ds.update(0, self.X, self.w2c, 10., 10., 5., 5., 10, 10, self.inv, sfm=(torch.zeros(3, dtype=torch.bool),) * 2)
 
 
+class NoConstraintSinkTest(unittest.TestCase):
+    def test_gate_flags_no_constraint_only(self):
+        from internal.metrics.geom_gate import DepthSupport
+        inv = torch.zeros(10, 10); inv[:, :5] = 0.1                      # 左半有可靠先驗
+        X = torch.tensor([[-1., 0., 5.], [1., 0., 5.], [2., 0., 10.]])  # 0：有先驗；1：沒先驗、沒 SfM；2：沒先驗、有 SfM
+        sf = (torch.zeros(3, dtype=torch.bool), torch.tensor([False, False, True]))
+        ds = DepthSupport(window=3, min_count=3, rule="vote")
+        for st in range(4):
+            ds.update(st, X, torch.eye(4), 10., 10., 5., 5., 10, 10, inv, sfm=sf, sfm_vote=False)
+        self.assertEqual(ds.nocon.tolist(), [False, True, False])
+        self.assertEqual(ds.nocon_ver, 1)
+        self.assertEqual(ds.support.tolist(), [False, True, True])     # sfm_vote=False => 閘門判定與沒給 SfM 時相同
+
+    def make(self, nocon, z, pxl=0.5, n=None):
+        import weakref
+        ds = types.SimpleNamespace(nocon=torch.tensor(nocon), nocon_ver=1)
+        m = types.SimpleNamespace(_depth_support=ds)
+        cfg = types.SimpleNamespace(sfm_nocon_sink_px=4.0, px_floor=1.0)
+        s = types.SimpleNamespace(config=cfg, _pxf_log=torch.log(torch.full((n or len(z),), pxl)))
+        s._metric_ref = lambda: m
+        gm = types.SimpleNamespace(gaussians={"means": torch.tensor([[0., 0., v] for v in z])})
+        return s, gm, ds
+
+    def test_sink_lowers_cap_only_for_flagged(self):
+        s, gm, ds = self.make([True, False], [3.0, 3.0])
+        C._nocon_sink(s, gm, 400)
+        self.assertEqual(s._noup_z[0].item(), 1.0)                     # 3 − 4 x 0.5
+        self.assertTrue(torch.isinf(s._noup_z[1]))
+        C._nocon_sink(s, gm, 401)                                        # 同一個判定版本 => 不再降
+        self.assertEqual(s._noup_z[0].item(), 1.0)
+        ds.nocon_ver = 2; C._nocon_sink(s, gm, 800)                      # 新判定 => 再降（取上限與現在高度較低者）
+        self.assertEqual(s._noup_z[0].item(), -1.0)
+
+    def test_growth_after_decision_pads_and_prune_skips(self):
+        s, gm, ds = self.make([True], [3.0, 3.0], n=2)                   # 判定後多長了一顆
+        C._nocon_sink(s, gm, 400)
+        self.assertEqual(s._noup_z[0].item(), 1.0); self.assertTrue(torch.isinf(s._noup_z[1]))
+        s2, gm2, ds2 = self.make([True, True, True], [3.0], n=1)         # 判定後剪掉 => 跳過
+        C._nocon_sink(s2, gm2, 400)
+        self.assertIsNone(getattr(s2, "_noup_z", None))
+
+
 if __name__ == "__main__":
     unittest.main()

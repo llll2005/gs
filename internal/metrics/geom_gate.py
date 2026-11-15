@@ -127,6 +127,8 @@ class DepthSupport:
             raise ValueError(f"behind 窄帶要 0 <= margin < max（收到 {self.bm!r}、{self.bmax!r}）")
         self.sum = self.cnt = self.mn = self.vote = self.support = None
         self.cntp = self.altc = None                     # ★ 11-15（丙）：只算先驗的觀測數、SfM 備援的觀測數
+        self.inview = self.scovc = None                  # ★ 11-15 深夜：完全沒有幾何約束的判定（視窗內看得到、從沒碰到可靠先驗也從沒碰到 SfM）
+        self.nocon = None; self.nocon_ver = 0
         self.bvote = self.behind = None
         self.t0 = None
         self.last = {}
@@ -139,6 +141,7 @@ class DepthSupport:
             self.mn = torch.full((n,), float("inf"), device=device)
             self.support = torch.ones(n, dtype=torch.bool, device=device)
             self.cntp = torch.zeros(n, device=device); self.altc = torch.zeros(n, device=device)
+            self.inview = torch.zeros(n, device=device); self.scovc = torch.zeros(n, device=device)
             if self.bm is not None:
                 self.bvote = torch.zeros(n, device=device)
                 self.behind = torch.zeros(n, dtype=torch.bool, device=device)
@@ -151,16 +154,17 @@ class DepthSupport:
             self.mn = torch.cat([self.mn, torch.full((m,), float("inf"), device=device)])
             self.support = torch.cat([self.support, torch.ones(m, dtype=torch.bool, device=device)])
             self.cntp = torch.cat([self.cntp, torch.zeros(m, device=device)]); self.altc = torch.cat([self.altc, torch.zeros(m, device=device)])
+            self.inview = torch.cat([self.inview, torch.zeros(m, device=device)]); self.scovc = torch.cat([self.scovc, torch.zeros(m, device=device)])
             if self.bm is not None:
                 self.bvote = torch.cat([self.bvote, torch.zeros(m, device=device)])
                 self.behind = torch.cat([self.behind, torch.zeros(m, dtype=torch.bool, device=device)])
 
     @torch.no_grad()
-    def update(self, step, means, w2c, fx, fy, cx, cy, width, height, inv_depth, sfm=None):
+    def update(self, step, means, w2c, fx, fy, cx, cy, width, height, inv_depth, sfm=None, sfm_vote=True):
         """sfm：★ 11-15（丙）(free [N] bool, cover [N] bool)＝這台相機的 SfM 觀測格投票（同 sfm_vis_votes：在格內最近的觀測 SfM 點前面 > 容差＝空區）。
         給了就在「先驗深度不可靠／沒有」的顆粒改用它投票：cover 算一次觀測、free 算一票「在前方」（只支援 rule＝vote）。
         「從未貼面」（never）只看先驗的觀測（cntp），SfM 備援不會讓沒先驗的地方被判 never。sfm=None 時與之前逐位元相同。"""
-        if sfm is not None and self.rule != "vote":
+        if sfm is not None and sfm_vote and self.rule != "vote":
             raise ValueError("depth_support 的 SfM 備援只支援 rule＝vote（mean 的殘差平均沒有 SfM 對應的量）")
         n = means.shape[0]
         self._resize(n, means.device)
@@ -176,6 +180,8 @@ class DepthSupport:
         vd = (v * (hd / float(height))).floor().long()
         ok &= (ud >= 0) & (ud < wd) & (vd >= 0) & (vd < hd)
         dinv = inv_depth.reshape(hd, wd)[vd.clamp(0, hd - 1), ud.clamp(0, wd - 1)]
+        if sfm is not None:
+            self.inview += ok.to(self.inview.dtype)                   # 在畫面內（不論先驗有沒有值）
         ok &= dinv > 1e-6
         zm = 1.0 / dinv.clamp_min(1e-6)
         r = torch.where(ok, (z - zm) / zm, torch.zeros_like(z))
@@ -185,6 +191,8 @@ class DepthSupport:
         self.vote += (ok & (r < -self.df)).to(self.vote.dtype)
         if sfm is not None:
             sfree, scov = sfm
+            self.scovc += scov.to(self.scovc.dtype)
+        if sfm is not None and sfm_vote:
             alt = (~ok) & scov & (z > self.near)
             self.cnt += alt.to(self.cnt.dtype)
             self.altc += alt.to(self.altc.dtype)
@@ -207,8 +215,12 @@ class DepthSupport:
                 self.behind = seen & (self.bvote > 0.5 * self.cnt)
                 self.last["behind"] = float(self.behind.float().mean())
                 self.bvote.zero_()
+            if sfm is not None:                                           # ★ 11-15 深夜：完全沒有幾何約束
+                self.nocon = (self.inview >= self.cmin) & (self.cntp == 0) & (self.scovc == 0)
+                self.nocon_ver += 1
+                self.last["nocon"] = float(self.nocon.float().mean())
             self.sum.zero_(); self.cnt.zero_(); self.vote.zero_(); self.mn.fill_(float("inf")); self.t0 = step
-            self.cntp.zero_(); self.altc.zero_()
+            self.cntp.zero_(); self.altc.zero_(); self.inview.zero_(); self.scovc.zero_()
             return True
         return False
 

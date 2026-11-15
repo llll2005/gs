@@ -663,6 +663,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 11-15（乙，Python 部分）> 0 時 v5 不用「判到就 x sfm_vis_eps」的硬門檻，改成母點機率 x max((1 - phi)^k, sfm_vis_eps)，
     phi＝累積的浮塊票／有證據的相機數（有證據的 < 2 時 phi＝0）。k＝此值。需要 sfm_vis_stream > 0。"""
     sfm_vis_gate: bool = False
+    sfm_nocon_sink_px: float = 0.0
+    """★ 2026-11-15 深夜 > 0 時：深度支撐閘門每個視窗判出「完全沒有幾何約束」的顆粒（metric 的 depth_support_nocon：看得到、但從沒碰到可靠先驗也從沒碰到 SfM），
+    把它們的高度上限（同 sfm_vis_noup 的 _noup_z）降到 min(上限, 現在高度) − 此值 x 像素長度（px_floor 的「最近可見訓練相機 1 px」），每步夾住 => 只能往下。
+    有 SfM 或可靠深度的地方一律不動（11-14 往下沉在 b4 把陸上沒 SfM 的顆粒壓進地底；這裡陸上有可靠深度就不算）。需要 px_floor、sfm_vis_gate、depth_support_nocon。
+    依據：b1 那團 100% 沒有 SfM 證據；11-14 接續 1000 步、沉 48 px x 20 次把那團 120 m 以上 768 -> 526（−32%）、高度中位 156 -> 127 m。"""
     """★ 11-15（丙）只建 SfM 觀測格（同 v4），給 metric 的 depth_support_sfm_free 用；不改抽樣（v4／v5 的壓制要另開 sfm_vis）。"""
     """v5：每次事件判完後，累積的 free／cover 乘這個倍率（0.5＝證據的半衰期是一個事件間隔）。1＝不淡出。"""
     """視線一致性判成浮塊／地下的母點的抽樣倍率；1.0＝不改抽樣、只印統計。範圍同 sfm_birth_from_iter／until_iter。"""
@@ -1062,6 +1067,12 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             pl_module.on_train_batch_end_hooks.append(self._add_xyz_noise)
             if bool(getattr(self.config, "sfm_lock", False)):
                 pl_module.on_train_batch_end_hooks.append(self._sfm_restore)   # 排在雜訊之後 => 錨點連雜訊也還原
+            if float(getattr(self.config, "sfm_nocon_sink_px", 0.0) or 0.0) > 0:
+                import weakref
+                _m = getattr(pl_module, "metric", None)
+                object.__setattr__(self, "_metric_ref", weakref.ref(_m) if _m is not None else None)
+                if not bool(getattr(self.config, "sfm_vis_noup", False)):
+                    pl_module.on_train_batch_end_hooks.append(self._sfm_noup_clamp)   # 往下沉也靠每步夾住高度上限
             if bool(getattr(self.config, "sfm_vis_noup", False)):
                 if not bool(getattr(self.config, "sfm_vis", False)):
                     raise ValueError("sfm_vis_noup 需要 sfm_vis（沒證據的判定來自視線一致性投票）")
@@ -2224,6 +2235,44 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         return floater, under, cv.round().long(), cv.round().long()
 
     @torch.no_grad()
+    def _nocon_sink(self, gaussian_model, step: int) -> None:
+        """★ 11-15 深夜：閘門出了新的「完全沒有幾何約束」判定 => 這些顆粒的高度上限往下降 sfm_nocon_sink_px 個像素長度。"""
+        mr = getattr(self, "_metric_ref", None)
+        m = mr() if mr is not None else None
+        ds = getattr(m, "_depth_support", None) if m is not None else None
+        if ds is None or getattr(ds, "nocon", None) is None or ds.nocon_ver == getattr(self, "_nocon_seen", 0):
+            return
+        self._nocon_seen = ds.nocon_ver
+        X = gaussian_model.gaussians["means"]
+        N = X.shape[0]
+        nc = ds.nocon
+        if nc.shape[0] > N:                                                   # 判定之後有剪枝 => 對不上，這次跳過
+            self._nocon_skip = getattr(self, "_nocon_skip", 0) + 1
+            return
+        if nc.shape[0] < N:                                                   # 判定之後有增生（加在尾端）=> 新的不算
+            nc = torch.cat([nc, torch.zeros(N - nc.shape[0], dtype=torch.bool, device=nc.device)])
+        fl = getattr(self, "_pxf_log", None); kappa = float(getattr(self.config, "px_floor", 0.0) or 0.0)
+        if fl is None or fl.shape[0] != N or kappa <= 0:
+            if not getattr(self, "_nocon_pxwarn", False):
+                self._nocon_pxwarn = True
+                print(f"⚠⚠ [nocon-sink] step {step}：拿不到像素長度（px_floor 沒開或長度不符）=> 這次不沉", flush=True)
+            return
+        pxl = (torch.exp(fl) / kappa).nan_to_num(0.0, posinf=0.0).float()
+        sel = nc & (pxl > 0)
+        z = X[:, 2].detach().float()
+        zmax = getattr(self, "_noup_z", None)
+        if zmax is None or zmax.shape[0] != N:
+            zmax = torch.full((N,), float("inf"), device=z.device)
+        sk = float(self.config.sfm_nocon_sink_px)
+        self._noup_z = torch.where(sel, torch.minimum(zmax, z) - sk * pxl, zmax)
+        self._nocon_n = getattr(self, "_nocon_n", 0) + 1
+        if self._nocon_n == 1 or self._nocon_n % 5 == 0:
+            d = (sk * pxl[sel] * 100).median() if bool(sel.any()) else torch.tensor(0.0)
+            print(f"[nocon-sink] {'✅ 首次觸發' if self._nocon_n == 1 else '　'} step {step}：完全沒有幾何約束 {int(nc.sum()):,}／{N:,} 顆，"
+                  f"其中有像素長度的 {int(sel.sum()):,} 顆上限往下降 {sk:g} px（中位 {float(d):.1f} m）｜第 {self._nocon_n} 次"
+                  + (f"｜長度對不上跳過 {self._nocon_skip} 次" if getattr(self, "_nocon_skip", 0) else ""), flush=True)
+
+    @torch.no_grad()
     def sfm_free_cover(self, X, name):
         """★ 11-15（丙）metric 的深度支撐閘門呼叫：這台訓練相機（影像名）的 SfM 觀測格投票 => (free [N] bool, cover [N] bool)；拿不到回 None。"""
         vis = getattr(self, "_vis", None)
@@ -2329,6 +2378,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     def _sfm_noup_clamp(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
         """每步結束（optimizer step 與 MCMC 雜訊之後）：沒證據的顆粒 z 夾在上限以下，上限只降不升。"""
+        if float(getattr(self.config, "sfm_nocon_sink_px", 0.0) or 0.0) > 0:
+            self._nocon_sink(gaussian_model, global_step)
         _k = int(getattr(self.config, "sfm_vis_noup_vote_every", 0) or 0)
         _ke = int(getattr(self.config, "sfm_noev_every", 0) or 0)
         if getattr(self, "_vis", None) is not None and (
