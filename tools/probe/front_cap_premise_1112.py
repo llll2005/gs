@@ -42,6 +42,7 @@ ap.add_argument("--max_cams", type=int, default=0)
 ap.add_argument("--depth_dir", default="estimated_depths_tri")
 ap.add_argument("--rel_dir", default="estimated_depths_tri_rel")
 ap.add_argument("--scale_name", default="estimated_depth_scales_tri")
+ap.add_argument("--rel_slope_max", type=int, default=1, help="★ 11-15 深夜：可靠度的斜率級上限（1＝訓練預設；4＝SfM 凸包外的外插也算，對應臂元件 rs4）")
 a = ap.parse_args()
 B = a.block; D = "data/matrix_city/aerial/train/block_all"; MU = 100.0; dev = torch.device("cuda")
 FR = [float(x) for x in a.fronts.split(",")]
@@ -101,7 +102,7 @@ del ck
 parser = dmh["parser"]
 if getattr(parser, "points_from", None) == "ply":
     parser.points_from = "random"
-parser.depth_dir = a.depth_dir; parser.depth_scale_name = a.scale_name; parser.depth_rel_dir = a.rel_dir
+parser.depth_dir = a.depth_dir; parser.depth_scale_name = a.scale_name; parser.depth_rel_dir = a.rel_dir; parser.depth_rel_slope_max = a.rel_slope_max
 ts = parser.instantiate(path=dmh["path"], output_path="/tmp", global_rank=0).get_outputs().train_set
 cams = ts.cameras; names = list(ts.image_names)
 sel = list(range(0, len(names), max(1, a.stride)))[: a.max_cams or None]
