@@ -145,7 +145,7 @@ def status_of(machine, run, label):
     R3 = "np16tricap0p5cmflattrimasklowresgeo8log0"            # 新底 3 的配方字串（只有建在它上面的才算現在的候選）
     on3 = run.startswith("g44tn_s20g70" + R3) or run.startswith("g44tn_s17g70" + R3) or run.startswith("g44tn_s15g70" + R3) \
         or run.startswith("g44tn_s15g80" + R3) or run.startswith("g44tn_s20g0" + R3)
-    if "capfc" in run and "tricap2g" not in run:
+    if "capfc" in run and "tricap2g" not in run and not run.startswith("g44tn_s17g70"):   # 新底 5（17k＋dense＋capfc）系列在下面分
         return "建議採用", "只補前面：換塊打平、地下 −21～−43%、F1 −.002～−.018 => 11-15 晚進底（新底 5）"
     if "tricap2g" in run:
         return "不採用", "上限只在增生期：沒拿回畫質"
@@ -170,6 +170,8 @@ def status_of(machine, run, label):
             return "不採用", "v5 系列（v4f／v5／v5e8／v5s4／dsf）：b1 那團都還在、塊內高處 −14～+10%、時間 +11～25% => 11-15 晚關線"
         if run.startswith("g44tn_s17g70") and "r2" in run:
             return "不採用", "17k＋兩輪名額 85%：時間 −18～19%，但換塊 −0.021／−0.028、本塊區域 −0.06～−0.08、F1 −.030／−.027（比 17k 單獨多掉一截）"
+        if run.startswith("g44tn_s17g70" + R3 + "densecapfcrs"):
+            return "待驗證", "凸包外也用校正深度（rs4／rs4+v4f）：b1 那團的根因修法（11-15 深夜）"
         if run.startswith("g44tn_s17g70" + R3 + "densecapfcncs"):
             return "不採用", "無約束往下沉：b1／b4 換塊 −0.07～−0.10、塔頂對齊掉 => 11-15 深夜關線"
         if run == "g44tn_s17g70" + R3 + "densecapfc_best1maskdistrfed10b4":
