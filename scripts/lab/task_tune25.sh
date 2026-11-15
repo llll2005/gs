@@ -46,6 +46,8 @@
 #     v5／v5e<k> ★ 11-15 v5（使用者「v4 改進版、解決時間」）：每步（v5e<k>＝每 k 步）只用當前訓練相機投浮塊票、逐顆累積，事件時用累積票判浮塊、
 #              判完累積 x 0.5；新增／搬家的繼承母點的票（sfm_vis_stream；TIDI-GS 式逐步累積證據）。使用者 11-15 viewer：b1 海岸外浮塊只有開 v4 的跑次沒有
 #     v5s<k>   ★ 11-15（乙）v5 軟化：母點機率 x max((1-phi)^k, 0.01)，phi＝累積浮塊票／有證據的相機數（取代判到就 x 0.01）
+#     rs<k>    ★ 11-15 深夜 校正深度可靠度的斜率級上限放寬到 k（預設 1；4＝SfM 凸包外的外插也用）：b1 海岸外那團在斜視角裡落在凸包外的遠方海面，
+#              那裡的校正深度其實準（與海面差 −0.3%）但被判無效 => 閘門投不到票；加校正深度前單目在那裡有值、那團只有約 60 顆
 #     ncs<k>   ★ 11-15 深夜 完全沒有幾何約束的顆粒往下沉：閘門視窗內看得到、但從沒碰到可靠先驗也從沒碰到 SfM => 高度上限每個視窗降 k 個像素長度
 #              （b1 海岸外那團 100% 沒有 SfM 證據、可靠深度全無效；有 SfM 或可靠深度的地方一律不動）
 #     dsf      ★ 11-15（丙）深度支撐閘門的 SfM 備援：先驗深度不可靠／沒有的顆粒改用 SfM 觀測格投空區票（一個閘門、兩種參考；使用者「融進去、只保留一個」）
@@ -88,6 +90,7 @@ parse() {
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
         v4f|v5|dsf) XT+=("$t") ;;
+        rs[0-9]) XT+=("$t") ;;
         ncs[0-9]*) [[ $t =~ ^ncs[0-9]+$ ]] || { echo "⛔ 寫法：ncs<k>（完全沒有幾何約束的顆粒每個閘門視窗往下沉 k 像素長度）"; return 2; }; XT+=("$t") ;;
         v5s[0-9]*) [[ $t =~ ^v5s[0-9]+$ ]] || { echo "⛔ 寫法：v5s<k>（軟化：x max((1-phi)^k, 0.01)）"; return 2; }; XT+=("$t") ;;
         v5e[0-9]*) [[ $t =~ ^v5e[0-9]+$ ]] || { echo "⛔ 寫法：v5e<k>（每 k 步投一次）"; return 2; }; XT+=("$t") ;;
@@ -107,7 +110,7 @@ parse() {
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
       r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;; r2wl) LBL+="只關第二輪增生留後段弱熵" ;;
       nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
-      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; fp16) LBL+="完整路徑每16步" ;; cskip) LBL+="C區不跑" ;; pxdel) LBL+="點精靈刪除" ;; pxabs) LBL+="點精靈吸收" ;; pxdelf) LBL+="點精靈全解析度才刪" ;; pxabsf) LBL+="點精靈全解析度才吸收" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sinkh*) LBL+="只沉離下方${t#sinkh}px以上" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; v4f) LBL+="v4只投浮塊票" ;; v5) LBL+="v5每步累積浮塊票" ;; v5e*) LBL+="v5每${t#v5e}步累積浮塊票" ;; v5s*) LBL+="v5軟化k${t#v5s}" ;; ncs*) LBL+="無約束往下沉${t#ncs}px" ;; dsf) LBL+="閘門SfM備援" ;; esac
+      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; fp16) LBL+="完整路徑每16步" ;; cskip) LBL+="C區不跑" ;; pxdel) LBL+="點精靈刪除" ;; pxabs) LBL+="點精靈吸收" ;; pxdelf) LBL+="點精靈全解析度才刪" ;; pxabsf) LBL+="點精靈全解析度才吸收" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sinkh*) LBL+="只沉離下方${t#sinkh}px以上" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; v4f) LBL+="v4只投浮塊票" ;; v5) LBL+="v5每步累積浮塊票" ;; v5e*) LBL+="v5每${t#v5e}步累積浮塊票" ;; v5s*) LBL+="v5軟化k${t#v5s}" ;; ncs*) LBL+="無約束往下沉${t#ncs}px" ;; rs[0-9]) LBL+="校正深度斜率級放寬到${t#rs}" ;; dsf) LBL+="閘門SfM備援" ;; esac
   done
 }
 
@@ -246,6 +249,9 @@ for t in "${XT[@]:-}"; do
                  --model.density.init_args.sfm_vis_behind_frac 1.01 --model.density.init_args.sfm_vis_noup false)
                  case "$t" in v5) XA+=(--model.density.init_args.sfm_vis_stream 1) ;; v5e*) XA+=(--model.density.init_args.sfm_vis_stream "${t#v5e}") ;;
                    v5s*) XA+=(--model.density.init_args.sfm_vis_stream 1 --model.density.init_args.sfm_vis_stream_soft "${t#v5s}") ;; esac ;;
+    # ★ 11-15 深夜 校正深度的可靠斜率級上限（預設 1；4＝連 SfM 凸包外的外插也算可靠）。b1 海岸外那團的像素全是斜率級 4（凸包外）
+    rs[0-9]) [[ " ${XT[*]} " =~ \ tri ]] || [[ " ${XT[*]} " =~ \ tricap ]] || { echo "⛔ rs<k> 要和校正深度（tri／tricap）一起用"; exit 2; }
+            XA+=(--data.parser.depth_rel_slope_max ${t#rs}) ;;
     # ★ 11-15 深夜 完全沒有幾何約束（閘門視窗內看得到、從沒碰到可靠先驗也沒碰到 SfM）的顆粒，每個視窗高度上限往下降 k 像素長度
     ncs*)   XA+=(--model.metric.init_args.depth_support_nocon true --model.density.init_args.sfm_vis_gate true
                  --model.density.init_args.sfm_vis_cell 8 --model.density.init_args.sfm_vis_px 4 --model.density.init_args.sfm_nocon_sink_px "${t#ncs}") ;;
