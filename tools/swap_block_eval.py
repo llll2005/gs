@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--grid", type=int, nargs=2, default=[4, 4], help="候選的分區格子（本機測試可用 5 5）")
     ap.add_argument("--views", choices=["heldout", "train"], default="heldout", help="train＝第一個候選自己的訓練相機（本機功能測試用）")
     ap.add_argument("--max_views", type=int, default=100000)
+    ap.add_argument("--load_cpu", action="store_true", help="★ 11-15 合併模型與候選先在 CPU 載入（本機 6 GB 卡＋viewer：整個合併模型一次搬上 GPU 會 OOM）；每個變體組好才上 GPU，結果相同")
     a = ap.parse_args()
     from internal.utils.gaussian_model_loader import GaussianModelLoader
     from internal.utils.ssim import ssim as ssim_fn
@@ -64,11 +65,17 @@ def main():
 
     mck = sorted(glob.glob(os.path.join(a.merged_run, "checkpoints", "*.ckpt")))
     mck = [c for c in mck if os.path.basename(c) == "merged.ckpt"] or mck
-    model, renderer, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(mck[-1], device=dev, eval_mode=True)
+    ldev = torch.device("cpu") if a.load_cpu else dev
+    model, renderer, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(mck[-1], device=ldev, eval_mode=True)
+    if a.load_cpu and hasattr(renderer, "to"):
+        renderer = renderer.to(dev)
     for f in ("absgrad_gate", "bwd_sat_skip", "bwd_reduce", "record_reduce", "tile_cull", "lean_train"):
         setattr(renderer, f, False)      # 訓練期加速旗標（渲染逐位元相同）；本機光柵器可能沒重編這些欄位（同 tower_probe／discriminant_race）
     base = {k: v.detach().cpu() for k, v in model.properties.items()}   # 17.6M 顆約 4 GB：放 CPU，每個變體組好才搬上 GPU（10-10 三個任務同卡時 OOM）
-    model.properties = {k: v[:1].to(dev) for k, v in base.items()}; torch.cuda.empty_cache()
+    model.properties = {k: v[:1].to(dev) for k, v in base.items()}
+    if a.load_cpu and hasattr(model, "to"):
+        model.to(dev)
+    torch.cuda.empty_cache()
     print(f"[基準] {mck[-1]}  N={base['means'].shape[0]:,}")
 
     cands = list(a.cand)
@@ -89,7 +96,7 @@ def main():
         if mmask is None:
             mmask = block_mask(base["means"], pc)[B]
             print(f"[基準] 第 {B} 塊盒內 {int(mmask.sum()):,} 顆（換掉這批）")
-        cm, _, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(c, device=dev, eval_mode=True)
+        cm, _, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(c, device=ldev, eval_mode=True)
         cp = {k: v for k, v in cm.properties.items()}
         # SH 階數較低的候選（best0sh2／1／0）：shs_rest 補 0 到基準的長度 —— 高階係數為 0 與低階渲染完全等價（10-11）
         # ⚠ 2026-10-17：eval_mode=True 載入時 SH 合併成單一 `shs`（DC 在第 0 個）=> 原本只看 `shs_rest` 的補 0 從沒生效、SH 換塊三次失敗

@@ -23,6 +23,6 @@ for kv in "${L[@]}"; do
 done
 echo "候選 ${#C[@]} 個：${N[*]}"
 LOG=logs/swap_local_b${B}${SWAP_SET:+_$SWAP_SET}_$(date +%m%d_%H%M).log
-conda run -n gspl --no-capture-output python -u tools/swap_block_eval.py --merged_run outputs/local/full44_best_nb14 --block "$B" \
+conda run -n gspl --no-capture-output python -u tools/swap_block_eval.py --merged_run outputs/local/full44_best_nb14 --block "$B" --load_cpu \
   --cand "${C[@]}" --names "${N[@]}" 2>&1 | grep -v "pkg_resources\|declare_namespace" | tee "$LOG"
 exit "${PIPESTATUS[0]}"
