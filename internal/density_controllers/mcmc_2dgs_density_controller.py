@@ -1689,45 +1689,84 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         from internal.utils.colmap import read_points3D_binary, read_images_binary, read_cameras_binary, qvec2rotmat
         c = self.config
         g = int(getattr(c, "sfm_vis_cell", 8) or 8)
-        pts = read_points3D_binary(os.path.join(sparse_dir, "points3D.bin"))
-        good = {pid: p.xyz for pid, p in pts.items() if len(p.image_ids) >= 3 and p.error < 1.5}
-        ims = read_images_binary(os.path.join(sparse_dir, "images.bin"))
-        cams = read_cameras_binary(os.path.join(sparse_dir, "cameras.bin"))
         names = None
         try:
             names = set(pl_module.trainer.datamodule.dataparser_outputs.train_set.image_names)
         except Exception:
             pass
-        sel = [im for im in ims.values() if names is None or im.name in names]
-        if not sel:
-            print("⚠⚠ [sfm-vis] 本塊訓練相機在 images.bin 裡一台都對不到 => sfm_vis 不會生效", flush=True)
-            return
-        Hmax = max(cams[im.camera_id].height for im in sel); Wmax = max(cams[im.camera_id].width for im in sel)
-        Hc, Wc = (Hmax + g - 1) // g, (Wmax + g - 1) // g
-        K = len(sel)
-        dmin = np.full((K, Hc, Wc), np.inf, dtype=np.float32); dmax = np.full((K, Hc, Wc), -np.inf, dtype=np.float32)
-        R = np.zeros((K, 3, 3), np.float32); T = np.zeros((K, 3), np.float32); intr = np.zeros((K, 6), np.float32)
-        n_obs = 0
-        for k, im in enumerate(sel):
-            cam = cams[im.camera_id]; pr = cam.params
-            fx, fy, cx, cy = (pr[0], pr[0], pr[1], pr[2]) if cam.model in ("SIMPLE_PINHOLE", "SIMPLE_RADIAL") else (pr[0], pr[1], pr[2], pr[3])
-            Rk = qvec2rotmat(im.qvec); R[k] = Rk; T[k] = im.tvec; intr[k] = (fx, fy, cx, cy, cam.width, cam.height)
-            ids = [int(i) for i in im.point3D_ids if int(i) in good]
-            if not ids:
-                continue
-            P = np.array([good[i] for i in ids]) @ Rk.T + im.tvec
-            z = P[:, 2]; m = z > 1e-6
-            u = fx * P[m, 0] / z[m] + cx; v = fy * P[m, 1] / z[m] + cy; zz = z[m]
-            inn = (u >= 0) & (v >= 0) & (u < cam.width) & (v < cam.height)
-            cu = (u[inn] // g).astype(int); cv = (v[inn] // g).astype(int); zz = zz[inn]
-            np.minimum.at(dmin[k], (cv, cu), zz); np.maximum.at(dmax[k], (cv, cu), zz)
-            n_obs += len(zz)
-        empty = ~np.isfinite(dmin)
-        dmin[empty] = np.nan; dmax[empty] = np.nan
+        # ★ 11-15 快取（使用者「快取作」）：建格要讀 images.bin／points3D.bin 再把幾百萬個觀測逐台投影（lab 約 40 s／塊）。
+        #   鍵＝三個 SfM 檔的大小與修改時間＋格子邊長＋可靠門檻＋本塊相機清單；內容與現場建的逐位元相同（存的就是轉成 float16 之後的格）。
+        #   落後上限的局部地面格要用全部可靠 SfM 點 => 那種設定不走快取。CITYGS_SFM_VIS_CACHE=0 關掉。
+        _need_gnd = float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 and (float(getattr(c, "sfm_vis_behind_max_above", -1.0)) >= 0
+                                                                                 or float(getattr(c, "sfm_vis_behind_max_above_nn", -1.0)) >= 0)
+        cache_path, loaded = None, False
+        if os.environ.get("CITYGS_SFM_VIS_CACHE", "1") != "0" and names is not None and not _need_gnd:
+            import hashlib
+            h = hashlib.sha1()
+            for fn in ("points3D.bin", "images.bin", "cameras.bin"):
+                st = os.stat(os.path.join(sparse_dir, fn))
+                h.update(f"{fn}:{st.st_size}:{st.st_mtime_ns};".encode())
+            h.update(f"cell={g};rel=track>=3,err<1.5;v1;".encode())
+            h.update("\n".join(sorted(names)).encode())
+            cache_path = os.path.join(sparse_dir, "sfm_vis_cache", f"vis_{h.hexdigest()[:20]}.npz")
+            if os.path.isfile(cache_path):
+                try:
+                    _t0c = time.time()
+                    with np.load(cache_path, allow_pickle=False) as zf:
+                        dmin16, dmax16, R, T, intr = zf["dmin"], zf["dmax"], zf["R"], zf["T"], zf["intr"]
+                        sel_names = [str(x) for x in zf["names"]]; n_obs = int(zf["n_obs"])
+                    loaded = True
+                    print(f"[sfm-vis] 快取：讀 {cache_path}（{time.time() - _t0c:.1f} s）", flush=True)
+                except Exception as e:
+                    print(f"⚠⚠ [sfm-vis] 快取讀不到（{e}）=> 現場重建", flush=True)
+        if not loaded:
+            pts = read_points3D_binary(os.path.join(sparse_dir, "points3D.bin"))
+            good = {pid: p.xyz for pid, p in pts.items() if len(p.image_ids) >= 3 and p.error < 1.5}
+            ims = read_images_binary(os.path.join(sparse_dir, "images.bin"))
+            cams = read_cameras_binary(os.path.join(sparse_dir, "cameras.bin"))
+            sel = [im for im in ims.values() if names is None or im.name in names]
+            if not sel:
+                print("⚠⚠ [sfm-vis] 本塊訓練相機在 images.bin 裡一台都對不到 => sfm_vis 不會生效", flush=True)
+                return
+            Hmax = max(cams[im.camera_id].height for im in sel); Wmax = max(cams[im.camera_id].width for im in sel)
+            Hc, Wc = (Hmax + g - 1) // g, (Wmax + g - 1) // g
+            K = len(sel)
+            dmin = np.full((K, Hc, Wc), np.inf, dtype=np.float32); dmax = np.full((K, Hc, Wc), -np.inf, dtype=np.float32)
+            R = np.zeros((K, 3, 3), np.float32); T = np.zeros((K, 3), np.float32); intr = np.zeros((K, 6), np.float32)
+            n_obs = 0
+            for k, im in enumerate(sel):
+                cam = cams[im.camera_id]; pr = cam.params
+                fx, fy, cx, cy = (pr[0], pr[0], pr[1], pr[2]) if cam.model in ("SIMPLE_PINHOLE", "SIMPLE_RADIAL") else (pr[0], pr[1], pr[2], pr[3])
+                Rk = qvec2rotmat(im.qvec); R[k] = Rk; T[k] = im.tvec; intr[k] = (fx, fy, cx, cy, cam.width, cam.height)
+                ids = [int(i) for i in im.point3D_ids if int(i) in good]
+                if not ids:
+                    continue
+                P = np.array([good[i] for i in ids]) @ Rk.T + im.tvec
+                z = P[:, 2]; m = z > 1e-6
+                u = fx * P[m, 0] / z[m] + cx; v = fy * P[m, 1] / z[m] + cy; zz = z[m]
+                inn = (u >= 0) & (v >= 0) & (u < cam.width) & (v < cam.height)
+                cu = (u[inn] // g).astype(int); cv = (v[inn] // g).astype(int); zz = zz[inn]
+                np.minimum.at(dmin[k], (cv, cu), zz); np.maximum.at(dmax[k], (cv, cu), zz)
+                n_obs += len(zz)
+            empty0 = ~np.isfinite(dmin)
+            dmin[empty0] = np.nan; dmax[empty0] = np.nan
+            dmin16, dmax16 = dmin.astype(np.float16), dmax.astype(np.float16)
+            sel_names = [im.name for im in sel]
+            if cache_path is not None:
+                try:
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    tmp = cache_path + f".tmp{os.getpid()}.npz"
+                    np.savez(tmp, dmin=dmin16, dmax=dmax16, R=R, T=T, intr=intr, names=np.array(sel_names), n_obs=np.int64(n_obs))
+                    os.replace(tmp, cache_path)                                  # 兩個跑次同時建也安全（後寫的覆蓋、內容相同）
+                    print(f"[sfm-vis] 快取：存 {cache_path}（{os.path.getsize(cache_path) / 2**20:.0f} MiB）", flush=True)
+                except Exception as e:
+                    print(f"⚠⚠ [sfm-vis] 快取存不了（{e}）=> 只影響下次的啟動時間", flush=True)
+        K, Hc, Wc = dmin16.shape
+        empty = np.isnan(dmin16)
         t = lambda a: torch.from_numpy(a).to(dev)
-        self._vis = {"dmin": t(dmin.astype(np.float16)), "dmax": t(dmax.astype(np.float16)), "R": t(R), "T": t(T),
+        self._vis = {"dmin": t(dmin16), "dmax": t(dmax16), "R": t(R), "T": t(T),
                      "fx": t(intr[:, 0]), "fy": t(intr[:, 1]), "cx": t(intr[:, 2]), "cy": t(intr[:, 3]), "W": t(intr[:, 4]), "H": t(intr[:, 5]),
-                     "cell": g, "step": -1, "name2k": {im.name: k for k, im in enumerate(sel)}}
+                     "cell": g, "step": -1, "name2k": {nm: k for k, nm in enumerate(sel_names)}}
         _ab_nn = float(getattr(c, "sfm_vis_behind_max_above_nn", -1.0))
         if float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 and (float(getattr(c, "sfm_vis_behind_max_above", -1.0)) >= 0 or _ab_nn >= 0):
             P = np.array(list(good.values()), dtype=np.float64).reshape(-1, 3)

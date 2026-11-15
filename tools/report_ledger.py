@@ -145,8 +145,8 @@ def status_of(machine, run, label):
     R3 = "np16tricap0p5cmflattrimasklowresgeo8log0"            # 新底 3 的配方字串（只有建在它上面的才算現在的候選）
     on3 = run.startswith("g44tn_s20g70" + R3) or run.startswith("g44tn_s17g70" + R3) or run.startswith("g44tn_s15g70" + R3) \
         or run.startswith("g44tn_s15g80" + R3) or run.startswith("g44tn_s20g0" + R3)
-    if "capfc" in run:
-        return "取捨", "只補前面：換塊打平、F1 掉，但地下覆蓋明顯降（主線的目標）——待使用者權衡"
+    if "capfc" in run and "tricap2g" not in run:
+        return "建議採用", "只補前面：換塊打平、地下 −21～−43%、F1 −.002～−.018 => 11-15 晚進底（新底 5）"
     if "tricap2g" in run:
         return "不採用", "上限只在增生期：沒拿回畫質"
     if run.startswith("seadose"):
@@ -162,14 +162,18 @@ def status_of(machine, run, label):
                               ("pxdel", "不採用", "點精靈刪除（低解析度期也刪，第 1,000 步判掉 82%）"), ("pxabs", "不採用", "點精靈吸收（低解析度期也做）"),
                               ("mg", "不採用", "合併系列（本機）：不省時間（+0～5%）、最終顆數沒降（cap 補回；mgpx／mgrel +15～21%）、畫質打平"),
                               ("noip", "不採用", "拿掉面內增生：海面高處 −61／−96%，但使用者 viewer 看 b1 那團還在（不是來源；擋住的是 v4 投票）"),
-                              ("dense", "建議採用", "三角式稠密起點（照常增生）：lab 換塊打平、F1／地下／海面變好、時間不變（待使用者決定）"),
+                              ("dense", "建議採用", "三角式稠密起點（照常增生）：四塊換塊打平、F1 都升 => 11-15 晚進底（新底 5）"),
                               ("r2", "不採用", "兩輪（名額 85%）：被 17k 壓過（省得少、換塊較差、幾何代價相同）、顆數 +15%")]:
             if key in tail:
                 return st, note
+        if run.startswith("g44tn_s17g70" + R3) and any(k in run[len("g44tn_s17g70" + R3):] for k in ("v4f", "v5", "dsf")):
+            return "待驗證", "v5 系列（v4 浮塊票的改進：v4f／v5／v5e8／v5s4／dsf；新底 4 上）"
         if run.startswith("g44tn_s17g70") and "r2" in run:
             return "不採用", "17k＋兩輪名額 85%：時間 −18～19%，但換塊 −0.021／−0.028、本塊區域 −0.06～−0.08、F1 −.030／−.027（比 17k 單獨多掉一截）"
+        if run == "g44tn_s17g70" + R3 + "densecapfc_best1maskdistrfed10b4":
+            return "現行", "新底 5（17k＋稠密起點＋只補前面；11-15 晚 使用者採用）"
         if run == "g44tn_s17g70" + R3 + "_best1maskdistrfed10b4":
-            return "現行", "新底 4（17k；11-15 使用者採用）"
+            return "參考", "新底 4（17k；11-15 採用，晚上被新底 5 取代）"
         if run.startswith("g44tn_s17g70"):
             return "取捨", "17k：時間 −12%、換塊打平，但地下 +0.5～0.6 層、F1 −.010～−.018"
         if run.startswith("g44tn_s15g80"):
