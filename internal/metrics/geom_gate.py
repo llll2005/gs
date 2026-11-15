@@ -126,6 +126,7 @@ class DepthSupport:
         if self.bm is not None and not (0.0 <= self.bm < self.bmax):
             raise ValueError(f"behind 窄帶要 0 <= margin < max（收到 {self.bm!r}、{self.bmax!r}）")
         self.sum = self.cnt = self.mn = self.vote = self.support = None
+        self.cntp = self.altc = None                     # ★ 11-15（丙）：只算先驗的觀測數、SfM 備援的觀測數
         self.bvote = self.behind = None
         self.t0 = None
         self.last = {}
@@ -137,6 +138,7 @@ class DepthSupport:
             self.vote = torch.zeros(n, device=device)
             self.mn = torch.full((n,), float("inf"), device=device)
             self.support = torch.ones(n, dtype=torch.bool, device=device)
+            self.cntp = torch.zeros(n, device=device); self.altc = torch.zeros(n, device=device)
             if self.bm is not None:
                 self.bvote = torch.zeros(n, device=device)
                 self.behind = torch.zeros(n, dtype=torch.bool, device=device)
@@ -148,12 +150,18 @@ class DepthSupport:
             self.vote = torch.cat([self.vote, torch.zeros(m, device=device)])
             self.mn = torch.cat([self.mn, torch.full((m,), float("inf"), device=device)])
             self.support = torch.cat([self.support, torch.ones(m, dtype=torch.bool, device=device)])
+            self.cntp = torch.cat([self.cntp, torch.zeros(m, device=device)]); self.altc = torch.cat([self.altc, torch.zeros(m, device=device)])
             if self.bm is not None:
                 self.bvote = torch.cat([self.bvote, torch.zeros(m, device=device)])
                 self.behind = torch.cat([self.behind, torch.zeros(m, dtype=torch.bool, device=device)])
 
     @torch.no_grad()
-    def update(self, step, means, w2c, fx, fy, cx, cy, width, height, inv_depth):
+    def update(self, step, means, w2c, fx, fy, cx, cy, width, height, inv_depth, sfm=None):
+        """sfm：★ 11-15（丙）(free [N] bool, cover [N] bool)＝這台相機的 SfM 觀測格投票（同 sfm_vis_votes：在格內最近的觀測 SfM 點前面 > 容差＝空區）。
+        給了就在「先驗深度不可靠／沒有」的顆粒改用它投票：cover 算一次觀測、free 算一票「在前方」（只支援 rule＝vote）。
+        「從未貼面」（never）只看先驗的觀測（cntp），SfM 備援不會讓沒先驗的地方被判 never。sfm=None 時與之前逐位元相同。"""
+        if sfm is not None and self.rule != "vote":
+            raise ValueError("depth_support 的 SfM 備援只支援 rule＝vote（mean 的殘差平均沒有 SfM 對應的量）")
         n = means.shape[0]
         self._resize(n, means.device)
         if self.t0 is None:
@@ -173,7 +181,14 @@ class DepthSupport:
         r = torch.where(ok, (z - zm) / zm, torch.zeros_like(z))
         self.sum += r
         self.cnt += ok.to(self.cnt.dtype)
+        self.cntp += ok.to(self.cntp.dtype)
         self.vote += (ok & (r < -self.df)).to(self.vote.dtype)
+        if sfm is not None:
+            sfree, scov = sfm
+            alt = (~ok) & scov & (z > self.near)
+            self.cnt += alt.to(self.cnt.dtype)
+            self.altc += alt.to(self.altc.dtype)
+            self.vote += (alt & sfree).to(self.vote.dtype)
         self.mn = torch.where(ok, torch.minimum(self.mn, r.abs()), self.mn)
         if self.bm is not None:
             self.bvote += (ok & (r > self.bm) & (r < self.bmax)).to(self.bvote.dtype)
@@ -183,15 +198,17 @@ class DepthSupport:
                 front = seen & (self.vote > 0.5 * self.cnt)
             else:
                 front = seen & (self.sum / self.cnt.clamp_min(1) < -self.df)
-            never = seen & (self.mn > self.db)
+            never = (self.cntp >= self.cmin) & (self.mn > self.db)          # ★ 11-15：只看先驗的觀測（沒 SfM 備援時 cntp＝cnt，與之前相同）
             self.support = ~(front | never)
             self.last = {"seen": float(seen.float().mean()), "front": float(front.float().mean()),
-                         "never": float(never.float().mean())}
+                         "never": float(never.float().mean()), "alt": float((self.altc > 0).float().mean()),
+                         "front_alt": float((front & (self.altc > 0.5 * self.cnt)).float().mean())}
             if self.bm is not None:
                 self.behind = seen & (self.bvote > 0.5 * self.cnt)
                 self.last["behind"] = float(self.behind.float().mean())
                 self.bvote.zero_()
             self.sum.zero_(); self.cnt.zero_(); self.vote.zero_(); self.mn.fill_(float("inf")); self.t0 = step
+            self.cntp.zero_(); self.altc.zero_()
             return True
         return False
 

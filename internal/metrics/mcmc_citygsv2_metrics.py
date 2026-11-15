@@ -168,6 +168,11 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     depth_support_sfm_radius: float = 0.0
     depth_support_interval: int = 1
     """★ 2026-11-02（使用者「延後的都排」：閘門讓每塊 +8%）每 k 步才把顆粒投到當前相機累積一次；視窗長度（步）不變 => 每顆的觀測數約為 1/k。"""
+    depth_support_sfm_free: bool = False
+    """★ 2026-11-15（丙；使用者「把 v5 融進去、只保留一個」）True 時深度支撐閘門在「先驗深度不可靠／沒有」的顆粒改用 SfM 觀測格投票
+    （同 v4／v5 的空區票：在這台相機格內最近的觀測 SfM 點前面 > 容差＝這次「在前方」；格內有 SfM＝一次觀測），其餘照舊比先驗深度。
+    => 一個閘門、兩種參考；不另開 v4／v5 的抽樣壓制。只支援 depth_support_rule vote；SfM 觀測格由 density 的 sfm_vis_gate 建（要一起開）。
+    依據：可靠度圖把不可靠像素設成無效，閘門在海面幾乎投不到票（11-13 量：海面只有約四成有可靠先驗）；使用者 viewer：b1 海岸外浮塊只有開 v4 的跑次沒有。"""
     depth_support_rule: str = "mean"
     """mean＝視窗內殘差平均 < −delta_front 判「一直在前方」（原行為）；vote＝超過一半的觀測 < −delta_front（＝中位數）。
     11-02 全域共識量測（真深度配對的上限）：遠離 SfM（豁免蓋不到）誤判 平均 37.5% vs 中位 15.3%、海面 20.8% vs 5.1%。"""
@@ -274,6 +279,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
     # ── 逐影像曝光補償（config.exposure_comp） ──
     def setup(self, stage: str, pl_module):
         super().setup(stage, pl_module)
+        import weakref
+        _dc0 = getattr(pl_module, "density_controller", None)
+        object.__setattr__(self, "_dc_ref", weakref.ref(_dc0) if _dc0 is not None else None)   # ★ 11-15 depth_support_sfm_free 要用（不註冊成子模組）
         if bool(getattr(self.config, "depth_support_behind", False)):
             _dc = getattr(getattr(pl_module, "density_controller", None), "config", None)
             if not bool(getattr(self.config, "depth_support", False)) or not bool(getattr(_dc, "geom_gate_sampling", False)):
@@ -498,7 +506,15 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             else:
                 cam = batch[0]
                 _k = int(getattr(c, "depth_support_interval", 1) or 1)
-                done = (ds.update(step, xyz, cam.world_to_camera, cam.fx, cam.fy, cam.cx, cam.cy, int(cam.width), int(cam.height), inv.to(xyz.device))
+                _sf = None
+                if bool(getattr(c, "depth_support_sfm_free", False)) and (_k <= 1 or step % _k == 0):
+                    _dcr = getattr(self, "_dc_ref", None)
+                    _dc = _dcr() if _dcr is not None else None
+                    _sf = _dc.sfm_free_cover(xyz, batch[1][0]) if _dc is not None and hasattr(_dc, "sfm_free_cover") else None
+                    if _sf is None and not getattr(self, "_dsf_warned", False) and step > 50:
+                        self._dsf_warned = True
+                        print(f"⚠⚠ [depth-support] step {step}：depth_support_sfm_free 開著但拿不到 SfM 觀測格（density 的 sfm_vis_gate 沒開？相機對不到？）=> 這次只比先驗", flush=True)
+                done = (ds.update(step, xyz, cam.world_to_camera, cam.fx, cam.fy, cam.cx, cam.cy, int(cam.width), int(cam.height), inv.to(xyz.device), sfm=_sf)
                         if _k <= 1 or step % _k == 0 else False)
                 exempt = ""
                 if done and getattr(self, "_sfm_xyz", None) is not None and ds.support is not None and ds.support.shape[0] == n:
@@ -518,7 +534,9 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                                 f"其中不透明（o>0.5）{100 * int(_ob.sum()) / max(_nb, 1):.1f}%")
                     print(f"[depth-support] {'✅ 首次判定' if not getattr(self, '_ds_announced', False) else '　'} step={step}："
                           f"視窗內看過 >=3 次 {100 * ds.last['seen']:.1f}%、一直在前方 {100 * ds.last['front']:.2f}%、從未貼面 {100 * ds.last['never']:.2f}%"
-                          f"{exempt}{_bhs}", flush=True)
+                          f"{exempt}{_bhs}"
+                          + (f"｜SfM 備援：視窗內用到 {100 * ds.last.get('alt', 0.0):.1f}% 顆、主要靠 SfM 判在前方 {100 * ds.last.get('front_alt', 0.0):.2f}%"
+                             if bool(getattr(c, "depth_support_sfm_free", False)) else ""), flush=True)
                     self._ds_announced = True
                 if ds.support is not None and ds.support.shape[0] == n:
                     gate &= ds.support

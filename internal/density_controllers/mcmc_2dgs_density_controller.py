@@ -659,6 +659,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     **只投浮塊票**：地下票不算（11-08 v4 傷牆的就是地下票：少 SfM 的牆被背面相機判地下）。新增／搬家的顆粒繼承母點的累積票。
     使用者 11-15 viewer：b1 海岸外那團浮塊只有開 v4（配 lr x2）的跑次沒有。需要 sfm_vis true；不能和 sfm_vis_noup 一起開。0＝v4。"""
     sfm_vis_stream_decay: float = 0.5
+    sfm_vis_stream_soft: float = 0.0
+    """★ 11-15（乙，Python 部分）> 0 時 v5 不用「判到就 x sfm_vis_eps」的硬門檻，改成母點機率 x max((1 - phi)^k, sfm_vis_eps)，
+    phi＝累積的浮塊票／有證據的相機數（有證據的 < 2 時 phi＝0）。k＝此值。需要 sfm_vis_stream > 0。"""
+    sfm_vis_gate: bool = False
+    """★ 11-15（丙）只建 SfM 觀測格（同 v4），給 metric 的 depth_support_sfm_free 用；不改抽樣（v4／v5 的壓制要另開 sfm_vis）。"""
     """v5：每次事件判完後，累積的 free／cover 乘這個倍率（0.5＝證據的半衰期是一個事件間隔）。1＝不淡出。"""
     """視線一致性判成浮塊／地下的母點的抽樣倍率；1.0＝不改抽樣、只印統計。範圍同 sfm_birth_from_iter／until_iter。"""
     sfm_vis_noup: bool = False
@@ -1584,7 +1589,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     def _sfm_on(self) -> bool:
         c = self.config
         return self._anchors_wanted() or float(getattr(c, "sfm_birth_radius", 0.0) or 0.0) > 0 or bool(getattr(c, "sfm_vis", False)) \
-            or bool(getattr(c, "merge_vis_under", False))
+            or bool(getattr(c, "merge_vis_under", False)) or bool(getattr(c, "sfm_vis_gate", False))
 
     def _anchors_wanted(self) -> bool:
         return bool(getattr(self.config, "sfm_lock", False)) or bool(getattr(self.config, "sfm_track", False))
@@ -1672,7 +1677,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         _rel = self._reliable_sfm(f)
         self._sfm_rel = _rel                                       # ★ 11-14 往下沉的細物保護要用（下方 SfM 表面）
         self._sfm_build(_rel, gaussian_model.gaussians["means"])
-        if bool(getattr(self.config, "sfm_vis", False)) or bool(getattr(self.config, "merge_vis_under", False)):
+        if bool(getattr(self.config, "sfm_vis", False)) or bool(getattr(self.config, "merge_vis_under", False)) \
+                or bool(getattr(self.config, "sfm_vis_gate", False)):
             self._sfm_vis_build(os.path.dirname(f), pl_module, gaussian_model.gaussians["means"].device)
 
     def _sfm_vis_build(self, sparse_dir: str, pl_module, dev) -> None:
@@ -2075,7 +2081,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         eps = float(getattr(c, "sfm_vis_eps", 0.01))
         tot = probs.sum().clamp_min(1e-30)
         m0 = float(probs[bad].sum() / tot)
-        out = probs * torch.where(bad, torch.full_like(probs, eps), torch.ones_like(probs))
+        _fac = getattr(self, "_v5_fac", None) if int(getattr(c, "sfm_vis_stream", 0) or 0) > 0 else None
+        if _fac is not None and _fac.shape[0] == vis["bad"].shape[0]:
+            out = probs * (_fac if indices is None else _fac[indices]).to(probs.dtype)     # （乙）軟化
+        else:
+            out = probs * torch.where(bad, torch.full_like(probs, eps), torch.ones_like(probs))
         m1 = float(out[bad].sum() / out.sum().clamp_min(1e-30))
         first = not getattr(self, "_sfm_vis_announced", False)
         if first or step // 1500 != getattr(self, "_sfm_vis_last", -1):
@@ -2154,6 +2164,12 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             self._v5_free, self._v5_cov = fr, cv
         floater = (fr >= float(getattr(c, "sfm_vis_free_min", 2))) & (fr >= float(getattr(c, "sfm_vis_free_frac", 0.0) or 0.0) * cv)
         under = torch.zeros_like(floater)
+        _sk = float(getattr(c, "sfm_vis_stream_soft", 0.0) or 0.0)
+        if _sk > 0:                                                          # （乙）軟化：x max((1 - phi)^k, eps)
+            phi = torch.where(cv >= 2, fr / cv.clamp_min(1e-6), torch.zeros_like(fr)).clamp(0, 1)
+            self._v5_fac = (1 - phi).pow(_sk).clamp_min(float(getattr(c, "sfm_vis_eps", 0.01)))
+        else:
+            self._v5_fac = None
         d = float(getattr(c, "sfm_vis_stream_decay", 0.5))
         ms = getattr(self, "_v5_ms", 0.0) / max(getattr(self, "_v5_ms_n", 0), 1)
         st = int(getattr(self, "_ip_step", 0))
@@ -2167,6 +2183,21 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if d != 1.0:
             fr.mul_(d); cv.mul_(d)
         return floater, under, cv.round().long(), cv.round().long()
+
+    @torch.no_grad()
+    def sfm_free_cover(self, X, name):
+        """★ 11-15（丙）metric 的深度支撐閘門呼叫：這台訓練相機（影像名）的 SfM 觀測格投票 => (free [N] bool, cover [N] bool)；拿不到回 None。"""
+        vis = getattr(self, "_vis", None)
+        if vis is None or not isinstance(name, str):
+            return None
+        k = vis["name2k"].get(name)
+        if k is None:
+            return None
+        sl = slice(k, k + 1)
+        f, b, cn, iv, cv = sfm_vis_votes(X.detach().float(), vis["R"][sl], vis["T"][sl], vis["fx"][sl], vis["fy"][sl], vis["cx"][sl], vis["cy"][sl],
+                                         vis["W"][sl], vis["H"][sl], vis["dmin"][sl], vis["dmax"][sl], vis["cell"],
+                                         float(getattr(self.config, "sfm_vis_px", 8.0)), return_cover_all=True)
+        return f > 0, cv > 0
 
     def _v5_inherit(self, dst, par) -> None:
         """新增／搬家的顆粒繼承母點的累積票（它們就放在母點旁邊）。"""

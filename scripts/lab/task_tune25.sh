@@ -45,6 +45,8 @@
 #     v4f      ★ 11-15 v4 只投浮塊票（全部相機、每次事件重投；地下票關掉＝不傷少 SfM 的牆；不開不准往上）——v5 的效果與時間對照
 #     v5／v5e<k> ★ 11-15 v5（使用者「v4 改進版、解決時間」）：每步（v5e<k>＝每 k 步）只用當前訓練相機投浮塊票、逐顆累積，事件時用累積票判浮塊、
 #              判完累積 x 0.5；新增／搬家的繼承母點的票（sfm_vis_stream；TIDI-GS 式逐步累積證據）。使用者 11-15 viewer：b1 海岸外浮塊只有開 v4 的跑次沒有
+#     v5s<k>   ★ 11-15（乙）v5 軟化：母點機率 x max((1-phi)^k, 0.01)，phi＝累積浮塊票／有證據的相機數（取代判到就 x 0.01）
+#     dsf      ★ 11-15（丙）深度支撐閘門的 SfM 備援：先驗深度不可靠／沒有的顆粒改用 SfM 觀測格投空區票（一個閘門、兩種參考；使用者「融進去、只保留一個」）
 #     capfc    ★ 11-13 規格 3 §4-3「只補前面」（使用者 11-13「作」；光柵器 depth_cap_grad_mode 3，要重編）：深度上限 B 的梯度只給在上限前面的貢獻、
 #              只經由 α（前面變更不透明 => 後面分到的 T 變小）；落在上限後面的貢獻收不到 B 的梯度。loss 與 forward 不變。要和 tricap<W> 一起用
 #     mgtrim   ★ 11-13 合併事件照同樣的規則選配對，但不合併：留下兩顆中不透明質量大的那顆（參數、Adam 狀態不動）、小的直接刪（cap 照樣扣）
@@ -83,7 +85,8 @@ parse() {
         nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf) XT+=("$t") ;;
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
-        v4f|v5) XT+=("$t") ;;
+        v4f|v5|dsf) XT+=("$t") ;;
+        v5s[0-9]*) [[ $t =~ ^v5s[0-9]+$ ]] || { echo "⛔ 寫法：v5s<k>（軟化：x max((1-phi)^k, 0.01)）"; return 2; }; XT+=("$t") ;;
         v5e[0-9]*) [[ $t =~ ^v5e[0-9]+$ ]] || { echo "⛔ 寫法：v5e<k>（每 k 步投一次）"; return 2; }; XT+=("$t") ;;
         r2c[0-9]*|r2s[0-9]*) [[ $t =~ ^r2[cs][0-9]+$ ]] || { echo "⛔ 寫法：r2c<NN>／r2s<NN>（例 r2c50、r2s50）"; return 2; }; XT+=("$t") ;;
         tricap[0-9]*) [[ $t =~ ^tricap[0-9]+(p[0-9]+)?(m[0-9]+(p[0-9]+)?)?g?$ ]] || { echo "⛔ tricap 寫法：tricap<W>[m<N>][g]（例 tricap2、tricap0p5m3、tricap0p5m1p5、tricap2g）"; return 2; }; XT+=("$t") ;;
@@ -101,7 +104,7 @@ parse() {
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
       r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;; r2wl) LBL+="只關第二輪增生留後段弱熵" ;;
       nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
-      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; fp16) LBL+="完整路徑每16步" ;; cskip) LBL+="C區不跑" ;; pxdel) LBL+="點精靈刪除" ;; pxabs) LBL+="點精靈吸收" ;; pxdelf) LBL+="點精靈全解析度才刪" ;; pxabsf) LBL+="點精靈全解析度才吸收" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sinkh*) LBL+="只沉離下方${t#sinkh}px以上" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; v4f) LBL+="v4只投浮塊票" ;; v5) LBL+="v5每步累積浮塊票" ;; v5e*) LBL+="v5每${t#v5e}步累積浮塊票" ;; esac
+      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; fp16) LBL+="完整路徑每16步" ;; cskip) LBL+="C區不跑" ;; pxdel) LBL+="點精靈刪除" ;; pxabs) LBL+="點精靈吸收" ;; pxdelf) LBL+="點精靈全解析度才刪" ;; pxabsf) LBL+="點精靈全解析度才吸收" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sinkh*) LBL+="只沉離下方${t#sinkh}px以上" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; v4f) LBL+="v4只投浮塊票" ;; v5) LBL+="v5每步累積浮塊票" ;; v5e*) LBL+="v5每${t#v5e}步累積浮塊票" ;; v5s*) LBL+="v5軟化k${t#v5s}" ;; dsf) LBL+="閘門SfM備援" ;; esac
   done
 }
 
@@ -235,10 +238,14 @@ for t in "${XT[@]:-}"; do
                  --model.density.init_args.sfm_vis_eps 1.0 --model.density.init_args.sfm_birth_from_iter 0
                  --model.density.init_args.sfm_vis_noup true --model.density.init_args.sfm_noev_every "${t#noev}") ;;
     # ★ 11-15 v4 只投浮塊票（地下票永不成立：behind_frac 1.01 > 1）／v5 每步用當前訓練相機投浮塊票、逐顆累積（sfm_vis_stream）；都不開不准往上
-    v4f|v5|v5e*) XA+=(--model.density.init_args.sfm_vis true --model.density.init_args.sfm_vis_cams 0 --model.density.init_args.sfm_vis_cell 8
+    v4f|v5|v5e*|v5s*) XA+=(--model.density.init_args.sfm_vis true --model.density.init_args.sfm_vis_cams 0 --model.density.init_args.sfm_vis_cell 8
                  --model.density.init_args.sfm_vis_px 4 --model.density.init_args.sfm_vis_free_frac 0.5 --model.density.init_args.sfm_vis_rep 0.1
                  --model.density.init_args.sfm_vis_behind_frac 1.01 --model.density.init_args.sfm_vis_noup false)
-                 case "$t" in v5) XA+=(--model.density.init_args.sfm_vis_stream 1) ;; v5e*) XA+=(--model.density.init_args.sfm_vis_stream "${t#v5e}") ;; esac ;;
+                 case "$t" in v5) XA+=(--model.density.init_args.sfm_vis_stream 1) ;; v5e*) XA+=(--model.density.init_args.sfm_vis_stream "${t#v5e}") ;;
+                   v5s*) XA+=(--model.density.init_args.sfm_vis_stream 1 --model.density.init_args.sfm_vis_stream_soft "${t#v5s}") ;; esac ;;
+    # ★ 11-15（丙）深度支撐閘門在先驗不可靠的地方改用 SfM 觀測格投票（一個閘門、兩種參考；不開 v4／v5 的抽樣壓制）
+    dsf)    XA+=(--model.metric.init_args.depth_support_sfm_free true --model.density.init_args.sfm_vis_gate true
+                 --model.density.init_args.sfm_vis_cell 8 --model.density.init_args.sfm_vis_px 4) ;;
     # ★ 11-14 細物保護：只有離下方 SfM 表面 > H 個像素長度的沒證據顆粒會往下沉（海面浮塊中位 504、路燈帶 81、車輛帶 11）
     sinkh*) [[ " ${XT[*]} " =~ \ sink[0-9] ]] || { echo "⛔ sinkh 要和 sink<p> 一起用"; exit 2; }
             XA+=(--model.density.init_args.sfm_noup_sink_min_h_px ${t#sinkh}) ;;
