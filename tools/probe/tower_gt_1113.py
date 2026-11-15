@@ -178,6 +178,7 @@ BANDS = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.5]
 bl = lambda i: f"{BANDS[i] * M:.0f}~{BANDS[i + 1] * M:.0f}m"
 glass = max(tall, key=lambda t: t[2])[0]
 SUM = {}
+H1 = {}
 for k, zt, blue, ctr, zmax_sfm in sorted([t for t in tall], key=lambda t: -t[1]):
     gsel = on(gx, k)
     X, N = gx[gsel], gn[gsel]
@@ -246,6 +247,10 @@ for k, zt, blue, ctr, zmax_sfm in sorted([t for t in tall], key=lambda t: -t[1])
             dfb, jfb = cKDTree(Gb).query(mm[mb], k=1) if mb.sum() else (np.zeros(0), np.zeros(0, int))
             nb_ = dfb < 0.15
             sdv = ((mm[mb][nb_] - Gb[jfb[nb_]]) * Nb[jfb[nb_]]).sum(1)
+            # ★ 11-16 H1（Fable）：朝向對齊依「到 GT 牆的有號距離」分組——貼牆（|d| <= 0.5 m）／牆後（< −1 m）／牆前（> 1 m）
+            aln_ = np.abs((mn[mb][nb_] * Nb[jfb[nb_]]).sum(1)) > 0.9
+            for gi, g_ in enumerate((np.abs(sdv) <= 0.005, sdv < -0.01, sdv > 0.01)):
+                hh = H1.setdefault((md["lab"], i), [0] * 6); hh[2 * gi] += int((aln_ & g_).sum()); hh[2 * gi + 1] += int(g_.sum())
             r["牆後>1m"].append(f"{100 * (sdv < -0.01).mean():.0f}%" if len(sdv) >= 10 else "—")
             r["牆前>1m"].append(f"{100 * (sdv > 0.01).mean():.0f}%" if len(sdv) >= 10 else "—")
             SUM.setdefault((md["lab"], i), [0, 0, 0, 0, 0, 0]); sm = SUM[(md["lab"], i)]
@@ -258,6 +263,16 @@ for k, zt, blue, ctr, zmax_sfm in sorted([t for t in tall], key=lambda t: -t[1])
         for lab, r in per:
             print(f"  {(key + ' ' + lab)[:14]:14}" + "".join(f"{x:>14}" for x in r[key]))
 
+print("\n=== H1：立面 1.5 m 內的不透明面元，朝向對齊（|n·n_gt| > 0.9）依到 GT 牆的有號距離分組（括號＝該組佔比）===")
+print(f"{'':18}" + "".join(f"{bl(i):>16}" for i in range(len(BANDS) - 1)))
+for md in models:
+    for gi, gname in enumerate(("貼牆 ±0.5m", "牆後 >1m", "牆前 >1m")):
+        cells = []
+        for i in range(len(BANDS) - 1):
+            hh = H1.get((md["lab"], i))
+            tot = sum(hh[1::2]) if hh else 0
+            cells.append(f"{100 * hh[2 * gi] / hh[2 * gi + 1]:.0f}%({100 * hh[2 * gi + 1] / tot:.0f}%)" if hh and hh[2 * gi + 1] >= 10 else "—")
+        print(f"{(gname + ' ' + md['lab'])[:18]:18}" + "".join(f"{c:>16}" for c in cells))
 print("\n=== 總結：所有高樓立面（GT 點加權）依高度帶 ===")
 print(f"{'':14}" + "".join(f"{bl(i):>14}" for i in range(len(BANDS) - 1)))
 def pct(lab, i, a_, b_):
