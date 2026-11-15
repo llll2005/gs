@@ -107,9 +107,35 @@ def qrot(q):
     return np.stack([np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)], -1),
                      np.stack([2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)], -1),
                      np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], -1)], 1)
+def load_ply(lab, f):
+    """★ 11-16 M1（Fable）：起點 PLY（只有 xyz＋rgb）。o＝1、尺度＝3 近鄰均方距離開根號（同訓練的 setup_from_pcd）、
+    旋轉＝訓練起點同樣的 rand 四元數（=> 朝向對齊只是隨機基準）。空中隨機補點＝顏色等於最常見那個 RGB（make_sfm_fill_init 用 SfM 平均色填）。"""
+    from plyfile import PlyData
+    v = PlyData.read(f)["vertex"].data
+    m = np.stack([v["x"], v["y"], v["z"]], 1).astype(np.float64)
+    rgb = np.stack([v["red"], v["green"], v["blue"]], 1).astype(np.int64)
+    key = rgb[:, 0] * 65536 + rgb[:, 1] * 256 + rgb[:, 2]
+    uk, cnt = np.unique(key, return_counts=True); mode = uk[cnt.argmax()]
+    fill = key == mode
+    ib = inblk(m); m, fill = m[ib], fill[ib]
+    dfill, _ = gtree.query(m[fill], k=1)
+    print(f"[起點] {lab}：{f}｜塊內 {len(m):,} 點，其中空中隨機補點 {int(fill.sum()):,}（{100 * fill.mean():.1f}%，顏色 {mode // 65536},{mode // 256 % 256},{mode % 256} 出現 {cnt.max():,} 次）"
+          f"｜補點離高樓 GT 點 < 1.5 m 的 {100 * (dfill < 0.015).mean():.1f}%、< 5 m 的 {100 * (dfill < 0.05).mean():.1f}%", flush=True)
+    d3, _ = cKDTree(m).query(m, k=4)
+    sc = np.sqrt(np.maximum((d3[:, 1:] ** 2).mean(1), 1e-14))
+    c = np.floor(m[:, :2] / CELL).astype(int) - o0
+    ok = (c[:, 0] >= 0) & (c[:, 0] < shp[0]) & (c[:, 1] >= 0) & (c[:, 1] < shp[1])
+    kk = np.zeros(len(m), bool); kk[ok] = anyfoot[c[ok, 0], c[ok, 1]]
+    m, fill, sc = m[kk], fill[kk], sc[kk]
+    r = np.random.default_rng(0).random((len(m), 4)); R = qrot(r)
+    s2 = np.stack([sc, sc], 1)
+    return dict(lab=lab, m=m, o=np.ones(len(m)), ax=R[:, :, 0], n=R[:, :, 2], ratio=np.ones(len(m)), lmax=sc, t1=R[:, :, 0], t2=R[:, :, 1], s=s2, fill=fill)
+
 def load(spec):
     lab, pat = spec.split("=", 1); fs = sorted(glob.glob(pat)); assert fs, f"找不到 {pat}"
     f = fs[-1]
+    if f.endswith(".ply"):
+        return load_ply(lab, f)
     sd = torch.load(f, map_location="cpu", weights_only=False)["state_dict"]
     g = "gaussian_model.gaussians."
     m = sd[g + "means"].double().numpy()
@@ -179,6 +205,8 @@ bl = lambda i: f"{BANDS[i] * M:.0f}~{BANDS[i + 1] * M:.0f}m"
 glass = max(tall, key=lambda t: t[2])[0]
 SUM = {}
 H1 = {}
+M4 = {}   # ★ 11-16 M4（Fable）：(模型, 帶) -> [立面 1 m 內不透明顆粒數, GT 立面點數, 長軸列表]
+M1F = {}  # ★ 11-16 M1：(模型, 帶) -> [立面 1.5 m 內的空中補點數, 立面 1.5 m 內的點數]（只有起點 PLY）
 for k, zt, blue, ctr, zmax_sfm in sorted([t for t in tall], key=lambda t: -t[1]):
     gsel = on(gx, k)
     X, N = gx[gsel], gn[gsel]
@@ -234,6 +262,7 @@ for k, zt, blue, ctr, zmax_sfm in sorted([t for t in tall], key=lambda t: -t[1])
             # 立面 1 m 內的顆粒：拉長
             dfac, jf = cKDTree(X[fac]).query(mm[mb], k=1) if mb.sum() else (np.zeros(0), None)
             sel = np.where(mb)[0][dfac < 0.01] if mb.sum() else np.zeros(0, int)
+            mm4 = M4.setdefault((md["lab"], i), [0, 0, []]); mm4[0] += len(sel); mm4[1] += ng; mm4[2].append(md["lmax"][op][sel])
             if len(sel) >= 10:
                 r["長短軸比"].append(f"{np.median(mr[sel]):.1f}")
                 r["直的拉長"].append(f"{100 * ((mr[sel] > 3) & (np.abs(ma[sel, 2]) > 0.9)).mean():.0f}%")
@@ -246,6 +275,9 @@ for k, zt, blue, ctr, zmax_sfm in sorted([t for t in tall], key=lambda t: -t[1])
             sg_ = np.sign(((Gb[:, :2] - Gb[:, :2].mean(0)) * Nb[:, :2]).sum(1)); Nb *= np.where(sg_ == 0, 1, sg_)[:, None]
             dfb, jfb = cKDTree(Gb).query(mm[mb], k=1) if mb.sum() else (np.zeros(0), np.zeros(0, int))
             nb_ = dfb < 0.15
+            if "fill" in md:
+                f1 = M1F.setdefault((md["lab"], i), [0, 0]); fn_ = md["fill"][op][mb][nb_]
+                f1[0] += int((fn_ & (np.abs(((mm[mb][nb_] - Gb[jfb[nb_]]) * Nb[jfb[nb_]]).sum(1)) <= 0.015)).sum()); f1[1] += int((np.abs(((mm[mb][nb_] - Gb[jfb[nb_]]) * Nb[jfb[nb_]]).sum(1)) <= 0.015).sum())
             sdv = ((mm[mb][nb_] - Gb[jfb[nb_]]) * Nb[jfb[nb_]]).sum(1)
             # ★ 11-16 H1（Fable）：朝向對齊依「到 GT 牆的有號距離」分組——貼牆（|d| <= 0.5 m）／牆後（< −1 m）／牆前（> 1 m）
             aln_ = np.abs((mn[mb][nb_] * Nb[jfb[nb_]]).sum(1)) > 0.9
@@ -281,4 +313,26 @@ def pct(lab, i, a_, b_):
 for name, a_, b_ in [("面元覆蓋", 0, 1), ("朝向對齊", 2, 3), ("牆後>1m", 4, 5)]:
     for md in models:
         print(f"{(name + ' ' + md['lab'])[:14]:14}" + "".join(f"{pct(md['lab'], i, a_, b_):>14}" for i in range(len(BANDS) - 1)))
+# ★ 11-16 M4：每個 GT 立面點（GT 點雲間距約 0.48 m => 約 0.23 m² 立面）分到幾顆立面 1 m 內的不透明顆粒、那些顆粒的長軸中位（m）
+print("\n=== M4：立面 1 m 內不透明顆粒 每 GT 立面點的顆數｜長軸中位（m）===")
+print(f"{'':14}" + "".join(f"{bl(i):>14}" for i in range(len(BANDS) - 1)))
+for md in models:
+    cells = []
+    for i in range(len(BANDS) - 1):
+        v = M4.get((md["lab"], i))
+        if not v or v[1] == 0:
+            cells.append("—"); continue
+        lm = np.concatenate(v[2]) if v[2] else np.zeros(0)
+        cells.append(f"{v[0] / v[1]:.2f}｜{np.median(lm) * M:.2f}" if len(lm) else f"{v[0] / v[1]:.2f}｜—")
+    print(f"{md['lab'][:14]:14}" + "".join(f"{c:>14}" for c in cells))
+if M1F:
+    print("\n=== M1：起點 PLY 在立面 ±1.5 m 內的點，有幾成是空中隨機補點 ===")
+    for md in models:
+        if "fill" not in md:
+            continue
+        lb = md["lab"]; cells = []
+        for i in range(len(BANDS) - 1):
+            v = M1F.get((lb, i))
+            cells.append(f"{100 * v[0] / max(v[1], 1):.0f}%（{v[1]:,}）" if v else "—")
+        print(f"{lb[:14]:14}" + "".join(f"{c:>14}" for c in cells))
 print("DONE tower_gt")
