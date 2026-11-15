@@ -138,6 +138,8 @@ class CLI(LightningCLI):
             logger_config.class_path = config.logger
 
         config.trainer.logger = logger_config
+        if logger_config is False:   # ★ 11-15 demo 模式 --logger none：log_dir 退回 default_root_dir（沒設＝工作目錄）=> config.yaml 寫到 repo 根目錄；改寫進這個跑次的輸出目錄
+            config.trainer.default_root_dir = output_path
 
         # set torch float32_matmul_precision
         if config.float32_matmul_precision is not None:
