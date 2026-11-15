@@ -2243,7 +2243,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         n0 = int(low.shape[0]); n_abs = 0; info = {}
         if mode == "absorb":
             from .merge_ops import absorb_step
-            _I, _J, info = absorb_step(gaussian_model, low, color_tol=0.1, min_opacity_src=0.0)   # 顏色門檻同 trim_merge_first
+            _I, _J, info = absorb_step(gaussian_model, low, color_tol=0.1, min_opacity_src=0.0,   # 顏色門檻同 trim_merge_first
+                                       chunk=1 << 16)   # ★ 11-15 本機 6 GB：預設 1<<19 一批的鄰域 PCA（批次 eigh）要配 2 GB => OOM；分小批結果相同
             n_abs = int(_J.numel())
             if _I.numel() > 0 and opt is not None:
                 self.replace_tensors_to_optimizers(gaussian_model, opt, inds=_I)          # 吸收者 Adam 重設（同 trim_merge_first）
