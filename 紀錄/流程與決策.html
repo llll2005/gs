@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>流程與決策</title>
+<!--
+  ★ 怎麼更新：所有內容都在下面 <script id="data"> 的 JSON 裡，版面由最底下的程式自動長出來。
+    - 新的 lab 結果：在 pending[] 對應項目的 tables 加一列，或改 status／next／decision。
+    - 決定採用：把那一項搬到 stages[].items（tag "adopted"）；決定不採用：搬到 stages[].rejected 或 rejected[]（附數據）。
+    - 數字一律寫「與基準的差」（基準列寫原值），欄名帶 ↑／↓（使用者 11-10 的表格規則）。
+  出處：紀錄/研究總覽.md §0／§9、紀錄/實驗分析/37、38（§7～§9）、紀錄/完整Pipeline數學詳解.md §14。
+-->
+<style>
+:root {
+  --bg: #fbfaf7; --fg: #1d1d1f; --muted: #6b6b70; --card: #ffffff; --line: #e3e1db; --th: #f1efe9;
+  --adopt: #1f7a4d; --adopt-bg: #e3f3ea; --inherit: #5b5b63; --inherit-bg: #ececef;
+  --eng: #6a3fb0; --eng-bg: #efe8fa; --pend: #9a5b00; --pend-bg: #fdf0d9; --rej: #b3261e; --rej-bg: #fbe7e5;
+  --good: #1f7a4d; --bad: #b3261e; --accent: #2a5db0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141416; --fg: #ececec; --muted: #a1a1a8; --card: #1d1d20; --line: #33333a; --th: #26262b;
+    --adopt: #6fd09b; --adopt-bg: #183326; --inherit: #b9b9c2; --inherit-bg: #2a2a30;
+    --eng: #c3a6f5; --eng-bg: #2b2140; --pend: #f3b65b; --pend-bg: #3a2a10; --rej: #ff8a80; --rej-bg: #3d1a18;
+    --good: #6fd09b; --bad: #ff8a80; --accent: #8fb3f5;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141416; --fg: #ececec; --muted: #a1a1a8; --card: #1d1d20; --line: #33333a; --th: #26262b;
+  --adopt: #6fd09b; --adopt-bg: #183326; --inherit: #b9b9c2; --inherit-bg: #2a2a30;
+  --eng: #c3a6f5; --eng-bg: #2b2140; --pend: #f3b65b; --pend-bg: #3a2a10; --rej: #ff8a80; --rej-bg: #3d1a18;
+  --good: #6fd09b; --bad: #ff8a80; --accent: #8fb3f5;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.6 "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif; }
+main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 20px; margin: 36px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+h3 { font-size: 16px; margin: 0 0 6px; }
+.sub { color: var(--muted); margin: 0 0 16px; }
+nav { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); padding: 8px 0; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 14px; }
+nav a { color: var(--accent); text-decoration: none; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.kpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.kpi .v { font-size: 22px; font-weight: 700; }
+.kpi .l { color: var(--muted); font-size: 13px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; font-size: 13px; }
+.tag { display: inline-block; font-size: 12px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; font-weight: 600; }
+.tag.inherit { color: var(--inherit); background: var(--inherit-bg); }
+.tag.adopted { color: var(--adopt); background: var(--adopt-bg); }
+.tag.eng { color: var(--eng); background: var(--eng-bg); }
+.tag.pending { color: var(--pend); background: var(--pend-bg); }
+.tag.rejected { color: var(--rej); background: var(--rej-bg); }
+.stage { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+.stage .desc { color: var(--muted); font-size: 14px; margin: 0 0 8px; }
+.group { margin: 10px 0 2px; font-weight: 700; font-size: 14px; color: var(--muted); }
+ul.mech { list-style: none; margin: 0; padding: 0; }
+ul.mech li { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 7px 0; border-top: 1px dashed var(--line); }
+ul.mech li:first-child { border-top: none; }
+.mname { font-weight: 600; }
+.mnote { color: var(--muted); font-size: 13.5px; }
+details { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+details > summary { cursor: pointer; padding: 8px 12px; font-weight: 600; font-size: 14px; list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "▸ "; color: var(--muted); }
+details[open] > summary::before { content: "▾ "; }
+details .inner { padding: 0 12px 10px; }
+.rej-item { padding: 8px 0; border-top: 1px dashed var(--line); }
+.rej-item:first-child { border-top: none; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 14px 0; }
+.meta { display: grid; grid-template-columns: 70px 1fr; gap: 4px 10px; font-size: 14px; margin: 6px 0 10px; }
+.meta b { color: var(--muted); font-weight: 600; }
+.decision { border-left: 3px solid var(--pend); padding: 4px 10px; background: var(--pend-bg); border-radius: 0 8px 8px 0; font-size: 14px; }
+.decision.done { border-color: var(--adopt); background: var(--adopt-bg); }
+.tcap { font-size: 13.5px; color: var(--muted); margin: 10px 0 4px; }
+.tw { max-height: 70vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+table { border-collapse: separate; border-spacing: 0; width: max-content; min-width: 100%; font-size: 13.5px; }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+th { position: sticky; top: 0; z-index: 2; background: var(--th); font-weight: 700; }
+th:first-child, td:first-child { position: sticky; left: 0; text-align: left; background: var(--card); z-index: 1; }
+th:first-child { z-index: 3; background: var(--th); }
+tr.base td { font-weight: 700; }
+td.g { color: var(--good); font-weight: 600; }
+td.b { color: var(--bad); font-weight: 600; }
+.note { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
+footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
+@media (max-width: 640px) { ul.mech li { grid-template-columns: 1fr; gap: 2px; } .meta { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+<h1>流程與決策</h1>
+<p class="sub" id="subtitle"></p>
+<nav id="nav"></nav>
+<section id="top"></section>
+<section id="stages"></section>
+<section id="pending"></section>
+<section id="rejected"></section>
+<footer id="foot"></footer>
+</main>
+
+<script id="data" type="application/json">
+{
+ "updated": "2026-11-15 12:00（台灣時間）",
+ "subtitle": "現行配方＝新底 3（task_tune25.sh <塊> s20g70+np16+tricap0p5+cmflat+trimask+lowres+geo8+log0）。每個階段標出沿用、我方採用、工程（不改訓練結果）；待驗證的在下半部，附決定用的數據；不採用的收在各段的下拉選單。",
+ "kpis": [
+  {"v": "28.058", "l": "全場景最佳 PSNR（A＋dist4，27.75M 顆，5.04 h；CityGS 公開模型 27.261）"},
+  {"v": "6.7／7.1 分", "l": "新底 3 每塊純訓練（lab，b1／b4；A＋dist4 13.0／13.8 分）"},
+  {"v": "+0.063／+0.001", "l": "新底 3 換塊 ΔPSNR b1／b4（對 full44；A＋dist4 +0.080／+0.016）"},
+  {"v": ".609／.768", "l": "新底 3 區塊 F1 b1／b4（A＋dist4 .506／.666）"},
+  {"v": "−73／−75%", "l": "地下覆蓋（對 A＋dist4，b1／b4；校正深度＋上限只罰躺平）"},
+  {"v": "3.5%", "l": "demo 模式下訓練外時間佔整個任務（本機 b1；之前每塊 3.5～5 分）"}
+ ],
+ "stages": [
+  {"id": "s-input", "title": "(a) 輸入", "desc": "只用影像、相機姿態（與 CityGS 相同）、SfM 點與單目深度；之後所有幾何判斷的依據是可靠 SfM 點。",
+   "groups": [{"name": "", "items": [
+    {"tag": "inherit", "name": "MatrixCity 空拍 5,621 張＋姿態", "note": "全域縮 1.2 倍到 1600x900（dataparser）；姿態＝MatrixCity GT x1/100，與 CityGS 相同"},
+    {"tag": "inherit", "name": "COLMAP 三角化 SfM 點", "note": "可靠＝track ≥ 3、重投影誤差 < 1.5 px"},
+    {"tag": "inherit", "name": "Depth Anything V2 單目深度", "note": "每張一組 SfM 縮放；單獨用誤差約 ±10%"},
+    {"tag": "adopted", "name": "SfM 三角形校正深度", "note": "11-11：每張影像用自己的可靠 SfM 點做 Delaunay 三角形，三角形內補單目殘差；誤差中位 2.15% → 0.15%（可靠三角形內 0.05%）"}
+   ]}],
+   "rejected": [
+    {"name": "單目深度的三種用法（硬性貼齊、SfM 局部校正、多視角融合）", "why": "11-11 被三角形校正取代（研究總覽 §9）"}
+   ]},
+  {"id": "s-prep", "title": "(b) 每塊準備（訓練前一次算好）", "desc": "全部只靠 SfM 與分塊算出，不需要先訓練一次。",
+   "groups": [{"name": "", "items": [
+    {"tag": "inherit", "name": "4x4 分塊", "note": "與 CityGS 同一個網格 → 每塊的訓練相機清單"},
+    {"tag": "adopted", "name": "塊外遮罩 A／B／C＋隨機背景", "note": "塊內算分、邊緣隨機背景、塊外不算；11-13 起改用校正深度判（trimask，接縫旁 200 m 以上的監督 87% → 97%）"},
+    {"tag": "adopted", "name": "初始化：可靠 SfM 點複製 K 份、裁到塊盒", "note": "dup init；SfM init 大勝 depth init（+1.33／+1.18 dB）"},
+    {"tag": "adopted", "name": "每塊顆數上限＝SfM 點數分配", "note": "平均 cap 不變，依塊內可靠 SfM 點數分（使用者規則：不准用結果反推 cap）"},
+    {"tag": "adopted", "name": "上限遮罩（只罰躺平的先驗表面）", "note": "cap_masks_flat：|n_z| > 0.8 的先驗表面才套深度上限（cmflat）"},
+    {"tag": "eng", "name": "預縮影像 input_r1.2", "note": "demo 模式用；與現縮逐位元相同，每張讀取 200 → 80 ms"}
+   ]}],
+   "rejected": [
+    {"name": "粗模型（coarse）暖啟動", "why": "使用者：會 OOM、跟輕量方向相反；11-09 輕量版 S30 畫質平但不省時間"},
+    {"name": "鄰塊背景／共識背景取代盒外高斯", "why": "使用者 10-17 不做：先跑的塊分數低、載入時間太長"}
+   ]},
+  {"id": "s-train", "title": "(c) 每塊訓練", "desc": "每一步「渲染 → 損失 → 反傳更新」；密度控制每 150 步決定搬家與增生；trim 每 500 步依「貢獻 ÷ 成本」剪。",
+   "groups": [
+    {"name": "排程與解析度", "items": [
+     {"tag": "adopted", "name": "全長 20k、增生到 70%（s20g70）", "note": "11-13 進底（新底 3）：純訓練 −46%（對 30k 新底），換塊 −0.004／+0.008、F1 −.005／−.007"},
+     {"tag": "adopted", "name": "前段低解析度 x0.5 → x0.75 → x1.0", "note": "0～5k／5k～10k／10k 起；低解析度段 dist 關掉；11-13 進底：−15%、換塊 +0.015／+0.014"},
+     {"tag": "eng", "name": "只記兩筆 log（log0）", "note": "第 50 步與最後一步；約 −6%"}
+    ]},
+    {"name": "表示與光柵", "items": [
+     {"tag": "inherit", "name": "2DGS 面元（位置、旋轉、2 軸尺度、opacity、SH 3 階）", "note": "CityGaussianV2／2DGS"},
+     {"tag": "inherit", "name": "Trim2DGS 光柵器", "note": "我方在裡面順便累加 V／C 與 |g|、加了深度上限通道"},
+     {"tag": "eng", "name": "加速旗標（渲染結果不變）", "note": "lean 訓練、飽和略過、塊內先加總、V／C 先加總（trim_running_warp）、零梯度略過、FusedAdam、融合 SSIM、高階 SH 每 16 步"}
+    ]},
+    {"name": "損失", "items": [
+     {"tag": "inherit", "name": "L1＋SSIM", "note": ""},
+     {"tag": "adopted", "name": "L1 混 L2（x2）", "note": "10-31：留住 b2 超高塔頂、不變慢"},
+     {"tag": "adopted", "name": "遮罩 A／B／C 計分", "note": "見 (b)"},
+     {"tag": "inherit", "name": "dist（2DGS）每 8 步", "note": "間隔是我方的：geo8，11-13 進底（−5%）"},
+     {"tag": "adopted", "name": "opacity 二元熵（先單向、STEPS/3 後雙向 x4）", "note": "🟨 借用改造；Load −1/3、品質平"},
+     {"tag": "inherit", "name": "法向一致性（2DGS）每 8 步", "note": "間隔是我方的；立面貼牆 0.88 → 0.96"},
+     {"tag": "adopted", "name": "深度支撐閘門（多視角投票、SfM 豁免）每 8 步", "note": "海面浮塊 −83～94%；SfM 豁免半徑＝8 x SfM 最近鄰中位（不把塔頂壓成煙）"},
+     {"tag": "adopted", "name": "鄰域平面約束每 16 步（np16）", "note": "11-10：> 250 m 立面對齊 40 → 51%、低角度破洞少"},
+     {"tag": "adopted", "name": "逐貢獻深度上限 0.5（校正深度；只罰躺平）", "note": "11-12：F1 +.11、地下 −73～75%；margin 1%、每 8 步"}
+    ]},
+    {"name": "密度控制與剪枝", "items": [
+     {"tag": "inherit", "name": "MCMC：死顆粒搬家＋增生到上限", "note": "3DGS-MCMC"},
+     {"tag": "adopted", "name": "母點抽樣 ∝ o·(1＋w·|g|)", "note": "🟨 借 AbsGS 的絕對梯度"},
+     {"tag": "adopted", "name": "閘門外的抽樣 x10⁻³、補洞、新點平面內錯開", "note": ""},
+     {"tag": "adopted", "name": "合併共平面同色鄰居（每 1500 步、刪掉被併的）", "note": "省時間的機制（關掉慢 5～6%）"},
+     {"tag": "adopted", "name": "點精靈下限（撐大到 1 個當下像素）", "note": "11-07：2DGS 次像素吸收態的修法；🟨 借 Mip-Splatting 的想法；像素跟著目前訓練解析度"},
+     {"tag": "adopted", "name": "增生後刪死顆粒", "note": "11-07"},
+     {"tag": "adopted", "name": "累加式 V／C trim", "note": "剪「貢獻 ÷ 覆蓋像素」最低的；V、C 在訓練光柵化裡順便累加"}
+    ]}
+   ],
+   "rejected": [
+    {"name": "只補前面（capfc）", "why": "11-15 lab 換塊 −0.003／−0.013、F1 −.014／−.018（37 §3）"},
+    {"name": "上限權重 2、只在增生期（tricap2g）", "why": "b1 換塊 −0.004、F1 −.017；沒拿回畫質"},
+    {"name": "全部表面都罰深度上限", "why": "11-12 B 臂全掉 → 改成只罰躺平（cmflat）"},
+    {"name": "完整路徑每 16 步（fp16）", "why": "本機 −2.5／−2.1%、F1 −.014／−.013（38 §8）"},
+    {"name": "C 區不跑（cskip）", "why": "本機不省時間（−0.4／+0.2%），held-out −0.06／−0.20、LPIPS 變差"},
+    {"name": "點精靈刪除／吸收（原版，低解析度期也刪）", "why": "第 1,000 步一次判掉 82%；+10% 時間、F1 −.039、地下 +0.36"},
+    {"name": "EDGS 式稠密起點不增生", "why": "本機 −19% 時間，但立面減半（15.4 → 7.0%）、b4 地下 +1.2 層、路燈缺口變大"},
+    {"name": "SfM 視線一致性 v4", "why": "11-09 全場景 −0.33 dB 的次因；把少 SfM 的牆判成地下"},
+    {"name": "位置 lr x2", "why": "11-09 全場景 −0.33 dB 的主因（87%）"},
+    {"name": "依覆蓋度加權抽視角", "why": "11-08：+17% 時間、高處反而更糊"}
+   ]},
+  {"id": "s-merge", "title": "(d) 合併與評測", "desc": "每塊只留塊盒內顆粒後合併；空拍 test 看不到的問題用幾何工具量。",
+   "groups": [{"name": "", "items": [
+    {"tag": "inherit", "name": "每塊裁到塊盒、合併 16 塊", "note": "utils/merge_citygs_ckpts.py"},
+    {"tag": "inherit", "name": "MatrixCity test 741 幀 PSNR／SSIM／LPIPS", "note": "沒參與訓練"},
+    {"tag": "adopted", "name": "換塊評測（定案用）", "note": "合併模型只換一塊的盒內顆粒；報整張圖與本塊區域／幾何區域 PSNR（排除塊外偏差）"},
+    {"tag": "adopted", "name": "幾何與外觀診斷", "note": "區塊 F1、地面／地下層、海面浮塊、立面、路燈與車、高樓（GT 點雲量尺 11-13）"}
+   ]}],
+   "rejected": []},
+  {"id": "s-eng", "title": "(e) 訓練外（工程，不改訓練結果）", "desc": "報告的時間：純訓練（第一步 → 最後一步）＋整個訓練任務；圖表資料包、等卡關卡、評估不算。",
+   "groups": [{"name": "", "items": [
+    {"tag": "eng", "name": "demo 模式（CITYGS_DEMO=1）", "note": "SfM 快速讀取＋快取、關訓練中的驗證、讀預縮影像、不產生 log；本機啟動 196 → 38 s"},
+    {"tag": "eng", "name": "run_summary.json＋tools/run_summary_report.py", "note": "每塊的啟動／純訓練／存檔／任務時間、顆數、VRAM 峰值"},
+    {"tag": "eng", "name": "等卡關卡 60 → 15 s", "note": "只影響 lab 排程"}
+   ]}],
+   "rejected": [
+    {"name": "ckpt 不存 Adam", "why": "部署本來就不載 Adam；拿掉會讓接續測試不能用"}
+   ]}
+ ],
+ "pending": [
+  {"id": "p-dense", "title": "稠密起點＋照常增生（三角式補點）", "status": "lab 驗證批排在最前面（11-15 中午起，換塊）", "next": "看 lab 換塊：打平以上就採用（本機 F1、地下、海面都好、時間不變）",
+   "decision": "",
+   "tables": [
+    {"cap": "本機（新底 3＋…；非基準列為差）", "cols": ["臂", "純訓練 ↓ b1／b4", "held-out PSNR ↑ b1／b4", "LPIPS ↓ b1／b4", "F1 ↑ b1／b4", "地下覆蓋 ↓ b1／b4", "海面 Σo·面積 ↓ b1／b4", "路燈缺口 0.5 m ↓ b1／b4"],
+     "rows": [
+      {"base": true, "c": ["新底 3（原值）", "20.0／21.9 分", "11.943／13.446", ".8094／.7686", ".598／.773", "2.50／2.23 層", "725k／134k m²", "28／15%"]},
+      {"c": ["稠密起點＋照常增生", "+0.5%／+0.3%", "+0.020／−0.010", "−.0003／+.0004", "+.013／+.006", "+0.01／−0.24", "+6%／−44%", "+0／+4 pt"], "good": [3, 4, 5], "bad": []},
+      {"c": ["稠密起點不增生（EDGS 式）", "−19%／−17%", "−0.033／−0.066", "+.0088／+.0138", "−.010／−.005", "+0.15／+1.23", "−73%／−96%", "+14／+14 pt"], "good": [1], "bad": [2, 3, 5, 7]}
+     ]},
+    {"cap": "lab 換塊（舊底 30k 上；11-15）", "cols": ["臂", "換塊 ΔPSNR ↑ b1／b4", "純訓練 b4", "F1 ↑ b4"],
+     "rows": [
+      {"base": true, "c": ["舊底（複製起點）", "+0.068／−0.007（對 full44）", "13.2 分", ".772"]},
+      {"c": ["稠密起點", "−0.011／−0.008", "+2%", "−.004"], "good": [], "bad": []}
+     ]}
+   ]},
+  {"id": "p-steps", "title": "步數再降（17k／15k）", "status": "lab 驗證批（17k、15k 增生 80%，換塊）", "next": "17k 若換塊打平、F1 掉 ≤ .02 可考慮；15k 要看 b4 是否只是單塊現象",
+   "decision": "",
+   "tables": [
+    {"cap": "本機（對新底 3 20k；重跑雜訊：時間 0.2／2.5%、held-out ±0.012、F1 ±.006）", "cols": ["全長", "純訓練 ↓ b1／b4", "held-out ↑ b1／b4", "LPIPS ↓ b1／b4", "F1 ↑ b1／b4", "最終顆數 b1／b4"],
+     "rows": [
+      {"base": true, "c": ["20k 增生 70%（原值）", "1,197／1,316 s", "11.943／13.446", ".8094／.7686", ".598／.773", "0.879M／1.133M"]},
+      {"c": ["重跑（雜訊）", "+0.2%／+2.5%", "+0.012／−0.009", "−.0003／+.0003", "+.003／−.006", "+0.1%／+0.3%"]},
+      {"c": ["17k 增生 70%", "−11.4%／−12.6%", "+0.017／−0.001", "−.0007／−.0014", "−.001／−.021", "+15%／+15%"], "good": [1], "bad": [4]},
+      {"c": ["15k 增生 70%", "−24.4%／約 −30%*", "−0.008／−0.032", "+.0010／+.0009", "−.012／−.032", "+4.5%／+5.4%"], "good": [1], "bad": [2, 4]},
+      {"c": ["15k 增生 80%", "−23.0%／−23.8%", "−0.012／−0.035", "+.0016／+.0015", "−.007／−.017", "+5.8%／+5.5%"], "good": [1], "bad": [2, 4]}
+     ], "note": "* b4 15k／70% 第一次 OOM、max_split 重試（每步 +8%），帳面 −24.3%。held-out 只渲染這一塊，會混到塊外，定案看 lab 換塊。"}
+   ]},
+  {"id": "p-r2", "title": "兩輪流程（第一輪名額 85%）", "status": "lab 驗證批（新底 3 上，換塊）", "next": "判準：省時間、分數打平（使用者 11-13）。注意顆數 +15%（模型變大）",
+   "decision": "",
+   "tables": [
+    {"cap": "差值對各自的底", "cols": ["版本", "純訓練 ↓ b1／b4", "換塊 ΔPSNR ↑ b1／b4", "held-out ↑ b1／b4", "F1 ↑ b1／b4", "最終顆數"],
+     "rows": [
+      {"c": ["舊底 30k（lab）", "−9%／−9%", "±0.000／−0.012", "—", "—／−.007", "—"]},
+      {"c": ["新底 3（本機）", "−7.4%／−6.3%", "（lab 驗證中）", "+0.019／+0.026", "−.004／−.021", "+15%／+14%"], "good": [1, 3], "bad": [4]},
+      {"c": ["舊底＋稠密起點（lab；時間對稠密起點）", "−10%／−10%", "−0.034／−0.035", "—", "—／−.034", "—"], "good": [1], "bad": [2, 4]}
+     ]}
+   ]},
+  {"id": "p-sea", "title": "海面浮塊：沒證據就往下沉", "status": "本機接續 1000 步的劑量掃描完成；lab 驗證批有 24／48 px（換塊）", "next": "lab 換塊打平 → 排完整 20k 訓練從頭開「往下沉 3 或 6 px、不加保護」（400 次投票，累積劑量遠大於這裡）",
+   "decision": "細物保護（只沉離下方 SfM 表面 > H 像素長度）：不需要——不保護時路燈缺口各劑量都沒變；保護反而讓顆粒懸在半空、F1 掉 .007～.011。",
+   "tables": [
+    {"cap": "b1（接續 1000 步、投票 20 次；差值對接續對照）", "cols": ["每次往下沉", "海上不透明 ↓", "Σo·面積 ↓", "> 50 m ↓", "held-out ↑", "F1 ↑", "地下覆蓋 ↓"],
+     "rows": [
+      {"base": true, "c": ["接續對照（原值）", "4,671", "754k m²", "1,845", "11.948", ".5964", "2.48"]},
+      {"c": ["3 px", "−8%", "−2%", "−10%", "−0.001", "−.000", "+0.01"]},
+      {"c": ["6 px", "−11%", "−6%", "−21%", "±0", "−.003", "−0.07"]},
+      {"c": ["12 px", "−16%", "−19%", "−42%", "+0.003", "−.002", "−0.04"], "good": [2, 3]},
+      {"c": ["24 px", "−37%", "−60%", "−55%", "+0.005", "−.000", "+0.03"], "good": [1, 2, 3]},
+      {"c": ["48 px", "−52%", "−66%", "−60%", "+0.012", "−.003", "+0.16"], "good": [1, 2, 3], "bad": [6]},
+      {"c": ["24 px＋保護 H200", "−11%", "−28%", "−55%", "+0.004", "−.007", "−0.17"], "bad": [5]},
+      {"c": ["48 px＋保護 H200", "−16%", "−25%", "−60%", "+0.010", "−.011", "−0.16"], "bad": [5]},
+      {"c": ["48 px＋保護 H100", "−22%", "−26%", "−60%", "—", "−.009", "−0.16"], "bad": [5]}
+     ]},
+    {"cap": "b4（同上）", "cols": ["每次往下沉", "海上不透明 ↓", "Σo·面積 ↓", "> 50 m ↓", "held-out ↑", "F1 ↑", "地下覆蓋 ↓", "路燈缺口 0.5 m ↓"],
+     "rows": [
+      {"base": true, "c": ["接續對照（原值）", "2,161", "146k m²", "270", "13.442", ".7732", "2.21", "15%"]},
+      {"c": ["3 px", "−23%", "−12%", "−20%", "−0.012", "−.002", "+0.08", "+0 pt"]},
+      {"c": ["6 px", "−29%", "−17%", "−34%", "−0.013", "−.002", "+0.10", "+1 pt"]},
+      {"c": ["12 px", "−35%", "−22%", "−42%", "−0.017", "−.003", "+0.14", "+2 pt"]},
+      {"c": ["24 px", "−42%", "−28%", "−58%", "−0.016", "−.002", "+0.24", "+2 pt"], "good": [3], "bad": [6]},
+      {"c": ["48 px", "−50%", "−39%", "−65%", "−0.017", "−.001", "+0.38", "+2 pt"], "good": [1, 2, 3], "bad": [6]},
+      {"c": ["24 px＋保護 H200", "0%", "+4%", "−58%", "−0.016", "−.002", "0.00", "+0 pt"]},
+      {"c": ["48 px＋保護 H200", "−1%", "+4%", "−65%", "−0.017", "−.002", "0.00", "+0 pt"]}
+     ], "note": "b4 的浮塊低（中位離海面約 12 m），保護 H200 幾乎全擋住；不保護時往下沉會把一部分顆粒壓進地底（+0.08～+0.38 層）。held-out 只渲染這一塊，−0.01～−0.017 在塊外偏差範圍內。"}
+   ]},
+  {"id": "p-sprite", "title": "點精靈：撐大 vs 刪除 vs 吸收", "status": "公平版（低解析度期照常撐大、全解析度才處理）刪除已出；吸收 b1 本機評估中", "next": "傾向維持撐大（現行）；吸收 b1 結果出來後定案",
+   "decision": "",
+   "tables": [
+    {"cap": "本機（差值對新底 3）", "cols": ["版本", "純訓練 ↓ b1／b4", "held-out ↑ b1／b4", "LPIPS ↓ b1／b4", "F1 ↑ b1／b4", "地下覆蓋 ↓ b1／b4", "路燈缺口 0.5 m ↓ b1／b4", "孤立柱缺口 0.5 m ↓ b1／b4"],
+     "rows": [
+      {"base": true, "c": ["撐大（現行，原值）", "20.0／21.9 分", "11.943／13.446", ".8094／.7686", ".598／.773", "2.50／2.23", "28／15%", "20／4%"]},
+      {"c": ["全解析度才刪（公平版）", "−1%／0%", "+0.002／−0.011", "+.0010／+.0016", "+.004／−.004", "+0.13／−0.10", "−1／+3 pt", "+6／+3 pt"]},
+      {"c": ["全解析度才吸收（公平版）", "（評估中）", "", "", "", "", "", ""]},
+      {"c": ["原版刪除", "+10.5%／+11.4%", "−0.043／−0.096", "+.0095／+.0110", "−.039／−.039", "+0.36／+0.17", "+6／+30 pt", "−11／+43 pt"], "bad": [1, 2, 3, 4, 5]},
+      {"c": ["原版吸收", "+11.5%／OOM", "−0.044／—", "+.0093／—", "−.035／—", "+0.63／—", "+1／— pt", "−11／— pt"], "bad": [1, 2, 3, 4, 5]}
+     ]}
+   ]},
+  {"id": "p-merge", "title": "合併系列 8 個變體", "status": "本機訓練完 b1 8 臂、b4 4 臂；本機評估約 12:50 出來（不換塊）", "next": "有好的再上 lab 換塊",
+   "decision": "",
+   "tables": [
+    {"cap": "（評估出來後填）", "cols": ["變體", "說明"],
+     "rows": [
+      {"c": ["只刪不併（mgtrim）", "配對規則一樣，留大的、刪小的"]},
+      {"c": ["L2 不透明度（mgl2）", "o* = <f,G_m>/<G_m,G_m>"]},
+      {"c": ["名額交給搬家（mgrel）", "被併的交給 MCMC 搬家而不是刪"]},
+      {"c": ["只在平滑區（mgtex，0.08）", "鄰域顏色 MAD < 0.08 才併（借 LocoADC）"]},
+      {"c": ["線狀合併（mgline）", "燈桿這類線狀結構也能併"]},
+      {"c": ["像素門檻（mgpx）＋L2／＋線狀", "門檻用點精靈的像素長度"]}
+     ]}
+   ]},
+  {"id": "p-full", "title": "新底 3 跑全場景", "status": "等使用者決定（不自排）", "next": "建議等稠密起點／步數／兩輪三項定案後一起跑", "decision": "", "tables": []},
+  {"id": "p-tower", "title": "高樓高層破洞（深藍大樓棟 4）", "status": "延後——使用者 11-13「等時間優化處理完」", "next": "① 低角度渲染驗證牆後那層 ② 深度上限延伸到 SfM 三角形夠密的立面 ③ 新底 3 的 b3",
+   "decision": "",
+   "tables": [
+    {"cap": "b3 GT 點雲量尺（11-13；CityGS vs 舊底 30k）", "cols": ["高度", "面元覆蓋 ↑ CityGS／我們", "朝向對齊 ↑ CityGS／我們", "牆後 > 1 m ↓ CityGS／我們"],
+     "rows": [
+      {"c": ["100～150 m", "87%／95%", "72%／61%", "6%／8%"]},
+      {"c": ["200～250 m", "93%／97%", "70%／57%", "22%／23%"]},
+      {"c": ["250～300 m", "89%／95%", "74%／48%", "19%／23%"]},
+      {"c": ["300～350 m", "88%／92%", "77%／25%", "11%／18%"]}
+     ]}
+   ]}
+ ],
+ "rejected_older": "更早的廢案與重開條件：紀錄/new_archived/已關閉的線.md；未做的構想：研究總覽 §9。"
+}
+</script>
+
+<script>
+(function () {
+  const D = JSON.parse(document.getElementById("data").textContent);
+  const el = (t, cls, html) => { const e = document.createElement(t); if (cls) e.className = cls; if (html !== undefined) e.innerHTML = html; return e; };
+  const esc = s => String(s).replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+  const TAG = {inherit: "沿用", adopted: "我方採用", eng: "工程", pending: "待驗證", rejected: "不採用"};
+  document.getElementById("subtitle").textContent = D.subtitle + "（最後更新 " + D.updated + "）";
+
+  const nav = document.getElementById("nav");
+  [["#top", "總覽"]].concat(D.stages.map(s => ["#" + s.id, s.title.replace(/^\([a-e]\)\s*/, "")]), [["#pending", "待驗證／待決定"]])
+    .forEach(([h, t]) => { const a = el("a", "", esc(t)); a.href = h; nav.appendChild(a); });
+
+  const top = document.getElementById("top");
+  const k = el("div", "kpis");
+  D.kpis.forEach(x => k.appendChild(el("div", "kpi", `<div class="v">${esc(x.v)}</div><div class="l">${esc(x.l)}</div>`)));
+  top.appendChild(k);
+  const lg = el("div", "legend");
+  ["inherit", "adopted", "eng", "pending", "rejected"].forEach(t => lg.appendChild(el("span", "tag " + t, TAG[t])));
+  top.appendChild(lg);
+
+  function table(t) {
+    const wrap = el("div", "");
+    if (t.cap) wrap.appendChild(el("div", "tcap", esc(t.cap)));
+    const tw = el("div", "tw"); const tb = el("table");
+    const thead = el("thead"); const tr = el("tr");
+    t.cols.forEach(c => tr.appendChild(el("th", "", esc(c)))); thead.appendChild(tr); tb.appendChild(thead);
+    const body = el("tbody");
+    t.rows.forEach(r => {
+      const row = el("tr", r.base ? "base" : "");
+      r.c.forEach((v, i) => {
+        const cls = (r.good || []).includes(i) ? "g" : (r.bad || []).includes(i) ? "b" : "";
+        row.appendChild(el("td", cls, esc(v)));
+      });
+      body.appendChild(row);
+    });
+    tb.appendChild(body); tw.appendChild(tb); wrap.appendChild(tw);
+    if (t.note) wrap.appendChild(el("p", "note", esc(t.note)));
+    return wrap;
+  }
+
+  const st = document.getElementById("stages");
+  st.appendChild(el("h2", "", "現行流程（新底 3）"));
+  D.stages.forEach(s => {
+    const c = el("div", "stage"); c.id = s.id;
+    c.appendChild(el("h3", "", esc(s.title)));
+    if (s.desc) c.appendChild(el("p", "desc", esc(s.desc)));
+    s.groups.forEach(g => {
+      if (g.name) c.appendChild(el("div", "group", esc(g.name)));
+      const ul = el("ul", "mech");
+      g.items.forEach(m => ul.appendChild(el("li", "", `<span><span class="tag ${m.tag}">${TAG[m.tag]}</span></span><span><span class="mname">${esc(m.name)}</span>${m.note ? `<div class="mnote">${esc(m.note)}</div>` : ""}</span>`)));
+      c.appendChild(ul);
+    });
+    if (s.rejected && s.rejected.length) {
+      const d = el("details"); d.appendChild(el("summary", "", `不採用（${s.rejected.length}）`));
+      const inner = el("div", "inner");
+      s.rejected.forEach(r => inner.appendChild(el("div", "rej-item", `<span class="tag rejected">不採用</span> <span class="mname">${esc(r.name)}</span><div class="mnote">${esc(r.why)}</div>`)));
+      d.appendChild(inner); c.appendChild(d);
+    }
+    st.appendChild(c);
+  });
+
+  const pd = document.getElementById("pending");
+  pd.appendChild(el("h2", "", "待驗證／待決定"));
+  D.pending.forEach(p => {
+    const c = el("div", "card"); c.id = p.id;
+    c.appendChild(el("h3", "", `<span class="tag pending">待驗證</span> ${esc(p.title)}`));
+    c.appendChild(el("div", "meta", `<b>狀態</b><span>${esc(p.status)}</span><b>下一步</b><span>${esc(p.next)}</span>`));
+    c.appendChild(el("div", "decision" + (p.decision ? " done" : ""), p.decision ? "決定：" + esc(p.decision) : "決定：（待定）"));
+    (p.tables || []).forEach(t => c.appendChild(table(t)));
+    pd.appendChild(c);
+  });
+
+  document.getElementById("foot").textContent = D.rejected_older + "　這頁的內容都在檔頭 <script id=\"data\"> 的 JSON 裡；lab 結果出來改那裡即可。";
+})();
+</script>
+</body>
+</html>
