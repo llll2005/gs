@@ -170,6 +170,8 @@ def status_of(machine, run, label):
             return "不採用", "v5 系列（v4f／v5／v5e8／v5s4／dsf）：b1 那團都還在、塊內高處 −14～+10%、時間 +11～25% => 11-15 晚關線"
         if run.startswith("g44tn_s17g70") and "r2" in run:
             return "不採用", "17k＋兩輪名額 85%：時間 −18～19%，但換塊 −0.021／−0.028、本塊區域 −0.06～−0.08、F1 −.030／−.027（比 17k 單獨多掉一截）"
+        if run.startswith("g44tn_s17g70" + R3 + "densecapfcncs"):
+            return "不採用", "無約束往下沉：b1／b4 換塊 −0.07～−0.10、塔頂對齊掉 => 11-15 深夜關線"
         if run == "g44tn_s17g70" + R3 + "densecapfc_best1maskdistrfed10b4":
             return "現行", "新底 5（17k＋稠密起點＋只補前面；11-15 晚 使用者採用）"
         if run == "g44tn_s17g70" + R3 + "_best1maskdistrfed10b4":
