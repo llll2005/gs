@@ -651,6 +651,15 @@ class MCMC2DGSDensityController(MCMCDensityController):
     sfm_vis_side_rep: float = 0.25
 
     sfm_vis_eps: float = 0.01
+    sfm_vis_stream: int = 0
+    """★ 2026-11-15 v5（使用者「對 v4 提出改進版、解決時間問題」；證據逐步累積的寫法同 TIDI-GS arXiv 2601.09291 的「逐顆累計有貢獻的訓練視角」）。
+    > 0 時不再於每次增生／搬家事件把全部顆粒投影到本塊全部訓練相機（v4：每次 0.4～1.5 s、500～900 台）；改成每 sfm_vis_stream 步
+    只用「這一步的訓練相機」投一次空區票（同 sfm_vis_votes 的判準與像素容差），逐顆累積 free／cover；事件時用累積的票判浮塊
+    （free >= sfm_vis_free_min 且 free >= sfm_vis_free_frac x cover），判完把累積乘 sfm_vis_stream_decay（顆粒會移動，舊證據淡出）。
+    **只投浮塊票**：地下票不算（11-08 v4 傷牆的就是地下票：少 SfM 的牆被背面相機判地下）。新增／搬家的顆粒繼承母點的累積票。
+    使用者 11-15 viewer：b1 海岸外那團浮塊只有開 v4（配 lr x2）的跑次沒有。需要 sfm_vis true；不能和 sfm_vis_noup 一起開。0＝v4。"""
+    sfm_vis_stream_decay: float = 0.5
+    """v5：每次事件判完後，累積的 free／cover 乘這個倍率（0.5＝證據的半衰期是一個事件間隔）。1＝不淡出。"""
     """視線一致性判成浮塊／地下的母點的抽樣倍率；1.0＝不改抽樣、只印統計。範圍同 sfm_birth_from_iter／until_iter。"""
     sfm_vis_noup: bool = False
     """★ 2026-11-06（使用者「讓沒證據的地方不准往上長」）需要 sfm_vis。每次投票時，視野內 >= 3 台相機、但格內有 SfM 的相機 0 台的顆粒
@@ -1080,6 +1089,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if not getattr(self, "_sfm_ready", False):  # 第一次（還沒做任何 optimizer step）=> 位置＝初始化
                 self._sfm_setup(gaussian_model, pl_module)
             self._sfm_report(gaussian_model, global_step)
+            if int(getattr(self.config, "sfm_vis_stream", 0) or 0) > 0 and getattr(self, "_vis", None) is not None:
+                self._v5_vote(gaussian_model, batch, global_step)
         if int(getattr(self.config, "inplane_hold", 0) or 0) > 0:
             self._inplane_project(gaussian_model, global_step)
         # Same event gating as the parent, plus optional screen-size recycling (see the
@@ -1414,7 +1425,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_noup_z": float("inf"),
                      "_pxf_log": float("-inf"), "_sfm_under": 0,
-                     "_r2_surf": False, "_r2_born": True, "_r2_p0": 0.0, "_r2_n0": 0.0}
+                     "_r2_surf": False, "_r2_born": True, "_r2_p0": 0.0, "_r2_n0": 0.0,
+                     "_v5_free": 0.0, "_v5_cov": 0.0}
     # 跟著 N 走的逐顆狀態 => 新增時補的值（_pxf_log：px_floor 的 log 下限，-inf＝不夾；_sfm_under：v4 地下票，0＝沒判／等下次投票）
 
     def _per_particle_extend(self, n0: int, n1: int) -> None:
@@ -1709,7 +1721,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         t = lambda a: torch.from_numpy(a).to(dev)
         self._vis = {"dmin": t(dmin.astype(np.float16)), "dmax": t(dmax.astype(np.float16)), "R": t(R), "T": t(T),
                      "fx": t(intr[:, 0]), "fy": t(intr[:, 1]), "cx": t(intr[:, 2]), "cy": t(intr[:, 3]), "W": t(intr[:, 4]), "H": t(intr[:, 5]),
-                     "cell": g, "step": -1}
+                     "cell": g, "step": -1, "name2k": {im.name: k for k, im in enumerate(sel)}}
         _ab_nn = float(getattr(c, "sfm_vis_behind_max_above_nn", -1.0))
         if float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 and (float(getattr(c, "sfm_vis_behind_max_above", -1.0)) >= 0 or _ab_nn >= 0):
             P = np.array(list(good.values()), dtype=np.float64).reshape(-1, 3)
@@ -2045,7 +2057,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             pick = torch.arange(K, device=X.device) if kk <= 0 or kk >= K else torch.randperm(K, device=X.device)[:kk]   # <=0＝全部相機
             import time as _t
             _t0 = _t.time()
-            floater, under, cv, iv = self._sfm_vis_classify(X, pick)
+            if int(getattr(c, "sfm_vis_stream", 0) or 0) > 0:               # ★ 11-15 v5：用逐步累積的票，不重投全部相機
+                floater, under, cv, iv = self._v5_classify(X)
+                pick = torch.zeros(0, device=X.device)
+            else:
+                floater, under, cv, iv = self._sfm_vis_classify(X, pick)
             vis["bad"] = floater | under; vis["fl"] = floater; vis["un"] = under; vis["cv"] = cv
             self._sfm_under = under.to(torch.uint8)                    # ★ 11-09 熵閘門 vis_gate_need_under 讀（跟著 _PER_PARTICLE 剪／補）
             vis["step"] = step; vis["n"] = X.shape[0]; vis["ncam"] = int(pick.numel())
@@ -2067,11 +2083,103 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             n = vis["bad"].shape[0]
             print(f"[sfm-vis] {'✅ 首次觸發' if first else '　'} step {step}：{'搬家' if indices is not None else '增生'}抽母點｜"
                   f"浮塊（空區票）{int(vis['fl'].sum()):,}、地下（一直被擋）{int(vis['un'].sum()):,}、沒有 SfM 證據 {int((vis['cv'] == 0).sum()):,}／{n:,} 顆；"
-                  f"機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）｜投票 {vis.get('ncam', 0)} 台相機、{vis.get('ms', 0):.0f} ms"
+                  f"機率質量 {m0:.1%} -> {m1:.1%}（× {eps:g}）｜" + (f"v5 逐步累積（事件判定 {vis.get('ms', 0):.0f} ms）" if int(getattr(c, "sfm_vis_stream", 0) or 0) > 0 else f"投票 {vis.get('ncam', 0)} 台相機、{vis.get('ms', 0):.0f} ms")
                   + (f"｜地下票只算落後 {float(c.sfm_vis_behind_max):g}×容差內" if float(getattr(c, "sfm_vis_behind_max", 0.0) or 0.0) > 0 else "")
                   + (f"（只套離地 > {float(vis.get('above', 0.0)):.4g} 的 {vis.get('bm_frac', 0.0):.1%} 顆）" if vis.get("gnd") is not None else "")
                   + (f"｜單側被擋＋證據稀不算地下 {vis['side_ex']:,}／{vis['side_un0']:,}" if "side_ex" in vis else ""), flush=True)
         return out
+
+    # ────────── ★ 11-15 v5：逐步累積的浮塊票（sfm_vis_stream）
+    def _v5_window(self, step: int) -> bool:
+        c = self.config
+        hi = int(getattr(c, "sfm_birth_until_iter", -1) or -1)
+        # 抽母點（增生／搬家）只發生在增生期 => 增生期外投的票用不到（v4 也只在事件時投）
+        return step >= int(getattr(c, "sfm_birth_from_iter", 0) or 0) and (hi <= 0 or step <= hi) and self._growing(step)
+
+    @torch.no_grad()
+    def _v5_vote(self, gaussian_model, batch, step: int) -> None:
+        """這一步的訓練相機投一次空區票，逐顆累積（free：在觀測到的 SfM 點前面 > 容差；cover：落在有 SfM 的格）。"""
+        c = self.config
+        if bool(getattr(c, "sfm_vis_noup", False)):
+            raise RuntimeError("sfm_vis_stream（v5）不能和 sfm_vis_noup 一起開（v5 不算「沒證據」）")
+        k_every = int(getattr(c, "sfm_vis_stream", 0) or 0)
+        if step % k_every != 0 or not self._v5_window(step):
+            return
+        vis = self._vis
+        try:
+            nm = batch[1][0]
+        except Exception:
+            nm = None
+        k = vis["name2k"].get(nm) if isinstance(nm, str) else None
+        if k is None:
+            self._v5_miss = getattr(self, "_v5_miss", 0) + 1
+            if self._v5_miss == 1:
+                print(f"⚠⚠ [sfm-vis v5] step {step}：這台訓練相機（{nm!r}）不在 SfM 深度格的相機清單裡 => 這步不投票（之後同類情況只計數）", flush=True)
+            return
+        import time as _t
+        X = gaussian_model.gaussians["means"].detach().float()
+        N = X.shape[0]
+        _timed = getattr(self, "_v5_n", 0) % 200 == 0                     # 取樣計時：前後都同步，才不會把排隊中的訓練工作算進來
+        if _timed and X.is_cuda:
+            torch.cuda.synchronize()
+        _t0 = _t.time()
+        t = getattr(self, "_v5_free", None)
+        if t is None or t.shape[0] != N or getattr(self, "_v5_cov", None) is None or self._v5_cov.shape[0] != N:
+            if t is not None:
+                self._v5_reset = getattr(self, "_v5_reset", 0) + 1         # 長度對不上（不在已知的增減路徑）=> 歸零自癒
+            self._v5_free = torch.zeros(N, device=X.device); self._v5_cov = torch.zeros(N, device=X.device)
+        sl = slice(k, k + 1)
+        f, b, cn, iv, cv = sfm_vis_votes(X, vis["R"][sl], vis["T"][sl], vis["fx"][sl], vis["fy"][sl], vis["cx"][sl], vis["cy"][sl],
+                                         vis["W"][sl], vis["H"][sl], vis["dmin"][sl], vis["dmax"][sl], vis["cell"],
+                                         float(getattr(c, "sfm_vis_px", 8.0)), return_cover_all=True)
+        self._v5_free += f.float(); self._v5_cov += cv.float()
+        self._v5_n = getattr(self, "_v5_n", 0) + 1
+        if _timed and self._v5_n > 1:                                      # 第一次含暖機，不計
+            if X.is_cuda:
+                torch.cuda.synchronize()
+            self._v5_ms = getattr(self, "_v5_ms", 0.0) + (_t.time() - _t0) * 1000
+            self._v5_ms_n = getattr(self, "_v5_ms_n", 0) + 1
+        if self._v5_n == 1:
+            print(f"[sfm-vis v5] ✅ 首次觸發 step {step}：每 {k_every} 步用當前訓練相機投空區票、逐顆累積（相機 {nm}，第 {k} 台）｜"
+                  f"這台：空區 {int(f.sum()):,}、有 SfM 證據 {int(cv.sum()):,}、視野內 {int(iv.sum()):,}／{N:,} 顆", flush=True)
+
+    @torch.no_grad()
+    def _v5_classify(self, X):
+        """事件時：用累積票判浮塊（判準同 v4 的空區票），地下一律不判；判完累積乘 decay。回傳格式同 _sfm_vis_classify。"""
+        c = self.config
+        N = X.shape[0]
+        fr, cv = getattr(self, "_v5_free", None), getattr(self, "_v5_cov", None)
+        if fr is None or fr.shape[0] != N:
+            fr = torch.zeros(N, device=X.device); cv = torch.zeros(N, device=X.device)
+            self._v5_free, self._v5_cov = fr, cv
+        floater = (fr >= float(getattr(c, "sfm_vis_free_min", 2))) & (fr >= float(getattr(c, "sfm_vis_free_frac", 0.0) or 0.0) * cv)
+        under = torch.zeros_like(floater)
+        d = float(getattr(c, "sfm_vis_stream_decay", 0.5))
+        ms = getattr(self, "_v5_ms", 0.0) / max(getattr(self, "_v5_ms_n", 0), 1)
+        st = int(getattr(self, "_ip_step", 0))
+        if st // 1500 != getattr(self, "_v5_last", -1):
+            self._v5_last = st // 1500
+            hv = cv > 0
+            print(f"[sfm-vis v5] step {st}：累積 {getattr(self, '_v5_n', 0):,} 次投票（每次約 {ms:.1f} ms）｜判浮塊 {int(floater.sum()):,}／{N:,} 顆；"
+                  f"有證據的顆粒 {int(hv.sum()):,}、證據數中位 {float(cv[hv].median()) if bool(hv.any()) else 0:.1f}"
+                  + (f"｜⚠ 相機對不到 {self._v5_miss:,} 次" if getattr(self, "_v5_miss", 0) else "")
+                  + (f"｜⚠ 長度不符歸零 {self._v5_reset} 次" if getattr(self, "_v5_reset", 0) else ""), flush=True)
+        if d != 1.0:
+            fr.mul_(d); cv.mul_(d)
+        return floater, under, cv.round().long(), cv.round().long()
+
+    def _v5_inherit(self, dst, par) -> None:
+        """新增／搬家的顆粒繼承母點的累積票（它們就放在母點旁邊）。"""
+        if dst.numel() == 0:
+            return
+        for key in ("_v5_free", "_v5_cov"):
+            t = getattr(self, key, None)
+            if t is None or t.shape[0] <= int(dst.max()):
+                continue
+            if par is not None and par.shape[0] == dst.shape[0]:
+                t[dst] = t[par]
+            else:
+                t[dst] = 0
 
     @torch.no_grad()
     def _sfm_noup_flag(self, X, cv, iv, step: int) -> None:
@@ -2359,6 +2467,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             t = getattr(self, k, None)
             if t is not None and t.shape[0] == dead_mask.shape[0]:
                 t[dead_mask] = 0
+        if getattr(self, "_v5_free", None) is not None and self._v5_free.shape[0] == dead_mask.shape[0] and bool(dead_mask.any()):
+            self._v5_inherit(dead_mask.nonzero(as_tuple=True)[0], getattr(self, "_last_parent_idx", None))   # ★ 11-15 v5
         t = getattr(self, "_pxf_log", None); par = getattr(self, "_last_parent_idx", None)   # px_floor：搬家的＝母點旁邊 => 繼承母點的下限
         if t is not None and t.shape[0] == dead_mask.shape[0]:
             di = dead_mask.nonzero(as_tuple=True)[0]
@@ -2393,6 +2503,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if n1 > n0:
             self._per_particle_extend(n0, n1)
             self._vlast_extend(gaussian_model, n0, n1)
+            if getattr(self, "_v5_free", None) is not None and self._v5_free.shape[0] == n1:
+                self._v5_inherit(torch.arange(n0, n1, device=self._v5_free.device), getattr(self, "_last_parent_idx", None))   # ★ 11-15 v5
             t = getattr(self, "_pxf_log", None); par = getattr(self, "_last_parent_idx", None)
             if t is not None and t.shape[0] == n1:
                 if par is not None and par.shape[0] == n1 - n0:
@@ -2575,7 +2687,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             for _k, _t in _st.items():
                 if torch.is_tensor(_t) and _t.shape[0] == N:
                     _t[slots] = 0
-        for _nm in ("_max_radii2D", "_max_tiles2D", "_absgrad_accum", "_occ_n", "_see_n"):
+        for _nm in ("_max_radii2D", "_max_tiles2D", "_absgrad_accum", "_occ_n", "_see_n", "_v5_free", "_v5_cov"):
             _t = getattr(self, _nm, None)
             if torch.is_tensor(_t) and _t.shape[0] == N:
                 _t[slots] = 0
