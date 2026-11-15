@@ -135,7 +135,7 @@ def parse_swap(path):
 def status_of(machine, run, label):
     s = run + " " + (label or "")
     if run == BASE3:
-        return "現行", "新底 3（現行配方）"
+        return "參考", "新底 3（20k；總帳差值的基準；11-15 起現行是 17k 的新底 4）"
     if run == ADIST4:
         return "參考", "A＋dist4（全場景最佳 28.058 的配方）"
     if run == NB30:
@@ -161,12 +161,15 @@ def status_of(machine, run, label):
                               ("pxdelf", "打平", "點精靈全解析度才刪：與撐大打平"), ("pxabsf", "不採用", "點精靈全解析度才吸收：與撐大打平但慢 8%"),
                               ("pxdel", "不採用", "點精靈刪除（低解析度期也刪，第 1,000 步判掉 82%）"), ("pxabs", "不採用", "點精靈吸收（低解析度期也做）"),
                               ("mg", "不採用", "合併系列（本機）：不省時間（+0～5%）、最終顆數沒降（cap 補回；mgpx／mgrel +15～21%）、畫質打平"),
+                              ("noip", "待驗證", "拿掉面內增生：海面高處 −61／−96%、換塊 −0.007／−0.010、F1 −.008／−.014（待使用者 viewer）"),
                               ("dense", "建議採用", "三角式稠密起點（照常增生）：lab 換塊打平、F1／地下／海面變好、時間不變（待使用者決定）"),
                               ("r2", "不採用", "兩輪（名額 85%）：被 17k 壓過（省得少、換塊較差、幾何代價相同）、顆數 +15%")]:
             if key in tail:
                 return st, note
         if run.startswith("g44tn_s17g70") and "r2" in run:
             return "不採用", "17k＋兩輪名額 85%：時間 −18～19%，但換塊 −0.021／−0.028、本塊區域 −0.06～−0.08、F1 −.030／−.027（比 17k 單獨多掉一截）"
+        if run == "g44tn_s17g70" + R3 + "_best1maskdistrfed10b4":
+            return "現行", "新底 4（17k；11-15 使用者採用）"
         if run.startswith("g44tn_s17g70"):
             return "取捨", "17k：時間 −12%、換塊打平，但地下 +0.5～0.6 層、F1 −.010～−.018"
         if run.startswith("g44tn_s15g80"):
