@@ -12,6 +12,7 @@ import argparse, glob, json, os, re
 BASE3 = "g44tn_s20g70np16tricap0p5cmflattrimasklowresgeo8log0_best1maskdistrfed10b4"
 ADIST4 = "g44s30ksfm10fssh16di4_best1maskdistrfed10b4"
 NB30 = "g44s30ksfm10lrx100nov4_best1maskdistrfed10b4"
+BASE5 = "g44tn_s17g70np16tricap0p5cmflattrimasklowresgeo8log0densecapfc_best1maskdistrfed10b4"   # ★ 11-15 晚 新底 5
 NUM = r"[-+]?[\d,]*\.?\d+"
 
 
@@ -253,6 +254,8 @@ def main():
     idx = {(r["machine"], r["blk"], r["run"]): r["id"] for r in out}
     for r in out:
         r["base"] = idx.get((r["machine"], r["blk"], BASE3))
+        if r["run"].startswith(BASE5.split("_best1")[0]) and idx.get((r["machine"], r["blk"], BASE5)):
+            r["base"] = idx.get((r["machine"], r["blk"], BASE5))          # 新底 5 系列（往下沉、凸包外放寬…）對新底 5
         if r["machine"] == "ref":
             r["base"] = idx.get(("lab", r["blk"], BASE3)) or idx.get(("local", r["blk"], BASE3))
     # 11-09 總帳（本機舊底 30k）
