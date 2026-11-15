@@ -58,7 +58,7 @@ def parse_eval(path):
             lab = l.split("純訓練")[0].strip()
             m = re.search(r"純訓練（[^）]*）\s*(" + NUM + r")\s*分", l)
             d = out.setdefault(lab, {})
-            if m: d["time_min"] = fnum(m.group(1))
+            if m and fnum(m.group(1)) > 0: d["time_min"] = fnum(m.group(1))   # 接續跑次（只跑 1000 步）記成 0.0 => 當缺值
             m = re.search(r"整個任務\s*(" + NUM + r")\s*分", l)
             if m: d["task_min"] = fnum(m.group(1))
             m = re.search(r"｜N\s*([\d,]+)", l)
@@ -150,7 +150,7 @@ def status_of(machine, run, label):
     if "tricap2g" in run:
         return "不採用", "上限只在增生期：沒拿回畫質"
     if run.startswith("seadose"):
-        return "待驗證", "海面往下沉（接續 1000 步的劑量掃描）"
+        return "待驗證", "海面往下沉（接續 1000 步）：lab 換塊 b1 打平、b4 −0.022 且地下增加（不保護）；保護版待驗"
     if run.startswith("probe_sea"):
         return "參考", "海面接續 500 步（11-13）"
     if on3:
@@ -158,12 +158,19 @@ def status_of(machine, run, label):
         if run.startswith("g44tn_s20g0"):
             return "不採用", "EDGS 式不增生：立面減半、地下變多"
         for key, st, note in [("fp16", "不採用", "完整路徑每 16 步：只省 2%、F1 掉"), ("cskip", "不採用", "C 區不跑：不省時間、畫質掉"),
-                              ("pxdelf", "打平", "點精靈全解析度才刪：與撐大打平"), ("pxabsf", "待評", "點精靈全解析度才吸收"),
+                              ("pxdelf", "打平", "點精靈全解析度才刪：與撐大打平"), ("pxabsf", "不採用", "點精靈全解析度才吸收：與撐大打平但慢 8%"),
                               ("pxdel", "不採用", "點精靈刪除（低解析度期也刪，第 1,000 步判掉 82%）"), ("pxabs", "不採用", "點精靈吸收（低解析度期也做）"),
-                              ("mg", "待評", "合併系列變體（本機）"), ("dense", "待驗證", "新底 3＋三角式稠密起點（照常增生）"),
-                              ("r2", "待驗證", "新底 3＋兩輪流程")]:
+                              ("mg", "不採用", "合併系列（本機）：不省時間（+0～5%）、最終顆數沒降（cap 補回；mgpx／mgrel +15～21%）、畫質打平"),
+                              ("dense", "建議採用", "三角式稠密起點（照常增生）：lab 換塊打平、F1／地下／海面變好、時間不變（待使用者決定）"),
+                              ("r2", "不採用", "兩輪（名額 85%）：被 17k 壓過（省得少、換塊較差、幾何代價相同）、顆數 +15%")]:
             if key in tail:
                 return st, note
+        if run.startswith("g44tn_s17g70"):
+            return "取捨", "17k：時間 −12%、換塊打平，但地下 +0.5～0.6 層、F1 −.010～−.018"
+        if run.startswith("g44tn_s15g80"):
+            return "不採用", "15k 增生 80%：本塊區域 b1 −0.077、F1 與地下都差"
+        if run.startswith("g44tn_s15g70"):
+            return "不採用", "15k 增生 70%：本機 F1 −.012／−.032（比 15k／80% 更差）"
         if not run.startswith("g44tn_s20g70"):
             return "待驗證", "步數再降（新底 3 配方）"
     if run.startswith("g44tn_s30g50") and ("r2" in run or "dense" in run):
@@ -248,7 +255,7 @@ def main():
                         "label": r["name"], "v": v, "src": ["11-09 總帳（report_data_1109.json）"], "status": "歷史",
                         "note": (r.get("mech") or "") + ("｜" + r["verdict"] if r.get("verdict") else ""),
                         "base": ("old|" + r["base"]) if r.get("base") else None})
-    PRI = {"現行": 0, "待驗證": 1, "取捨": 2, "待評": 3, "打平": 4, "不採用": 5, "參考": 6, "歷史": 7}
+    PRI = {"現行": 0, "建議採用": 0.5, "待驗證": 1, "取捨": 2, "待評": 3, "打平": 4, "不採用": 5, "參考": 6, "歷史": 7}
     out.sort(key=lambda r: ({"lab": 0, "local": 1, "ref": 2, "local-old": 3}.get(r["machine"], 9), PRI.get(r["status"], 9), r["blk"] or 0, r["label"]))
     import math
     for r in out:                                          # NaN／inf 不是合法 JSON（瀏覽器整段讀不進來）=> 丟掉
