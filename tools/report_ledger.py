@@ -150,7 +150,7 @@ def status_of(machine, run, label):
     if "tricap2g" in run:
         return "不採用", "上限只在增生期：沒拿回畫質"
     if run.startswith("seadose"):
-        return "待驗證", "海面往下沉（接續 1000 步）：lab 換塊 b1 打平、b4 −0.022 且地下增加（不保護）；保護版待驗"
+        return "待驗證", "海面往下沉（接續 1000 步）：b1 打平；b4 不保護 −0.022、保護 H200 仍 −0.019（地下不再增加、但海面也幾乎沒降）"
     if run.startswith("probe_sea"):
         return "參考", "海面接續 500 步（11-13）"
     if on3:
@@ -165,6 +165,8 @@ def status_of(machine, run, label):
                               ("r2", "不採用", "兩輪（名額 85%）：被 17k 壓過（省得少、換塊較差、幾何代價相同）、顆數 +15%")]:
             if key in tail:
                 return st, note
+        if run.startswith("g44tn_s17g70") and "r2" in run:
+            return "不採用", "17k＋兩輪名額 85%：時間 −18～19%，但換塊 −0.021／−0.028、本塊區域 −0.06～−0.08、F1 −.030／−.027（比 17k 單獨多掉一截）"
         if run.startswith("g44tn_s17g70"):
             return "取捨", "17k：時間 −12%、換塊打平，但地下 +0.5～0.6 層、F1 −.010～−.018"
         if run.startswith("g44tn_s15g80"):
