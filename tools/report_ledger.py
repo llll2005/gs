@@ -167,7 +167,7 @@ def status_of(machine, run, label):
             if key in tail:
                 return st, note
         if run.startswith("g44tn_s17g70" + R3) and any(k in run[len("g44tn_s17g70" + R3):] for k in ("v4f", "v5", "dsf")):
-            return "待驗證", "v5 系列（v4 浮塊票的改進：v4f／v5／v5e8／v5s4／dsf；新底 4 上）"
+            return "不採用", "v5 系列（v4f／v5／v5e8／v5s4／dsf）：b1 那團都還在、塊內高處 −14～+10%、時間 +11～25% => 11-15 晚關線"
         if run.startswith("g44tn_s17g70") and "r2" in run:
             return "不採用", "17k＋兩輪名額 85%：時間 −18～19%，但換塊 −0.021／−0.028、本塊區域 −0.06～−0.08、F1 −.030／−.027（比 17k 單獨多掉一截）"
         if run == "g44tn_s17g70" + R3 + "densecapfc_best1maskdistrfed10b4":
