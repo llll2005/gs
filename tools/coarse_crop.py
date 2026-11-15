@@ -8,7 +8,7 @@
 - 全域全解析度跑不動（10-31 全域 3.2M：187 ms／步、峰值 19.3 GB、RAM 被殺）=> coarse 用 1/4 訓練解析度＋SH0。
 
 ## 兩個子指令
-init   各塊 `sfmfill_sweep44/dup1/block_<B>.ply` 只留自己盒內（不外擴；外圈塊本來就延伸到場景邊）拼成全域，
+init   各塊 `<--src>/dup1/block_<B>.ply`（預設 sfmfill_sweep44；11-16 新底 5 版用 sfmfill_tri44_crop＝稠密起點）只留自己盒內（不外擴；外圈塊本來就延伸到場景邊）拼成全域，
        隨機抽到 --n 顆 => `<data>/coarse_init/dup1_g44_<n/1000>k.ply`（全域 coarse 的起點）
 crop   全域 coarse 的 ckpt 裁到各塊盒外擴 --m_c（同 `block_mask44.py --crop_ply` 的外擴，預設 0.15 x 內側塊尺寸），
        再把最大的面元在面內一拆四（2x2、兩軸尺度各減半、opacity／顏色照抄），顆數拆到 <= --frac x 該塊 cap 為止；
@@ -54,7 +54,7 @@ def in_box(xy, lo, hi):
 def cmd_init(a):
     from plyfile import PlyData, PlyElement
     Rp, bx, _ = boxes(a.data, a.part)
-    src = os.path.join(a.data, "sfmfill_sweep44", a.dup)
+    src = os.path.join(a.data, a.src, a.dup)          # ★ 11-16 --src：新底 5 的 coarse 用稠密起點 sfmfill_tri44_crop
     parts, tot = [], 0
     for b in range(16):
         v = PlyData.read(os.path.join(src, f"block_{b}.ply"))["vertex"].data
@@ -67,7 +67,7 @@ def cmd_init(a):
     if len(allv) > a.n:
         allv = allv[np.sort(rng.choice(len(allv), a.n, replace=False))]
     od = os.path.join(a.data, "coarse_init"); os.makedirs(od, exist_ok=True)
-    of = os.path.join(od, f"{a.dup}_g44_{len(allv) // 1000}k.ply")
+    of = os.path.join(od, f"{a.tag or a.dup}_g44_{len(allv) // 1000}k.ply")
     PlyData([PlyElement.describe(allv, "vertex")], text=False).write(of)
     print(f"全域起點：各塊 {a.dup} 合計 {tot:,}、自己盒內拼起來 {sum(len(p) for p in parts):,} -> 抽 {len(allv):,} => {of}")
 
@@ -133,7 +133,9 @@ def main():
     ap.add_argument("cmd", choices=["init", "crop"])
     ap.add_argument("--data", default="data/matrix_city/aerial/train/block_all")
     ap.add_argument("--part", default="partition/partitions-dim_4_4_visibility_0.08")
-    ap.add_argument("--dup", default="dup1", help="init：用 sfmfill_sweep44 底下哪一份 dup")
+    ap.add_argument("--dup", default="dup1", help="init：用 --src 底下哪一份 dup")
+    ap.add_argument("--src", default="sfmfill_sweep44", help="init：各塊起點的目錄（11-16 新底 5 的 coarse 用 sfmfill_tri44_crop＝稠密起點；裁盒版也行，只留自己盒內）")
+    ap.add_argument("--tag", default="", help="init：輸出檔名前綴（預設＝--dup；換 --src 時要給，免得蓋掉 dup1_g44_*.ply）")
     ap.add_argument("--n", type=int, default=1800000, help="init：全域起點顆數（要 <= 0.9 x coarse cap）")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--ckpt", help="crop：全域 coarse 的 ckpt")

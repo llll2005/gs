@@ -7,6 +7,7 @@
 #     g<NN>    增生期＝全長的 NN%（預設 g50＝現行比例）
 #     lowres   前段低解析度：< 全長 1/4 用 1/2、< 1/2 用 3/4，低解析度步不算 dist（11-09 在現行配方上快 12～15%）
 #     coarse   起點＝輕量 coarse 裁塊（outputs/lab/coarse_g44r48sh0_crop；task_coarse.sh）
+#     coarse5  ★ 11-16 起點＝新底 5 配方的 10k coarse 裁塊（outputs/lab/coarse5_s10g70r48sh0_crop；task_coarse.sh init5／coarse5／crop5）
 #     np16     鄰域平面約束每 16 步
 #     lr050    位置 lr 再減半（3.2e-5）
 #     mvu      v4 判準搬進合併事件（＋BH 用 SfM 間距倍數）
@@ -85,7 +86,7 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
+        lowres|coarse|coarse5|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
         nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf) XT+=("$t") ;;
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
@@ -103,7 +104,7 @@ parse() {
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
-    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
+    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
@@ -154,6 +155,11 @@ for t in "${XT[@]:-}"; do
     lowres) XA+=(--model.train_res_schedule "$((ST / 4)):0.5,$((ST / 2)):0.75" --model.metric.init_args.lambda_dist_lowres 0) ;;
     coarse) CK=outputs/lab/coarse_g44r48sh0_crop/blocks/block_$B/checkpoints/coarse_crop.ckpt
             [ -f "$CK" ] || { echo "⛔ 缺 $CK（task_coarse.sh crop）"; exit 2; }
+            XA+=(--model.initialize_from "$CK" --model.overwrite_config false); ENVX+=(CITYGS_KEEP_CFG_RENDERER=1) ;;
+    # ★ 11-16 新底 5 版 coarse 起點（task_coarse.sh init5／coarse5／crop5；TUNE_COARSE5＝裁塊跑次名）
+    coarse5) CK=outputs/lab/${TUNE_COARSE5:-coarse5_s10g70r48sh0_crop}/blocks/block_$B/checkpoints/coarse_crop.ckpt
+            [ -f "$CK" ] || [ "${CITYGS_DRY:-0}" = 1 ] || { echo "⛔ 缺 $CK（task_coarse.sh crop5）"; exit 2; }
+            [[ " ${XT[*]} " =~ \ dense\  ]] && { echo "⛔ coarse5 與 dense 是兩種起點，不能一起寫"; exit 2; }
             XA+=(--model.initialize_from "$CK" --model.overwrite_config false); ENVX+=(CITYGS_KEEP_CFG_RENDERER=1) ;;
     np16)   XA+=(--model.metric.init_args.surf_reg 0.01 --model.metric.init_args.surf_orient 1.0 --model.metric.init_args.surf_interval 16
                  --model.metric.init_args.surf_every 400) ;;
