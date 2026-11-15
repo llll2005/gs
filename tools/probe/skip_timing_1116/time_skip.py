@@ -7,7 +7,7 @@ import numpy as np
 import torch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../..")))
 ap = argparse.ArgumentParser(); ap.add_argument("--ckpt", required=True); ap.add_argument("--nview", type=int, default=24)
-ap.add_argument("--rep", type=int, default=3); ap.add_argument("--phase", default="grow,harvest")
+ap.add_argument("--rep", type=int, default=3); ap.add_argument("--phase", default="grow,harvest,full")
 a = ap.parse_args()
 import diff_trim_surfel_rasterization as RZ
 print("光柵器", RZ.__file__, flush=True)
@@ -26,11 +26,18 @@ print(f"N={model.n_gaussians:,}｜可求梯度參數 {len(params)} 組｜視角 
 bg = torch.zeros(3, device=dev)
 g = torch.Generator(device=dev).manual_seed(0)
 W = None
+WF = {}
 ARMS = [("不開", 0, False), ("不開（重跑，量雜訊）", 0, False), ("A-1 fwd", 1, False), ("A-1 bwd", 2, False), ("A-1 fwd+bwd", 3, False),
         ("配對 bit（tile 層，現有）", 0, True), ("A-3（逐 warp 位元）", 4, True), ("A-1 fwd＋A-3", 5, True)]
 
 
+FULL = False
+KEYS = ("render", "rend_normal", "rend_dist", "surf_depth", "rend_alpha", "surf_normal")
+
+
 def run(cam, absg):
+    if FULL:   # 完整路徑步（每 8 步：法向＋深度等幾何通道；光柵器 MODE 0＋GEOM backward）
+        return renderer(cam, model, bg_color=bg, _absgrad=absg)
     out = renderer(cam, model, bg_color=bg, _lean=True, _absgrad=absg)
     return out
 
@@ -46,9 +53,16 @@ def one_pass(absg, record):
         out = run(cam, absg)
         e1.record()
         img = out["render"]
-        if W is None or len(W) <= k:
-            W = (W or []) + [torch.rand(img.shape, device=dev, generator=g) - 0.5]
-        loss = (img * W[k]).sum()
+        if FULL:
+            ks = [kk for kk in KEYS if torch.is_tensor(out.get(kk))]
+            key = ("full", k)
+            if key not in WF:
+                WF[key] = {kk: torch.rand(out[kk].shape, device=dev, generator=g) - 0.5 for kk in ks}
+            loss = sum((out[kk] * WF[key][kk]).sum() for kk in ks)
+        else:
+            if W is None or len(W) <= k:
+                W = (W or []) + [torch.rand(img.shape, device=dev, generator=g) - 0.5]
+            loss = (img * W[k]).sum()
         loss.backward()
         e2.record()
         torch.cuda.synchronize()
@@ -60,13 +74,14 @@ def one_pass(absg, record):
 
 
 for phase in a.phase.split(","):
-    grow = phase == "grow"
+    FULL = phase == "full"
+    grow = phase in ("grow", "full")
     renderer._acc_stop = not grow          # 增生期：訓練中累加 V/C（WACC）開；收割期關
     absg = grow                            # absgrad 只在增生期累加（absgrad_gate）
-    print(f"\n══ {'增生期（V/C 累加＋absgrad 開）' if grow else '收割期（V/C 累加、absgrad 關）'} ══", flush=True)
+    print(f"\n══ {'完整路徑步（MODE 0＋GEOM backward；render／法向／dist／深度／alpha 都進 loss）' if FULL else ('增生期（V/C 累加＋absgrad 開）' if grow else '收割期（V/C 累加、absgrad 關）')} ══", flush=True)
     res = {}
     ref = None
-    for name, f, pb in ARMS:
+    for name, f, pb in (ARMS[:5] if FULL else ARMS):
         os.environ["CITYGS_SKIPF"] = str(f); renderer.bwd_pair_bit = pb
         one_pass(absg, False)                                   # 暖機
         TF, TB = [], []

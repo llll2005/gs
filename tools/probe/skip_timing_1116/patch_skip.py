@@ -23,9 +23,9 @@ head = head.replace("__device__ float g_t_sat = 0.0001f;", "__device__ float g_t
 rb('''	__shared__ int s_cn1[LEANLIKE ? BLOCK_SIZE : 1];
 ''', '''	__shared__ int s_cn1[LEANLIKE ? BLOCK_SIZE : 1];
 	// ★ 11-16 計時版：A-1（逐 warp 精確支撐盒跳過）與 A-3（pair_used 改存 8 個 warp 的遮罩）
-	const bool a1 = LEANLIKE && (g_skipf & 1);
+	const bool a1 = (LEANLIKE || (MODE == 0 && !record_transmittance)) && (g_skipf & 1);   // MODE 0 的 record pass 在 alpha 判斷前就計數 => 不跳
 	const bool a3 = rec_pair && (g_skipf & 4);
-	__shared__ float4 s_box[LEANLIKE ? BLOCK_SIZE : 1];
+	__shared__ float4 s_box[(LEANLIKE || MODE == 0) ? BLOCK_SIZE : 1];
 	__shared__ unsigned long long s_wm[(MODE == 1) ? BLOCK_SIZE : 1];
 	const int wid = block.thread_rank() >> 5;
 	const float sx0 = (float)pix_min.x + 0.5f, sx1 = (float)pix_min.x + 15.5f;
@@ -95,6 +95,50 @@ open(F, "w", encoding="utf-8").write(s)
 
 B = "backward.cu"
 s = open(B, encoding="utf-8").read()
+# ★ 完整路徑步的 backward（renderCUDA<C, GEOM, ABS>）：同樣的逐 warp 盒外跳過（原本盒外的配對也是走到 alpha < 1/255 就 continue，中間沒有副作用）
+_g0 = s.index("renderCUDA(\n\tconst uint2* __restrict__ ranges,")
+_g1 = s.index("renderCUDA_opt(")
+_gk = s[_g0:_g1]
+def _rg(a, b):
+    global _gk
+    assert _gk.count(a) == 1, (_gk.count(a), a[:70]); _gk = _gk.replace(a, b)
+_rg('''	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];''', '''	__shared__ int collected_id[BLOCK_SIZE];
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
+	// ★ 11-16 計時版：A-1 也用在完整路徑步
+	const bool a1g = (g_skipf_b & 2) != 0;
+	__shared__ float4 collected_boxg[BLOCK_SIZE];
+	const int widg = block.thread_rank() >> 5;
+	const float gx0 = (float)pix_min.x + 0.5f, gx1 = (float)pix_min.x + 15.5f;
+	const float gy0 = (float)pix_min.y + 2.f * widg + 0.5f, gy1 = gy0 + 1.f;''')
+_rg('''			for (int i = 0; i < C; i++)
+				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];''', '''			for (int i = 0; i < C; i++)
+				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
+			if (a1g) {
+				const float op = normal_opacity[coll_id].w;
+				float4 bx = make_float4(-1e30f, 1e30f, -1e30f, 1e30f);
+				if (op > 1.0f / 255.0f) {
+					const float RE = sqrtf(fmaxf(2.f * logf(255.f * op), 1e-12f));
+					float2 cc, ce;
+					if (computeAABB_R_b(transMats + 9 * coll_id, RE, cc, ce)) {
+						const float2 xy0 = points_xy_image[coll_id]; const float fs = FilterSize * RE;
+						bx = make_float4(fminf(cc.x - ce.x, xy0.x - fs) - 1.f, fmaxf(cc.x + ce.x, xy0.x + fs) + 1.f,
+						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
+					}
+				}
+				collected_boxg[block.thread_rank()] = bx;
+			}''')
+_rg('''			contributor--;
+			if (contributor >= last_contributor)
+				continue;
+''', '''			contributor--;
+			if (contributor >= last_contributor)
+				continue;
+			if (a1g) { const float4 b = collected_boxg[j]; if (b.y < gx0 || b.x > gx1 || b.w < gy0 || b.z > gy1) continue; }
+''')
+s = s[:_g0] + _gk + s[_g1:]
 def rbk(a, b, cnt=1):
     global s
     assert s.count(a) == cnt, (s.count(a), a[:80]); s = s.replace(a, b)
