@@ -53,6 +53,7 @@
 #
 # 用法：bash scripts/lab/task_citygs_origin.sh <模式> [塊]（模式清單見 --help；官方 block 一律 [solo]）
 #   流程   prep → prep_test_official → coarse → partition → block <N>（x16）→ merge → test
+#   計時   blocktime <N>（11-17：只為計時重跑某塊，輸出 ${NAME}_timing，不動 release）
 #   論文設定線（ω 0.9、prune 0.025）  blockpaper <N> → mergepaper → testpaper；CITYGS_OFF_LINE=paper 讓量測模式改量這條線
 #   量測   res／blockload／prune／stepprof [N]／evalours／storage
 case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") bash "$(dirname "$0")/../_help.sh" "$0"; exit 2 ;; esac   # 說明全部從本檔讀出（scripts/_help.sh）
@@ -74,7 +75,7 @@ OTRAIN=$GS/data/matrix_city/aerial/train/block_all_official       # 官方線專
 OTEST=$GS/data/matrix_city/aerial/test/block_all_test_official2
 OTRAIN_REL=data/matrix_city/aerial/train/block_all_official        # 相對 cityGS_origin（data -> gs/data）
 [ -d "$ORIG" ] || { echo "⛔ 找不到 $ORIG"; exit 2; }
-MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blockfix <N>|blockpaper <N>|mergepaper|testpaper|merge|test|res|blockload|prune|stepprof [N]|evalours|storage（CITYGS_OFF_LINE=paper 改量論文設定線）}
+MODE=${1:?用法: task_citygs_origin.sh prep|prep_test_official|coarse|partition|block <N>|blocktime <N>|blockfix <N>|blockpaper <N>|mergepaper|testpaper|merge|test|res|blockload|prune|stepprof [N]|evalours|storage（CITYGS_OFF_LINE=paper 改量論文設定線）}
 BLKARG=${2:-}
 
 # ⚠ 執行期也要鎖 arch：容器設成含 10.0，torch 2.0.1 不認識，而 CUDA 後端第一次 densify 才 JIT 編譯
@@ -344,6 +345,23 @@ print('✅ prep 完成（影像＋官方深度）')" ;;
       --config configs/$NAME.yaml --data.parser.block_id "$BLKARG" -n $NAME \
       --data.num_workers 8 --data.path "$OTRAIN_REL"
     rc=$?; record "$BLKARG" "outputs/$NAME/blocks/block_$BLKARG"; exit "$rc" ;;
+  blocktime)
+    # ★ 2026-11-17 使用者：「序列底塞 CityGS 的計時重跑，補上之前沒量到的（卡被外部干擾導致時間不可用）」。
+    #   release 的 b10～b15 當初訓練期間同卡外部佔用 5～18 GB（台帳 ext_max_MiB）=> 時間不可引用（`紀錄/參考_CityGS參考線.md` §0.2 標 *）。
+    #   這裡**只為計時**重跑：指令、config、資料、環境與 block 模式完全相同，但輸出到 ${NAME}_timing
+    #   => 不動 release 的 blocks/block_N 與合併模型（我們所有比較都用那一份；重跑不會逐位元相同）。
+    #   台帳 mode＝blocktime；ext_max_MiB > 2000 仍不可引用（要再跑一次）。
+    [ -n "$BLKARG" ] || { echo "⛔ 用法: task_citygs_origin.sh blocktime <N>"; exit 2; }
+    [ -d "$OTRAIN/partition/partitions-dim_4_4_visibility_0.05" ] || { echo "⛔ 還沒分區（先跑 partition）"; exit 2; }
+    NT=${NAME}_timing
+    move_aside "outputs/$NT/blocks/block_$BLKARG"
+    echo "=== 官方微調 block $BLKARG（只為計時，輸出 $NT；release 的 outputs/$NAME 不動）$(date) ==="
+    run_measured conda run -n "$OFFENV" --no-capture-output python -u main.py fit \
+      --config configs/$NAME.yaml --data.parser.block_id "$BLKARG" -n $NT \
+      --data.num_workers 8 --data.path "$OTRAIN_REL"
+    rc=$?; record "$BLKARG" "outputs/$NT/blocks/block_$BLKARG"
+    [ -d "outputs/$NAME/blocks/block_$BLKARG" ] || echo "⛔⛔ release 的 outputs/$NAME/blocks/block_$BLKARG 不見了（不該發生）"
+    exit "$rc" ;;
   merge)
     # ⚠ 2026-09-29：官方 merge 只 assert「至少 1 塊」，而且掃 blocks/ 底下**每個目錄**（含 *.aborted_*）
     #   => 缺一塊時會**靜默用 15 塊合成**，test 分數照樣出來。這裡逐塊要求 block_0..15 都有 60000 步，
