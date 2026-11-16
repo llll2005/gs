@@ -1501,7 +1501,8 @@ def n20_swap(d):
 # (名稱, PSNR, LPIPS, 合併 N（百萬）, 16 塊純訓練 h, 顏色)
 N21_FULL = [("full44 舊最佳（60k）", 27.739, .1293, 17.63, 30.7, MUTED), ("ed10b4", 27.868, .1153, 27.83, 7.32, C4),
             ("★ 配方 A", 28.048, .1143, 27.93, 5.90, C1), ("★ A＋dist 每 4 步", 28.058, .1142, 27.75, 5.04, "#123f7a"),
-            ("★ A cap 1.5M", 27.931, .1286, 17.12, 4.48, C3), ("A cap 1M", 27.776, .1448, 11.50, 3.86, C2)]
+            ("★ A cap 1.5M", 27.931, .1286, 17.12, 4.48, C3), ("A cap 1M", 27.776, .1448, 11.50, 3.86, C2),
+            ("A＋dist4 SfM 分配 1M", 27.822, .1421, 11.64, 2.98, "#7a5c12"), ("★ 新底 5（17k）", 27.775, .1530, 10.63, 1.41, "#b5452b")]   # ★ 11-16
 N21_BLK = {"配方 A − ed10b4": [+0.171, +0.137, +0.137, +0.150, +0.206, +0.177, +0.155, +0.161, +0.218, +0.203, +0.173, +0.164, +0.236, +0.233, +0.178, +0.149],
            "A＋dist4 − ed10b4": [+0.179, +0.127, +0.131, +0.139, +0.203, +0.168, +0.171, +0.179, +0.253, +0.198, +0.184, +0.179, +0.238, +0.263, +0.204, +0.178],
            "A 平行重跑 − ed10b4": [+0.178, +0.144, +0.155, +0.170, +0.196, +0.167, +0.168, +0.179, +0.209, +0.195, +0.178, +0.170, +0.222, +0.230, +0.183, +0.153],
@@ -1520,14 +1521,14 @@ def n21_full(d):
     for nm, p, lp, n, h, c in N21_FULL:
         ax.scatter(h, p, s=n * 22, color=c, alpha=0.85, edgecolor="white", lw=1, zorder=3)
         dx, dy, ha = {"★ A＋dist 每 4 步": (-16, 10, "right"), "★ 配方 A": (16, 4, "left"), "ed10b4": (18, -10, "left"),
-                      "★ A cap 1.5M": (-14, -20, "right")}.get(nm, (12, -4, "left"))
+                      "★ A cap 1.5M": (-16, 6, "right"), "A＋dist4 SfM 分配 1M": (-14, -24, "right"), "★ 新底 5（17k）": (12, -44, "left")}.get(nm, (12, -4, "left"))
         ax.annotate(f"{nm}\n{p:.3f}／LPIPS {lp:.4f}／{n:.1f}M", (h, p), xytext=(dx, dy), ha=ha,
                     textcoords="offset points", fontsize=7.5, color=INK2)
     ax.axhline(27.261, color=MUTED, ls="--", lw=1); ax.text(12, 27.275, "CityGS release 27.261（24.48M；b0~9 就要 40.3 h）", fontsize=7.5, color=INK2)
-    ax.set_xscale("log"); ax.set_xticks([4, 5, 6, 8, 12, 20, 30]); ax.set_xticklabels(["4", "5", "6", "8", "12", "20", "30"])
-    ax.set_xlim(2.6, 60); ax.set_ylim(27.2, 28.2)
+    ax.set_xscale("log"); ax.set_xticks([1.5, 2, 3, 4, 5, 6, 8, 12, 20, 30]); ax.set_xticklabels(["1.5", "2", "3", "4", "5", "6", "8", "12", "20", "30"])
+    ax.set_xlim(1.1, 60); ax.set_ylim(27.2, 28.2)
     ax.set_xlabel("16 塊純訓練時間（h，對數；[solo]）"); ax.set_ylabel("MatrixCity test 741 幀 PSNR")
-    ax.set_title("4x4 全場景：配方 A 28.048（5.90 h）、＋dist 每 4 步 28.058（5.04 h）；cap 1.5M 用舊最佳的顆數贏它", fontsize=9.5)
+    ax.set_title("4x4 全場景：A＋dist4 28.058（5.04 h）最高；★ 11-16 新底 5 27.775 只要 1.41 h（SfM 分配 1M 的 47%、PSNR −0.047）", fontsize=9.5)
     save(fig, d, "n21_full.png")
 
 
@@ -1764,7 +1765,8 @@ N24_MONO = {  # 高度帶: (①現行, ②每張真深度, ③每 60 px 真深�
     "z 1~2": (37.2, 27.2, 1.3, 18.5), "z 2~3": (46.6, 37.7, 1.6, 21.3), "z≥3 超高塔頂": (68.3, 50.7, 1.9, 32.1)}
 N24_FULL = [  # 名稱, PSNR, SSIM, LPIPS, N(M), 16 塊純訓練 h, FPS
     ("CityGS release", 27.261, .8671, .1540, 24.48, None, 21.9), ("★ A＋dist4 每塊 2.5M", 28.058, .8824, .1142, 27.75, 5.04, 40.6),
-    ("A＋dist4 每塊 1M", 27.805, .8709, .1443, 11.57, 3.23, 57.7), ("A＋dist4 自適應 平均 1M", 27.828, .8725, .1406, 11.64, 3.19, 57.7)]
+    ("A＋dist4 每塊 1M", 27.805, .8709, .1443, 11.57, 3.23, 57.7), ("A＋dist4 自適應 平均 1M", 27.828, .8725, .1406, 11.64, 3.19, 57.7),
+    ("A＋dist4 SfM 分配 平均 1M", 27.822, .8719, .1421, 11.64, 2.98, 57.6), ("★ 新底 5（17k）", 27.775, .8644, .1530, 10.63, 1.41, 64.8)]   # ★ 11-16 新底 5 全場景
 
 
 def n24_swap(d):
@@ -1825,17 +1827,17 @@ def n24_mono(d):
 def n24_full(d):
     """全場景（MatrixCity test 741 幀）：每塊 1M 兩版 vs 2.5M vs CityGS。"""
     fig, axs = plt.subplots(1, 4, figsize=(18, 3.9))
-    R = N24_FULL; x = np.arange(len(R)); cs = [MUTED, "#123f7a", C1, C3]
+    R = N24_FULL; x = np.arange(len(R)); cs = [MUTED, "#123f7a", C1, C3, C2, "#b5452b"][:len(R)]
     for ax, j, lab, fmt in zip(axs, (1, 3, 4, 5), ("PSNR（dB）", "LPIPS（越低越好）", "合併顆數（M）", "16 塊純訓練（h）"), ("{:.3f}", "{:.4f}", "{:.2f}", "{:.2f}")):
         vals = [r[j] if r[j] is not None else 0 for r in R]
         bars = ax.bar(x, vals, 0.62, color=cs)
         for b_, r in zip(bars, R):
             ax.text(b_.get_x() + b_.get_width() / 2, b_.get_height(), fmt.format(r[j]) if r[j] is not None else "未量",
                     ha="center", va="bottom", fontsize=7.5, color=INK2)
-        ax.set_xticks(x, [r[0].replace("A＋dist4 ", "A＋dist4\n") for r in R], fontsize=7.2); ax.set_title(lab, fontsize=9.2)
+        ax.set_xticks(x, [r[0].replace("A＋dist4 ", "A＋dist4\n").replace(" 平均 1M", "\n平均 1M").replace("（17k）", "\n（17k）") for r in R], fontsize=6.8); ax.set_title(lab, fontsize=9.2)
         if j == 1:
             ax.set_ylim(27, 28.2)
-    fig.suptitle("全場景：自適應 cap 平均 1M 以同顆數贏均勻 1M（+0.023 dB、LPIPS −2.6%；全場景雜訊 0.002）；1M 對 2.5M 時間 −36%、顆數 −58%、FPS +42%，PSNR −0.23", fontsize=9.6)
+    fig.suptitle("全場景：★ 11-16 新底 5（17k）27.775、純訓練 1.41 h＝A＋dist4 SfM 分配 1M 的 47%（PSNR −0.047、LPIPS +0.011）；自適應 1M 以同顆數贏均勻 1M（+0.023）；1M 對 2.5M 時間 −36%、PSNR −0.23", fontsize=9.0)
     save(fig, d, "n24_full.png")
 
 
