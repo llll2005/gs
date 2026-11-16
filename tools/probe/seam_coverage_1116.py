@@ -72,7 +72,13 @@ blk = np.full(len(X), -1)
 for b, (lo, hi) in boxes.items():
     m = (U[:, 0] >= lo[0]) & (U[:, 0] <= hi[0]) & (U[:, 1] >= lo[1]) & (U[:, 1] <= hi[1]); blk[m & (blk < 0)] = b
 fac = np.abs(N[:, 2]) < 0.3; flat = np.abs(N[:, 2]) > 0.8
-print(f"GT 抽 {len(X):,} 點（全部 {len(gx):,}）｜立面 {100 * fac.mean():.0f}%、平面 {100 * flat.mean():.0f}%｜地面參考 z {ZG:.4f}", flush=True)
+# ★ 11-16 轉角（使用者圖 7「牆面轉折處糊掉」）：立面點 1.5 m 內有另一個立面點的法向夾角 > 45°（|n·n'| < 0.7）
+_fi = np.where(fac)[0]; _ft = cKDTree(X[_fi])
+_dd, _jj = _ft.query(X[_fi], k=16, distance_upper_bound=0.015)
+_ok = np.isfinite(_dd); _jj = np.where(_ok, _jj, 0)
+_mincos = np.where(_ok, np.abs((N[_fi][:, None, :] * N[_fi][_jj]).sum(-1)), 1.0).min(1)
+corner = np.zeros(len(X), bool); corner[_fi] = _mincos < 0.7; del _ft, _dd, _jj, _ok
+print(f"GT 抽 {len(X):,} 點（全部 {len(gx):,}）｜立面 {100 * fac.mean():.0f}%（其中轉角 {100 * corner[fac].mean():.0f}%）、平面 {100 * flat.mean():.0f}%｜地面參考 z {ZG:.4f}", flush=True)
 
 
 def qrot(q):
@@ -133,7 +139,7 @@ for spec in a.models:
     lab, pat = spec.split("=", 1)
     f = pat if "{b}" in pat else [x for x in sorted(glob.glob(pat)) if "xyz" not in x][-1]
     res[lab] = cover(f)
-for kind, km in (("立面（|n_z|<0.3）", fac), ("平面（|n_z|>0.8：屋頂、地面）", flat)):
+for kind, km in (("立面（|n_z|<0.3）", fac), ("平面（|n_z|>0.8：屋頂、地面）", flat), ("立面－轉角（1.5 m 內有夾角 > 45° 的牆）", fac & corner), ("立面－平牆", fac & ~corner)):
     print(f"\n=== {kind}：覆蓋％／朝向對齊％（GT 點數）；列＝離內部接縫線的距離，欄＝離地高度 ===")
     print(f"{'':22}" + "".join(f"{f'{lo:.0f}~{hi:.0f}m' if hi < 1e8 else f'>{lo:.0f}m':>26}" for lo, hi in HB))
     for lab, (cov, al) in res.items():
@@ -185,5 +191,5 @@ if a.png_dir:
         fig.tight_layout(); out = os.path.join(a.png_dir, f"coverage_{lab}.png"); fig.savefig(out, dpi=90); plt.close(fig)
         print(f"[圖] {out}")
     np.savez_compressed(os.path.join(a.png_dir, "seam_cov_points.npz"), U=U.astype(np.float32), hgt=hgt.astype(np.float32),
-                        fac=fac, flat=flat, blk=blk, **{f"cov_{k}": v[0] for k, v in res.items()}, **{f"al_{k}": v[1] for k, v in res.items()})
+                        fac=fac, flat=flat, blk=blk, corner=corner, **{f"cov_{k}": v[0] for k, v in res.items()}, **{f"al_{k}": v[1] for k, v in res.items()})
 print("DONE seam_coverage")
