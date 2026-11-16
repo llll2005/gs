@@ -230,6 +230,13 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     3＝只補前面：B 的梯度只給在上限前面的貢獻（z·icap <= 1），而且只經由 α——前面變更不透明 => 後面分到的 T 變小 => B 變小；
     落在上限後面的貢獻收不到 B 的梯度。依據：離線拆解 D1 舊底的落後權重 54～60% 在「先驗對、但前面漏光」(④)，S3 的 Vb 63～68% 來自 ④（`37` §8）。
     loss 與 forward 完全不變，只改梯度去向。"""
+    depth_cap_plane_dir: str = ""
+    """★ 2026-11-17 平面上限（Fable 第三輪「海面與塔頂當成平面物件」；使用者「作」）：`tools/make_plane_depth.py` 的平面外推逆深度
+    （每張 <影像名>.npy float16 逆深度＋<影像名>_k.png 種類：1 立面、2 海面），在上限遮罩套完之後，補到**還沒有上限**的像素
+    （產生器只放在校正深度不可靠／沒有的像素），一樣乘塊外遮罩（只留 A）、上限＝平面深度 x (1+margin)。""＝關（與之前逐位元相同）。
+    前提（`tools/probe/plane_extrap_1117.py`，GT 深度）：海面區內誤差中位 0.6～1.8%、會誤罰非海面的像素約 0%；立面塔頂外推誤差中位 0.8～1.5%。"""
+    depth_cap_plane_kinds: str = "sea"
+    """平面上限用哪幾種（逗號分隔：sea、facade）。立面的上限之前會掉分（cmflat 的理由），所以預設只開海面；立面另開臂驗。"""
     depth_cap_mask_dir: str = ""
     """★ 2026-11-12 規格 3 §3.1 上限遮罩：每張影像一個 uint8 PNG（檔名同影像），0＝這個像素不設上限（`tools/make_cap_masks.py`）。
     在 depth_cap_map 套完塊外遮罩之後再乘上去 => loss、逐顆帳（vcb）、需求地圖補貨（hfd）都跟著遮罩走。路徑＝絕對路徑或相對工作目錄。
@@ -662,6 +669,8 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 cap = cap * (m == 1)
         if getattr(c, "depth_cap_mask_dir", ""):
             cap = self._cap_mask_apply(cap, name, hw, step)
+        if getattr(c, "depth_cap_plane_dir", ""):
+            cap = self._cap_plane_apply(cap, name, hw, gt.device, step)
         cap = cap.contiguous()
         self._cap_map_cur = cap
         self._cap_cur = cap if want_loss else None
@@ -684,6 +693,53 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             bw = float(getattr(c, "opacity_entropy_both_reg", -1.0))
             return (bw if bw >= 0 else ew), "both", "both"
         return ew, side, ""
+
+    def _cap_plane_apply(self, cap, name, hw, device, step):
+        """★ 11-17 平面上限（config.depth_cap_plane_dir／_kinds）：還沒有上限（cap == 0）、平面有外推深度、種類允許、塊內計分（A）的像素
+        => 上限＝平面逆深度 / (1+margin)。CPU 快取原解析度（float16 逆深度＋uint8 種類）。缺檔 => 該張不動。可觀測性：本步與累計補上的像素比例。"""
+        import os
+        import numpy as np
+        from PIL import Image
+        c = self.config
+        cache = self.__dict__.setdefault("_pl_cache", {})
+        miss = self.__dict__.setdefault("_pl_miss", set())
+        acc = self.__dict__.setdefault("_pl_acc", [0.0, 0.0, 0.0])      # [像素, 補上的立面, 補上的海面]
+        key = os.path.basename(str(name))
+        ent = cache.get(key)
+        if ent is None and key not in miss:
+            d = str(c.depth_cap_plane_dir)
+            p, pk = os.path.join(d, key + ".npy"), os.path.join(d, key + "_k.png")
+            if os.path.exists(p) and os.path.exists(pk):
+                ent = (torch.from_numpy(np.load(p).astype(np.float16)), torch.from_numpy(np.array(Image.open(pk)).astype(np.uint8)))
+                cache[key] = ent
+            else:
+                if not miss:
+                    print(f"⚠⚠ [cap-plane] 找不到平面外推深度 {p}（該張不補；之後只計數）", flush=True)
+                miss.add(key)
+        if ent is None:
+            return cap
+        pinv = ent[0].to(device, non_blocking=True).float(); kd = ent[1].to(device, non_blocking=True)
+        if tuple(pinv.shape) != tuple(hw):
+            pinv = torch.nn.functional.interpolate(pinv[None, None], size=tuple(hw), mode="nearest")[0, 0]
+            kd = torch.nn.functional.interpolate(kd[None, None].float(), size=tuple(hw), mode="nearest")[0, 0].round().to(torch.uint8)
+        kinds = [{"facade": 1, "sea": 2}[k] for k in str(getattr(c, "depth_cap_plane_kinds", "sea")).split(",") if k in ("facade", "sea")]
+        allow = torch.zeros_like(kd, dtype=torch.bool)
+        for k in kinds:
+            allow |= kd == k
+        sel = allow & (pinv > 1e-6) & (cap <= 0)
+        if getattr(c, "block_mask_dir", ""):
+            m = self._block_mask_get(name, hw, device)
+            if m is not None:
+                sel &= (m == 1)
+        out = torch.where(sel, pinv / (1.0 + float(c.depth_cap_margin)), cap)
+        n = float(cap.numel()); nf = float((sel & (kd == 1)).sum()); ns = float((sel & (kd == 2)).sum())
+        acc[0] += n; acc[1] += nf; acc[2] += ns
+        bucket = step // 2000
+        if not getattr(self, "_pl_announced", False) or bucket != getattr(self, "_pl_bucket", -1):
+            print(f"[cap-plane] {'✅ 首次觸發' if not getattr(self, '_pl_announced', False) else '　'} step={step}：本張補上 立面 {nf / n:.3f}、海面 {ns / n:.3f}｜"
+                  f"累計 立面 {acc[1] / max(acc[0], 1):.4f}、海面 {acc[2] / max(acc[0], 1):.4f}（種類 {kinds}；缺檔 {len(miss)} 張）", flush=True)
+            self._pl_announced = True; self._pl_bucket = bucket
+        return out
 
     def _cap_mask_apply(self, cap, name, hw, step):
         """★ 11-12 規格 3 §3.1：上限圖 x 上限遮罩（config.depth_cap_mask_dir）。CPU 快取存遮罩原解析度的 bool（約 0.5 MB／張），

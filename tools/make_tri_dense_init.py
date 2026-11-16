@@ -109,7 +109,15 @@ def main():
                     help="拿掉 base 裡的空中隨機補點（make_sfm_fill_init 用 SfM 平均色填＝最常見的那個 RGB）；少掉的名額由下面的反投影點補滿（總顆數仍＝target_frac x cap）")
     ap.add_argument("--outside_hull", action="store_true",
                     help="斜率級 4（該影像 SfM 點的凸包外、外插的校正深度）的像素也反投影（只用在起點，不進任何 loss；凸包內照舊只收 slope_max／size_max）")
+    # ★ 2026-11-17 平面物件（Fable 第三輪；使用者「作」）：tools/make_plane_depth.py 的平面外推逆深度（海面 kind 2、立面 kind 1）也反投影進起點；
+    #   只在校正深度不可靠／沒有的像素（產生器本來就只放在那些像素）；一樣要多視角一致才算數。海面鋪滿到相機看得到的範圍，塔頂補在外推的牆面上。
+    ap.add_argument("--plane_dir", default="", help="平面外推逆深度目錄（相對 dataset 或絕對路徑）；空＝不用")
+    ap.add_argument("--plane_kinds", default="facade,sea")
     a = ap.parse_args()
+    PK = {"facade": 1, "sea": 2}
+    pk_allow = [PK[k] for k in a.plane_kinds.split(",") if k in PK]
+    pdir = os.path.join(a.dataset, a.plane_dir) if a.plane_dir else ""
+    n_plane = {1: 0, 2: 0}
     import torch
     from plyfile import PlyData
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -132,7 +140,7 @@ def main():
         cap = a.cap_avg * float(W8[str(b)]); target = int(a.target_frac * cap)
         v = PlyData.read(os.path.join(D, a.base, f"block_{b}.ply"))["vertex"].data
         bx = np.stack([v["x"], v["y"], v["z"]], -1).astype(np.float64); bc = np.stack([v["red"], v["green"], v["blue"]], -1).astype(np.uint8)
-        n_fill = 0
+        n_fill = 0; n_plane[1] = n_plane[2] = 0
         if a.drop_fill:
             key = bc[:, 0].astype(np.int64) * 65536 + bc[:, 1].astype(np.int64) * 256 + bc[:, 2]
             uk, cnt = np.unique(key, return_counts=True)
@@ -152,6 +160,14 @@ def main():
             vv, uu = np.meshgrid(np.arange(oy, H, a.stride), np.arange(ox, W, a.stride), indexing="ij")
             i_ = inv[vv, uu]; r_ = rel[vv, uu]
             ok = (i_ > 1e-6) & ((((r_ & 7) <= a.slope_max) & ((r_ >> 3) <= a.size_max)) | (a.outside_hull & ((r_ & 7) == 4)))
+            if pdir and os.path.exists(os.path.join(pdir, nm + ".npy")):
+                pinv = np.load(os.path.join(pdir, nm + ".npy")).astype(np.float32); pkd = cv2.imread(os.path.join(pdir, nm + "_k.png"), cv2.IMREAD_UNCHANGED)
+                if pinv.shape == inv.shape and pkd is not None:
+                    p_ = pinv[vv, uu]; k_ = pkd[vv, uu]
+                    okp = (p_ > 1e-6) & np.isin(k_, pk_allow) & ~ok
+                    for kk in (1, 2):
+                        n_plane[kk] += int((okp & (k_ == kk)).sum())
+                    i_ = np.where(okp, p_, i_); ok = ok | okp
             if not ok.any():
                 continue
             z = 1.0 / i_[ok].astype(np.float64)
@@ -181,7 +197,7 @@ def main():
         out = os.path.join(D, a.out, "dup1", f"block_{b}.ply")
         write_xyzrgb_ply(out, np.concatenate([bx, dx]).astype(np.float32), np.concatenate([bc, np.clip(np.round(dc), 0, 255).astype(np.uint8)]))
         # 報告：體素邊長對 SfM 近鄰間距、對像素足跡的倍數（都只是描述，不是門檻）
-        print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}{f'（拿掉空中補點 {n_fill:,}）' if a.drop_fill else ''}{'｜凸包外也反投影' if a.outside_hull else ''}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
+        print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}{f'（拿掉空中補點 {n_fill:,}）' if a.drop_fill else ''}{'｜凸包外也反投影' if a.outside_hull else ''}{f'｜平面像素 立面 {n_plane[1]:,}、海面 {n_plane[2]:,}' if pdir else ''}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
               f"稠密點 {len(dx):,}（要 {n_want:,}）=> 共 {len(bx) + len(dx):,}（{(len(bx) + len(dx)) / cap:.2f} cap）｜{time.time() - t0:.0f} s => {out}", flush=True)
     print("DONE make_tri_dense_init", flush=True)
 
