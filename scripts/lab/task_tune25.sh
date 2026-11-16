@@ -93,6 +93,7 @@ parse() {
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
         v4f|v5|dsf) XT+=("$t") ;;
+        npri[0-9]*) [[ $t =~ ^npri[0-9]+$ ]] || { echo "⛔ 寫法：npri<k>（單目法向先驗，權重 0.0125 x k）"; return 2; }; XT+=("$t") ;;
         coarse5c[0-9]*) [[ $t =~ ^coarse5c[0-9]+(f[0-9]+)?$ ]] || { echo "⛔ 寫法：coarse5c<k 步>[f<拆分百分比>]（例 coarse5c30、coarse5c30f50）"; return 2; }; XT+=("$t") ;;
         rs[0-9]) XT+=("$t") ;;
         ncs[0-9]*) [[ $t =~ ^ncs[0-9]+$ ]] || { echo "⛔ 寫法：ncs<k>（完全沒有幾何約束的顆粒每個閘門視窗往下沉 k 像素長度）"; return 2; }; XT+=("$t") ;;
@@ -107,7 +108,7 @@ parse() {
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
-    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
+    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
@@ -168,6 +169,11 @@ for t in "${XT[@]:-}"; do
             [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44nf_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44nf_crop/dup1/block_$B.ply（tools/make_tri_dense_init.py --blocks $B --drop_fill --outside_hull --out sfmfill_tri44nf_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44nf_crop); CITYGS_DUP44=1 ;;
+    # ★ 11-16 單目法向先驗（Fable H3；使用者「都做」）：完整路徑步加 w(1−|cos(渲染法向, 單目法向)|)，w＝0.0125 x k（同法向一致性的尺度）；
+    #   先驗＝tools/make_mono_normals.py（校正深度不可靠、局部平面、深度在本張 SfM 範圍內的立面像素）
+    npri*)  _NP=data/matrix_city/aerial/train/block_all/normal_prior_mono
+            [ -d "$_NP" ] || [ "${CITYGS_DRY:-0}" = 1 ] || { echo "⛔ 缺 $_NP（tools/make_mono_normals.py --blocks $B）"; exit 2; }
+            XA+=(--model.metric.init_args.normal_prior_reg "$(awk -v k="${t#npri}" 'BEGIN{printf "%g", 0.0125 * k}')" --model.metric.init_args.normal_prior_dir "$_NP") ;;
     # ★ 11-16 coarse 消融（使用者「對 coarse 抽幾個小塊作各階段長度／總長度／參數的消融，時間不超過新底 5」）：
     #   coarse5c<NN>[f<PP>] ＝ coarse NN k 步（CO5_RUN＝coarse5_s<NN>g70r48sh0）、裁塊拆到 PP% cap（預設 85；CO5_CROP_FRAC）
     coarse5c*) [[ $t =~ ^coarse5c([0-9]+)(f([0-9]+))?$ ]]

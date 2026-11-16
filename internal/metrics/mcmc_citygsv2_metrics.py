@@ -235,6 +235,15 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     在 depth_cap_map 套完塊外遮罩之後再乘上去 => loss、逐顆帳（vcb）、需求地圖補貨（hfd）都跟著遮罩走。路徑＝絕對路徑或相對工作目錄。
     找不到檔 => 該張不設上限（⚠⚠ 一次、之後計數，每 2000 步印缺幾張；缺超過 1% 就是 bug）。""＝關（上限圖與之前逐位元相同）。
     為什麼（規格 3 §0 線索 1）：B 臂的抽母點計價不限朝向時多掉 −0.134／−0.082 dB、只算躺平時 ≈ 0；上限掉分 40% 在立面（`37` §3.1、§7）。"""
+    normal_prior_reg: float = 0.0
+    """★ 2026-11-16 單目法向先驗（Fable H3；使用者 11-16「都做」）：完整路徑步（與 lambda_normal 同一套每 k 步、權重乘 k）加
+    w·mean(1 − |cos(渲染法向, 先驗法向)|)，只算先驗遮罩內、塊外遮罩是 A、渲染 alpha > 0.5 的像素。0＝關（逐位元不變）。
+    先驗＝`tools/make_mono_normals.py` 從單目深度（逐張 scale/offset）算的世界座標法向，遮罩只留「校正深度不可靠、局部平面、
+    不在深度斷層、深度在本張 SfM 範圍內」的像素（預設只收立面）。依據：H3 離線檢查，塔頂校正深度不可靠的立面像素上，
+    單目法向誤差中位 11～12°、70～75% < 20°（校正深度在那裡 18～22°；`tools/probe/h3_mono_normal_1116.py`）。"""
+    normal_prior_dir: str = ""
+    """單目法向先驗的目錄（每張影像一個 RGBA PNG：RGB＝世界法向 x127.5+127.5、A＝255 可用）。找不到檔 => 該張不算。"""
+    normal_prior_from_iter: int = 0
     surf_reg: float = 0.0
     """★ 2026-11-01 鄰域平面約束（使用者 11-01：不增加計算、從 0 漸增到定值、用周遭高斯讓深度一致的表面平滑、取絕對值免得抹掉細節）。0＝關。
     不渲染：每 surf_every 步用 Morton 近鄰算每顆的鄰域平面（opacity 加權 PCA，`geom_gate.surf_planes`），只對平坦鄰域（e3/e2 < surf_flat）
@@ -714,6 +723,76 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                   f"{after / max(before, 1):.3f}、累計 {acc[1] / max(acc[0], 1):.3f}｜缺檔 {len(miss)}／{len(seen)} 張{warn}（{d}）", flush=True)
         return out
 
+    def _normal_prior_get(self, name, hw, device):
+        """單目法向先驗（normal_prior_dir）：CPU 快取原解析度 uint8 RGBA，用到時搬上 device、nearest 放大到 hw。回傳 (法向 [3,H,W], 遮罩 [H,W]) 或 None。"""
+        import os
+        import numpy as np
+        from PIL import Image
+        cache = self.__dict__.setdefault("_np_cache", {})
+        miss = self.__dict__.setdefault("_np_miss", set())
+        key = str(name)
+        a = cache.get(key)
+        if a is None:
+            if key in miss:
+                return None
+            p = os.path.join(str(self.config.normal_prior_dir), os.path.splitext(os.path.basename(key))[0] + ".png")
+            if not os.path.exists(p):
+                if not miss:
+                    print(f"⚠⚠ [normal-prior] 找不到先驗 {p}（該張不算；之後只計數）", flush=True)
+                miss.add(key)
+                return None
+            a = torch.from_numpy(np.array(Image.open(p).convert("RGBA")))
+            cache[key] = a
+        t = a.to(device, non_blocking=True).permute(2, 0, 1).float()
+        if tuple(t.shape[-2:]) != tuple(hw):
+            t = torch.nn.functional.interpolate(t[None], size=tuple(hw), mode="nearest")[0]
+        n = torch.nn.functional.normalize(t[:3] / 127.5 - 1.0, dim=0)
+        return n, t[3] > 127
+
+    def _normal_prior_step(self, step, batch, outputs, metrics, pbar):
+        """單目法向先驗的 loss（config.normal_prior_*）；不是完整路徑步、沒有先驗或像素太少就不動 loss。"""
+        c = self.config
+        w = float(getattr(c, "normal_prior_reg", 0.0) or 0.0)
+        if w <= 0 or step < int(getattr(c, "normal_prior_from_iter", 0) or 0):
+            return
+        k = int(getattr(c, "lambda_normal_interval", 1) or 1)
+        if k > 1 and step % k != 0:
+            return
+        rn = outputs.get("rend_normal")
+        if rn is None:
+            if not getattr(self, "_np_warned", False):
+                self._np_warned = True
+                print(f"⚠⚠ [normal-prior] 這一步沒有 rend_normal（沒走完整路徑？lambda_normal 是 0？）=> 不算（step={step}）", flush=True)
+            return
+        name, gt = batch[1][0], batch[1][1]
+        hw = tuple(gt.shape[-2:])
+        pr = self._normal_prior_get(name, hw, rn.device)
+        if pr is None:
+            return
+        npr, m = pr
+        if getattr(c, "block_mask_dir", ""):
+            bm = self._block_mask_get(name, hw, rn.device)
+            if bm is not None:
+                m = m & (bm == 1)
+        al = outputs.get("rend_alpha")
+        if al is not None:
+            m = m & (al.reshape(hw).detach() > 0.5)
+        n = int(m.sum())
+        if n < 100:
+            return
+        rnn = torch.nn.functional.normalize(rn.reshape(3, *hw), dim=0)
+        cos = (rnn * npr).sum(0).abs()
+        loss = (1.0 - cos)[m].mean()
+        metrics["loss"] = metrics["loss"] + w * k * loss
+        metrics["nprior"] = loss.detach()
+        pbar["nprior"] = False
+        if not getattr(self, "_np_announced", False) or step % 2000 == 0:
+            with torch.no_grad():
+                deg = torch.rad2deg(torch.arccos(cos[m].clamp(0, 1)))
+            print(f"[normal-prior] {'✅ 首次觸發' if not getattr(self, '_np_announced', False) else '　'} step={step}：先驗像素 {n / (hw[0] * hw[1]):.3f}、"
+                  f"渲染法向對先驗夾角中位 {float(deg.median()):.1f}°、loss {float(loss):.4f}（權重 {w}×{k}；缺檔 {len(getattr(self, '_np_miss', ()))} 張）", flush=True)
+            self._np_announced = True
+
     def _depth_cap_step(self, step, batch, outputs, metrics, pbar):
         """逐貢獻深度上限的 loss（config.depth_cap_*）；這一步沒有上限圖或渲染器沒交出 rend_cap 就不動 loss。"""
         cap = getattr(self, "_cap_cur", None)
@@ -868,6 +947,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         metrics, pbar = super().get_train_metrics(pl_module, gaussian_model, step, batch, outputs)
         self._see_through_step(step, batch, outputs, metrics, pbar)
         self._depth_cap_step(step, batch, outputs, metrics, pbar)
+        self._normal_prior_step(step, batch, outputs, metrics, pbar)
         _w2 = float(getattr(self.config, "rgb_l2_weight", 0.0) or 0.0)
         if _w2 > 0:
             _gt = batch[1][1]
