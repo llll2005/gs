@@ -74,6 +74,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             bwd_sat_skip: bool = False,
             bwd_reduce: bool = False,
             bwd_pair_bit: bool = False,
+            bwd_pair_bit_warp: bool = False,
+            skip_box: bool = False,
             bwd_zero_grad_skip: bool = False,
             skip_unscored_pixels: bool = False,
             trim_running_vc: bool = False,
@@ -148,6 +150,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ★ 2026-10-16 配對貢獻 bit（使用者「試試」）：forward（lean 訓練）記每個 (tile,顆粒) 配對有沒有被任一像素混合，
         #   backward 只處理被混合過的（其他配對對每個像素都是 valid=false => 梯度不變，只省掉重算交點與指數的工作）
         self.bwd_pair_bit = bwd_pair_bit
+        # ★ 2026-11-16 A-1／A-3（Fable 提案、使用者「要改 cuda 的都同意」；tools/probe/skip_timing_1116 的計時與逐位元檢查）：
+        #   skip_box           每個 warp（16x2 像素條）先看顆粒的精確支撐盒，沒交集就整個 warp 跳過那個配對（forward＋backward，lean 與非 record 的完整路徑）。
+        #                      渲染逐位元相同、梯度只差加總順序；訓練中累加 V/C 時 V 少掉 alpha < 1/255 的項（覆蓋數 C 照算）。
+        #   bwd_pair_bit_warp  配對位元改成 8 個 warp 各一個位元（需 bwd_pair_bit），backward 逐 warp 只走自己位元為 1 的配對，
+        #                      並把 backward 的近平面判準改成跟 forward 一樣（現有配對 bit 的梯度差就來自這個不一致）。
+        self.bwd_pair_bit_warp = bwd_pair_bit_warp
+        self.skip_box = skip_box
         # ★ 2026-11-05 不計分像素（塊外遮罩的 C 區，b3／b12 佔 12～14% 像素、11～13% tile；使用者 11-05「排一次測試」）：
         #   bwd_zero_grad_skip    backward 不處理上游梯度全 0 的像素（C 區在 metric 被 detach => 梯度恰為 0；dist 步除外）。
         #                         梯度只差浮點加總順序（與 bwd_reduce 同級）。需要 lean_train。
@@ -445,6 +454,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"bwd_sat_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_sat_skip", False)) else {}),
             **({"bwd_reduce": True} if (_lean and not record_transmittance and getattr(self, "bwd_reduce", False)) else {}),
             **({"bwd_pair_bit": True} if (_lean and not record_transmittance and getattr(self, "bwd_pair_bit", False)) else {}),
+            **({"pair_bit_warp": True} if (_lean and not record_transmittance and getattr(self, "bwd_pair_bit", False)
+                                           and getattr(self, "bwd_pair_bit_warp", False)) else {}),
+            # ★ 2026-11-16 A-1：record pass（trim）與 audit 不跳（光柵器內也擋：MODE 2／4 與 MODE 0 record 不跳）
+            **({"skip_box": True} if (getattr(self, "skip_box", False) and not record_transmittance
+                                      and not kwargs.get("_audit", False)) else {}),
             **({"bwd_zero_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_zero_grad_skip", False)) else {}),
             **({"pix_skip": _pix} if (_lean and not record_transmittance and _pix is not None) else {}),
             **({"depth_cap": _cap} if _cap is not None else {}),
@@ -473,6 +487,11 @@ class SepDepthTrim2DGSRenderer(Renderer):
             raise RuntimeError("設了 trim_running_warp 但光柵器不認得 train_record_warp 欄位 —— 沒重編")
         if getattr(self, "trim_running_vc", False) and "train_record" not in GaussianRasterizationSettings._fields:
             raise RuntimeError("設了 trim_running_vc 但光柵器不認得 train_record 欄位 —— 沒重編")
+        if getattr(self, "bwd_pair_bit_warp", False) and not getattr(self, "bwd_pair_bit", False):
+            raise ValueError("bwd_pair_bit_warp 要和 bwd_pair_bit 一起開（逐 warp 位元存在配對位元的緩衝區裡）")
+        for _f, _fld in (("skip_box", "skip_box"), ("bwd_pair_bit_warp", "pair_bit_warp")):
+            if getattr(self, _f, False) and _fld not in GaussianRasterizationSettings._fields:
+                raise RuntimeError(f"設了 {_f} 但光柵器不認得 {_fld} 欄位 —— 沒重編")
         for _f in ("bwd_sat_skip", "bwd_reduce", "bwd_pair_bit"):
             if getattr(self, _f, False) and _f not in GaussianRasterizationSettings._fields:
                 raise RuntimeError(f"設了 {_f} 但光柵器不認得這個欄位 —— 沒重編")

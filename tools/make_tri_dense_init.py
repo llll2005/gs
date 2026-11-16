@@ -104,6 +104,11 @@ def main():
     ap.add_argument("--view_step", type=int, default=2); ap.add_argument("--stride", type=int, default=3, help="深度圖像素的取樣步長")
     ap.add_argument("--slope_max", type=int, default=1); ap.add_argument("--size_max", type=int, default=2)
     ap.add_argument("--min_views", type=int, default=2)
+    # ★ 2026-11-16 海面起點臂（Fable：海面沒有紋理，顆粒生在哪就留在哪；b1 海面上方 > 5 m 的起點 6,833 顆全是空中隨機補點）：
+    ap.add_argument("--drop_fill", action="store_true",
+                    help="拿掉 base 裡的空中隨機補點（make_sfm_fill_init 用 SfM 平均色填＝最常見的那個 RGB）；少掉的名額由下面的反投影點補滿（總顆數仍＝target_frac x cap）")
+    ap.add_argument("--outside_hull", action="store_true",
+                    help="斜率級 4（該影像 SfM 點的凸包外、外插的校正深度）的像素也反投影（只用在起點，不進任何 loss；凸包內照舊只收 slope_max／size_max）")
     a = ap.parse_args()
     import torch
     from plyfile import PlyData
@@ -127,6 +132,12 @@ def main():
         cap = a.cap_avg * float(W8[str(b)]); target = int(a.target_frac * cap)
         v = PlyData.read(os.path.join(D, a.base, f"block_{b}.ply"))["vertex"].data
         bx = np.stack([v["x"], v["y"], v["z"]], -1).astype(np.float64); bc = np.stack([v["red"], v["green"], v["blue"]], -1).astype(np.uint8)
+        n_fill = 0
+        if a.drop_fill:
+            key = bc[:, 0].astype(np.int64) * 65536 + bc[:, 1].astype(np.int64) * 256 + bc[:, 2]
+            uk, cnt = np.unique(key, return_counts=True)
+            if cnt.max() >= max(1000, 0.002 * len(bx)):      # 補點全是同一個顏色；SfM 點不會有上千個完全同色
+                fm = key == uk[cnt.argmax()]; n_fill = int(fm.sum()); bx, bc = bx[~fm], bc[~fm]
         names = [l.strip() for l in open(os.path.join(D, a.part, "%03d_%03d.txt" % (b % 4, b // 4))) if l.strip()][:: a.view_step]
         XS, CS, VS = [], [], []
         for vi, nm in enumerate(names):
@@ -140,7 +151,7 @@ def main():
             oy, ox = rng.integers(0, a.stride, 2)
             vv, uu = np.meshgrid(np.arange(oy, H, a.stride), np.arange(ox, W, a.stride), indexing="ij")
             i_ = inv[vv, uu]; r_ = rel[vv, uu]
-            ok = (i_ > 1e-6) & ((r_ & 7) <= a.slope_max) & ((r_ >> 3) <= a.size_max)
+            ok = (i_ > 1e-6) & ((((r_ & 7) <= a.slope_max) & ((r_ >> 3) <= a.size_max)) | (a.outside_hull & ((r_ & 7) == 4)))
             if not ok.any():
                 continue
             z = 1.0 / i_[ok].astype(np.float64)
@@ -170,7 +181,7 @@ def main():
         out = os.path.join(D, a.out, "dup1", f"block_{b}.ply")
         write_xyzrgb_ply(out, np.concatenate([bx, dx]).astype(np.float32), np.concatenate([bc, np.clip(np.round(dc), 0, 255).astype(np.uint8)]))
         # 報告：體素邊長對 SfM 近鄰間距、對像素足跡的倍數（都只是描述，不是門檻）
-        print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
+        print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}{f'（拿掉空中補點 {n_fill:,}）' if a.drop_fill else ''}{'｜凸包外也反投影' if a.outside_hull else ''}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
               f"稠密點 {len(dx):,}（要 {n_want:,}）=> 共 {len(bx) + len(dx):,}（{(len(bx) + len(dx)) / cap:.2f} cap）｜{time.time() - t0:.0f} s => {out}", flush=True)
     print("DONE make_tri_dense_init", flush=True)
 

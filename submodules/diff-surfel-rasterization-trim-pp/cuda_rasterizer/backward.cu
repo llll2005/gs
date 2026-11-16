@@ -16,6 +16,28 @@
 
 // ★ 2026-11-07 alpha 上限，必須與 forward 相同（見 forward.cu g_alpha_max）；旗標 bit 128（rasterizer_impl.cu 每次 backward 前設定）
 __device__ float g_alpha_max_b = 0.99f;
+__device__ int g_skipf_b = 0;   // ★ 2026-11-16 A-1／A-3（見 BACKWARD::setSkipFlags）
+// ★ 2026-11-16 A-1／A-3：與 forward.cu computeAABB_R 逐字相同（兩個編譯單元各一份）
+__device__ static bool computeAABB_R_b(const float *transMat, const float R, float2 & center, float2 & extent)
+{
+	glm::mat4x3 T = glm::mat4x3(
+		transMat[0], transMat[1], transMat[2],
+		transMat[3], transMat[4], transMat[5],
+		transMat[6], transMat[7], transMat[8],
+		transMat[6], transMat[7], transMat[8]
+	);
+	const float R2 = R * R;
+	const glm::vec3 sgn = glm::vec3(R2, R2, -1.0f);
+	float d = glm::dot(sgn, T[3] * T[3]);
+	if (d == 0.0f) return false;
+	glm::vec3 f = sgn * (1.0f / d);
+	glm::vec3 p = glm::vec3(glm::dot(f, T[0] * T[3]), glm::dot(f, T[1] * T[3]), glm::dot(f, T[2] * T[3]));
+	glm::vec3 h0 = p * p - glm::vec3(glm::dot(f, T[0] * T[0]), glm::dot(f, T[1] * T[1]), glm::dot(f, T[2] * T[2]));
+	glm::vec3 h = sqrt(max(glm::vec3(0.0), h0));
+	center = {p.x, p.y};
+	extent = {h.x, h.y};
+	return true;
+}
 // ★ 2026-11-11 逐像素深度上限圖（與 forward.cu 的 g_cap_inv／g_cap_n 同一份，呼叫端在 backward 前後設定與清掉）
 __device__ const float* g_cap_inv_b = nullptr;
 __device__ int g_cap_n_b = 0;
@@ -328,6 +350,12 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
+	// ★ 2026-11-16 A-1／A-3：A-1 也用在完整路徑步
+	const bool a1g = (g_skipf_b & 2) != 0;
+	__shared__ float4 collected_boxg[BLOCK_SIZE];
+	const int widg = block.thread_rank() >> 5;
+	const float gx0 = (float)pix_min.x + 0.5f, gx1 = (float)pix_min.x + 15.5f;
+	const float gy0 = (float)pix_min.y + 2.f * widg + 0.5f, gy1 = gy0 + 1.f;
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
@@ -418,6 +446,20 @@ renderCUDA(
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
+			if (a1g) {
+				const float op = normal_opacity[coll_id].w;
+				float4 bx = make_float4(-1e30f, 1e30f, -1e30f, 1e30f);
+				if (op > 1.0f / 255.0f) {
+					const float RE = sqrtf(fmaxf(2.f * logf(255.f * op), 1e-12f));
+					float2 cc, ce;
+					if (computeAABB_R_b(transMats + 9 * coll_id, RE, cc, ce)) {
+						const float2 xy0 = points_xy_image[coll_id]; const float fs = FilterSize * RE;
+						bx = make_float4(fminf(cc.x - ce.x, xy0.x - fs) - 1.f, fmaxf(cc.x + ce.x, xy0.x + fs) + 1.f,
+						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
+					}
+				}
+				collected_boxg[block.thread_rank()] = bx;
+			}
 				// collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
@@ -430,6 +472,7 @@ renderCUDA(
 			contributor--;
 			if (contributor >= last_contributor)
 				continue;
+			if (a1g) { const float4 b = collected_boxg[j]; if (b.y < gx0 || b.x > gx1 || b.w < gy0 || b.z > gy1) continue; }
 
 			// compute ray-splat intersection as before
 			float3 Tu = collected_Tu[j];
@@ -709,6 +752,14 @@ renderCUDA_opt(
 	__shared__ int collected_q[BLOCK_SIZE];        // 擠壓後每個槽位的原始序號（＝原本的 contributor）
 	__shared__ int s_wcnt[BLOCK_SIZE / 32];
 	const bool pb = (pair_used != nullptr);
+	// ★ 2026-11-16 A-1／A-3
+	const bool a1 = (g_skipf_b & 2) != 0;
+	const bool a3 = pb && (g_skipf_b & 4) != 0;
+	__shared__ float4 collected_box[BLOCK_SIZE];
+	__shared__ unsigned char collected_m[BLOCK_SIZE];
+	const int wid = warp.meta_group_rank();
+	const float sx0 = (float)pix_min.x + 0.5f, sx1 = (float)pix_min.x + 15.5f;
+	const float sy0 = (float)pix_min.y + 2.f * wid + 0.5f, sy1 = sy0 + 1.f;
 
 	const float T_final = inside ? final_Ts[pix_id] : 0;
 	float T = T_final;
@@ -762,6 +813,21 @@ renderCUDA_opt(
 			collected_Tw[slot] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
 			for (int c = 0; c < C; c++)
 				collected_colors[c * BLOCK_SIZE + slot] = colors[coll_id * C + c];
+			if (a3) collected_m[slot] = pair_used[range.x + q];
+			if (a1) {
+				const float op = normal_opacity[coll_id].w;
+				float4 bx = make_float4(-1e30f, 1e30f, -1e30f, 1e30f);
+				if (op > 1.0f / 255.0f) {
+					const float RE = sqrtf(fmaxf(2.f * logf(255.f * op), 1e-12f));
+					float2 cc, ce;
+					if (computeAABB_R_b(transMats + 9 * coll_id, RE, cc, ce)) {
+						const float2 xy0 = points_xy_image[coll_id]; const float fs = FilterSize * RE;
+						bx = make_float4(fminf(cc.x - ce.x, xy0.x - fs) - 1.f, fmaxf(cc.x + ce.x, xy0.x + fs) + 1.f,
+						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
+					}
+				}
+				collected_box[slot] = bx;
+			}
 		}
 		if (RED) {
 			for (int k = 0; k < OPT_NG; k++) s_g[k][block.thread_rank()] = 0.f;
@@ -774,6 +840,9 @@ renderCUDA_opt(
 			contributor--;
 			// 擠壓後用原始序號；未擠壓時 collected_q 沒寫 => 沿用遞減的 contributor（舊行為一字不變）
 			const uint32_t cq = pb ? (uint32_t)collected_q[j] : contributor;
+			// ★ 2026-11-16 A-1／A-3：整個 warp 一致的跳過（位元／盒子對同一個 warp 相同 => 不會在 warp 集體操作前分歧）
+			if (a3 && !((collected_m[j] >> wid) & 1)) continue;
+			if (a1) { const float4 b = collected_box[j]; if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) continue; }
 			// 每個 lane 都要走到歸約點（warp 集體操作）=> 用 valid 取代原本的 continue
 			bool valid = inside && (cq < (uint32_t)last_contributor);
 			float g[OPT_NG];
@@ -803,7 +872,9 @@ renderCUDA_opt(
 #endif
 					// ★ 2026-10-16 診斷：forward 一律用交點深度判近平面（forward.cu），backward 歷來用 c_d（濾波分支是 Tw.z）=> 不一致。
 					//   BWD_NEAR_LIKE_FWD=1 改成與 forward 相同（只為驗證配對 bit 的梯度差來源；預設 0＝舊行為）
-					const float near_d = BWD_NEAR_LIKE_FWD ? ((s.x * Tw.x + s.y * Tw.y) + Tw.z) : c_d;
+					// ★ 11-16 A-3（逐 warp 配對位元）開著時近平面判準一律跟 forward 一樣：否則 forward 判掉、沒混合的側對面元，
+					//   backward 還會算它的梯度（現有配對 bit 的梯度差就是這個；BWD_NEAR_LIKE_FWD 1 時與雜訊同級）
+					const float near_d = (BWD_NEAR_LIKE_FWD || a3) ? ((s.x * Tw.x + s.y * Tw.y) + Tw.z) : c_d;
 					if (near_d < NEAR_PLANE || power > 0.0f || alpha < 1.0f / 255.0f) valid = false;
 					if (valid) {
 						T = T / (1.f - alpha);
@@ -1325,6 +1396,12 @@ void BACKWARD::setDepthCap(const float* cap_inv, int n)
 void BACKWARD::setDepthCapGradMode(int mode)
 {
 	cudaMemcpyToSymbol(g_cap_grad_mode_b, &mode, sizeof(int));
+}
+
+void BACKWARD::setSkipFlags(int f)
+{
+	static int cur = -1;
+	if (f != cur) { cudaMemcpyToSymbol(g_skipf_b, &f, sizeof(int)); cur = f; }
 }
 
 void BACKWARD::setAlphaMax(float a)

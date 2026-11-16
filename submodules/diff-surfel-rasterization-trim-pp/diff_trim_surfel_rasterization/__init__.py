@@ -110,7 +110,11 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-11-08 bit10 = 飽和門檻 1e-3（原 1e-4；backward 不用旗標）
                 | (1024 if getattr(raster_settings, "t_sat_1e3", False) else 0)
                 # ★ 2026-11-08 bit11 = 飽和門檻 1e-5（被蓋住的顆粒也拿得到梯度；bit10 優先）
-                | (2048 if getattr(raster_settings, "t_sat_1e5", False) else 0)),
+                | (2048 if getattr(raster_settings, "t_sat_1e5", False) else 0)
+                # ★ 2026-11-16 bit12 = A-1 逐 warp 精確支撐盒跳過（lean 與非 record 的完整路徑；渲染逐位元相同）
+                | (4096 if getattr(raster_settings, "skip_box", False) else 0)
+                # ★ 2026-11-16 bit13 = A-3 配對位元存 8 個 warp 的遮罩（需 bwd_pair_bit；forward 寫、backward 逐 warp 跳）
+                | (8192 if getattr(raster_settings, "pair_bit_warp", False) else 0)),
             sh_rest,
             # ★ 2026-11-05 逐像素不計分遮罩（uint8 H*W，1＝略過；只在 lean 訓練 forward 生效）；None＝空張量＝不略過
             (getattr(raster_settings, "pix_skip", None) if getattr(raster_settings, "pix_skip", None) is not None
@@ -252,7 +256,10 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-11-05 bit6 = 上游梯度全 0 的像素不處理（只在 lean／geom 關時生效，backward.cu renderCUDA_opt）
                 | (64 if getattr(raster_settings, "bwd_zero_skip", False) else 0)
                 # ★ 2026-11-07 bit7 = alpha 上限 0.999（必須與 forward 的 lean bit 512 一致）
-                | (128 if getattr(raster_settings, "alpha_999", False) else 0),
+                | (128 if getattr(raster_settings, "alpha_999", False) else 0)
+                # ★ 2026-11-16 bit8 = A-1 逐 warp 精確支撐盒跳過、bit9 = A-3 逐 warp 配對位元（＋近平面判準跟 forward 一樣）
+                | (256 if getattr(raster_settings, "skip_box", False) else 0)
+                | (512 if (getattr(raster_settings, "pair_bit_warp", False) and getattr(raster_settings, "bwd_pair_bit", False)) else 0),
                 sh_rest, a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp)
 
         _cap = _depth_cap_of(raster_settings) if geom_grad else None    # ★ 11-11 逐貢獻深度上限：backward 期間再把上限圖交給光柵器
@@ -354,6 +361,13 @@ class GaussianRasterizationSettings(NamedTuple):
     record_reduce : bool = False
     # ★ 2026-10-03：非 record 呼叫只綁「可能 alpha >= 1/255」的 tile（rasterizer_impl.cu tileMayContribute）；渲染逐位元相同
     tile_cull : bool = False
+    # ★ 2026-11-16 A-1（Fable）：每個 warp（16x2 像素條）先看顆粒的精確支撐盒（alpha >= 1/255 的範圍，R＝sqrt(2 ln(255 o)) 的圓錐盒 ∪ 低通圓盤，外擴 1 px）
+    #   跟像素條有沒有交集，沒有就整個 warp 跳過那個配對。盒外本來就是 alpha < 1/255、走到 continue => 渲染逐位元相同、梯度只差加總順序。
+    #   例外：訓練中累加 V/C 時跳過的配對覆蓋數照算、V 少掉 alpha < 1/255 的項；record pass（trim）不跳。
+    skip_box : bool = False
+    # ★ 2026-11-16 A-3（Fable）：配對位元（bwd_pair_bit）從「整個 tile 有沒有人混合」改成「8 個 warp 各自有沒有人混合」，backward 每個 warp
+    #   只走自己位元為 1 的配對；同時 backward 的近平面判準改成跟 forward 一樣（否則 forward 判掉的側對面元 backward 還會算梯度）。需 bwd_pair_bit。
+    pair_bit_warp : bool = False
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

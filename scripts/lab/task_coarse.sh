@@ -102,6 +102,7 @@ case "$MODE" in
   #   - 不帶：塊外遮罩（全域沒有塊外）、前段低解析度（coarse 本身就是 1/4 解析度）
   #   - 1/4 訓練解析度（400x225；預縮影像 input_r4.8，與現縮同一算法）、SH0、cap 2M（11-09 輕量 coarse：峰值 2.76 GB、結束 1.80M 顆）
   #   - 10k、增生 70%（新底 5 的比例；11-09 的 20k／增生 25% 細修掉分是增生期太短）、合併到 90%；px_floor 1 px（＝細修的 4 px；11-09 理由）
+  #   CO5_SBOX=1＝光柵器 A-1 逐 warp 精確支撐盒跳過（11-16；渲染逐位元相同、只是更快；跑次名照舊，靠 CO5_RUN 區分）
   #   跑次 outputs/lab/<CO5_RUN>_best1；之後 crop5 裁成 16 塊（0.85 x 該塊 SfM 分配 cap、最大面元面內一拆四），細修用 task_tune25.sh 的 coarse5 元件
   init5)
     for b in $(seq 0 15); do [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44_crop/dup1/block_$b.ply" ] || { echo "⛔ 缺稠密起點 block_$b（tools/make_tri_dense_init.py --blocks $b）"; exit 2; }; done
@@ -129,7 +130,7 @@ case "$MODE" in
       --model.metric.init_args.surf_every 400 \
       --model.metric.init_args.lambda_dist_interval 8 --model.train_log_interval -50 \
       --model.gaussian.init_args.sh_degree 0 --data.parser.down_sample_factor 4.8 "${IMG[@]}" \
-      --model.density.init_args.px_floor 1.0 \
+      --model.density.init_args.px_floor 1.0 ${CO5_SBOX:+--model.renderer.init_args.skip_box true} \
       --trainer.limit_val_batches 0 --trainer.num_sanity_val_steps 0
     exit $? ;;
   crop5)

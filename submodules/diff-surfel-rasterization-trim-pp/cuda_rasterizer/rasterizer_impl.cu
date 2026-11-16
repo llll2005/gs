@@ -495,9 +495,12 @@ int CudaRasterizer::Rasterizer::forward(
 	const int fmode = flag_audit ? 3 : ((record_transmittance && (lean & 4)) ? 4 : ((lean & 1) ? (record_transmittance ? 2 : ((lean & 64) ? 5 : 1)) : 0));
 	uint8_t* pair_used = nullptr;
 	if ((lean & 16) && num_rendered > 0) {
-		CHECK_CUDA(cudaMemset(binningState.pair_used, fmode == 1 ? 0 : 1, num_rendered), debug)
+		CHECK_CUDA(cudaMemset(binningState.pair_used, fmode == 1 ? 0 : 0xFF, num_rendered), debug)   // ★ 11-16：非 mode 1 填全 1（A-3 的 8 個 warp 位元都開）
 		if (fmode == 1) pair_used = binningState.pair_used;
 	}
+	// ★ 2026-11-16 A-1／A-3（Fable；使用者「要改 cuda 的都同意」）：bit 4096＝逐 warp 精確支撐盒跳過（lean 與非 record 的完整路徑）、
+	//   bit 8192＝配對位元改存 8 個 warp 的遮罩（需 bit 16）。預設都關＝原行為。
+	FORWARD::setSkipFlags(((lean & 4096) ? 1 : 0) | ((lean & 8192) ? 4 : 0));
 	FORWARD::setRecordT((lean & 256) != 0);   // ★ 2026-11-07 bit 256 = record 模式累加 Σ T（逐顆可見度）
 	FORWARD::setTSat((lean & 1024) ? 0.001f : ((lean & 2048) ? 0.00001f : 0.0001f));   // ★ 2026-11-08 bit 1024 = 飽和門檻 1e-3、bit 2048 = 1e-5（原 1e-4）
 	FORWARD::setAlphaMax((lean & 512) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 512 = alpha 上限 0.999
@@ -591,6 +594,8 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* depth_ptr = geomState.depths;
 	const float* transMat_ptr = (transMat_precomp != nullptr) ? transMat_precomp : geomState.transMat;
 	BACKWARD::setAlphaMax((geom_grad & 128) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 128 = alpha 上限 0.999（與 forward 相同）
+	// ★ 2026-11-16 backward 旗標 bit 256＝逐 warp 精確支撐盒跳過（opt 與 GEOM 兩條路徑）、bit 512＝逐 warp 配對位元（需 bit 16；同時把近平面判準改成跟 forward 一樣）
+	BACKWARD::setSkipFlags(((geom_grad & 256) ? 2 : 0) | ((geom_grad & 512) ? 4 : 0));
 	CHECK_CUDA(BACKWARD::render(
 		tile_grid,
 		block,

@@ -59,6 +59,7 @@ namespace FORWARD
 	void setAlphaMax(float a);
 	// ★ 2026-11-08 飽和門檻（預設 1e-4；lean bit 1024 => 1e-3、bit 2048 => 1e-5；見 forward.cu g_t_sat）
 	void setTSat(float t);
+	void setSkipFlags(int f);   // ★ 2026-11-16 A-1／A-3：1＝A-1 forward（逐 warp 精確支撐盒跳過）、4＝A-3（pair_used 存 8 個 warp 的遮罩）
 	// ★ 2026-11-11 逐像素深度上限圖（裝置端指標＋像素數；nullptr／0＝清掉）
 	void setDepthCap(const float* cap_inv, int n);
 	void setDepthCapAcc(float* bh, float* tot);   // ★ 2026-11-11 逐顆落在上限後面的 T·α

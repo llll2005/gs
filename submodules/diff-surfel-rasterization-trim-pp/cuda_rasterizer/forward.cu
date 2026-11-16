@@ -26,6 +26,7 @@ __device__ float g_alpha_max = 0.99f;
 // ★ 2026-11-08 飽和門檻（使用者「減少 tile／每像素工作量」）：像素在 test_T < g_t_sat 時停止；預設 1e-4＝原行為（逐位元相同）。
 //   lean bit 1024 => 1e-3（忽略的顏色 <= 0.1%，不到 8 位元色階半格）。backward 跟著 forward 的最後貢獻者走，不用改。
 __device__ float g_t_sat = 0.0001f;
+__device__ int g_skipf = 0;   // ★ 2026-11-16 A-1／A-3（見 FORWARD::setSkipFlags）
 // ★ 2026-11-11 逐像素深度上限圖（auxiliary.h CAP_OFFSET）：g_cap_n＝圖的像素數（要等於 W*H 才用；0＝沒設）。
 //   呼叫端（Python 的 autograd Function）只在那一次 forward／backward 前後設定與清掉 => 其他渲染（驗證、trim record）不受影響。
 __device__ const float* g_cap_inv = nullptr;
@@ -558,6 +559,14 @@ renderCUDA(
 	const bool rec_acc = LEANLIKE && record_transmittance;
 	__shared__ float s_ta1[LEANLIKE ? BLOCK_SIZE : 1];
 	__shared__ int s_cn1[LEANLIKE ? BLOCK_SIZE : 1];
+	// ★ 2026-11-16 A-1／A-3：A-1（逐 warp 精確支撐盒跳過）與 A-3（pair_used 改存 8 個 warp 的遮罩）
+	const bool a1 = (LEANLIKE || (MODE == 0 && !record_transmittance)) && (g_skipf & 1);   // MODE 0 的 record pass 在 alpha 判斷前就計數 => 不跳
+	const bool a3 = rec_pair && (g_skipf & 4);
+	__shared__ float4 s_box[(LEANLIKE || MODE == 0) ? BLOCK_SIZE : 1];
+	__shared__ unsigned long long s_wm[(MODE == 1) ? BLOCK_SIZE : 1];
+	const int wid = block.thread_rank() >> 5;
+	const float sx0 = (float)pix_min.x + 0.5f, sx1 = (float)pix_min.x + 15.5f;
+	const float sy0 = (float)pix_min.y + 2.f * wid + 0.5f, sy1 = sy0 + 1.f;
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -603,8 +612,23 @@ renderCUDA(
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+			if (a1) {   // 精確支撐盒：alpha >= 1/255 <=> rho <= 2 ln(255 o)；圓錐盒（R）∪ 低通圓盤（FilterSize R）＋外擴 1 px（浮點保險）
+				const float op = normal_opacity[coll_id].w;
+				float4 bx = make_float4(-1e30f, 1e30f, -1e30f, 1e30f);
+				if (op > 1.0f / 255.0f) {
+					const float RE = sqrtf(fmaxf(2.f * logf(255.f * op), 1e-12f));
+					float2 cc, ce;
+					if (computeAABB_R(transMats + 9 * coll_id, RE, cc, ce)) {
+						const float2 xy0 = points_xy_image[coll_id]; const float fs = FilterSize * RE;
+						bx = make_float4(fminf(cc.x - ce.x, xy0.x - fs) - 1.f, fmaxf(cc.x + ce.x, xy0.x + fs) + 1.f,
+						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
+					}
+				}
+				s_box[block.thread_rank()] = bx;
+			}
 		}
 		if (rec_pair) s_used[block.thread_rank()] = 0;
+		if (a3) s_wm[block.thread_rank()] = 0ull;
 		if (rec_acc) { s_ta1[block.thread_rank()] = 0.f; s_cn1[block.thread_rank()] = 0; }
 		block.sync();
 
@@ -626,6 +650,8 @@ renderCUDA(
 				if (!done) do {
 					// Keep track of current position in range
 					contributor++;
+					if (a1) { const float4 b = s_box[j];
+						if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) { acc_hit = true; acc_ta = 0.f; break; } }   // 覆蓋數照算（C 逐位元相同）、V 少掉 < T/255 的項
 
 					// Fisrt compute two homogeneous planes, See Eq. (8)
 					float3 Tu = collected_Tu[j];
@@ -727,7 +753,7 @@ renderCUDA(
 					// Keep track of last range entry to update this
 					// pixel.
 					last_contributor = contributor;
-					if (rec_pair) s_used[j] = 1;   // 多個像素同時寫 1 => 良性競爭
+					if (rec_pair) { if (a3) ((volatile unsigned char*)&s_wm[j])[wid] = 1; else s_used[j] = 1; }   // 多個像素同時寫 1 => 良性競爭
 				} while (0);
 				const unsigned hm = __ballot_sync(0xffffffffu, acc_hit);
 				if (hm) {
@@ -741,6 +767,8 @@ renderCUDA(
 		{
 			// Keep track of current position in range
 			contributor++;
+			if (a1) { const float4 b = s_box[j];
+				if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) { if (rec_acc) atomicAdd(&s_cn1[j], 1); continue; } }
 
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			float3 Tu = collected_Tu[j];
@@ -842,12 +870,16 @@ renderCUDA(
 			// Keep track of last range entry to update this
 			// pixel.
 			last_contributor = contributor;
-			if (rec_pair) s_used[j] = 1;   // 多個像素同時寫 1 => 良性競爭
+			if (rec_pair) { if (a3) ((volatile unsigned char*)&s_wm[j])[wid] = 1; else s_used[j] = 1; }   // 多個像素同時寫 1 => 良性競爭
 		}
 		if (rec_pair || rec_acc) {
 			block.sync();
-			if (rec_pair && range.x + progress < range.y && s_used[block.thread_rank()])
-				pair_used[range.x + progress] = 1;
+			if (rec_pair && range.x + progress < range.y) {
+				if (a3) { const unsigned long long v = s_wm[block.thread_rank()]; unsigned m8 = 0;
+					for (int b8 = 0; b8 < 8; b8++) if ((v >> (8 * b8)) & 0xffull) m8 |= (1u << b8);
+					if (m8) pair_used[range.x + progress] = (uint8_t)m8; }
+				else if (s_used[block.thread_rank()]) pair_used[range.x + progress] = 1;
+			}
 			if (rec_acc && range.x + progress < range.y && s_cn1[block.thread_rank()] > 0) {
 				const int gid = collected_id[block.thread_rank()];
 				atomicAdd(&transmittance[gid], s_ta1[block.thread_rank()]);
@@ -1138,6 +1170,12 @@ void FORWARD::setDepthCapAcc(float* bh, float* tot)
 {
 	cudaMemcpyToSymbol(g_cacc_bh, &bh, sizeof(float*));
 	cudaMemcpyToSymbol(g_cacc_tot, &tot, sizeof(float*));
+}
+
+void FORWARD::setSkipFlags(int f)
+{
+	static int cur = -1;
+	if (f != cur) { cudaMemcpyToSymbol(g_skipf, &f, sizeof(int)); cur = f; }
 }
 
 void FORWARD::setTSat(float t)
