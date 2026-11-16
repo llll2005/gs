@@ -26,8 +26,14 @@ boxes = {}
 for k in range(len(ids)):
     boxes[int(ids[k][1] * 4 + ids[k][0])] = (xys[k], xys[k] + size[k])
 # 內部邊界線：某塊的上界＝另一塊的下界
-XL = sorted({round(float(boxes[b][1][0]), 6) for b in boxes} & {round(float(boxes[b][0][0]), 6) for b in boxes})
-YL = sorted({round(float(boxes[b][1][1]), 6) for b in boxes} & {round(float(boxes[b][0][1]), 6) for b in boxes})
+def _shared(hi_, lo_):   # 浮點容差比對（11-16 第一版用 round(…,6) 精確比對，漏掉 x＝−3.61、y＝−2.54 兩條）
+    out = []
+    for v in sorted(set(hi_)):
+        if any(abs(v - w) < 1e-4 for w in lo_) and not any(abs(v - o) < 1e-4 for o in out):
+            out.append(v)
+    return out
+XL = _shared([float(boxes[b][1][0]) for b in boxes], [float(boxes[b][0][0]) for b in boxes])
+YL = _shared([float(boxes[b][1][1]) for b in boxes], [float(boxes[b][0][1]) for b in boxes])
 print(f"內部邊界線 x={XL} y={YL}", flush=True)
 
 pts = read_points3D_binary(f"{D}/sparse/0/points3D.bin")
@@ -76,13 +82,31 @@ def qrot(q):
                      np.stack([2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)], -1)], 1)
 
 
-def cover(f):
+def _load_opaque(f, own_block=None):
     sd = torch.load(f, map_location="cpu", weights_only=False)["state_dict"]
     g = "gaussian_model.gaussians."
     o = torch.sigmoid(sd[g + "opacities"].float()).reshape(-1).numpy()
+    m = sd[g + "means"].double().numpy()
     keep = o > 0.5
-    m = sd[g + "means"].double().numpy()[keep]; s = torch.exp(sd[g + "scales"].float()).numpy()[keep][:, :2]
-    R = qrot(sd[g + "rotations"].float().numpy()[keep].astype(np.float64)); del sd
+    if own_block is not None:     # 分塊 ckpt：只留自己分區盒內的（同 merge_citygs_ckpts 的裁法）
+        lo, hi = boxes[own_block]; u = m @ Rp.T
+        keep &= (u[:, 0] >= lo[0]) & (u[:, 0] <= hi[0]) & (u[:, 1] >= lo[1]) & (u[:, 1] <= hi[1])
+    out = (m[keep], torch.exp(sd[g + "scales"].float()).numpy()[keep][:, :2], sd[g + "rotations"].float().numpy()[keep].astype(np.float64))
+    del sd
+    return out
+
+
+def cover(f):
+    if "{b}" in f:   # ★ 分塊模式：pattern 裡的 {b} 換成 0～15，每塊只留自己盒內（CityGS 的合併檔太大時用）
+        parts = []
+        for b in range(16):
+            fs = [x for x in sorted(glob.glob(f.replace("{b}", str(b)))) if "xyz" not in x]
+            parts.append(_load_opaque(fs[-1], own_block=b))
+        m = np.concatenate([p_[0] for p_ in parts]); s = np.concatenate([p_[1] for p_ in parts]); q = np.concatenate([p_[2] for p_ in parts]); del parts
+    else:
+        m, s, q = _load_opaque(f)
+    keep = np.ones(len(m), bool)
+    R = qrot(q); del q
     t1, t2, nrm = R[:, :, 0], R[:, :, 1], R[:, :, 2]; del R
     tr = cKDTree(m)
     cov = np.zeros(len(X), bool); al = np.zeros(len(X), bool)
@@ -107,7 +131,7 @@ HB = [(-1e9, 50), (50, 150), (150, 250), (250, 1e9)]
 res = {}
 for spec in a.models:
     lab, pat = spec.split("=", 1)
-    f = [x for x in sorted(glob.glob(pat)) if "xyz" not in x][-1]
+    f = pat if "{b}" in pat else [x for x in sorted(glob.glob(pat)) if "xyz" not in x][-1]
     res[lab] = cover(f)
 for kind, km in (("立面（|n_z|<0.3）", fac), ("平面（|n_z|>0.8：屋頂、地面）", flat)):
     print(f"\n=== {kind}：覆蓋％／朝向對齊％（GT 點數）；列＝離內部接縫線的距離，欄＝離地高度 ===")
