@@ -5,7 +5,7 @@
   校正深度不可靠（estimated_depths_tri_rel 的斜率級 > slope_max 或大小級 > size_max，或校正深度無效）——可靠處已經有深度上限與 SfM 撐著
   局部平面：步長 1 與 2 算出的法向夾角 < planar_deg（單目在邊緣、細物上法向會亂）
   不在深度斷層：3x3 內深度最大／最小 < 1 + disc（相對量）
-  深度在本張影像可靠 SfM 點深度的 [min / range_k, max x range_k] 內（排除單目當成無限遠的海面、天空；相對量）
+  深度在本張影像可靠 SfM 點深度的 [min / range_k, max x range_k] 內（排除超出本張 SfM 深度範圍的天空與遠景；相對量。⚠ 11-17 更正：單目在海面不是無限遠，11-02 量過無效只 0.1%）
   立面（--facade_only，預設開）：世界法向 |n_z| < facade_nz
 沒有場景單位門檻：全部是角度、相對深度比或可靠度級別。
 輸出：<dataset>/<out>/<影像名去副檔名>.png（RGBA：RGB＝世界法向 x127.5＋127.5、A＝255 可用）、stats.json

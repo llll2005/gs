@@ -244,6 +244,12 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     normal_prior_dir: str = ""
     """單目法向先驗的目錄（每張影像一個 RGBA PNG：RGB＝世界法向 x127.5+127.5、A＝255 可用）。找不到檔 => 該張不算。"""
     normal_prior_from_iter: int = 0
+    normal_prior_depth: float = 0.0
+    """★ 2026-11-17 先驗也套在「渲染深度算出的法向」（surf_normal）上（Fable 第三輪：過渡解法；使用者「直接做」）：
+    loss 變成 w·k·[mean(1 − |cos(渲染法向, 先驗)|) + normal_prior_depth · mean(1 − |cos(深度法向, 先驗)|)]，同一批像素、同一步。
+    為什麼：只管渲染法向時，牆後那層也被轉正，變成和牆平行的第二層（b2 50～250 m 牆後層對齊 2～9% → 10～29%、F1 precision 掉）；
+    深度法向反映「這片像素的深度是不是同一個平面」，前後兩層交錯時深度跳動、深度法向亂 => 被先驗罰 => 逼這片收斂成單一平面。
+    它只保證是一個面、不保證是對的面（位置要靠平面外推）。0＝關（與只套渲染法向逐位元相同）。"""
     surf_reg: float = 0.0
     """★ 2026-11-01 鄰域平面約束（使用者 11-01：不增加計算、從 0 漸增到定值、用周遭高斯讓深度一致的表面平滑、取絕對值免得抹掉細節）。0＝關。
     不渲染：每 surf_every 步用 Morton 近鄰算每顆的鄰域平面（opacity 加權 PCA，`geom_gate.surf_planes`），只對平坦鄰域（e3/e2 < surf_flat）
@@ -783,7 +789,28 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         rnn = torch.nn.functional.normalize(rn.reshape(3, *hw), dim=0)
         cos = (rnn * npr).sum(0).abs()
         loss = (1.0 - cos)[m].mean()
-        metrics["loss"] = metrics["loss"] + w * k * loss
+        wd = float(getattr(c, "normal_prior_depth", 0.0) or 0.0)
+        total = loss
+        if wd > 0:
+            sn = outputs.get("surf_normal")
+            if sn is None:
+                if not getattr(self, "_npd_warned", False):
+                    self._npd_warned = True
+                    print(f"⚠⚠ [normal-prior] normal_prior_depth={wd} 但這一步沒有 surf_normal（lambda_normal 是 0？）=> 深度法向那項不算（step={step}）", flush=True)
+            else:
+                snn = torch.nn.functional.normalize(sn.reshape(3, *hw), dim=0)
+                cos_s = (snn * npr).sum(0).abs()
+                loss_s = (1.0 - cos_s)[m].mean()
+                total = loss + wd * loss_s
+                metrics["nprior_depth"] = loss_s.detach()
+                pbar["nprior_depth"] = False
+                if not getattr(self, "_npd_announced", False) or step % 2000 == 0:
+                    with torch.no_grad():
+                        deg_s = torch.rad2deg(torch.arccos(cos_s[m].clamp(0, 1)))
+                    print(f"[normal-prior-depth] {'✅ 首次觸發' if not getattr(self, '_npd_announced', False) else '　'} step={step}："
+                          f"深度法向對先驗夾角中位 {float(deg_s.median()):.1f}°、loss {float(loss_s):.4f}（權重 {w}×{k}×{wd}）", flush=True)
+                    self._npd_announced = True
+        metrics["loss"] = metrics["loss"] + w * k * total
         metrics["nprior"] = loss.detach()
         pbar["nprior"] = False
         if not getattr(self, "_np_announced", False) or step % 2000 == 0:
