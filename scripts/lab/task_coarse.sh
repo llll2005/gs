@@ -108,6 +108,7 @@ case "$MODE" in
     for b in $(seq 0 15); do [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44_crop/dup1/block_$b.ply" ] || { echo "⛔ 缺稠密起點 block_$b（tools/make_tri_dense_init.py --blocks $b）"; exit 2; }; done
     $PY tools/coarse_crop.py init --src sfmfill_tri44_crop --dup dup1 --tag tri --n "${CO5_INIT_N:-1800000}" 2>&1 | grep -v -E 'Warn|pkg_res|declare' ;;
   coarse5)
+    # ⚠ 11-16 第一次失敗：optimizer 的 class_path（FusedAdam）要排在 NB 的 init_args（sh_rest_interval）前面，否則 jsonargparse 拿預設 Adam 去驗、報不認得
     source scripts/lab/_nb_recipe.sh
     ST=${CO5_STEPS:-10000}; G5=${CO5_G:-70}; CO5_RUN=${CO5_RUN:-coarse5_s10g70r48sh0}
     CO5_INIT=coarse_init/tri_g44_$(( ${CO5_INIT_N:-1800000} / 1000 ))k.ply
@@ -115,8 +116,8 @@ case "$MODE" in
     IMG=(); if [ -f data/matrix_city/aerial/train/block_all/input_r4.8/.complete ]; then IMG=(--data.parser.image_dir input_r4.8)
     else echo "⚠ 缺 input_r4.8/.complete（tools/make_resized_images.py --factor 4.8）=> 影像照舊現縮"; fi
     CITYGS_SFM_FAST=1 NCAM=1 STEPS=$ST CITYGS_LEAN=1 CITYGS_CAP=${CO5_CAP:-2000000} CITYGS_INIT_PLY=$CO5_INIT CITYGS_POSTDATA=0 \
-      CITYGS_FAMILY=${CO5_RUN}_ bash scripts/lab/task_cmp.sh null best1 "${NB[@]}" \
-      --model.gaussian.init_args.optimization.optimizer.class_path FusedAdam \
+      CITYGS_FAMILY=${CO5_RUN}_ bash scripts/lab/task_cmp.sh null best1 \
+      --model.gaussian.init_args.optimization.optimizer.class_path FusedAdam "${NB[@]}" \
       --model.metric.init_args.lambda_dist 100 --model.renderer.init_args.trim_running_vc true \
       --model.metric.init_args.opacity_entropy_side down --model.metric.init_args.opacity_entropy_both_from_iter $((ST / 3)) \
       --model.metric.init_args.opacity_entropy_both_reg 0.008 \
