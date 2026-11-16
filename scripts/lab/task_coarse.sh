@@ -141,7 +141,9 @@ case "$MODE" in
     echo "coarse5 ckpt：$CK"
     set -o pipefail
     t0=$(date +%s)
-    $PY tools/coarse_crop.py crop --ckpt "$CK" --out "lab/${CO5_RUN}_crop" 2>&1 | grep -v -E 'Warn|pkg_res|declare'; rc=$?
+    # ★ 11-16 CO5_CROP_FRAC：拆分到 frac x cap（預設 0.85）；不是預設時裁塊目錄加 _f<百分比>（tune25 元件 coarse5c<NN>f<百分比>）
+    FR=${CO5_CROP_FRAC:-0.85}; SFX=""; [ "$FR" = 0.85 ] || SFX="_f$(awk -v f="$FR" 'BEGIN{printf "%d", f * 100 + 0.5}')"
+    $PY tools/coarse_crop.py crop --ckpt "$CK" --out "lab/${CO5_RUN}${SFX}_crop" --frac "$FR" 2>&1 | grep -v -E 'Warn|pkg_res|declare'; rc=$?
     echo "[crop5] 裁塊 $(( $(date +%s) - t0 )) s（全場景一次；時間總表要攤進 coarse 起點的成本）"; exit $rc ;;
   *) echo "⛔ 模式只有 init／coarse／crop／fine／eval／init5／coarse5／crop5"; exit 2 ;;
 esac
