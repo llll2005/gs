@@ -156,7 +156,7 @@ for name in names:
         img = cv2.imread(f"{D}/input/{name}")
         if img is None:
             continue
-        img = rs(img, sh, cv2.INTER_AREA)
+        img = rs(img, sh, cv2.INTER_AREA).astype(np.float64)        # ⚠ 同解析度時 rs 原樣回傳 uint8 => 平方溢位（11-17 第一次跑因此 0 區）
         mu = uniform_filter(img, size=(5, 5, 1)); sd = np.sqrt(np.clip(uniform_filter(img ** 2, size=(5, 5, 1)) - mu ** 2, 0, None)).max(-1)
         nodepth = ~np.isfinite(zt) | ((rel & 7) == 4)
         cand = nodepth & (sd < a.col_std)
