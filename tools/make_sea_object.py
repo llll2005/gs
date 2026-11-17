@@ -225,7 +225,10 @@ def main():
                     okk = (zz > 1e-6) & (u_ >= 0) & (u_ < Wc) & (v_ >= 0) & (v_ < Hc); best = np.where(okk & (zz < best), zz, best)
                 return best / FX0
             for spec in a.models:
-                lab, pat = spec.split("=", 1); f = sorted(x for x in glob.glob(pat) if "xyz" not in x)[-1]
+                lab, pat = spec.split("=", 1); fs_ = sorted(x for x in glob.glob(pat.replace("{B}", str(b))) if "xyz" not in x)
+                if not fs_:
+                    print(f"b{b}｜P5 {lab}：沒有模型（{pat}）", flush=True); continue
+                f = fs_[-1]
                 sd = torch.load(f, map_location="cpu", weights_only=False)["state_dict"]; gp = "gaussian_model.gaussians."
                 m_ = sd[gp + "means"].double().numpy(); o_ = torch.sigmoid(sd[gp + "opacities"].float()).reshape(-1).numpy(); s_ = torch.exp(sd[gp + "scales"].float()).numpy()[:, :2]; del sd
                 kk = (o_ > 0.5) & inbox(m_); m_, o_, s_ = m_[kk], o_[kk], s_[kk]
