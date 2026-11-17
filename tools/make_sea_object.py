@@ -52,6 +52,10 @@ def main():
     #      同一張影像的海面像素中位差 < col_tol（逐張比，避開逐幀曝光差）=> 「像海」票；像海票 >= min_yes 且多於（不像海＋前面有東西＋後面）票；
     #   ② SfM 沒有結構：格內沒有可靠 SfM 點高出平面 > g/2（碼頭、路面、船）；③ 和既有海面格 8 連通（廣度優先，長到不能再長）。
     #   只用影像、校正深度與 SfM；門檻是像素／RGB／格距的倍數，沒有場景公尺。
+    # ★ 11-18 v3：共識平面（單目區平面合成）在各塊歪 0.4～2.1°、高度 −2.2～−6.6 m 不等；同一批海面格上的可靠 SfM 點擬出的水面傾斜只有 0.05～0.3°、
+    #   高度 −2.3～−2.8 m（MAD 約 0.3 m）=> 海是平的、是共識平面不準，而且各塊高度不同會在合併後的接縫上出現台階。
+    #   --sea_level z：海面改成水平面 z（世界座標、場景單位；用全場景 SfM 水面高度的中位，所有塊共用 => 接縫無台階）。傾斜檢查仍用共識平面先判是不是海。
+    ap.add_argument("--sea_level", type=float, default=None)
     ap.add_argument("--max_tilt", type=float, default=10.0, help="共識平面和水平面夾角超過這個度數 => 不是海面、整塊跳過")
     ap.add_argument("--grow", action="store_true"); ap.add_argument("--col_std", type=float, default=6.0); ap.add_argument("--col_tol", type=float, default=20.0)   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
@@ -124,6 +128,9 @@ def main():
         _tilt = float(np.degrees(np.arccos(min(1.0, abs(float(n1[2]))))))
         if _tilt > a.max_tilt:
             print(f"b{b}：共識平面和水平面夾 {_tilt:.1f}° > {a.max_tilt:g}° => 不是海面，跳過", flush=True); continue
+        if a.sea_level is not None:
+            print(f"b{b}｜--sea_level：共識平面（傾斜 {_tilt:.2f}°、截距 {c1:.5f}）換成水平面 z = {a.sea_level:.5f}", flush=True)
+            n1 = np.array([0.0, 0.0, 1.0]); c1 = float(a.sea_level)
         # ── 平面基底與裁切 ──
         e1 = np.cross(n1, [1.0, 0, 0]); e1 = e1 / np.linalg.norm(e1) if np.linalg.norm(e1) > 1e-6 else np.array([0, 1.0, 0]); e2 = np.cross(n1, e1)
         org = n1 * c1
