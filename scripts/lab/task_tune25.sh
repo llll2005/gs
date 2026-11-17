@@ -88,7 +88,7 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|coarse5|sbox|pbw|densenf|densepl|pcs|pcsf|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
+        lowres|coarse|coarse5|sbox|pbw|densenf|densepl|densepl2|pcs|pcsf|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
         nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf) XT+=("$t") ;;
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
@@ -108,7 +108,7 @@ parse() {
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
-    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
+    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
@@ -168,6 +168,11 @@ for t in "${XT[@]:-}"; do
     # ★ 11-17 平面物件（Fable 第三輪；使用者「作」）：
     #   densepl＝稠密起點拿掉空中隨機補點、改用平面外推深度（海面鋪滿、塔頂補在外推的牆面）反投影補滿（sfmfill_tri44pl_crop）
     #   pcs／pcsf＝深度上限補到平面外推深度的像素（海面／海面＋立面）；需要 tricap 開著（上限本身）
+    # ★ 11-17 densepl2＝v2：陸地照原本稠密起點的密度，平面點另外用自己的名額與體素邊長（v1 平面佔掉名額、陸地變稀 => 地下 +0.2～0.5 層）
+    densepl2) [[ " ${XT[*]} " =~ \ (dense|densenf|densepl)\  ]] && { echo "⛔ densepl2 不能和其他 dense* 起點一起寫"; exit 2; }
+            [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44pl2_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+              || { echo "⛔ 缺 sfmfill_tri44pl2_crop/dup1/block_$B.ply（tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --plane_sep --out sfmfill_tri44pl2_crop）"; exit 2; }
+            ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44pl2_crop); CITYGS_DUP44=1 ;;
     densepl) [[ " ${XT[*]} " =~ \ dense\  || " ${XT[*]} " =~ \ densenf\  ]] && { echo "⛔ densepl 與 dense／densenf 是不同起點，不能一起寫"; exit 2; }
             [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44pl_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44pl_crop/dup1/block_$B.ply（tools/make_plane_depth.py --blocks $B；tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --out sfmfill_tri44pl_crop）"; exit 2; }

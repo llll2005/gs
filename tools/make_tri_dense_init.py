@@ -113,6 +113,12 @@ def main():
     #   只在校正深度不可靠／沒有的像素（產生器本來就只放在那些像素）；一樣要多視角一致才算數。海面鋪滿到相機看得到的範圍，塔頂補在外推的牆面上。
     ap.add_argument("--plane_dir", default="", help="平面外推逆深度目錄（相對 dataset 或絕對路徑）；空＝不用")
     ap.add_argument("--plane_kinds", default="facade,sea")
+    # ★ 11-17 v2（使用者「都做」後查到：v1 把平面候選和陸地候選一起解體素邊長 => 平面佔掉名額，陸地起點變稀（體素邊長 b1～b4 粗 3～41%），
+    #   陸地面元變大、地下覆蓋 +0.2～0.5 層（tools/probe/ground_split_sea_1117.py：增加的全在陸地格）。
+    #   v2＝陸地照原本稠密起點解（名額＝目標 − SfM 點 − 平面名額），平面點**另外**用自己的體素邊長解到平面名額；
+    #   平面名額＝max(拿掉的空中補點數, plane_min_frac x 目標) => 陸地點數與原本稠密起點幾乎相同。
+    ap.add_argument("--plane_sep", action="store_true", help="v2：平面點用自己的名額與體素邊長（不稀釋陸地起點）")
+    ap.add_argument("--plane_min_frac", type=float, default=0.03)
     a = ap.parse_args()
     PK = {"facade": 1, "sea": 2}
     pk_allow = [PK[k] for k in a.plane_kinds.split(",") if k in PK]
@@ -147,7 +153,7 @@ def main():
             if cnt.max() >= max(1000, 0.002 * len(bx)):      # 補點全是同一個顏色；SfM 點不會有上千個完全同色
                 fm = key == uk[cnt.argmax()]; n_fill = int(fm.sum()); bx, bc = bx[~fm], bc[~fm]
         names = [l.strip() for l in open(os.path.join(D, a.part, "%03d_%03d.txt" % (b % 4, b // 4))) if l.strip()][:: a.view_step]
-        XS, CS, VS = [], [], []
+        XS, CS, VS, PS = [], [], [], []
         for vi, nm in enumerate(names):
             im = by_name.get(nm); f = os.path.join(D, a.depth, nm + ".npy")
             if im is None or not os.path.exists(f):
@@ -160,6 +166,7 @@ def main():
             vv, uu = np.meshgrid(np.arange(oy, H, a.stride), np.arange(ox, W, a.stride), indexing="ij")
             i_ = inv[vv, uu]; r_ = rel[vv, uu]
             ok = (i_ > 1e-6) & ((((r_ & 7) <= a.slope_max) & ((r_ >> 3) <= a.size_max)) | (a.outside_hull & ((r_ & 7) == 4)))
+            okp = np.zeros_like(ok)
             if pdir and os.path.exists(os.path.join(pdir, nm + ".npy")):
                 pinv = np.load(os.path.join(pdir, nm + ".npy")).astype(np.float32); pkd = cv2.imread(os.path.join(pdir, nm + "_k.png"), cv2.IMREAD_UNCHANGED)
                 if pinv.shape == inv.shape and pkd is not None:
@@ -182,23 +189,38 @@ def main():
             img = cv2.imread(os.path.join(D, "input", nm))
             img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)[..., ::-1]
             XS.append(Xw[inb].astype(np.float32)); CS.append(img[vv[ok][inb], uu[ok][inb]]); VS.append(np.full(int(inb.sum()), vi, np.int32))
-        X = np.concatenate(XS).astype(np.float64); C = np.concatenate(CS); V = np.concatenate(VS)
+            PS.append(okp[ok][inb])
+        X = np.concatenate(XS).astype(np.float64); C = np.concatenate(CS); V = np.concatenate(VS); PF = np.concatenate(PS)
         # 高度範圍夾在 SfM＋補點的範圍內（外擴 10%）：少數離群的深度會把點丟到很遠，撐大體素索引的範圍
         zr = (X @ Rp.T)[:, 2]; zb = (bx @ Rp.T)[:, 2]; zm = 0.1 * float(zb.max() - zb.min())
         inz = (zr >= zb.min() - zm) & (zr <= zb.max() + zm)
-        n_cand0 = len(X); X, C, V = X[inz], C[inz], V[inz]
+        n_cand0 = len(X); X, C, V, PF = X[inz], C[inz], V[inz], PF[inz]
         from scipy.spatial import cKDTree
         sub = bx[rng.choice(len(bx), min(len(bx), 50000), replace=False)]
         nn = float(np.median(cKDTree(bx).query(sub, k=2)[0][:, 1]))          # SfM＋補點的近鄰間距中位（只當掃描起點的尺度與報告用）
         origin = np.minimum(X.min(0), bx.min(0)) - 1e-3
-        n_want = max(target - len(bx), 0)
-        g, n_got = solve_voxel(X, V, origin, n_want, a.min_views, bx, 64.0 * nn)
-        dx, dc = supported_voxels(X, C, V, origin, g, a.min_views, np.unique(voxel_keys(bx, origin, g)))
+        g_p, n_p = None, 0
+        if a.plane_sep and pdir and PF.any():
+            b_plane = max(n_fill, int(a.plane_min_frac * target))
+            n_want = max(target - len(bx) - b_plane, 0)
+            XL, CL, VL = X[~PF], C[~PF], V[~PF]
+            g, n_got = solve_voxel(XL, VL, origin, n_want, a.min_views, bx, 64.0 * nn)
+            dxl, dcl = supported_voxels(XL, CL, VL, origin, g, a.min_views, np.unique(voxel_keys(bx, origin, g)))
+            occ = np.concatenate([bx, dxl])
+            g_p, n_got_p = solve_voxel(X[PF], V[PF], origin, b_plane, a.min_views, occ, 64.0 * nn)
+            dxp, dcp = supported_voxels(X[PF], C[PF], V[PF], origin, g_p, a.min_views, np.unique(voxel_keys(occ, origin, g_p)))
+            n_p = len(dxp)
+            dx, dc = np.concatenate([dxl, dxp]), np.concatenate([dcl, dcp])
+            n_want = n_want + b_plane
+        else:
+            n_want = max(target - len(bx), 0)
+            g, n_got = solve_voxel(X, V, origin, n_want, a.min_views, bx, 64.0 * nn)
+            dx, dc = supported_voxels(X, C, V, origin, g, a.min_views, np.unique(voxel_keys(bx, origin, g)))
         out = os.path.join(D, a.out, "dup1", f"block_{b}.ply")
         write_xyzrgb_ply(out, np.concatenate([bx, dx]).astype(np.float32), np.concatenate([bc, np.clip(np.round(dc), 0, 255).astype(np.uint8)]))
         # 報告：體素邊長對 SfM 近鄰間距、對像素足跡的倍數（都只是描述，不是門檻）
         print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}{f'（拿掉空中補點 {n_fill:,}）' if a.drop_fill else ''}{'｜凸包外也反投影' if a.outside_hull else ''}{f'｜平面像素 立面 {n_plane[1]:,}、海面 {n_plane[2]:,}' if pdir else ''}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
-              f"稠密點 {len(dx):,}（要 {n_want:,}）=> 共 {len(bx) + len(dx):,}（{(len(bx) + len(dx)) / cap:.2f} cap）｜{time.time() - t0:.0f} s => {out}", flush=True)
+              f"稠密點 {len(dx):,}（要 {n_want:,}）{f'＝陸地 {len(dx) - n_p:,}＋平面 {n_p:,}（平面體素邊長 {g_p:.5f}）' if g_p is not None else ''} => 共 {len(bx) + len(dx):,}（{(len(bx) + len(dx)) / cap:.2f} cap）｜{time.time() - t0:.0f} s => {out}", flush=True)
     print("DONE make_tri_dense_init", flush=True)
 
 
