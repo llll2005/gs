@@ -43,7 +43,9 @@ def main():
     ap.add_argument("--models", nargs="*", default=[])
     # ★ 11-17 前提第一次：規格的反對票「可靠深度在平面上或後面」把 SfM 看得到的海面（深度就在平面上）也算反對（b12 有贊成票的格只 25% 成為海面格）
     #   => behind：只有「可靠深度在平面後面超過 margin」（穿過平面看到更低的東西）才反對；在平面 ±margin 內的可靠像素算贊成（有 SfM 的海）
-    ap.add_argument("--no_rule", choices=["spec", "behind"], default="spec")
+    #   behind 量出來會把岸邊陸地算成海（陸地比海高約 4 m，300～500 m 外 1% 深度就是 3～5 m，分不開）
+    #   => abstain：在平面 ±margin 內的可靠像素棄權（不贊成也不反對），只有在平面後面才反對；贊成票仍只來自影像定義的海面區
+    ap.add_argument("--no_rule", choices=["spec", "behind", "abstain"], default="spec")
     a = ap.parse_args()
     import torch
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -164,16 +166,18 @@ def main():
             zt = np.where(tri[vv, uu] > 1e-6, 1.0 / np.maximum(tri[vv, uu], 1e-9), np.nan)
             if a.no_rule == "spec":
                 no = rel_ok[vv, uu] & (zt >= z * (1 - a.margin)) & ~ks
-            else:
+            elif a.no_rule == "behind":
                 no = rel_ok[vv, uu] & (zt > z * (1 + a.margin)) & ~ks
                 ks = ks | (rel_ok[vv, uu] & (np.abs(zt / z - 1) <= a.margin))
+            else:
+                no = rel_ok[vv, uu] & (zt > z * (1 + a.margin)) & ~ks
             i, j = cell_of(X, g); key = i * 1000003 + j
             YES.append(np.unique(key[ok & ks])); NO.append(np.unique(key[ok & no]))
         yk, yc = np.unique(np.concatenate(YES), return_counts=True); nk, nc_ = np.unique(np.concatenate(NO), return_counts=True)
         noc = np.zeros(len(yk), np.int64); pos = np.searchsorted(nk, yk); hit = (pos < len(nk)) & (nk[np.minimum(pos, len(nk) - 1)] == yk); noc[hit] = nc_[pos[hit]]
         sea = (yc >= a.min_yes) & (yc > noc); seak = yk[sea]
         cap = a.cap_avg * float(W8[str(b)])
-        np.savez(os.path.join(OUT, f"block_{b}{'' if a.no_rule == 'spec' else '_behind'}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea])
+        np.savez(os.path.join(OUT, f"block_{b}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea])
         print(f"b{b}｜鋪磚邊長 {g * 100:.2f} m（P {a.P:.0f} px x 最近可見深度中位 {np.median(list(dmin.values())) * 100:.0f} m）｜"
               f"有贊成票的格 {len(yk):,}、海面格 {sea.sum():,}｜P4：鋪磚 {sea.sum():,} 顆＝cap {cap:,.0f} 的 {100 * sea.sum() / cap:.1f}%｜{time.time() - t0:.0f} s", flush=True)
         seaset = seak
