@@ -303,6 +303,7 @@ class GaussianSplatting(LightningModule):
             strip_max: int = 8,
             grad_checkpoint: bool = False,
             train_res_schedule: str = "",
+            geo_res_scale: float = 1.0,
             outside_pool_start: int = 0,
             outside_pool_trainable: bool = True,
             outside_pool_freeze_step: int = 0,
@@ -976,7 +977,7 @@ class GaussianSplatting(LightningModule):
         elif extra is not None:
             extra = _rs_t(extra)
         last = getattr(self, "_res_last", None)
-        if last != (w, h):
+        if last != (w, h) and not getattr(self, "_res_geo_step", False):   # ★ 11-17 幾何步降解析度每 8 步來回，不印
             self._res_last = (w, h)
             print(f"[train-res] ✅ step {step}: 訓練解析度 {W}x{H} -> {w}x{h}（x{s:g}）"
                   + (f"；額外資料 {', '.join(str(tuple(t.shape)) for t in (extra if isinstance(extra, (tuple, list)) else [extra]) if torch.is_tensor(t))}"
@@ -1005,6 +1006,22 @@ class GaussianSplatting(LightningModule):
         # ★ 2026-10-09 低解析度起步（使用者：DLSS 式，前期顆數多時壓低逐像素／逐配對負載）
         _rs = self._train_res_scale(global_step)
         self._res_now = _rs                      # ★ 11-06 metric／renderer 讀它決定低解析度步的 dist 權重（metric.lambda_dist_lowres）
+        # ★ 11-17 幾何步降解析度（geo_res_scale < 1；使用者「再壓低 2 倍」的候選④）：每 lambda_normal_interval 步的完整路徑步
+        #   （法向＋深度上限＋閘門＋dist，一步是一般步的 2～2.4 倍、佔總時間 21～24%，紀錄/實驗分析/38 §1）改用 min(排程, geo_res_scale)。
+        #   判斷與 renderer.training_forward 的 _geo 同一條規則（法向有作用的步；深度上限設成同一個間隔，落在同一步）。
+        #   _res_now 只反映排程 => 這些步的 dist 照算、權重不變（lambda_dist_lowres 只管排程的低解析度期）。
+        _gs = float(self.hparams.get("geo_res_scale", 1.0) or 1.0)
+        if _gs < 1.0:
+            _mc = getattr(self.metric, "config", None)
+            _ln = float(getattr(_mc, "lambda_normal", 0.0) or 0.0)
+            _nfr = int(getattr(_mc, "normal_regularization_from_iter", 0) or 0)
+            _ni = int(getattr(_mc, "lambda_normal_interval", 1) or 1)
+            self._res_geo_step = _ln > 0 and global_step > _nfr and (_ni <= 1 or global_step % _ni == 0) and _gs < _rs
+            if self._res_geo_step:
+                _rs = _gs
+                if not getattr(self, "_geo_res_announced", False):
+                    self._geo_res_announced = True
+                    print(f"[geo-res] ✅ 首次觸發 step {global_step}：幾何步（每 {_ni} 步）用 {_gs} 倍解析度；排程倍率 {self._res_now}", flush=True)
         if _rs < 1.0:
             camera, batch = self._downscale_batch(camera, batch, _rs, global_step)
         if int(self.hparams.get("outside_pool_start", 0) or 0) > 0:
