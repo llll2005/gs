@@ -271,8 +271,9 @@ def main():
                 pl = np.full(len(m_), np.inf); pl[cand] = px_len(m_[cand])
                 off = cand & (np.abs(dist) > 3 * pl); area = o_ * 2 * np.pi * s_[:, 0] * s_[:, 1] * 1e4
                 up, dn = off & (dist > 0), off & (dist < 0)
+                huge = 3 * s_.max(1) > 8 * g
                 print(f"b{b}｜P5 {lab}：海面格上方離平面 > 3 px 的不透明顆粒 {up.sum():,}（Σo·面積 {area[up].sum() / 1e3:,.0f}k m²）｜下方 {dn.sum():,}（{area[dn].sum() / 1e3:,.0f}k m²）"
-                      f"｜海面格上、在平面附近 {int((onsea & ~off).sum()):,}", flush=True)
+                      f"｜海面格上、在平面附近 {int((onsea & ~off).sum()):,}｜巨大面元（3σ > 8 x 鋪磚邊長）海面格內 {int((huge & onsea).sum()):,}、格外 {int((huge & ~onsea).sum()):,}", flush=True)
         json.dump(dict(block=b, g=g, n=n1.tolist(), c=c1, sea_cells=int(sea.sum()), regions=len(R_)), open(os.path.join(OUT, f"stats_block_{b}.json"), "w"), indent=1)
     print("DONE make_sea_object", flush=True)
 
