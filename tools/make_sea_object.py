@@ -45,7 +45,14 @@ def main():
     #   => behind：只有「可靠深度在平面後面超過 margin」（穿過平面看到更低的東西）才反對；在平面 ±margin 內的可靠像素算贊成（有 SfM 的海）
     #   behind 量出來會把岸邊陸地算成海（陸地比海高約 4 m，300～500 m 外 1% 深度就是 3～5 m，分不開）
     #   => abstain：在平面 ±margin 內的可靠像素棄權（不贊成也不反對），只有在平面後面才反對；贊成票仍只來自影像定義的海面區
-    ap.add_argument("--no_rule", choices=["spec", "behind", "abstain"], default="abstain")   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
+    ap.add_argument("--no_rule", choices=["spec", "behind", "abstain"], default="abstain")
+    # ★ 11-17 規格 6 v2 A（使用者「A 跟 B 都作」）：S1 的殘留集中在港口碼頭之間的水面——那裡沒拿到「是海」的票（不是影像定義的海面區），
+    #   所以沒有錨定層也沒有海面上限。--grow：從海面格往相連的格長，要同時滿足
+    #   ① 像海的影像證據：打到該格、不在平面前面也不在後面（可靠深度沒有或在平面上）的像素，5x5 RGB 標準差 < col_std 且顏色和
+    #      同一張影像的海面像素中位差 < col_tol（逐張比，避開逐幀曝光差）=> 「像海」票；像海票 >= min_yes 且多於（不像海＋前面有東西＋後面）票；
+    #   ② SfM 沒有結構：格內沒有可靠 SfM 點高出平面 > g/2（碼頭、路面、船）；③ 和既有海面格 8 連通（廣度優先，長到不能再長）。
+    #   只用影像、校正深度與 SfM；門檻是像素／RGB／格距的倍數，沒有場景公尺。
+    ap.add_argument("--grow", action="store_true"); ap.add_argument("--col_std", type=float, default=6.0); ap.add_argument("--col_tol", type=float, default=20.0)   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -155,6 +162,7 @@ def main():
         g = a.P * float(np.median(list(dmin.values()))) / FXT
         # 第二遍：投票
         YES, NO, CK, CC = [], [], [], []
+        LK, UL, FR, GK, GC = [], [], [], [], []           # --grow：像海／不像海／前面有東西 的票、像海像素的顏色
         for nm in names:
             L = load_img(nm)
             if L is None:
@@ -174,12 +182,53 @@ def main():
             else:
                 no = rel_ok[vv, uu] & (zt > z * (1 + a.margin)) & ~ks
             i, j = cell_of(X, g); key = i * 1000003 + j
+            if a.grow and img is not None and (ok & ks).sum() >= 50:
+                imf = img.astype(np.float32)
+                mu = cv2.blur(imf, (5, 5)); sd_ = np.sqrt(np.maximum(cv2.blur(imf * imf, (5, 5)) - mu * mu, 0)).mean(-1)
+                sea_med = np.median(imf[vv[ok & ks], uu[ok & ks]], 0)
+                front = rel_ok[vv, uu] & (zt < z * (1 - a.margin))
+                rest = ok & ~ks & ~front & ~no
+                like = rest & (sd_[vv, uu] < a.col_std) & (np.abs(imf[vv, uu] - sea_med).mean(-1) < a.col_tol)
+                lk_, li_ = np.unique(key[like], return_index=True); LK.append(lk_); UL.append(np.unique(key[rest & ~like])); FR.append(np.unique(key[ok & ~ks & front]))
+                if len(lk_):
+                    sl_ = np.nonzero(like)[0][li_]; GK.append(lk_); GC.append(img[vv[sl_], uu[sl_]])
             yk_, yi_ = np.unique(key[ok & ks], return_index=True); YES.append(yk_); NO.append(np.unique(key[ok & no]))
             if img is not None and len(yk_):
                 sel_ = np.nonzero(ok & ks)[0][yi_]; CK.append(yk_); CC.append(img[vv[sel_], uu[sel_]])
         yk, yc = np.unique(np.concatenate(YES), return_counts=True); nk, nc_ = np.unique(np.concatenate(NO), return_counts=True)
         noc = np.zeros(len(yk), np.int64); pos = np.searchsorted(nk, yk); hit = (pos < len(nk)) & (nk[np.minimum(pos, len(nk) - 1)] == yk); noc[hit] = nc_[pos[hit]]
         sea = (yc >= a.min_yes) & (yc > noc); seak = yk[sea]
+        n_grown = 0
+        if a.grow and LK:
+            cnt = lambda L_: (lambda u_c: dict(zip(u_c[0].tolist(), u_c[1].tolist())))(np.unique(np.concatenate(L_), return_counts=True)) if L_ else {}
+            cL, cU, cF = cnt(LK), cnt(UL), cnt(FR); cN = dict(zip(nk.tolist(), nc_.tolist()))
+            if "SFM_REL" not in globals():
+                from internal.utils import colmap_fast
+                _d = colmap_fast.points3D_arrays(os.path.join(D, "sparse/0/points3D.bin"))
+                globals()["SFM_REL"] = np.ascontiguousarray(_d["xyz"][(np.diff(_d["off"]) >= 3) & (_d["err"] < 1.5)], dtype=np.float64)
+            hs = SFM_REL @ n1 - c1; si, sj = cell_of(SFM_REL - np.outer(hs, n1), g)
+            struct = set((si[hs > g / 2] * 1000003 + sj[hs > g / 2]).tolist())
+            ok_cell = {k_ for k_, v_ in cL.items() if v_ >= a.min_yes and v_ > cU.get(k_, 0) + cF.get(k_, 0) + cN.get(k_, 0) and k_ not in struct}
+            cur = set(seak.tolist()); front_ = list(cur)
+            while front_:
+                nxt = []
+                for k_ in front_:
+                    ii_ = int(round(k_ / 1000003)); jj_ = k_ - ii_ * 1000003
+                    for di in (-1, 0, 1):
+                        for dj in (-1, 0, 1):
+                            q_ = (ii_ + di) * 1000003 + (jj_ + dj)
+                            if q_ in ok_cell and q_ not in cur:
+                                cur.add(q_); nxt.append(q_)
+                front_ = nxt
+            grown = np.array(sorted(cur - set(seak.tolist())), dtype=np.int64); n_grown = len(grown)
+            print(f"b{b}｜--grow：像海票格 {len(cL):,}、符合條件 {len(ok_cell):,}（SfM 結構格 {len(struct):,} 排除）｜和海面格相連而長進來 {n_grown:,} 格"
+                  f"（原海面格 {len(seak):,} => {len(seak) + n_grown:,}）", flush=True)
+            if n_grown:
+                seak = np.sort(np.concatenate([seak, grown]))
+                yc = np.concatenate([yc[sea], np.array([cL[k_] for k_ in grown.tolist()], np.int64)]); noc = np.concatenate([noc[sea], np.array([cN.get(k_, 0) for k_ in grown.tolist()], np.int64)])
+                o_ = np.argsort(np.concatenate([yk[sea], grown])); yc, noc = yc[o_], noc[o_]
+                sea = np.ones(len(seak), bool); yk = seak
+                CK += GK; CC += GC
         cap = a.cap_avg * float(W8[str(b)])
         # 鋪磚：每個海面格的格心一顆；顏色＝贊成票影像在該格的顏色中位
         ti = np.round(seak / 1000003).astype(np.int64); tj = seak - ti * 1000003

@@ -611,6 +611,12 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 2026-11-17 規格 6 §4 seanop：中心投到平面落在海面格、不是海面層、離平面超過 sea_noparent_k x 自己像素長度（px_floor 的快取）的顆粒，
     不准當增生與搬家的母點（抽樣機率設 0）。不刪、不搬。需要 sea_layer_obj、px_floor > 0。"""
     sea_noparent_k: float = 3.0
+    sea_floater_h: float = -1.0
+    """★ 2026-11-17 規格 6 v2 的 B（使用者「A 跟 B 都作」）：> 0 時，中心投到平面落在海面格、高出共識平面超過 sea_floater_h 倍鋪磚邊長，
+    而且離最近的可靠 SfM 點超過 sea_floater_sfm 倍鋪磚邊長的不透明或半透明顆粒＝海面上方的孤立浮塊：增生期在每次增生事件併進死亡（交給 MCMC 搬家），
+    增生後在 harvest_prune_dead 的節奏直接刪。鋪磚邊長＝海面物件的 g（最近可見訓練相機 16 px 的足跡），不是場景公尺。
+    依據：S1 b1 那顆 123 m 高、9x6 m、離 SfM 173 m；海面上限只罰平面後面，上方沒有東西推它。要 sea_layer_obj。"""
+    sea_floater_sfm: float = 10.0
     sfm_track: bool = False
     """★ 2026-11-05 只追蹤、不鎖（sfm_lock 關著時才有意義）：同樣找出錨點（初始化裡的可靠 SfM 點），但不保護、不還原，
     只在 sfm 報告裡印它們的下場——被 trim 剪掉、被合併刪掉、被搬家／補洞挪走、還活著的位移與透明度。訓練行為不變。"""
@@ -1119,10 +1125,13 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 pl_module.on_train_batch_end_hooks.append(self._sea_restore)        # 最後一個 => 雜訊、px_floor 之後再夾
             if bool(getattr(self.config, "sea_noparent", False)) and not str(getattr(self.config, "sea_layer_obj", "") or ""):
                 raise ValueError("sea_noparent 要搭配 sea_layer_obj")
+            if float(getattr(self.config, "sea_floater_h", -1.0) or -1.0) > 0 and not str(getattr(self.config, "sea_layer_obj", "") or ""):
+                raise ValueError("sea_floater_h 要搭配 sea_layer_obj（海面物件的平面與海面格）")
 
     def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
         self._ip_step = global_step                     # relocate_gs／add_new_gs 的平面錯開要用（漸增係數）
-        if (str(getattr(self.config, "sea_layer_file", "") or "") or bool(getattr(self.config, "sea_noparent", False))) \
+        if (str(getattr(self.config, "sea_layer_file", "") or "") or bool(getattr(self.config, "sea_noparent", False))
+                or float(getattr(self.config, "sea_floater_h", -1.0) or -1.0) > 0) \
                 and not getattr(self, "_sea_ready", False):
             self._sea_setup(gaussian_model)
         if self._r2_on():
@@ -1416,6 +1425,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                 print(f"[nonfinite] ⚠⚠ step {global_step}: {_nf_idx.numel():,} 顆參數非有限 => 併入死亡搬家、清 Adam 狀態", flush=True)
             if _merge_dead is not None:
                 dead_mask = dead_mask | _merge_dead             # 合併掉的 j：不受 relocate_protect 保護、一定搬走
+            _sf = self._sea_floater_mask(gaussian_model, global_step)
+            if _sf is not None:
+                dead_mask = dead_mask | _sf                       # ★ 11-17 規格 6 v2 B：海面上方的孤立浮塊搬走
             if int(getattr(self.config, "occl_recycle_min", 0) or 0) > 0 and global_step >= int(getattr(self.config, "occl_from_iter", 3000)):
                 dead_mask = self._occl_step(gaussian_model, outputs, batch, dead_mask, global_step)
             dead_mask = self._anchor_exclude(dead_mask, gaussian_model)        # 錨點不給補洞拿去用（relocate_gs 也會再擋一次）
@@ -1909,6 +1921,48 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return torch.zeros_like(insea)
         pl = torch.exp(fl[idx] if idx is not None else fl).float() / kap
         return insea & torch.isfinite(pl) & (d.abs() > float(getattr(self.config, "sea_noparent_k", 3.0)) * pl)
+
+    def _sea_floater_mask(self, gaussian_model, step: int):
+        """規格 6 v2 B：海面格上方、高出平面 > sea_floater_h·g、離可靠 SfM > sea_floater_sfm·g 的顆粒（bool [N]）；關或沒有海面物件 => None。"""
+        kh = float(getattr(self.config, "sea_floater_h", -1.0) or -1.0)
+        if kh <= 0 or not getattr(self, "_sea_ready", False) or getattr(self, "_sea_n", None) is None:
+            return None
+        import numpy as np
+        X = gaussian_model.gaussians["means"].detach(); N = X.shape[0]
+        n = self._sea_n; d = X.float() @ n - self._sea_c
+        cand = d > kh * self._sea_g
+        sm = self._sea_all(N)
+        if sm is not None:
+            cand = cand & ~sm
+        out = torch.zeros(N, dtype=torch.bool, device=X.device)
+        idx = torch.nonzero(cand, as_tuple=True)[0]
+        if idx.numel():
+            P = X[idx].float() - d[idx, None] * n[None] - self._sea_org[None]
+            i = torch.floor(P @ self._sea_e1 / self._sea_g).long(); j = torch.floor(P @ self._sea_e2 / self._sea_g).long()
+            idx = idx[torch.isin(i * self._sea_base + j, self._sea_keys)]
+        n_far = 0
+        if idx.numel():
+            tr = getattr(self, "_sea_sfm_tree", None)
+            if tr is None:
+                import os
+                from scipy.spatial import cKDTree
+                pl = self._pl_ref() if getattr(self, "_pl_ref", None) is not None else None
+                root = pl.trainer.datamodule.hparams["path"]
+                f = next((x for x in (os.path.join(root, "sparse", "0", "points3D.bin"), os.path.join(root, "sparse", "points3D.bin")) if os.path.isfile(x)), None)
+                if f is None:
+                    print("⚠⚠ [sea-floater] 找不到 points3D.bin => 不收回（關掉）", flush=True)
+                    self.config.sea_floater_h = -1.0
+                    return None
+                tr = self._sea_sfm_tree = cKDTree(self._reliable_sfm(f))
+            dist, _ = tr.query(X[idx].double().cpu().numpy())
+            far = torch.from_numpy(dist > float(getattr(self.config, "sea_floater_sfm", 10.0)) * self._sea_g).to(X.device)
+            out[idx[far]] = True; n_far = int(far.sum())
+        tot = getattr(self, "_sea_floater_total", 0) + n_far; self._sea_floater_total = tot
+        if not getattr(self, "_sea_floater_announced", False) or n_far > 0:
+            print(f"[sea-floater] {'✅ 首次觸發 ' if not getattr(self, '_sea_floater_announced', False) else '　'}step {step}：海面格上方 > {kh:g} 格距"
+                  f"（{kh * self._sea_g * 100:.1f} m）的 {int(idx.numel()):,} 顆中，離 SfM > {getattr(self.config, 'sea_floater_sfm', 10.0):g} 格距的 {n_far:,} 顆收回（累計 {tot:,}）", flush=True)
+            self._sea_floater_announced = True
+        return out
 
     def _sea_probs(self, gaussian_model, probs, indices=None):
         if not getattr(self, "_sea_ready", False):
@@ -2645,6 +2699,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return 0
         with torch.no_grad():
             dead = (gaussian_model.get_opacities() <= self._current_min_opacity(global_step)).reshape(-1)
+            _sf = self._sea_floater_mask(gaussian_model, global_step)
+            if _sf is not None:
+                dead = dead | _sf                                 # ★ 11-17 規格 6 v2 B：增生後海面上方的孤立浮塊直接刪
             n_d = int(dead.sum()); n0 = int(dead.shape[0])
             if n_d > 0:
                 self._prune_points(dead, gaussian_model, optimizers)
@@ -3796,7 +3853,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # `mask`: True = prune.
         # ★ 11-17 規格 6：海面層標記是按起點的列對齊的；第 1 步的起始 trim（renderer.before_training_step）
         #   比 after_backward 早 => 在第一次剪枝前就要建好，否則列數對不上（冒煙測試：起始 trim 剪掉 1 顆 => 中止）
-        if (str(getattr(self.config, "sea_layer_file", "") or "") or bool(getattr(self.config, "sea_noparent", False))) \
+        if (str(getattr(self.config, "sea_layer_file", "") or "") or bool(getattr(self.config, "sea_noparent", False))
+                or float(getattr(self.config, "sea_floater_h", -1.0) or -1.0) > 0) \
                 and not getattr(self, "_sea_ready", False):
             self._sea_setup(gaussian_model)
         _am = self._anchor_mask(mask.shape[0])
