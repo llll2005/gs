@@ -41,6 +41,9 @@ def main():
     ap.add_argument("--cap_avg", type=float, default=1e6); ap.add_argument("--alloc", default="configs/cap_alloc_sfm_g44.json")
     ap.add_argument("--masks", action="store_true"); ap.add_argument("--premise", action="store_true"); ap.add_argument("--ncam", type=int, default=60)
     ap.add_argument("--models", nargs="*", default=[])
+    # ★ 11-17 前提第一次：規格的反對票「可靠深度在平面上或後面」把 SfM 看得到的海面（深度就在平面上）也算反對（b12 有贊成票的格只 25% 成為海面格）
+    #   => behind：只有「可靠深度在平面後面超過 margin」（穿過平面看到更低的東西）才反對；在平面 ±margin 內的可靠像素算贊成（有 SfM 的海）
+    ap.add_argument("--no_rule", choices=["spec", "behind"], default="spec")
     a = ap.parse_args()
     import torch
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -159,14 +162,18 @@ def main():
             X, z, ok = plane_hits(nm, uu.astype(float), vv.astype(float), (Wd, H)); ok &= inbox(X)
             ks = kd[vv, uu] == 2
             zt = np.where(tri[vv, uu] > 1e-6, 1.0 / np.maximum(tri[vv, uu], 1e-9), np.nan)
-            no = rel_ok[vv, uu] & (zt >= z * (1 - a.margin)) & ~ks
+            if a.no_rule == "spec":
+                no = rel_ok[vv, uu] & (zt >= z * (1 - a.margin)) & ~ks
+            else:
+                no = rel_ok[vv, uu] & (zt > z * (1 + a.margin)) & ~ks
+                ks = ks | (rel_ok[vv, uu] & (np.abs(zt / z - 1) <= a.margin))
             i, j = cell_of(X, g); key = i * 1000003 + j
             YES.append(np.unique(key[ok & ks])); NO.append(np.unique(key[ok & no]))
         yk, yc = np.unique(np.concatenate(YES), return_counts=True); nk, nc_ = np.unique(np.concatenate(NO), return_counts=True)
         noc = np.zeros(len(yk), np.int64); pos = np.searchsorted(nk, yk); hit = (pos < len(nk)) & (nk[np.minimum(pos, len(nk) - 1)] == yk); noc[hit] = nc_[pos[hit]]
         sea = (yc >= a.min_yes) & (yc > noc); seak = yk[sea]
         cap = a.cap_avg * float(W8[str(b)])
-        np.savez(os.path.join(OUT, f"block_{b}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea])
+        np.savez(os.path.join(OUT, f"block_{b}{'' if a.no_rule == 'spec' else '_behind'}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea])
         print(f"b{b}｜鋪磚邊長 {g * 100:.2f} m（P {a.P:.0f} px x 最近可見深度中位 {np.median(list(dmin.values())) * 100:.0f} m）｜"
               f"有贊成票的格 {len(yk):,}、海面格 {sea.sum():,}｜P4：鋪磚 {sea.sum():,} 顆＝cap {cap:,.0f} 的 {100 * sea.sum() / cap:.1f}%｜{time.time() - t0:.0f} s", flush=True)
         seaset = seak
@@ -190,6 +197,7 @@ def main():
         if a.premise and M is not None:
             rng = np.random.default_rng(0); samp = [names[i] for i in sorted(rng.choice(len(names), min(a.ncam, len(names)), replace=False))]
             e_con, e_own, cov_n, cov_d, nfront, nnotsea, nmask = [], [], 0, 0, 0, 0, 0
+            cov_nb, cov_db, cov_sb = 0, 0, 0                 # 只算裁切盒內的 GT 海面像素（規格 §7：盒外的遠海不歸這份規格）
             for nm in samp:
                 gt = M.load_gt(nm); L = load_img(nm)
                 if gt is None or L is None:
@@ -209,11 +217,12 @@ def main():
                 i, j = cell_of(X, g); m = ok & is_sea_cell(i, j)
                 zt = np.where(tri.ravel() > 1e-6, 1.0 / np.maximum(tri.ravel(), 1e-9), np.inf); m &= ~(rel_ok.ravel() & (zt < z * (1 - a.margin)))
                 cov_n += int((m & gsea).sum()); cov_d += int(gsea.sum())
+                gin = gsea & inbox(Xg); cov_nb += int((m & gin).sum()); cov_db += int(gin.sum()); cov_sb += int((gin & (kd.ravel() == 2)).sum())
                 ns = m & ~gsea & np.isfinite(zgv) & (zgv > 0); nmask += int(m.sum())
                 nfront += int((ns & (zgv < z * (1 - a.margin))).sum()); nnotsea += int((ns & ~(zgv < z * (1 - a.margin))).sum())
             ec = np.concatenate(e_con) if e_con else np.zeros(1); eo = np.concatenate(e_own) if e_own else np.zeros(1)
             print(f"b{b}｜P2（GT 海面像素、單張區內 {len(ec):,} px）：共識平面 中位 {100 * np.median(ec):.2f}% p90 {100 * np.percentile(ec, 90):.2f}%｜單張平面 中位 {100 * np.median(eo):.2f}% p90 {100 * np.percentile(eo, 90):.2f}%", flush=True)
-            print(f"b{b}｜P3：反投影遮罩涵蓋 GT 海面像素 {100 * cov_n / max(cov_d, 1):.1f}%｜遮罩內不是海：前面有東西擋 {100 * nfront / max(nmask, 1):.2f}%、真的不是海 {100 * nnotsea / max(nmask, 1):.2f}%", flush=True)
+            print(f"b{b}｜P3（{a.no_rule}）：反投影遮罩涵蓋 GT 海面像素 {100 * cov_n / max(cov_d, 1):.1f}%｜只算裁切盒內：遮罩 {100 * cov_nb / max(cov_db, 1):.1f}% vs 單張海面區 {100 * cov_sb / max(cov_db, 1):.1f}%｜遮罩內不是海：前面有東西擋 {100 * nfront / max(nmask, 1):.2f}%、真的不是海 {100 * nnotsea / max(nmask, 1):.2f}%", flush=True)
         # P5：現成模型
         if a.models:
             FX0 = FXT
