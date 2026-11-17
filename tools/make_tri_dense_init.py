@@ -119,6 +119,11 @@ def main():
     #   平面名額＝max(拿掉的空中補點數, plane_min_frac x 目標) => 陸地點數與原本稠密起點幾乎相同。
     ap.add_argument("--plane_sep", action="store_true", help="v2：平面點用自己的名額與體素邊長（不稀釋陸地起點）")
     ap.add_argument("--plane_min_frac", type=float, default=0.03)
+    # ★ 11-17 使用者 viewer：平面 v1 在 b3 地底 2.5 km 出現兩塊上公里的大面元（＝海面霧）。來源是 base（SfM＋補點）裡的 SfM 離群點
+    #   （b3 有 593 點在地下 1 km 以下，最深 −44.7 km；每一版起點都有）：海面上方的浮塊清掉後，它們從縫裡被看到、從底下替海面上色。
+    #   => 拿掉高度在「可靠 SfM（track>=3、誤差<1.5）高度 0.1～99.9 百分位、各外擴 10% 範圍」以外的 base 點；候選點的高度夾限也改用這個範圍
+    #   （原本用 base 的 min／max，被離群點撐大＝等於沒夾）。只用百分位與相對範圍，沒有場景單位。
+    ap.add_argument("--drop_outliers", action="store_true")
     a = ap.parse_args()
     PK = {"facade": 1, "sea": 2}
     pk_allow = [PK[k] for k in a.plane_kinds.split(",") if k in PK]
@@ -146,12 +151,20 @@ def main():
         cap = a.cap_avg * float(W8[str(b)]); target = int(a.target_frac * cap)
         v = PlyData.read(os.path.join(D, a.base, f"block_{b}.ply"))["vertex"].data
         bx = np.stack([v["x"], v["y"], v["z"]], -1).astype(np.float64); bc = np.stack([v["red"], v["green"], v["blue"]], -1).astype(np.uint8)
-        n_fill = 0; n_plane[1] = n_plane[2] = 0
+        n_fill = 0; n_plane[1] = n_plane[2] = 0; n_out = 0
         if a.drop_fill:
             key = bc[:, 0].astype(np.int64) * 65536 + bc[:, 1].astype(np.int64) * 256 + bc[:, 2]
             uk, cnt = np.unique(key, return_counts=True)
             if cnt.max() >= max(1000, 0.002 * len(bx)):      # 補點全是同一個顏色；SfM 點不會有上千個完全同色
                 fm = key == uk[cnt.argmax()]; n_fill = int(fm.sum()); bx, bc = bx[~fm], bc[~fm]
+        if a.drop_outliers:
+            if "zrel" not in locals():
+                from internal.utils.colmap import read_points3D_binary
+                _pts = read_points3D_binary(os.path.join(D, "sparse/0/points3D.bin"))
+                _P = np.stack([q.xyz for q in _pts.values()]); _ok = np.array([(len(q.image_ids) >= 3) and (q.error < 1.5) for q in _pts.values()]); del _pts
+                _z = (_P[_ok] @ Rp.T)[:, 2]; _lo, _hi = np.percentile(_z, [0.1, 99.9]); _mg = 0.1 * (_hi - _lo)
+                zrel = (_lo - _mg, _hi + _mg); del _P, _ok, _z
+            zbx = (bx @ Rp.T)[:, 2]; keep = (zbx >= zrel[0]) & (zbx <= zrel[1]); n_out = int((~keep).sum()); bx, bc = bx[keep], bc[keep]
         names = [l.strip() for l in open(os.path.join(D, a.part, "%03d_%03d.txt" % (b % 4, b // 4))) if l.strip()][:: a.view_step]
         XS, CS, VS, PS = [], [], [], []
         for vi, nm in enumerate(names):
@@ -194,6 +207,8 @@ def main():
         # 高度範圍夾在 SfM＋補點的範圍內（外擴 10%）：少數離群的深度會把點丟到很遠，撐大體素索引的範圍
         zr = (X @ Rp.T)[:, 2]; zb = (bx @ Rp.T)[:, 2]; zm = 0.1 * float(zb.max() - zb.min())
         inz = (zr >= zb.min() - zm) & (zr <= zb.max() + zm)
+        if a.drop_outliers:
+            inz &= (zr >= zrel[0]) & (zr <= zrel[1])
         n_cand0 = len(X); X, C, V, PF = X[inz], C[inz], V[inz], PF[inz]
         from scipy.spatial import cKDTree
         sub = bx[rng.choice(len(bx), min(len(bx), 50000), replace=False)]
@@ -219,7 +234,7 @@ def main():
         out = os.path.join(D, a.out, "dup1", f"block_{b}.ply")
         write_xyzrgb_ply(out, np.concatenate([bx, dx]).astype(np.float32), np.concatenate([bc, np.clip(np.round(dc), 0, 255).astype(np.uint8)]))
         # 報告：體素邊長對 SfM 近鄰間距、對像素足跡的倍數（都只是描述，不是門檻）
-        print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}{f'（拿掉空中補點 {n_fill:,}）' if a.drop_fill else ''}{'｜凸包外也反投影' if a.outside_hull else ''}{f'｜平面像素 立面 {n_plane[1]:,}、海面 {n_plane[2]:,}' if pdir else ''}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
+        print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}{f'（拿掉空中補點 {n_fill:,}）' if a.drop_fill else ''}{f'（拿掉高度離群 {n_out:,}；可靠 SfM 高度範圍 {zrel[0]:.3f}～{zrel[1]:.3f}）' if a.drop_outliers else ''}{'｜凸包外也反投影' if a.outside_hull else ''}{f'｜平面像素 立面 {n_plane[1]:,}、海面 {n_plane[2]:,}' if pdir else ''}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
               f"稠密點 {len(dx):,}（要 {n_want:,}）{f'＝陸地 {len(dx) - n_p:,}＋平面 {n_p:,}（平面體素邊長 {g_p:.5f}）' if g_p is not None else ''} => 共 {len(bx) + len(dx):,}（{(len(bx) + len(dx)) / cap:.2f} cap）｜{time.time() - t0:.0f} s => {out}", flush=True)
     print("DONE make_tri_dense_init", flush=True)
 
