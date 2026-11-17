@@ -1879,16 +1879,25 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     def _sea_restore(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
         """每步結束：海面層的位置還原到格心、法向固定為平面法向（面內轉角照學）、尺度夾在界內。"""
         from .merge_ops import _qmat, _mat2q
-        sm = self._sea_all(gaussian_model.n_gaussians)
-        if sm is None:
+        # ★ 11-18 海面層索引快取（逐位元相同）：原本每步 nonzero（GPU→CPU 同步）重找；改成 _sea 換物件或被就地改過（_version）才重找。
+        #   持有被快取的那個張量本身 => 位址不會被回收再用，不會誤判成沒變。實測（b1 增生期）每步收尾 hooks 1.36 -> 2.27 ms 的大部分在這裡。
+        t = getattr(self, "_sea", None)
+        if t is None or t.shape[0] != gaussian_model.n_gaussians:
             return
-        sel = torch.nonzero(sm, as_tuple=True)[0]
+        ck = getattr(self, "_sea_sel_ck", None)
+        if ck is not None and ck[0] is t and ck[1] == t._version:
+            sel = ck[2]
+        else:
+            sel = torch.nonzero(t >= 0, as_tuple=True)[0]
+            self._sea_sel_ck = (t, t._version, sel)
         if sel.numel() == 0:
             return
         g = gaussian_model.gaussians; c = self.config
+        first = not getattr(self, "_sea_announced", False)
+        report = first or global_step % 2000 == 0
         with torch.no_grad():
-            tgt = self._sea_xyz[self._sea[sel]].to(g["means"].dtype)
-            disp = (g["means"][sel] - tgt).norm(dim=-1)
+            tgt = self._sea_xyz[t[sel]].to(g["means"].dtype)
+            disp = (g["means"][sel] - tgt).norm(dim=-1) if report else None
             g["means"][sel] = tgt
             q = g["rotations"][sel]; R = _qmat(q.float())
             n = self._sea_n
@@ -1901,10 +1910,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             g["rotations"][sel] = qn.to(q.dtype)
             lo = math.log(float(c.sea_layer_scale_min) * self._sea_g); hi = math.log(float(c.sea_layer_scale_max) * self._sea_g)
             sc = g["scales"][sel]
-            at_lo = (sc <= lo).float().mean(); at_hi = (sc >= hi).float().mean()
+            if report:
+                at_lo = (sc <= lo).float().mean(); at_hi = (sc >= hi).float().mean()
             g["scales"][sel] = sc.clamp(lo, hi)
-        first = not getattr(self, "_sea_announced", False)
-        if first or global_step % 2000 == 0:
+        if report:
             self._sea_announced = True
             o = torch.sigmoid(g["opacities"][sel].float()).reshape(-1)
             print(f"[sea] {'✅ 首次觸發' if first else '　'} step {global_step}：海面層 {sel.numel():,} 顆｜不透明度中位 {float(o.median()):.2f}、< 0.5 佔 {100 * float((o < 0.5).float().mean()):.1f}%｜"

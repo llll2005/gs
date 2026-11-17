@@ -320,6 +320,8 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 print("⚠⚠ [depth-support] depth_support_behind 有開，但 metric depth_support="
                       f"{bool(getattr(self.config, 'depth_support', False))}、density geom_gate_sampling={bool(getattr(_dc, 'geom_gate_sampling', False))}"
                       " => behind 票不會影響抽樣（兩個都要 true）", flush=True)
+        if str(getattr(self.config, "depth_cap_plane_dir", "") or ""):
+            self._cap_plane_preload()
         _cmd = str(getattr(self.config, "depth_cap_mask_dir", "") or "")
         if _cmd:
             import os
@@ -753,6 +755,49 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                   f"比平面淺超過 {float(c.sea_front_margin):.0%} 的 {frac:.3f}、loss {float(loss):.4f}（權重 {w}×{k}；缺檔 {len(miss)} 張）", flush=True)
             self._sf_announced = True
 
+    @staticmethod
+    def _cap_plane_load(d, key):
+        """讀一張平面外推深度（float16 逆深度＋uint8 種類）；缺檔回 None。訓練迴圈與背景預讀共用 => 值逐位元相同。"""
+        import os
+        import numpy as np
+        from PIL import Image
+        p, pk = os.path.join(d, key + ".npy"), os.path.join(d, key + "_k.png")
+        if os.path.exists(p) and os.path.exists(pk):
+            return (torch.from_numpy(np.load(p).astype(np.float16)), torch.from_numpy(np.array(Image.open(pk)).astype(np.uint8)))
+        return None
+
+    def _cap_plane_preload(self):
+        """★ 11-18 平面上限的檔案在背景執行緒先讀進 CPU 快取（逐位元相同，只搬時間）。
+        實測（b1 增生期逐段計時）：海面寬遮罩上限讓每 8 步一次的完整步 forward 7.6 -> 33.2 ms，主因是每張第一次用到時在訓練迴圈裡同步讀硬碟。
+        背景執行緒還沒讀到的那張 => 訓練迴圈照舊自己讀（同一個函式、同樣的值）。"""
+        import os
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        d = str(self.config.depth_cap_plane_dir)
+        if not os.path.isdir(d):
+            return
+        cache = self.__dict__.setdefault("_pl_cache", {})
+        keys = sorted(f[:-4] for f in os.listdir(d) if f.endswith(".npy"))
+
+        def _one(k):
+            if k not in cache:
+                try:
+                    ent = self._cap_plane_load(d, k)
+                    if ent is not None:
+                        cache.setdefault(k, ent)
+                except Exception:
+                    pass
+
+        def _run():
+            import time
+            t0 = time.time()
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                list(ex.map(_one, keys))
+            print(f"[cap-plane] 背景預讀完成：{len(cache):,}／{len(keys):,} 張，{time.time() - t0:.1f} s", flush=True)
+
+        threading.Thread(target=_run, daemon=True, name="cap_plane_preload").start()
+        print(f"[cap-plane] 背景預讀開始：{len(keys):,} 張（{d}）", flush=True)
+
     def _cap_plane_apply(self, cap, name, hw, device, step):
         """★ 11-17 平面上限（config.depth_cap_plane_dir／_kinds）：還沒有上限（cap == 0）、平面有外推深度、種類允許、塊內計分（A）的像素
         => 上限＝平面逆深度 / (1+margin)。CPU 快取原解析度（float16 逆深度＋uint8 種類）。缺檔 => 該張不動。可觀測性：本步與累計補上的像素比例。"""
@@ -767,10 +812,10 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         ent = cache.get(key)
         if ent is None and key not in miss:
             d = str(c.depth_cap_plane_dir)
-            p, pk = os.path.join(d, key + ".npy"), os.path.join(d, key + "_k.png")
-            if os.path.exists(p) and os.path.exists(pk):
-                ent = (torch.from_numpy(np.load(p).astype(np.float16)), torch.from_numpy(np.array(Image.open(pk)).astype(np.uint8)))
-                cache[key] = ent
+            p = os.path.join(d, key + ".npy")
+            ent = self._cap_plane_load(d, key)
+            if ent is not None:
+                ent = cache.setdefault(key, ent)
             else:
                 if not miss:
                     print(f"⚠⚠ [cap-plane] 找不到平面外推深度 {p}（該張不補；之後只計數）", flush=True)
@@ -791,12 +836,14 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             if m is not None:
                 sel &= (m == 1)
         out = torch.where(sel, pinv / (1.0 + float(c.depth_cap_margin)), cap)
-        n = float(cap.numel()); nf = float((sel & (kd == 1)).sum()); ns = float((sel & (kd == 2)).sum())
-        acc[0] += n; acc[1] += nf; acc[2] += ns
+        # ★ 11-18 統計留在 GPU（原本每步兩次 float(...) => GPU→CPU 同步）；只在印的時候才轉成 Python 數字
+        n = float(cap.numel()); nf = (sel & (kd == 1)).sum(); ns = (sel & (kd == 2)).sum()
+        acc[0] += n; acc[1] = acc[1] + nf; acc[2] = acc[2] + ns
         bucket = step // 2000
         if not getattr(self, "_pl_announced", False) or bucket != getattr(self, "_pl_bucket", -1):
+            nf = float(nf); ns = float(ns)
             print(f"[cap-plane] {'✅ 首次觸發' if not getattr(self, '_pl_announced', False) else '　'} step={step}：本張補上 立面 {nf / n:.3f}、海面 {ns / n:.3f}｜"
-                  f"累計 立面 {acc[1] / max(acc[0], 1):.4f}、海面 {acc[2] / max(acc[0], 1):.4f}（種類 {kinds}；缺檔 {len(miss)} 張）", flush=True)
+                  f"累計 立面 {float(acc[1]) / max(acc[0], 1):.4f}、海面 {float(acc[2]) / max(acc[0], 1):.4f}（種類 {kinds}；缺檔 {len(miss)} 張）", flush=True)
             self._pl_announced = True; self._pl_bucket = bucket
         return out
 
