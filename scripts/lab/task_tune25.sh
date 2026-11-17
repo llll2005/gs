@@ -180,7 +180,11 @@ for t in "${XT[@]:-}"; do
             [ -f "$_SI/block_$B.ply" ] && [ -f "$_SI/block_${B}_sea.npy" ] && [ -f "$_SO/block_$B.npz" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺海面物件或起點（tools/make_sea_object.py --blocks $B --masks；tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --plane_sep --drop_outliers --sea_object sea_object --out sfmfill_tri44sea_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44sea_crop); CITYGS_DUP44=1
-            SEA_EXTRA=$(python3 -c "import numpy as np;print(int(np.load('$_SI/block_${B}_sea.npy').sum()))" 2>/dev/null || echo 0)
+            # ⚠ 11-17 冒煙抓到：lab 的系統 python3 沒有 numpy，原本的 `|| echo 0` 讓海面名額靜默變 0 => 改用 gspl、讀不到就停
+            if [ -f "$_SI/block_${B}_sea.npy" ]; then
+              SEA_EXTRA=$(conda run -n gspl --no-capture-output python -c "import numpy as np;print(int(np.load('$_SI/block_${B}_sea.npy').sum()))" | tail -1)
+              [[ "$SEA_EXTRA" =~ ^[0-9]+$ ]] && [ "$SEA_EXTRA" -gt 0 ] || { echo "⛔ 讀不到海面鋪磚數（$_SI/block_${B}_sea.npy => '$SEA_EXTRA'）"; exit 2; }
+            else SEA_EXTRA=0; fi
             XA+=(--model.density.init_args.sea_layer_file "$_SI/block_${B}_sea.npy" --model.density.init_args.sea_layer_obj "$_SO/block_$B.npz") ;;
     seaback) [[ " ${XT[*]} " =~ \ (pcs|pcsf)\  ]] && { echo "⛔ seaback 取代 pcs／pcsf（同一個 depth_cap_plane_dir），不能一起寫"; exit 2; }
             [[ " ${XT[*]} " =~ \ tricap ]] || { echo "⛔ seaback 要和 tricap 一起開"; exit 2; }

@@ -3777,11 +3777,16 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         # and calls this to remove them. MCMC keeps no per-Gaussian state buffers (only the
         # binoms table), so unlike Vanilla/RTGStable we just prune the model properties.
         # `mask`: True = prune.
+        # ★ 11-17 規格 6：海面層標記是按起點的列對齊的；第 1 步的起始 trim（renderer.before_training_step）
+        #   比 after_backward 早 => 在第一次剪枝前就要建好，否則列數對不上（冒煙測試：起始 trim 剪掉 1 顆 => 中止）
+        if (str(getattr(self.config, "sea_layer_file", "") or "") or bool(getattr(self.config, "sea_noparent", False))) \
+                and not getattr(self, "_sea_ready", False):
+            self._sea_setup(gaussian_model)
         _am = self._anchor_mask(mask.shape[0])
-        if _am is not None and bool((mask & _am).any()):              # ★ 2026-11-05 SfM 錨點不給 trim 剪
+        if _am is not None and bool((mask & _am).any()):              # ★ 2026-11-05 SfM 錨點不給 trim 剪（11-17 起含海面層）
             if not getattr(self, "_anchor_prune_announced", False):
                 self._anchor_prune_announced = True
-                print(f"[sfm-lock] ✅ 首次觸發：本次剪枝 {int(mask.sum()):,} 顆中 {int((mask & _am).sum()):,} 顆是錨點 => 保留", flush=True)
+                print(f"[sfm-lock] ✅ 首次觸發：本次剪枝 {int(mask.sum()):,} 顆中 {int((mask & _am).sum()):,} 顆是錨點／海面層 => 保留", flush=True)
             mask = mask & ~_am
         self._anchor_fate(mask, getattr(self, "_prune_reason", None) or "trim 剪掉")   # 追蹤模式：記下被剪的錨點
         valid = ~mask
