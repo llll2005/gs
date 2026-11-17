@@ -128,6 +128,10 @@ def main():
     # ★ 11-17 規格 6 §3：海面改成 3D 海面物件的鋪磚（每個海面格的格心一顆，顏色＝贊成票影像的顏色中位），接在起點最後；
     #   平面點只留立面（海面的平面點不再反投影）；另存 block_<b>_sea.npy（哪幾列是海面層）。海面層有自己的名額，不佔 SfM 分配的 cap。
     ap.add_argument("--sea_object", default="", help="海面物件目錄（相對 dataset；tools/make_sea_object.py 的輸出）；空＝不用")
+    # ★ 11-17 資料準備簡化（使用者「init 資料準備可以簡化／合併讓它更快？」「可以作」）：原本 rng 建在塊迴圈外、各塊輪流消耗 =>
+    #   產出跟「同一個行程裡塊的順序」有關（11-10 的 b4 是在 [1, 4, 3] 的行程裡產生的，單獨重產就不同：37% 逐點相同、其餘差 2～5 mm）、
+    #   而且不能逐塊平行。--seed_per_block＝每塊自己的種子 default_rng([0, 塊號]) => 與順序無關、可逐塊平行；預設關（舊產出照舊可重現）。
+    ap.add_argument("--seed_per_block", action="store_true")
     a = ap.parse_args()
     PK = {"facade": 1, "sea": 2}
     pk_allow = [PK[k] for k in a.plane_kinds.split(",") if k in PK]
@@ -152,6 +156,8 @@ def main():
     rng = np.random.default_rng(0)
     for b in a.blocks:
         t0 = time.time()
+        if a.seed_per_block:
+            rng = np.random.default_rng([0, int(b)])
         k = int(np.where((ids[:, 0] == b % 4) & (ids[:, 1] == b // 4))[0][0])
         lo, hi = xys[k] - mc, xys[k] + size[k] + mc
         cap = a.cap_avg * float(W8[str(b)]); target = int(a.target_frac * cap)
