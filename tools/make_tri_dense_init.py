@@ -121,7 +121,8 @@ def main():
     ap.add_argument("--plane_min_frac", type=float, default=0.03)
     # ★ 11-17 使用者 viewer：平面 v1 在 b3 地底 2.5 km 出現兩塊上公里的大面元（＝海面霧）。來源是 base（SfM＋補點）裡的 SfM 離群點
     #   （b3 有 593 點在地下 1 km 以下，最深 −44.7 km；每一版起點都有）：海面上方的浮塊清掉後，它們從縫裡被看到、從底下替海面上色。
-    #   => 拿掉高度在「可靠 SfM（track>=3、誤差<1.5）高度 0.1～99.9 百分位、各外擴 10% 範圍」以外的 base 點；候選點的高度夾限也改用這個範圍
+    #   => 拿掉高度低於「可靠 SfM（track>=3、誤差<1.5）高度 0.1 百分位 − 10% x (99.9 − 0.1 百分位)」的 base 點；候選點的下限也改用它
+    #   （只砍下方：每一版起點都沒有高於 600 m 的點；上限若也用 99.9 百分位＋10% 只有 386 m，會砍掉 427 m 的塔尖）
     #   （原本用 base 的 min／max，被離群點撐大＝等於沒夾）。只用百分位與相對範圍，沒有場景單位。
     ap.add_argument("--drop_outliers", action="store_true")
     a = ap.parse_args()
@@ -163,7 +164,7 @@ def main():
                 _pts = read_points3D_binary(os.path.join(D, "sparse/0/points3D.bin"))
                 _P = np.stack([q.xyz for q in _pts.values()]); _ok = np.array([(len(q.image_ids) >= 3) and (q.error < 1.5) for q in _pts.values()]); del _pts
                 _z = (_P[_ok] @ Rp.T)[:, 2]; _lo, _hi = np.percentile(_z, [0.1, 99.9]); _mg = 0.1 * (_hi - _lo)
-                zrel = (_lo - _mg, _hi + _mg); del _P, _ok, _z
+                zrel = (_lo - _mg, np.inf); del _P, _ok, _z      # 只砍下方：離群點都在地底；上方用原本的夾限（可靠 SfM 99.9 百分位＋10% 只有 386 m，會砍掉 427 m 塔尖）
             zbx = (bx @ Rp.T)[:, 2]; keep = (zbx >= zrel[0]) & (zbx <= zrel[1]); n_out = int((~keep).sum()); bx, bc = bx[keep], bc[keep]
         names = [l.strip() for l in open(os.path.join(D, a.part, "%03d_%03d.txt" % (b % 4, b // 4))) if l.strip()][:: a.view_step]
         XS, CS, VS, PS = [], [], [], []
