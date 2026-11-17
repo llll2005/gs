@@ -52,6 +52,7 @@ def main():
     #      同一張影像的海面像素中位差 < col_tol（逐張比，避開逐幀曝光差）=> 「像海」票；像海票 >= min_yes 且多於（不像海＋前面有東西＋後面）票；
     #   ② SfM 沒有結構：格內沒有可靠 SfM 點高出平面 > g/2（碼頭、路面、船）；③ 和既有海面格 8 連通（廣度優先，長到不能再長）。
     #   只用影像、校正深度與 SfM；門檻是像素／RGB／格距的倍數，沒有場景公尺。
+    ap.add_argument("--max_tilt", type=float, default=10.0, help="共識平面和水平面夾角超過這個度數 => 不是海面、整塊跳過")
     ap.add_argument("--grow", action="store_true"); ap.add_argument("--col_std", type=float, default=6.0); ap.add_argument("--col_tol", type=float, default=20.0)   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
@@ -119,6 +120,10 @@ def main():
         print(f"b{b}｜海面區 {len(R_)}（收 {int(inl.sum())}）｜共識平面法向與世界 z 夾角 {np.degrees(np.arccos(abs(n1[2]))):.2f}°、截距 {c1:.5f}｜"
               f"P1：各區重心對共識的相對深度差中位 {100 * np.median(rel):.2f}%（p90 {100 * np.percentile(rel, 90):.2f}%）vs 各區自己的殘差中位 {100 * np.median(Rs):.2f}%｜"
               f"法向夾角中位 {np.median(ang):.2f}°｜截距分群 {ngrp} 群", flush=True)
+        # ★ 11-18 全場景：沒有海的塊也可能有幾個被誤判的「海面區」，擬出歪掉的平面（b6：與世界 z 夾 31°、海面格 0）=> 跳過、不寫檔
+        _tilt = float(np.degrees(np.arccos(min(1.0, abs(float(n1[2]))))))
+        if _tilt > a.max_tilt:
+            print(f"b{b}：共識平面和水平面夾 {_tilt:.1f}° > {a.max_tilt:g}° => 不是海面，跳過", flush=True); continue
         # ── 平面基底與裁切 ──
         e1 = np.cross(n1, [1.0, 0, 0]); e1 = e1 / np.linalg.norm(e1) if np.linalg.norm(e1) > 1e-6 else np.array([0, 1.0, 0]); e2 = np.cross(n1, e1)
         org = n1 * c1
@@ -229,6 +234,8 @@ def main():
                 o_ = np.argsort(np.concatenate([yk[sea], grown])); yc, noc = yc[o_], noc[o_]
                 sea = np.ones(len(seak), bool); yk = seak
                 CK += GK; CC += GC
+        if len(seak) == 0:
+            print(f"b{b}：海面格 0 => 跳過、不寫檔", flush=True); continue
         cap = a.cap_avg * float(W8[str(b)])
         # 鋪磚：每個海面格的格心一顆；顏色＝贊成票影像在該格的顏色中位
         ti = np.round(seak / 1000003).astype(np.int64); tj = seak - ti * 1000003

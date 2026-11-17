@@ -4,6 +4,7 @@
 #   2 sea_object_v2 缺的塊（b1／b3 以外）從 sea_object_v2_all 補過來（npz＋cap_b<b>；沒有海的塊 make_sea_object 會跳過、不寫 npz）
 #   3 sfmfill_tri44sea2_crop 缺的塊用同一組參數產（陸地＝v2、海面＝長過的鋪磚；b1／b3 已有的不動）
 #   4 檢查 16 塊的起點與標記都在
+# ⚠ 11-18：runner 用 bash -c 執行腳本內容 => pgrep 的字樣要寫成 [m]ake_… 才不會比對到自己（第一版因此空等）
 # 用法（佇列，[solo]：吃 CPU、不能和計時中的訓練同時跑）：bash scripts/lab/prep_fullscene_sea.sh
 case "${1:-}" in -h|--help) sed -n 2,8p "$0"; exit 0 ;; esac
 set -u
@@ -12,11 +13,11 @@ D=data/matrix_city/aerial/train/block_all
 PY="conda run -n gspl --no-capture-output python -u"
 echo "▶ $(date '+%H:%M:%S') 等 16 塊平面外推＋海面物件跑完"
 for i in $(seq 1 1440); do
-  pgrep -f "tools/make_plane_depth.py|tools/make_sea_object.py" > /dev/null || break
+  pgrep -f "[m]ake_plane_depth[.]py|[m]ake_sea_object[.]py" > /dev/null || break
   [ $((i % 20)) = 0 ] && echo "  …還在跑（$(date '+%H:%M:%S')）"
   sleep 30
 done
-pgrep -f "tools/make_plane_depth.py|tools/make_sea_object.py" > /dev/null && { echo "⛔ 等了 12 小時還在跑"; exit 3; }
+pgrep -f "[m]ake_plane_depth[.]py|[m]ake_sea_object[.]py" > /dev/null && { echo "⛔ 等了 12 小時還在跑"; exit 3; }
 grep -q "DONE\|跳過\|鋪磚邊長" logs/sea_object_v2_all_1117.log 2>/dev/null || { echo "⛔ logs/sea_object_v2_all_1117.log 看不到 16 塊海面物件 v2 的輸出"; tail -5 logs/sea_object_v2_all_1117.log; exit 4; }
 echo "▶ $(date '+%H:%M:%S') 補 sea_object_v2"
 mkdir -p "$D/sea_object_v2"
