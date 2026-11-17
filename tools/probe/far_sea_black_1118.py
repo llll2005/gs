@@ -83,7 +83,14 @@ for fr in a.frames:
         for L in (so["far_L"].tolist() if "far_L" in so.files else []):
             gL = g * 2 ** L; i2 = np.floor(q @ e1 / gL).astype(np.int64); j2 = np.floor(q @ e2 / gL).astype(np.int64)
             onf |= np.isin(i2 * 1000003 + j2, so[f"far_keys_{L}"])
-        print(f"   落在 {a.sea_obj} 海面格：第 0 層 {100 * on0.mean():.1f}%、遠海層 {100 * onf.mean():.1f}%", flush=True)
+        onx = np.zeros(len(X), bool)
+        if "tile_frozen" in so.files and so["tile_frozen"].any():      # 外推磚（--far_fill）：格心 ± 邊長/2 的正方形
+            fz = so["tile_frozen"]; tc = so["tiles"][fz]; tg_ = so["tile_g"][fz]
+            qu, qv = (X - org) @ e1, (X - org) @ e2; cu, cv = (tc - org) @ e1, (tc - org) @ e2
+            for gg in np.unique(tg_):
+                m_ = tg_ == gg; ki = set(zip(np.floor(cu[m_] / gg).astype(np.int64).tolist(), np.floor(cv[m_] / gg).astype(np.int64).tolist()))
+                onx |= np.array([(a_, b_) in ki for a_, b_ in zip(np.floor(qu / gg).astype(np.int64).tolist(), np.floor(qv / gg).astype(np.int64).tolist())])
+        print(f"   落在 {a.sea_obj} 海面格：第 0 層 {100 * on0.mean():.1f}%、遠海層 {100 * onf.mean():.1f}%、外推磚 {100 * onx.mean():.1f}%｜三者合計 {100 * (on0 | onf | onx).mean():.1f}%", flush=True)
     # b 訓練影像怎麼看這些點
     nvis = np.zeros(len(X), int); kinds = np.zeros((len(X), 4), int); relok = np.zeros(len(X), int); infront = np.zeros(len(X), int)
     for (nm, Rt, tt_, fx2, fy2, cx2, cy2, Wc, Hc) in TC:
