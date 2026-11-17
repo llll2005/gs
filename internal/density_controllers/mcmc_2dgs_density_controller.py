@@ -1861,6 +1861,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         self._sea_far = [(self._sea_g * 2 ** int(L), torch.tensor(np.sort(ob[f"far_keys_{int(L)}"]), dtype=torch.long, device=dev))
                          for L in (ob["far_L"].tolist() if "far_L" in ob.files else [])]
         self._sea_tg = torch.tensor(ob["tile_g"], dtype=torch.float32, device=dev) if "tile_g" in ob.files else None
+        # ★ 11-18 v4b 外推海面磚（make_sea_object --far_fill）：訓練鏡頭看不到 => 沒有梯度，位置／法向／尺度（＝格邊長）／不透明度（0.995）全固定
+        self._sea_frz = torch.tensor(ob["tile_frozen"], dtype=torch.bool, device=dev) if "tile_frozen" in ob.files and bool(ob["tile_frozen"].any()) else None
         f = str(getattr(c, "sea_layer_file", "") or "")
         if not f:
             print(f"[sea] 只開非母點（sea_noparent）：海面格 {len(ob['keys']):,}、鋪磚邊長 {self._sea_g * 100:.2f} m", flush=True)
@@ -1881,6 +1883,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if self._sea_far:
             print(f"[sea] ✅ 遠海分層：" + "、".join(f"邊長 {gL * 100:.1f} m {k.numel():,} 格" for gL, k in self._sea_far)
                   + f"｜尺度依每顆自己的邊長夾", flush=True)
+        if self._sea_frz is not None:
+            print(f"[sea] ✅ 外推海面磚 {int(self._sea_frz.sum()):,} 顆（訓練鏡頭看不到；尺度＝格邊長、不透明度 0.995 固定）", flush=True)
 
     def _sea_all(self, n: int):
         t = getattr(self, "_sea", None)
@@ -1896,10 +1900,12 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return
         ck = getattr(self, "_sea_sel_ck", None)
         if ck is not None and ck[0] is t and ck[1] == t._version:
-            sel = ck[2]
+            sel, fsel = ck[2], ck[3]
         else:
             sel = torch.nonzero(t >= 0, as_tuple=True)[0]
-            self._sea_sel_ck = (t, t._version, sel)
+            fz = getattr(self, "_sea_frz", None)
+            fsel = sel[fz[t[sel]]] if fz is not None else None
+            self._sea_sel_ck = (t, t._version, sel, fsel)
         if sel.numel() == 0:
             return
         g = gaussian_model.gaussians; c = self.config
@@ -1928,6 +1934,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if report:
                 at_lo = (sc <= lo).float().mean(); at_hi = (sc >= hi).float().mean()
             g["scales"][sel] = sc.clamp(lo, hi) if tg is None else torch.minimum(torch.maximum(sc, lo), hi)
+            if fsel is not None and fsel.numel():               # 外推海面磚：尺度＝格邊長、不透明度 0.995（固定）
+                g["scales"][fsel] = torch.log(tg[t[fsel]]).to(g["scales"].dtype)[:, None].expand(-1, g["scales"].shape[1])
+                g["opacities"][fsel] = math.log(0.995 / 0.005)
         if report:
             self._sea_announced = True
             o = torch.sigmoid(g["opacities"][sel].float()).reshape(-1)

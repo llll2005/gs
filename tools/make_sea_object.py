@@ -64,7 +64,15 @@ def main():
     #   L＝ceil(log2(P·f/g)) 夾在 [0, K]（第 L 層格邊長 g·2^L，讓每格在該視角約 P 像素，和第 0 層同一個像素準則；沒有公尺常數）。
     #   第 0 層照舊（所有像素都投，逐位元相同）；L >= 1 的像素另外在自己那層投票，同樣的贊成／反對規則；
     #   由細到粗接受：贊成 >= min_yes、贊成 > 反對、且已接受的較細海面格蓋不到這格的一半。0＝關（輸出與 v3 相同）。
-    ap.add_argument("--far_levels", type=int, default=0)   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
+    ap.add_argument("--far_levels", type=int, default=0)
+    # ★ 11-18 v4b 外推海面（--far_levels 只收到十幾格：tools/probe/far_sea_black_1118.py 量到 0226／0269 變黑的點 89～91% 沒有任何 b3 訓練影像看得到，
+    #   test 鏡頭往外看得比訓練鏡頭遠；新底 5 那裡的灰是沒受監督的顆粒碰巧外推）。--far_fill k：在
+    #   「分區盒內、離最近訓練鏡頭的水平距離 <= k x 訓練鏡頭離海面高度中位、而且沒有任何訓練鏡頭看得到」的海平面上，用四叉樹鋪錨定磚：
+    #   從 2^far_fill_top 倍格開始，格子 5 點（中心＋四角）至少 3 點沒被看到、且邊長 <= far_fill_P x 該處像素大小（離最近訓練鏡頭的距離 / fx_train / sqrt(cos 入射角)）=> 收；
+    #   有被看到或太大 => 切四塊。顏色＝本塊海面格顏色中位；訓練時位置、法向、尺度（＝格邊長）、不透明度（0.995）都固定（tile_frozen；那裡沒有梯度）。0＝關。
+    ap.add_argument("--far_fill", type=float, default=0.0)
+    ap.add_argument("--far_fill_top", type=int, default=8)
+    ap.add_argument("--far_fill_P", type=float, default=64.0, help="外推磚的像素準則（格邊長 <= P x 像素大小；外推區沒有監督、顏色是常數，不需要細格）")   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -306,6 +314,62 @@ def main():
                         colL[np.searchsorted(keep, uk2)] = np.clip(np.round(md2), 0, 255).astype(np.uint8)
                 far_c.append(colL)
                 print(f"b{b}｜遠海第 {L} 層（邊長 {gL * 100:.1f} m）：有贊成票 {len(fyk):,} 格、過票 {len(cand):,}、被較細格蓋掉 {int((cov >= 0.5).sum()):,} => 收 {len(keep):,} 格", flush=True)
+        fill_t, fill_g, n_fill = [], [], 0
+        if a.far_fill > 0:
+            Cc = np.array([-(v[0].T @ v[1]) for v in CAM.values()]); hc = Cc @ n1 - c1; hmed = float(np.median(hc[hc > 0]))
+            from scipy.spatial import cKDTree
+            qc = Cc - org; cuv = np.stack([qc @ e1, qc @ e2], 1); tr2 = cKDTree(cuv); tr3 = cKDTree(Cc)
+            pad = a.far_fill * hmed
+            camv = list(CAM.values())
+            def observed(Pw):
+                ob_ = np.zeros(len(Pw), bool)
+                for R, t, fx, fy, cx, cy, Wc, Hc in camv:
+                    Xc = Pw @ R.T + t; zz = Xc[:, 2]
+                    u_ = fx * Xc[:, 0] / np.maximum(zz, 1e-9) + cx; v_ = fy * Xc[:, 1] / np.maximum(zz, 1e-9) + cy
+                    ob_ |= (zz > 1e-6) & (u_ >= 0) & (u_ < Wc) & (v_ >= 0) & (v_ < Hc)
+                return ob_
+            acc_all = [(g, seak)] + [(g * 2 ** L, FAR[L]) for L in FAR]
+            gT = g * 2 ** a.far_fill_top
+            u0, v0 = cuv.min(0) - pad; u1, v1 = cuv.max(0) + pad
+            I, J = np.meshgrid(np.arange(np.floor(u0 / gT), np.floor(u1 / gT) + 1), np.arange(np.floor(v0 / gT), np.floor(v1 / gT) + 1), indexing="ij")
+            I, J = I.ravel().astype(np.int64), J.ravel().astype(np.int64)
+            for L in range(a.far_fill_top, -1, -1):
+                if len(I) == 0:
+                    break
+                gL = g * 2 ** L
+                offs = np.array([[0.5, 0.5], [0, 0], [1, 0], [0, 1], [1, 1]])
+                uv = np.stack([(I[:, None] + offs[None, :, 0]) * gL, (J[:, None] + offs[None, :, 1]) * gL], -1)       # [M,5,2]
+                Pw = org + uv[..., 0:1] * e1 + uv[..., 1:2] * e2                                                    # [M,5,3]
+                dxy, _ = tr2.query(uv.reshape(-1, 2)); dxy = dxy.reshape(-1, 5)
+                inreg = (dxy <= pad).any(1) & inbox(Pw.reshape(-1, 3)).reshape(-1, 5).any(1)
+                I, J, uv, Pw = I[inreg], J[inreg], uv[inreg], Pw[inreg]
+                if len(I) == 0:
+                    break
+                obs = observed(Pw.reshape(-1, 3)).reshape(-1, 5)
+                d3, _ = tr3.query(Pw[:, 0]); hh = np.maximum(np.abs(Cc[tr3.query(Pw[:, 0])[1]] @ n1 - c1), 1e-9)
+                fpx = d3 / FXT / np.sqrt(np.clip(hh / np.maximum(d3, 1e-9), 1e-3, 1.0))
+                small = gL <= a.far_fill_P * fpx
+                cov = np.zeros(len(I))
+                kk_ = I * 1000003 + J
+                for gl, kl in acc_all:
+                    if gl < gL:
+                        il = np.round(kl / 1000003).astype(np.int64); jl = kl - il * 1000003
+                        cen = org + np.outer((il + 0.5) * gl, e1) + np.outer((jl + 0.5) * gl, e2)
+                        ic, jc = cell_of(cen, gL); kc, ncc = np.unique(ic * 1000003 + jc, return_counts=True)
+                        p2 = np.searchsorted(kc, kk_); h2 = (p2 < len(kc)) & (kc[np.minimum(p2, max(len(kc) - 1, 0))] == kk_) if len(kc) else np.zeros(len(kk_), bool)
+                        cov[h2] += ncc[p2[h2]] * (gl / gL) ** 2
+                    else:                                         # 同層或較粗的已收格蓋住這格的中心 => 不要
+                        ic, jc = cell_of(Pw[:, 0], gl); cov += np.isin(ic * 1000003 + jc, kl)
+                acc = (obs.sum(1) <= 2) & small & inbox(Pw[:, 0]) & (cov < 0.5)          # 5 點裡至少 3 點沒被看到（邊界格也收，不留縫）
+                if acc.any():
+                    fill_t.append(Pw[acc, 0]); fill_g.append(np.full(int(acc.sum()), gL)); n_fill += int(acc.sum())
+                    acc_all.append((gL, np.sort(kk_[acc])))
+                    print(f"b{b}｜外推海面第 {L} 層（邊長 {gL * 100:.0f} m）：收 {int(acc.sum()):,} 格", flush=True)
+                sub = (~acc) & (cov < 1.0) & ((obs.any(1) & ~obs.all(1)) | (~obs.any(1) & ~small))   # 全被看到的格（覆蓋區內部）不切：交給投票
+                if L == 0:
+                    break
+                I = np.concatenate([2 * I[sub] + di for di in (0, 1) for dj in (0, 1)]); J = np.concatenate([2 * J[sub] + dj for di in (0, 1) for dj in (0, 1)])
+            print(f"b{b}｜外推海面：鏡頭高度中位 {hmed:.3f}、範圍＝離鏡頭水平 {pad:.3f} 內｜共 {n_fill:,} 格", flush=True)
         cap = a.cap_avg * float(W8[str(b)])
         # 鋪磚：每個海面格的格心一顆；顏色＝贊成票影像在該格的顏色中位
         ti = np.round(seak / 1000003).astype(np.int64); tj = seak - ti * 1000003
@@ -318,11 +382,13 @@ def main():
             meds = np.stack([np.array([np.median(x) for x in np.split(ccc[:, ch], st_[1:])]) for ch in range(3)], 1)
             col[np.searchsorted(seak, uk_)] = np.clip(np.round(meds), 0, 255).astype(np.uint8)
         extra = {}
-        if FAR:
-            # 遠海鋪磚接在第 0 層後面（起點標記與錨定層的列序照這個順序）；tile_g＝每顆的格邊長（尺度夾在 [min, max] x 自己的邊長）
-            n0t = len(tiles)
-            tiles = np.concatenate([tiles] + far_t); col = np.concatenate([col] + far_c)
-            extra = dict(tile_g=np.concatenate([np.full(n0t, g)] + far_g), n_tiles0=n0t, far_L=np.array(sorted(FAR), np.int64),
+        if FAR or n_fill:
+            # 遠海鋪磚接在第 0 層後面、外推海面再接在後面（起點標記與錨定層的列序照這個順序）；tile_g＝每顆的格邊長；tile_frozen＝外推磚（全部固定）
+            n0t = len(tiles); nfar = sum(len(x) for x in far_t)
+            med_col = np.median(col, 0).round().astype(np.uint8)
+            tiles = np.concatenate([tiles] + far_t + fill_t); col = np.concatenate([col] + far_c + ([np.tile(med_col, (n_fill, 1))] if n_fill else []))
+            extra = dict(tile_g=np.concatenate([np.full(n0t, g)] + far_g + fill_g), n_tiles0=n0t, far_L=np.array(sorted(FAR), np.int64),
+                         tile_frozen=np.concatenate([np.zeros(n0t + nfar, bool), np.ones(n_fill, bool)]), n_fill=n_fill,
                          **{f"far_keys_{L}": FAR[L] for L in FAR})
         np.savez(os.path.join(OUT, f"block_{b}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea],
                  tiles=tiles, colors=col, **extra)
