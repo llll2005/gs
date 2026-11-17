@@ -9,6 +9,7 @@
 
 用法：python tools/merged_heldout_by_block.py --csv 我方=logs/a.csv release=logs/b.csv [--blocks 12]
       python tools/merged_heldout_by_block.py --ours_dir outputs/lab/full44_best/test_official --csv release=logs/evalgap/ours_release.csv
+      python tools/merged_heldout_by_block.py --dirs 舊=outputs/lab/<跑次A>/test_official 新=outputs/lab/<跑次B>/test_official
 """
 import argparse
 import csv
@@ -27,6 +28,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", nargs="+", default=[], help="名稱=逐幀 CSV 路徑")
     ap.add_argument("--ours_dir", default=None, help="（可選）我方 PNG 目錄，當作名稱「我方」的第一條線")
+    ap.add_argument("--dirs", nargs="+", default=[], help="名稱=PNG 目錄（eval_official_test --save_dir 的輸出；可多條，排在 --ours_dir 之後、--csv 之前；11-18 加：兩個全場景跑次直接比）")
     ap.add_argument("--blocks", type=int, nargs="+", default=list(range(16)))
     ap.add_argument("--block_dim", type=int, nargs=2, default=[4, 4])
     ap.add_argument("--train_dir", default="data/matrix_city/aerial/train/block_all")
@@ -38,13 +40,19 @@ def main():
     centres = np.array([(-cams.R[i].numpy().T @ cams.T[i].numpy()) for i in range(len(names))])
 
     lines = {}   # 名稱 -> {幀名: (psnr, n_tiles, n_contrast, n_fail) }
-    if a.ours_dir:
+
+    def _png_dir(dd):
         d = {}
         for n in names:
-            im = np.asarray(Image.open(os.path.join(a.ours_dir, n.rsplit(".", 1)[0] + "_gt_vs_render.png")).convert("RGB"), np.float64) / 255.
+            im = np.asarray(Image.open(os.path.join(dd, n.rsplit(".", 1)[0] + "_gt_vs_render.png")).convert("RGB"), np.float64) / 255.
             w = im.shape[1] // 2
             d[n] = (float(-10 * np.log10(max(((im[:, :w] - im[:, w:]) ** 2).mean(), 1e-12))), np.nan, np.nan, np.nan)
-        lines["我方"] = d
+        return d
+    if a.ours_dir:
+        lines["我方"] = _png_dir(a.ours_dir)
+    for spec in a.dirs:
+        nm, path = spec.split("=", 1)
+        lines[nm] = _png_dir(path)
     for spec in a.csv:
         nm, path = spec.split("=", 1)
         d = {}
