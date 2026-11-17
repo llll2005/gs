@@ -64,9 +64,11 @@ def one(job):
     from PIL import Image
     from scipy.ndimage import label, maximum_filter, minimum_filter, binary_dilation, uniform_filter
     a = A
-    o_npy = os.path.join(a["out"], name + ".npy"); o_k = os.path.join(a["out"], name + "_k.png")
-    if os.path.exists(o_npy) and os.path.exists(o_k) and not a["force"]:
+    o_npy = os.path.join(a["out"], name + ".npy"); o_k = os.path.join(a["out"], name + "_k.png"); o_p = os.path.join(a["out"], name + "_planes.npz")
+    have_maps = os.path.exists(o_npy) and os.path.exists(o_k)
+    if have_maps and os.path.exists(o_p) and not a["force"]:
         return name, None
+    regs = []                                        # ★ 11-17 規格 6 §1 P1：每個收下的區的平面參數（相機座標 n·X = c）
     D = a["D"]
     ft = os.path.join(D, "estimated_depths_tri", name + ".npy"); fr = os.path.join(D, "estimated_depths_tri_rel", name + ".npy")
     if not (os.path.exists(ft) and os.path.exists(fr)):
@@ -129,6 +131,7 @@ def one(job):
                     ii = np.nonzero(tgt)
                     out_inv[ii[0][ok], ii[1][ok]] = (1.0 / zp[ok]).astype(np.float32); kind[ii[0][ok], ii[1][ok]] = 1
                     st["fac_ok"] += 1
+                    vv_, uu_ = np.nonzero(reg); regs.append((1, f[0], f[1], int(reg.sum()), f[2], float(uu_.mean()), float(vv_.mean())))
     if a["sea"]:
         img = cv2.imread(os.path.join(D, "input", name))
         if img is not None:
@@ -152,8 +155,13 @@ def one(job):
                     ii = np.nonzero(reg)
                     out_inv[ii[0][ok], ii[1][ok]] = (1.0 / zp[ok]).astype(np.float32); kind[ii[0][ok], ii[1][ok]] = 2
                     st["sea_ok"] += 1
-    np.save(o_npy, out_inv.astype(np.float16))
-    Image.fromarray(kind).save(o_k)
+                    regs.append((2, f[0], f[1], int(reg.sum()), f[2], float(ii[1].mean()), float(ii[0].mean())))
+    if a["force"] or not have_maps:                  # 已有的深度圖不覆寫（訓練中的跑次可能正在讀）
+        np.save(o_npy, out_inv.astype(np.float16))
+        Image.fromarray(kind).save(o_k)
+    np.savez(o_p, kind=np.array([r[0] for r in regs], np.int8), n=np.array([r[1] for r in regs], np.float64).reshape(-1, 3),
+             c=np.array([r[2] for r in regs], np.float64), npix=np.array([r[3] for r in regs], np.int64), resid=np.array([r[4] for r in regs], np.float64),
+             cu=np.array([r[5] for r in regs], np.float64), cv=np.array([r[6] for r in regs], np.float64), size=np.array([W, H]))
     st["fac_px"] = float((kind == 1).mean()); st["sea_px"] = float((kind == 2).mean())
     return name, st
 
