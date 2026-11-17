@@ -20,6 +20,7 @@ ap.add_argument("--block", type=int, required=True); ap.add_argument("--top", ty
 ap.add_argument("--plane_dir", default="estimated_depths_plane"); ap.add_argument("--gt", default="data/geometry_gt/MC_Aerial/Block_all_ds.ply")
 ap.add_argument("--ang", type=float, default=8.0); ap.add_argument("--ctol", type=float, default=0.02); ap.add_argument("--down", type=float, default=1.2)
 ap.add_argument("--nsample", type=int, default=20000)
+ap.add_argument("--ctol_px", type=float, default=0.0, help="> 0：截距容許值改成 該區相機距離／fx x 這麼多像素（像素足跡；取代 --ctol）")
 a = ap.parse_args()
 D = "data/matrix_city/aerial/train/block_all"; B = a.block; M = 100.0
 p = torch.load(f"{D}/partition/partitions-dim_4_4_visibility_0.08/partitions.pt", map_location="cpu", weights_only=False)
@@ -98,6 +99,7 @@ for nm in names:
         if k > 0 and inblk(Xw[None])[0]:
             REG.append((k, n_w, c_w, float(npx), float(np.linalg.norm(Xw - C)), Xw))
 print(f"區平面：{len(names)} 張影像、落在高樓足跡內的立面區 {len(REG):,}", flush=True)
+FXT = CAMS[0][2] / a.down
 # ── 分群＋共識 ──
 def wmed(x, w):
     o = np.argsort(x); cw = np.cumsum(w[o]); return float(x[o][np.searchsorted(cw, 0.5 * cw[-1])])
@@ -107,7 +109,8 @@ for k in tall:
     R_.sort(key=lambda r: -r[3]); cl = []
     for r in R_:
         for g in cl:
-            if np.degrees(np.arccos(np.clip(r[1] @ g["n"], -1, 1))) < a.ang and abs(r[2] - g["c"]) < a.ctol * r[4]:
+            tol = a.ctol_px * r[4] / FXT if a.ctol_px > 0 else a.ctol * r[4]
+            if np.degrees(np.arccos(np.clip(r[1] @ g["n"], -1, 1))) < a.ang and abs(r[2] - g["c"]) < tol:
                 g["m"].append(r); break
         else:
             cl.append({"n": r[1], "c": r[2], "m": [r]})
