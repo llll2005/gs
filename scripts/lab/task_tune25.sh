@@ -88,7 +88,7 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|coarse5|sbox|pbw|densenf|densepl|densepl2|pcs|pcsf|sea3d|seaback|seafront|seanop|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
+        lowres|coarse|coarse5|sbox|pbw|densenf|densepl|densepl2|densedo|densedf|densepl2nd|pcs|pcsf|sea3d|seaback|seafront|seanop|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
         nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf) XT+=("$t") ;;
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
@@ -108,7 +108,7 @@ parse() {
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
-    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; sea3d) LBL+="海面物件錨定層" ;; seaback) LBL+="海面寬遮罩上限" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
+    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; densedo) LBL+="稠密起點去下方離群" ;; densedf) LBL+="稠密起點空中補點換陸地" ;; densepl2nd) LBL+="稠密起點平面另算名額不去離群" ;; sea3d) LBL+="海面物件錨定層" ;; seaback) LBL+="海面寬遮罩上限" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
@@ -173,6 +173,17 @@ for t in "${XT[@]:-}"; do
             [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44pl2_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44pl2_crop/dup1/block_$B.ply（tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --plane_sep --out sfmfill_tri44pl2_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44pl2_crop); CITYGS_DUP44=1 ;;
+    # ★ 11-17 晚 拆解平面 v2 的陸地地下層變多（使用者「兩個都做」）：從新底 6 的稠密起點一次只改一項
+    #   densedo＝只去下方離群點（--drop_outliers）；densedf＝只拿掉空中補點、名額給陸地反投影（--drop_fill，不開凸包外）；
+    #   densepl2nd＝空中補點換成平面點（--drop_fill --plane_sep，＝v2 少了去離群）。另配 densepl2 不加平面上限 => 分出上限的份
+    densedo|densedf|densepl2nd)
+            [[ " ${XT[*]} " =~ \ (dense|densenf|densepl|densepl2|sea3d|densedo|densedf|densepl2nd)\  ]] && [ "$(printf '%s\n' "${XT[@]}" | grep -c -E '^(dense|densenf|densepl|densepl2|sea3d|densedo|densedf|densepl2nd)$')" -gt 1 ] \
+              && { echo "⛔ $t 只能和一種起點一起寫"; exit 2; }
+            case "$t" in densedo) _CD=sfmfill_tri44do_crop; _GA="--drop_outliers" ;; densedf) _CD=sfmfill_tri44df_crop; _GA="--drop_fill" ;;
+                         densepl2nd) _CD=sfmfill_tri44pl2nd_crop; _GA="--drop_fill --plane_dir estimated_depths_plane --plane_sep" ;; esac
+            [ -f "data/matrix_city/aerial/train/block_all/$_CD/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+              || { echo "⛔ 缺 $_CD/dup1/block_$B.ply（tools/make_tri_dense_init.py data/matrix_city/aerial/train/block_all --blocks $B $_GA --out $_CD）"; exit 2; }
+            ENVX+=(CITYGS_CROP_INIT=$_CD); CITYGS_DUP44=1 ;;
     # ★ 11-17 規格 6（海面物件）：sea3d＝起點用 sfmfill_tri44sea_crop（陸地＝v2、平面點只留立面、海面＝每個海面格一顆鋪磚）＋錨定的海面層，
     #   cap 另外加上鋪磚顆數（海面層有自己的名額）；seaback＝上限改用海面物件的寬遮罩與共識平面；seafront＝窄遮罩上罰比平面淺；seanop＝海面格上離開平面的不當母點
     sea3d)  _SO=data/matrix_city/aerial/train/block_all/sea_object; _SI=data/matrix_city/aerial/train/block_all/sfmfill_tri44sea_crop/dup1
