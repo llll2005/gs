@@ -236,6 +236,12 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     （產生器只放在校正深度不可靠／沒有的像素），一樣乘塊外遮罩（只留 A）、上限＝平面深度 x (1+margin)。""＝關（與之前逐位元相同）。
     前提（`tools/probe/plane_extrap_1117.py`，GT 深度）：海面區內誤差中位 0.6～1.8%、會誤罰非海面的像素約 0%；立面塔頂外推誤差中位 0.8～1.5%。"""
     depth_cap_plane_kinds: str = "sea"
+    sea_front_reg: float = 0.0
+    """★ 2026-11-17 規格 6 §4 seafront：窄遮罩（該張影像自己的海面區 ∧ 共識平面有交點；`make_sea_object.py` 的 cap_b<b>/<影像名>_n.png）的像素上，
+    渲染深度（surf_depth）比共識平面深度（同目錄 <影像名>.npy 的逆深度）淺超過 sea_front_margin 就罰：w·k·mean relu(1/(1+f) − z_render/z_平面)，
+    只算塊內計分（A）、渲染 alpha > 0.5 的像素；和法向同一步（每 lambda_normal_interval 步、權重乘 k）。海面層被錨定在平面上 => 梯度只會把前面的東西往透明推。0＝關。"""
+    sea_front_margin: float = 0.02
+    sea_front_dir: str = ""
     """平面上限用哪幾種（逗號分隔：sea、facade）。立面的上限之前會掉分（cmflat 的理由），所以預設只開海面；立面另開臂驗。"""
     depth_cap_mask_dir: str = ""
     """★ 2026-11-12 規格 3 §3.1 上限遮罩：每張影像一個 uint8 PNG（檔名同影像），0＝這個像素不設上限（`tools/make_cap_masks.py`）。
@@ -694,6 +700,59 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             return (bw if bw >= 0 else ew), "both", "both"
         return ew, side, ""
 
+    def _sea_front_step(self, step, batch, outputs, metrics, pbar):
+        """★ 11-17 規格 6 seafront（config.sea_front_*）；不是完整路徑步、拿不到 surf_depth、沒有遮罩就不動 loss。"""
+        import os
+        import numpy as np
+        from PIL import Image
+        c = self.config
+        w = float(getattr(c, "sea_front_reg", 0.0) or 0.0)
+        if w <= 0:
+            return
+        k = int(getattr(c, "lambda_normal_interval", 1) or 1)
+        if k > 1 and step % k != 0:
+            return
+        if "surf_depth" not in outputs or "rend_alpha" not in outputs:
+            if not getattr(self, "_sf_warned", False):
+                self._sf_warned = True
+                print(f"⚠⚠ [sea-front] 這一步沒有 surf_depth／rend_alpha（不是完整路徑？）=> 不算（step={step}）", flush=True)
+            return
+        name, gt = batch[1][0], batch[1][1]; hw = tuple(gt.shape[-2:]); dev = gt.device
+        cache = self.__dict__.setdefault("_sf_cache", {}); miss = self.__dict__.setdefault("_sf_miss", set())
+        key = os.path.basename(str(name)); ent = cache.get(key)
+        if ent is None and key not in miss:
+            d = str(c.sea_front_dir); p, pn = os.path.join(d, key + ".npy"), os.path.join(d, key + "_n.png")
+            if os.path.exists(p) and os.path.exists(pn):
+                ent = (torch.from_numpy(np.load(p).astype(np.float16)), torch.from_numpy(np.array(Image.open(pn)) > 0)); cache[key] = ent
+            else:
+                miss.add(key)
+        if ent is None:
+            return
+        inv = ent[0].to(dev).float(); nm_ = ent[1].to(dev)
+        if tuple(inv.shape) != hw:
+            inv = torch.nn.functional.interpolate(inv[None, None], size=hw, mode="nearest")[0, 0]
+            nm_ = torch.nn.functional.interpolate(nm_[None, None].float(), size=hw, mode="nearest")[0, 0] > 0.5
+        m = nm_ & (inv > 1e-6) & (outputs["rend_alpha"].reshape(hw).detach() > 0.5)
+        if getattr(c, "block_mask_dir", ""):
+            bm = self._block_mask_get(name, hw, dev)
+            if bm is not None:
+                m = m & (bm == 1)
+        n = int(m.sum())
+        if n < 100:
+            return
+        z = outputs["surf_depth"].reshape(hw)
+        r = z * inv                                                   # z_render / z_平面
+        pen = torch.relu(1.0 / (1.0 + float(c.sea_front_margin)) - r)
+        loss = pen[m].mean()
+        metrics["loss"] = metrics["loss"] + w * k * loss
+        metrics["sea_front"] = loss.detach(); pbar["sea_front"] = False
+        if not getattr(self, "_sf_announced", False) or step % 2000 == 0:
+            with torch.no_grad():
+                frac = float((pen[m] > 0).float().mean())
+            print(f"[sea-front] {'✅ 首次觸發' if not getattr(self, '_sf_announced', False) else '　'} step={step}：窄遮罩像素 {n / (hw[0] * hw[1]):.3f}、"
+                  f"比平面淺超過 {float(c.sea_front_margin):.0%} 的 {frac:.3f}、loss {float(loss):.4f}（權重 {w}×{k}；缺檔 {len(miss)} 張）", flush=True)
+            self._sf_announced = True
+
     def _cap_plane_apply(self, cap, name, hw, device, step):
         """★ 11-17 平面上限（config.depth_cap_plane_dir／_kinds）：還沒有上限（cap == 0）、平面有外推深度、種類允許、塊內計分（A）的像素
         => 上限＝平面逆深度 / (1+margin)。CPU 快取原解析度（float16 逆深度＋uint8 種類）。缺檔 => 該張不動。可觀測性：本步與累計補上的像素比例。"""
@@ -1031,6 +1090,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         self._see_through_step(step, batch, outputs, metrics, pbar)
         self._depth_cap_step(step, batch, outputs, metrics, pbar)
         self._normal_prior_step(step, batch, outputs, metrics, pbar)
+        self._sea_front_step(step, batch, outputs, metrics, pbar)
         _w2 = float(getattr(self.config, "rgb_l2_weight", 0.0) or 0.0)
         if _w2 > 0:
             _gt = batch[1][1]

@@ -45,7 +45,7 @@ def main():
     #   => behind：只有「可靠深度在平面後面超過 margin」（穿過平面看到更低的東西）才反對；在平面 ±margin 內的可靠像素算贊成（有 SfM 的海）
     #   behind 量出來會把岸邊陸地算成海（陸地比海高約 4 m，300～500 m 外 1% 深度就是 3～5 m，分不開）
     #   => abstain：在平面 ±margin 內的可靠像素棄權（不贊成也不反對），只有在平面後面才反對；贊成票仍只來自影像定義的海面區
-    ap.add_argument("--no_rule", choices=["spec", "behind", "abstain"], default="spec")
+    ap.add_argument("--no_rule", choices=["spec", "behind", "abstain"], default="abstain")   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -154,12 +154,14 @@ def main():
             print(f"b{b}：沒有海面像素落在裁切盒內 => 跳過", flush=True); continue
         g = a.P * float(np.median(list(dmin.values()))) / FXT
         # 第二遍：投票
-        YES, NO = [], []
+        YES, NO, CK, CC = [], [], [], []
         for nm in names:
             L = load_img(nm)
             if L is None:
                 continue
             kd, tri, rel_ok = L; H, Wd = kd.shape
+            img = cv2.imread(os.path.join(D, "input", nm))
+            img = cv2.resize(img, (Wd, H), interpolation=cv2.INTER_AREA)[..., ::-1] if img is not None else None
             vv, uu = np.mgrid[0:H:a.stride, 0:Wd:a.stride]; vv, uu = vv.ravel(), uu.ravel()
             X, z, ok = plane_hits(nm, uu.astype(float), vv.astype(float), (Wd, H)); ok &= inbox(X)
             ks = kd[vv, uu] == 2
@@ -172,20 +174,35 @@ def main():
             else:
                 no = rel_ok[vv, uu] & (zt > z * (1 + a.margin)) & ~ks
             i, j = cell_of(X, g); key = i * 1000003 + j
-            YES.append(np.unique(key[ok & ks])); NO.append(np.unique(key[ok & no]))
+            yk_, yi_ = np.unique(key[ok & ks], return_index=True); YES.append(yk_); NO.append(np.unique(key[ok & no]))
+            if img is not None and len(yk_):
+                sel_ = np.nonzero(ok & ks)[0][yi_]; CK.append(yk_); CC.append(img[vv[sel_], uu[sel_]])
         yk, yc = np.unique(np.concatenate(YES), return_counts=True); nk, nc_ = np.unique(np.concatenate(NO), return_counts=True)
         noc = np.zeros(len(yk), np.int64); pos = np.searchsorted(nk, yk); hit = (pos < len(nk)) & (nk[np.minimum(pos, len(nk) - 1)] == yk); noc[hit] = nc_[pos[hit]]
         sea = (yc >= a.min_yes) & (yc > noc); seak = yk[sea]
         cap = a.cap_avg * float(W8[str(b)])
-        np.savez(os.path.join(OUT, f"block_{b}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea])
+        # 鋪磚：每個海面格的格心一顆；顏色＝贊成票影像在該格的顏色中位
+        ti = np.round(seak / 1000003).astype(np.int64); tj = seak - ti * 1000003
+        tiles = org + np.outer((ti + 0.5) * g, e1) + np.outer((tj + 0.5) * g, e2)
+        ckk = np.concatenate(CK) if CK else np.zeros(0, np.int64); ccc = np.concatenate(CC) if CC else np.zeros((0, 3), np.uint8)
+        inn = np.isin(ckk, seak); ckk, ccc = ckk[inn], ccc[inn]
+        od = np.argsort(ckk, kind="stable"); ckk, ccc = ckk[od], ccc[od]
+        uk_, st_ = np.unique(ckk, return_index=True); col = np.full((len(seak), 3), 128, np.uint8)
+        if len(uk_):
+            meds = np.stack([np.array([np.median(x) for x in np.split(ccc[:, ch], st_[1:])]) for ch in range(3)], 1)
+            col[np.searchsorted(seak, uk_)] = np.clip(np.round(meds), 0, 255).astype(np.uint8)
+        np.savez(os.path.join(OUT, f"block_{b}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea],
+                 tiles=tiles, colors=col)
         print(f"b{b}｜鋪磚邊長 {g * 100:.2f} m（P {a.P:.0f} px x 最近可見深度中位 {np.median(list(dmin.values())) * 100:.0f} m）｜"
               f"有贊成票的格 {len(yk):,}、海面格 {sea.sum():,}｜P4：鋪磚 {sea.sum():,} 顆＝cap {cap:,.0f} 的 {100 * sea.sum() / cap:.1f}%｜{time.time() - t0:.0f} s", flush=True)
         seaset = seak
         def is_sea_cell(i, j):
             kk = i * 1000003 + j; p_ = np.searchsorted(seaset, kk); return (p_ < len(seaset)) & (seaset[np.minimum(p_, len(seaset) - 1)] == kk)
-        # 反投影遮罩
+        # ★ 規格 6 §4：每塊一個目錄 cap_b<b>/：<影像名>.npy（共識平面逆深度，float16，寬或窄遮罩處）、_k.png（寬遮罩＝2，給 depth_cap_plane_*）、
+        #   _n.png（窄遮罩＝該張自己的海面區 ∧ 共識平面有交點，給 sea_front_*）
         if a.masks:
             from PIL import Image
+            CD = os.path.join(OUT, f"cap_b{b}"); os.makedirs(CD, exist_ok=True)
             for nm in names:
                 L = load_img(nm)
                 if L is None:
@@ -193,10 +210,14 @@ def main():
                 kd, tri, rel_ok = L; H, Wd = kd.shape
                 vv, uu = np.mgrid[0:H, 0:Wd]; vv, uu = vv.ravel(), uu.ravel()
                 X, z, ok = plane_hits(nm, uu.astype(float), vv.astype(float), (Wd, H))
-                i, j = cell_of(X, g); m = ok & is_sea_cell(i, j)
+                i, j = cell_of(X, g); wide = ok & is_sea_cell(i, j)
                 zt = np.where(tri[vv, uu] > 1e-6, 1.0 / np.maximum(tri[vv, uu], 1e-9), np.inf)
-                m &= ~(rel_ok[vv, uu] & (zt < z * (1 - a.margin)))
-                Image.fromarray((m.reshape(H, Wd) * 255).astype(np.uint8)).save(os.path.join(OUT, "masks", nm))
+                wide &= ~(rel_ok[vv, uu] & (zt < z * (1 - a.margin)))
+                narrow = ok & (kd[vv, uu] == 2)
+                inv = np.where(wide | narrow, 1.0 / np.where(ok, z, 1.0), 0.0).astype(np.float16)
+                np.save(os.path.join(CD, nm + ".npy"), inv.reshape(H, Wd))
+                Image.fromarray((wide.reshape(H, Wd) * 2).astype(np.uint8)).save(os.path.join(CD, nm + "_k.png"))
+                Image.fromarray((narrow.reshape(H, Wd) * 255).astype(np.uint8)).save(os.path.join(CD, nm + "_n.png"))
         # P2／P3（GT）
         if a.premise and M is not None:
             rng = np.random.default_rng(0); samp = [names[i] for i in sorted(rng.choice(len(names), min(a.ncam, len(names)), replace=False))]

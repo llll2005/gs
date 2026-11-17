@@ -594,6 +594,19 @@ class MCMC2DGSDensityController(MCMCDensityController):
     <data.path>/sparse/0/points3D.bin）重合（<1e-5）的顆粒＝錨點：每步結束把位置還原（光度梯度、MCMC 雜訊、合併都動不了），
     不參與 relocation、補洞改用、trim、合併。opacity、大小、方向、顏色照學（可以學成透明 => 錯的 SfM 點不會變永久瑕疵）。
     參數變成非有限的錨點解除鎖定、照常搬家。dup 的抖動複本與補點不是錨點。False＝關。"""
+    sea_layer_file: str = ""
+    """★ 2026-11-17 規格 6 §3 錨定的海面層：起點 PLY 的海面層標記（`make_tri_dense_init.py --sea_object` 的 block_<b>_sea.npy，bool、長度＝起點列數）。
+    ""＝關（逐位元相同）。開訓時（第一次 backward）由標記設定逐顆狀態 `_sea`（跟著 N 走）；列數對不上 => 中止。
+    每步結束：位置還原到格心、法向固定為平面法向（面內轉角照學）、兩個尺度夾在 [sea_layer_scale_min, sea_layer_scale_max] x 鋪磚邊長；
+    不透明度與顏色照學。不參與搬家／補洞／trim／合併／刪死顆粒（同 SfM 錨點的豁免），不當增生／搬家的母點。"""
+    sea_layer_obj: str = ""
+    """海面物件（`tools/make_sea_object.py` 的 block_<b>.npz：平面 n、c、格子原點與面內軸、鋪磚邊長 g、海面格鍵值）。sea_layer_file 與 sea_noparent 都要它。"""
+    sea_layer_scale_min: float = 0.5
+    sea_layer_scale_max: float = 2.0
+    sea_noparent: bool = False
+    """★ 2026-11-17 規格 6 §4 seanop：中心投到平面落在海面格、不是海面層、離平面超過 sea_noparent_k x 自己像素長度（px_floor 的快取）的顆粒，
+    不准當增生與搬家的母點（抽樣機率設 0）。不刪、不搬。需要 sea_layer_obj、px_floor > 0。"""
+    sea_noparent_k: float = 3.0
     sfm_track: bool = False
     """★ 2026-11-05 只追蹤、不鎖（sfm_lock 關著時才有意義）：同樣找出錨點（初始化裡的可靠 SfM 點），但不保護、不還原，
     只在 sfm 報告裡印它們的下場——被 trim 剪掉、被合併刪掉、被搬家／補洞挪走、還活著的位移與透明度。訓練行為不變。"""
@@ -1096,9 +1109,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     raise ValueError(f"densify_until_iter（{c.densify_until_iter}）要 <= round2_from（{c.round2_from}）：第一輪的增生要在 S1 前結束")
                 if not bool(getattr(c, "round2_free", False)):
                     pl_module.on_train_batch_end_hooks.append(self._r2_plane_hold)   # 排在雜訊之後 => 雜訊的法向分量也投影掉
+            if str(getattr(self.config, "sea_layer_file", "") or ""):
+                if not str(getattr(self.config, "sea_layer_obj", "") or ""):
+                    raise ValueError("sea_layer_file 要搭配 sea_layer_obj（海面物件 npz）")
+                pl_module.on_train_batch_end_hooks.append(self._sea_restore)        # 最後一個 => 雜訊、px_floor 之後再夾
+            if bool(getattr(self.config, "sea_noparent", False)) and not str(getattr(self.config, "sea_layer_obj", "") or ""):
+                raise ValueError("sea_noparent 要搭配 sea_layer_obj")
 
     def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
         self._ip_step = global_step                     # relocate_gs／add_new_gs 的平面錯開要用（漸增係數）
+        if (str(getattr(self.config, "sea_layer_file", "") or "") or bool(getattr(self.config, "sea_noparent", False))) \
+                and not getattr(self, "_sea_ready", False):
+            self._sea_setup(gaussian_model)
         if self._r2_on():
             self._round2_tick(gaussian_model, global_step)
         if self._sfm_on():
@@ -1439,7 +1461,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                             or global_step + self.config.densification_interval >= self._grow_end(global_step)):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
 
-    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_noup_z": float("inf"),
+    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_sea": -1, "_noup_z": float("inf"),
                      "_pxf_log": float("-inf"), "_sfm_under": 0,
                      "_r2_surf": False, "_r2_born": True, "_r2_p0": 0.0, "_r2_n0": 0.0,
                      "_v5_free": 0.0, "_v5_cov": 0.0}
@@ -1809,17 +1831,126 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         d[ok] = g[c[:, 0], c[:, 1], c[:, 2]].float() * self._sfm_q
         return d
 
+    # ────────── ★ 11-17 規格 6：錨定的海面層與海面格上的非母點
+    def _sea_setup(self, gaussian_model) -> None:
+        import numpy as np
+        c = self.config; self._sea_ready = True
+        dev = gaussian_model.gaussians["means"].device
+        ob = np.load(str(c.sea_layer_obj))
+        self._sea_n = torch.tensor(ob["n"], dtype=torch.float32, device=dev); self._sea_c = float(ob["c"])
+        self._sea_org = torch.tensor(ob["origin"], dtype=torch.float32, device=dev)
+        self._sea_e1 = torch.tensor(ob["e1"], dtype=torch.float32, device=dev); self._sea_e2 = torch.tensor(ob["e2"], dtype=torch.float32, device=dev)
+        self._sea_g = float(ob["g"]); self._sea_keys = torch.tensor(np.sort(ob["keys"]), dtype=torch.long, device=dev); self._sea_base = int(ob["base"])
+        f = str(getattr(c, "sea_layer_file", "") or "")
+        if not f:
+            print(f"[sea] 只開非母點（sea_noparent）：海面格 {len(ob['keys']):,}、鋪磚邊長 {self._sea_g * 100:.2f} m", flush=True)
+            return
+        flags = np.load(f)
+        N = gaussian_model.gaussians["means"].shape[0]
+        if flags.shape[0] != N:
+            print(f"⚠⚠ [sea] 海面層標記 {f} 有 {flags.shape[0]:,} 列，但模型有 {N:,} 顆 => 對不上，中止（不要靜默當成沒有海面層）", flush=True)
+            raise RuntimeError("sea_layer_file 列數與起點顆數不符")
+        idx = torch.nonzero(torch.from_numpy(flags.astype(bool)), as_tuple=True)[0].to(dev)
+        self._sea = torch.full((N,), -1, dtype=torch.long, device=dev); self._sea[idx] = torch.arange(idx.numel(), device=dev)
+        self._sea_xyz = gaussian_model.gaussians["means"].detach()[idx].clone()
+        print(f"[sea] ✅ 海面層 {idx.numel():,} 顆（起點 {N:,}）｜平面法向與世界 z 夾角 {float(torch.rad2deg(torch.arccos(self._sea_n[2].abs().clamp(max=1)))):.2f}°｜"
+              f"鋪磚邊長 {self._sea_g * 100:.2f} m｜尺度夾在 [{c.sea_layer_scale_min}, {c.sea_layer_scale_max}] x 邊長", flush=True)
+
+    def _sea_all(self, n: int):
+        t = getattr(self, "_sea", None)
+        return (t >= 0) if t is not None and t.shape[0] == n else None
+
+    def _sea_restore(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
+        """每步結束：海面層的位置還原到格心、法向固定為平面法向（面內轉角照學）、尺度夾在界內。"""
+        from .merge_ops import _qmat, _mat2q
+        sm = self._sea_all(gaussian_model.n_gaussians)
+        if sm is None:
+            return
+        sel = torch.nonzero(sm, as_tuple=True)[0]
+        if sel.numel() == 0:
+            return
+        g = gaussian_model.gaussians; c = self.config
+        with torch.no_grad():
+            tgt = self._sea_xyz[self._sea[sel]].to(g["means"].dtype)
+            disp = (g["means"][sel] - tgt).norm(dim=-1)
+            g["means"][sel] = tgt
+            q = g["rotations"][sel]; R = _qmat(q.float())
+            n = self._sea_n
+            t1 = R[:, :, 0] - (R[:, :, 0] @ n)[:, None] * n[None]
+            nn_ = t1.norm(dim=-1, keepdim=True)
+            t1 = torch.where(nn_ > 1e-6, t1 / nn_.clamp_min(1e-12), self._sea_e1[None].expand_as(t1))
+            t2 = torch.cross(n[None].expand_as(t1), t1, dim=-1)
+            qn = _mat2q(torch.stack([t1, t2, n[None].expand_as(t1)], -1))
+            qn = torch.where(((qn * q.float()).sum(-1, keepdim=True) < 0), -qn, qn)
+            g["rotations"][sel] = qn.to(q.dtype)
+            lo = math.log(float(c.sea_layer_scale_min) * self._sea_g); hi = math.log(float(c.sea_layer_scale_max) * self._sea_g)
+            sc = g["scales"][sel]
+            at_lo = (sc <= lo).float().mean(); at_hi = (sc >= hi).float().mean()
+            g["scales"][sel] = sc.clamp(lo, hi)
+        first = not getattr(self, "_sea_announced", False)
+        if first or global_step % 2000 == 0:
+            self._sea_announced = True
+            o = torch.sigmoid(g["opacities"][sel].float()).reshape(-1)
+            print(f"[sea] {'✅ 首次觸發' if first else '　'} step {global_step}：海面層 {sel.numel():,} 顆｜不透明度中位 {float(o.median()):.2f}、< 0.5 佔 {100 * float((o < 0.5).float().mean()):.1f}%｜"
+                  f"尺度碰下限 {100 * float(at_lo):.1f}%、碰上限 {100 * float(at_hi):.1f}%｜還原位移中位 {float(disp.median()) * 100:.3f} m", flush=True)
+
+    def _sea_off_plane(self, X, idx):
+        """中心投到平面落在海面格、離平面超過 k x 自己像素長度（px_floor 快取）的顆粒（bool）；拿不到像素長度的不算。"""
+        n = self._sea_n; d = X.float() @ n - self._sea_c
+        P = X.float() - d[:, None] * n[None] - self._sea_org[None]
+        i = torch.floor(P @ self._sea_e1 / self._sea_g).long(); j = torch.floor(P @ self._sea_e2 / self._sea_g).long()
+        insea = torch.isin(i * self._sea_base + j, self._sea_keys)
+        fl = getattr(self, "_pxf_log", None); kap = float(getattr(self.config, "px_floor", 0.0) or 0.0)
+        if fl is None or kap <= 0 or fl.shape[0] != getattr(self, "_sea_nall", fl.shape[0]):
+            return torch.zeros_like(insea)
+        pl = torch.exp(fl[idx] if idx is not None else fl).float() / kap
+        return insea & torch.isfinite(pl) & (d.abs() > float(getattr(self.config, "sea_noparent_k", 3.0)) * pl)
+
+    def _sea_probs(self, gaussian_model, probs, indices=None):
+        if not getattr(self, "_sea_ready", False):
+            return probs
+        N = gaussian_model.gaussians["means"].shape[0]
+        sm = self._sea_all(N)
+        z = torch.zeros(probs.shape[0], dtype=torch.bool, device=probs.device)
+        if sm is not None:
+            z = sm if indices is None else sm[indices]
+            if z.shape[0] != probs.shape[0]:
+                return probs
+        n_sea = int(z.sum()); n_off = 0
+        if bool(getattr(self.config, "sea_noparent", False)):
+            X = gaussian_model.gaussians["means"]; X = X if indices is None else X[indices]
+            if X.shape[0] == probs.shape[0]:
+                self._sea_nall = N
+                off = self._sea_off_plane(X, indices) & ~z; n_off = int(off.sum()); z = z | off
+        if n_sea + n_off == 0:
+            return probs
+        tot = float(probs.sum().clamp_min(1e-30)); m0 = float(probs[z].sum()) / tot
+        out = probs.masked_fill(z, 0)
+        step = int(getattr(self, "_ip_step", 0)); first = not getattr(self, "_seap_announced", False)
+        if first or step // 2000 != getattr(self, "_seap_last", -1):
+            self._seap_announced = True; self._seap_last = step // 2000
+            print(f"[sea-probs] {'✅ 首次觸發' if first else '　'} step {step}：{'搬家' if indices is not None else '增生'}抽母點，海面層 {n_sea:,}、"
+                  f"海面格上離開平面的 {n_off:,} 顆不當母點（原本佔抽樣機率 {100 * m0:.2f}%）", flush=True)
+        return out
+
     def _anchor_all(self, n: int):
         a = getattr(self, "_anchor", None)
         return (a >= 0) if a is not None and a.shape[0] == n else None
 
-    def _anchor_mask(self, n: int):
-        """要保護的錨點（只有鎖定模式；追蹤模式回 None => 所有豁免都不生效）。"""
+    def _anchor_lock_mask(self, n: int):
+        """要保護的 SfM 錨點（只有鎖定模式；追蹤模式回 None）。"""
         return self._anchor_all(n) if bool(getattr(self.config, "sfm_lock", False)) else None
+
+    def _anchor_mask(self, n: int):
+        """要保護的顆粒＝SfM 錨點（鎖定模式）∪ 海面層（★ 11-17 規格 6）；都沒有 => None（所有豁免都不生效）。"""
+        am = self._anchor_lock_mask(n); sm = self._sea_all(n)
+        if sm is None:
+            return am
+        return sm if am is None else (am | sm)
 
     def _sfm_restore(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
         """每步結束（optimizer step 與 MCMC 雜訊之後）把錨點位置還原。"""
-        am = self._anchor_mask(gaussian_model.n_gaussians)
+        am = self._anchor_lock_mask(gaussian_model.n_gaussians)
         if am is None:
             return
         sel = torch.nonzero(am, as_tuple=True)[0]
@@ -1837,8 +1968,11 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         fin = torch.isfinite(g["scales"]).all(-1) & torch.isfinite(g["means"]).all(-1) & torch.isfinite(g["opacities"]).all(-1)
         rel = am & ~fin
         if bool(rel.any()):
-            self._anchor[rel] = -1
-            print(f"[sfm-lock] ⚠ {int(rel.sum()):,} 顆錨點參數非有限 => 解除鎖定、照常搬家", flush=True)
+            if getattr(self, "_anchor", None) is not None and self._anchor.shape[0] == rel.shape[0]:
+                self._anchor[rel] = -1
+            if getattr(self, "_sea", None) is not None and self._sea.shape[0] == rel.shape[0]:
+                self._sea[rel] = -1
+            print(f"[sfm-lock] ⚠ {int(rel.sum()):,} 顆錨點／海面層參數非有限 => 解除鎖定、照常搬家", flush=True)
         return dead_mask & ~(am & fin)
 
     def _geom_gate_probs(self, gaussian_model, probs, indices=None):
@@ -1846,6 +1980,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         probs = self._sfm_birth_probs(gaussian_model, probs, indices)
         probs = self._sfm_vis_probs(gaussian_model, probs, indices)
         probs = self._behind_price_probs(gaussian_model, probs, indices)
+        probs = self._sea_probs(gaussian_model, probs, indices)
         return self._round2_probs(gaussian_model, probs, indices)
 
     # ────────── 兩輪流程（round2_*；規格 4 §1，2026-11-12）

@@ -88,7 +88,7 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|coarse|coarse5|sbox|pbw|densenf|densepl|densepl2|pcs|pcsf|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
+        lowres|coarse|coarse5|sbox|pbw|densenf|densepl|densepl2|pcs|pcsf|sea3d|seaback|seafront|seanop|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
         nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf) XT+=("$t") ;;
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
@@ -108,7 +108,7 @@ parse() {
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
-    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
+    case "$t" in lowres) LBL+="低解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; sea3d) LBL+="海面物件錨定層" ;; seaback) LBL+="海面寬遮罩上限" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
@@ -173,6 +173,20 @@ for t in "${XT[@]:-}"; do
             [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44pl2_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44pl2_crop/dup1/block_$B.ply（tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --plane_sep --out sfmfill_tri44pl2_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44pl2_crop); CITYGS_DUP44=1 ;;
+    # ★ 11-17 規格 6（海面物件）：sea3d＝起點用 sfmfill_tri44sea_crop（陸地＝v2、平面點只留立面、海面＝每個海面格一顆鋪磚）＋錨定的海面層，
+    #   cap 另外加上鋪磚顆數（海面層有自己的名額）；seaback＝上限改用海面物件的寬遮罩與共識平面；seafront＝窄遮罩上罰比平面淺；seanop＝海面格上離開平面的不當母點
+    sea3d)  _SO=data/matrix_city/aerial/train/block_all/sea_object; _SI=data/matrix_city/aerial/train/block_all/sfmfill_tri44sea_crop/dup1
+            [[ " ${XT[*]} " =~ \ (dense|densenf|densepl|densepl2)\  ]] && { echo "⛔ sea3d 是自己的起點，不能和其他 dense* 一起寫"; exit 2; }
+            [ -f "$_SI/block_$B.ply" ] && [ -f "$_SI/block_${B}_sea.npy" ] && [ -f "$_SO/block_$B.npz" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+              || { echo "⛔ 缺海面物件或起點（tools/make_sea_object.py --blocks $B --masks；tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --plane_sep --drop_outliers --sea_object sea_object --out sfmfill_tri44sea_crop）"; exit 2; }
+            ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44sea_crop); CITYGS_DUP44=1
+            SEA_EXTRA=$(python3 -c "import numpy as np;print(int(np.load('$_SI/block_${B}_sea.npy').sum()))" 2>/dev/null || echo 0)
+            XA+=(--model.density.init_args.sea_layer_file "$_SI/block_${B}_sea.npy" --model.density.init_args.sea_layer_obj "$_SO/block_$B.npz") ;;
+    seaback) [[ " ${XT[*]} " =~ \ (pcs|pcsf)\  ]] && { echo "⛔ seaback 取代 pcs／pcsf（同一個 depth_cap_plane_dir），不能一起寫"; exit 2; }
+            [[ " ${XT[*]} " =~ \ tricap ]] || { echo "⛔ seaback 要和 tricap 一起開"; exit 2; }
+            XA+=(--model.metric.init_args.depth_cap_plane_dir data/matrix_city/aerial/train/block_all/sea_object/cap_b$B --model.metric.init_args.depth_cap_plane_kinds sea) ;;
+    seafront) XA+=(--model.metric.init_args.sea_front_reg 0.5 --model.metric.init_args.sea_front_margin 0.02 --model.metric.init_args.sea_front_dir data/matrix_city/aerial/train/block_all/sea_object/cap_b$B) ;;
+    seanop) XA+=(--model.density.init_args.sea_noparent true --model.density.init_args.sea_layer_obj data/matrix_city/aerial/train/block_all/sea_object/block_$B.npz) ;;
     densepl) [[ " ${XT[*]} " =~ \ dense\  || " ${XT[*]} " =~ \ densenf\  ]] && { echo "⛔ densepl 與 dense／densenf 是不同起點，不能一起寫"; exit 2; }
             [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44pl_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44pl_crop/dup1/block_$B.ply（tools/make_plane_depth.py --blocks $B；tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --out sfmfill_tri44pl_crop）"; exit 2; }
@@ -330,6 +344,7 @@ if [[ " ${XT[*]} " =~ \ r2wl\  ]]; then   # 放在所有元件之後
   echo "[r2wl] 只關第二輪的增生：增生到 $D1、合併到 $S1、熵 x2 雙向從 $((S1 / 6)) 起、S1（$S1）之後熵只往 0（0.002）、cap 100%"
 fi
 CAP=$(python3 -c "import json;print(int(round(1e6 * json.load(open('configs/cap_alloc_sfm_g44.json'))['weights']['$B'])))")
+[ -n "${SEA_EXTRA:-}" ] && [ "${SEA_EXTRA:-0}" -gt 0 ] && { echo "[sea3d] cap 另加海面鋪磚 $SEA_EXTRA 顆（海面層自己的名額）：$CAP => $((CAP + SEA_EXTRA))"; CAP=$((CAP + SEA_EXTRA)); }
 # ★ 11-13 規格 5 §1 逐段計時模式（task_mech_time.sh 的 MT_TUNE_ARMS 用）：TUNE_PROFILE_STEPS＝訓練到這一步就停（排程仍照全長）、
 #   CITYGS_STEP_PROFILE（穩態從 TUNE_PROFILE_WARMUP 步起）、不跑圖表資料包、跑次名＝TUNE_PROFILE_NAME（不進任何家族）
 if [ -n "${TUNE_PROFILE_STEPS:-}" ]; then

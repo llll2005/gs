@@ -125,9 +125,14 @@ def main():
     #   （只砍下方：每一版起點都沒有高於 600 m 的點；上限若也用 99.9 百分位＋10% 只有 386 m，會砍掉 427 m 的塔尖）
     #   （原本用 base 的 min／max，被離群點撐大＝等於沒夾）。只用百分位與相對範圍，沒有場景單位。
     ap.add_argument("--drop_outliers", action="store_true")
+    # ★ 11-17 規格 6 §3：海面改成 3D 海面物件的鋪磚（每個海面格的格心一顆，顏色＝贊成票影像的顏色中位），接在起點最後；
+    #   平面點只留立面（海面的平面點不再反投影）；另存 block_<b>_sea.npy（哪幾列是海面層）。海面層有自己的名額，不佔 SfM 分配的 cap。
+    ap.add_argument("--sea_object", default="", help="海面物件目錄（相對 dataset；tools/make_sea_object.py 的輸出）；空＝不用")
     a = ap.parse_args()
     PK = {"facade": 1, "sea": 2}
     pk_allow = [PK[k] for k in a.plane_kinds.split(",") if k in PK]
+    if a.sea_object:
+        pk_allow = [k for k in pk_allow if k != 2]           # 海面改由鋪磚負責
     pdir = os.path.join(a.dataset, a.plane_dir) if a.plane_dir else ""
     n_plane = {1: 0, 2: 0}
     import torch
@@ -233,10 +238,16 @@ def main():
             g, n_got = solve_voxel(X, V, origin, n_want, a.min_views, bx, 64.0 * nn)
             dx, dc = supported_voxels(X, C, V, origin, g, a.min_views, np.unique(voxel_keys(bx, origin, g)))
         out = os.path.join(D, a.out, "dup1", f"block_{b}.ply")
-        write_xyzrgb_ply(out, np.concatenate([bx, dx]).astype(np.float32), np.concatenate([bc, np.clip(np.round(dc), 0, 255).astype(np.uint8)]))
+        XO = np.concatenate([bx, dx]); CO = np.concatenate([bc, np.clip(np.round(dc), 0, 255).astype(np.uint8)]); n_sea = 0
+        if a.sea_object:
+            so = np.load(os.path.join(D, a.sea_object, f"block_{b}.npz"))
+            XO = np.concatenate([XO, so["tiles"]]); CO = np.concatenate([CO, so["colors"].astype(np.uint8)]); n_sea = len(so["tiles"])
+            os.makedirs(os.path.dirname(out), exist_ok=True)
+            np.save(os.path.join(D, a.out, "dup1", f"block_{b}_sea.npy"), np.concatenate([np.zeros(len(XO) - n_sea, bool), np.ones(n_sea, bool)]))
+        write_xyzrgb_ply(out, XO.astype(np.float32), CO)
         # 報告：體素邊長對 SfM 近鄰間距、對像素足跡的倍數（都只是描述，不是門檻）
         print(f"b{b}：cap {cap:,.0f} => 目標 {target:,}｜SfM＋補點 {len(bx):,}{f'（拿掉空中補點 {n_fill:,}）' if a.drop_fill else ''}{f'（拿掉高度離群 {n_out:,}；可靠 SfM 高度範圍 {zrel[0]:.3f}～{zrel[1]:.3f}）' if a.drop_outliers else ''}{'｜凸包外也反投影' if a.outside_hull else ''}{f'｜平面像素 立面 {n_plane[1]:,}、海面 {n_plane[2]:,}' if pdir else ''}｜視角 {len(names)}、候選 {len(X):,}（高度範圍外丟掉 {n_cand0 - len(X):,}）｜體素邊長 {g:.5f}（SfM 近鄰間距中位 {nn:.5f} 的 {g / nn:.2f} 倍）｜"
-              f"稠密點 {len(dx):,}（要 {n_want:,}）{f'＝陸地 {len(dx) - n_p:,}＋平面 {n_p:,}（平面體素邊長 {g_p:.5f}）' if g_p is not None else ''} => 共 {len(bx) + len(dx):,}（{(len(bx) + len(dx)) / cap:.2f} cap）｜{time.time() - t0:.0f} s => {out}", flush=True)
+              f"{f'海面鋪磚 {n_sea:,}（另外的名額）｜' if a.sea_object else ''}稠密點 {len(dx):,}（要 {n_want:,}）{f'＝陸地 {len(dx) - n_p:,}＋平面 {n_p:,}（平面體素邊長 {g_p:.5f}）' if g_p is not None else ''} => 共 {len(bx) + len(dx):,}（{(len(bx) + len(dx)) / cap:.2f} cap）｜{time.time() - t0:.0f} s => {out}", flush=True)
     print("DONE make_tri_dense_init", flush=True)
 
 
