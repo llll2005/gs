@@ -1857,6 +1857,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         self._sea_org = torch.tensor(ob["origin"], dtype=torch.float32, device=dev)
         self._sea_e1 = torch.tensor(ob["e1"], dtype=torch.float32, device=dev); self._sea_e2 = torch.tensor(ob["e2"], dtype=torch.float32, device=dev)
         self._sea_g = float(ob["g"]); self._sea_keys = torch.tensor(np.sort(ob["keys"]), dtype=torch.long, device=dev); self._sea_base = int(ob["base"])
+        # ★ 11-18 v4 遠海分層（make_sea_object --far_levels）：各層格鍵值（邊長 g·2^L）與每顆鋪磚自己的邊長；舊檔沒有 => None（逐位元相同）
+        self._sea_far = [(self._sea_g * 2 ** int(L), torch.tensor(np.sort(ob[f"far_keys_{int(L)}"]), dtype=torch.long, device=dev))
+                         for L in (ob["far_L"].tolist() if "far_L" in ob.files else [])]
+        self._sea_tg = torch.tensor(ob["tile_g"], dtype=torch.float32, device=dev) if "tile_g" in ob.files else None
         f = str(getattr(c, "sea_layer_file", "") or "")
         if not f:
             print(f"[sea] 只開非母點（sea_noparent）：海面格 {len(ob['keys']):,}、鋪磚邊長 {self._sea_g * 100:.2f} m", flush=True)
@@ -1867,10 +1871,16 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             print(f"⚠⚠ [sea] 海面層標記 {f} 有 {flags.shape[0]:,} 列，但模型有 {N:,} 顆 => 對不上，中止（不要靜默當成沒有海面層）", flush=True)
             raise RuntimeError("sea_layer_file 列數與起點顆數不符")
         idx = torch.nonzero(torch.from_numpy(flags.astype(bool)), as_tuple=True)[0].to(dev)
+        if self._sea_tg is not None and self._sea_tg.numel() != idx.numel():
+            print(f"⚠⚠ [sea] 海面物件的鋪磚 {self._sea_tg.numel():,} 顆，但起點標記 {idx.numel():,} 列 => 起點不是用這個海面物件產的，中止", flush=True)
+            raise RuntimeError("sea tile_g 與起點海面層列數不符")
         self._sea = torch.full((N,), -1, dtype=torch.long, device=dev); self._sea[idx] = torch.arange(idx.numel(), device=dev)
         self._sea_xyz = gaussian_model.gaussians["means"].detach()[idx].clone()
         print(f"[sea] ✅ 海面層 {idx.numel():,} 顆（起點 {N:,}）｜平面法向與世界 z 夾角 {float(torch.rad2deg(torch.arccos(self._sea_n[2].abs().clamp(max=1)))):.2f}°｜"
               f"鋪磚邊長 {self._sea_g * 100:.2f} m｜尺度夾在 [{c.sea_layer_scale_min}, {c.sea_layer_scale_max}] x 邊長", flush=True)
+        if self._sea_far:
+            print(f"[sea] ✅ 遠海分層：" + "、".join(f"邊長 {gL * 100:.1f} m {k.numel():,} 格" for gL, k in self._sea_far)
+                  + f"｜尺度依每顆自己的邊長夾", flush=True)
 
     def _sea_all(self, n: int):
         t = getattr(self, "_sea", None)
@@ -1908,23 +1918,36 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             qn = _mat2q(torch.stack([t1, t2, n[None].expand_as(t1)], -1))
             qn = torch.where(((qn * q.float()).sum(-1, keepdim=True) < 0), -qn, qn)
             g["rotations"][sel] = qn.to(q.dtype)
-            lo = math.log(float(c.sea_layer_scale_min) * self._sea_g); hi = math.log(float(c.sea_layer_scale_max) * self._sea_g)
             sc = g["scales"][sel]
+            tg = getattr(self, "_sea_tg", None)
+            if tg is None:
+                lo = math.log(float(c.sea_layer_scale_min) * self._sea_g); hi = math.log(float(c.sea_layer_scale_max) * self._sea_g)
+            else:                                               # v4 遠海分層：每顆依自己的邊長夾
+                lg = torch.log(tg[t[sel]]).to(sc.dtype)[:, None]
+                lo = lg + math.log(float(c.sea_layer_scale_min)); hi = lg + math.log(float(c.sea_layer_scale_max))
             if report:
                 at_lo = (sc <= lo).float().mean(); at_hi = (sc >= hi).float().mean()
-            g["scales"][sel] = sc.clamp(lo, hi)
+            g["scales"][sel] = sc.clamp(lo, hi) if tg is None else torch.minimum(torch.maximum(sc, lo), hi)
         if report:
             self._sea_announced = True
             o = torch.sigmoid(g["opacities"][sel].float()).reshape(-1)
             print(f"[sea] {'✅ 首次觸發' if first else '　'} step {global_step}：海面層 {sel.numel():,} 顆｜不透明度中位 {float(o.median()):.2f}、< 0.5 佔 {100 * float((o < 0.5).float().mean()):.1f}%｜"
                   f"尺度碰下限 {100 * float(at_lo):.1f}%、碰上限 {100 * float(at_hi):.1f}%｜還原位移中位 {float(disp.median()) * 100:.3f} m", flush=True)
 
+    def _sea_insea(self, P):
+        """平面上的點（已扣掉 org、在平面內）落在海面格；有遠海分層時任何一層都算。沒有遠海 => 與原本逐位元相同。"""
+        i = torch.floor(P @ self._sea_e1 / self._sea_g).long(); j = torch.floor(P @ self._sea_e2 / self._sea_g).long()
+        insea = torch.isin(i * self._sea_base + j, self._sea_keys)
+        for gL, kL in getattr(self, "_sea_far", None) or []:
+            i = torch.floor(P @ self._sea_e1 / gL).long(); j = torch.floor(P @ self._sea_e2 / gL).long()
+            insea = insea | torch.isin(i * self._sea_base + j, kL)
+        return insea
+
     def _sea_off_plane(self, X, idx):
         """中心投到平面落在海面格、離平面超過 k x 自己像素長度（px_floor 快取）的顆粒（bool）；拿不到像素長度的不算。"""
         n = self._sea_n; d = X.float() @ n - self._sea_c
         P = X.float() - d[:, None] * n[None] - self._sea_org[None]
-        i = torch.floor(P @ self._sea_e1 / self._sea_g).long(); j = torch.floor(P @ self._sea_e2 / self._sea_g).long()
-        insea = torch.isin(i * self._sea_base + j, self._sea_keys)
+        insea = self._sea_insea(P)
         fl = getattr(self, "_pxf_log", None); kap = float(getattr(self.config, "px_floor", 0.0) or 0.0)
         if fl is None or kap <= 0 or fl.shape[0] != getattr(self, "_sea_nall", fl.shape[0]):
             return torch.zeros_like(insea)
@@ -1947,8 +1970,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         idx = torch.nonzero(cand, as_tuple=True)[0]
         if idx.numel():
             P = X[idx].float() - d[idx, None] * n[None] - self._sea_org[None]
-            i = torch.floor(P @ self._sea_e1 / self._sea_g).long(); j = torch.floor(P @ self._sea_e2 / self._sea_g).long()
-            idx = idx[torch.isin(i * self._sea_base + j, self._sea_keys)]
+            idx = idx[self._sea_insea(P)]
         n_far = 0
         if idx.numel():
             tr = getattr(self, "_sea_sfm_tree", None)

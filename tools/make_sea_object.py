@@ -57,7 +57,14 @@ def main():
     #   --sea_level z：海面改成水平面 z（世界座標、場景單位；用全場景 SfM 水面高度的中位，所有塊共用 => 接縫無台階）。傾斜檢查仍用共識平面先判是不是海。
     ap.add_argument("--sea_level", type=float, default=None)
     ap.add_argument("--max_tilt", type=float, default=10.0, help="共識平面和水平面夾角超過這個度數 => 不是海面、整塊跳過")
-    ap.add_argument("--grow", action="store_true"); ap.add_argument("--col_std", type=float, default=6.0); ap.add_argument("--col_tol", type=float, default=20.0)   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
+    ap.add_argument("--grow", action="store_true"); ap.add_argument("--col_std", type=float, default=6.0); ap.add_argument("--col_tol", type=float, default=20.0)
+    # ★ 11-18 v4 遠海分層（全場景 b3 −0.81 dB 的修法）：錨定層只鋪到格子拿得到票的地方；遠處一個訓練像素在平面上就大過一格，
+    #   拿不到 min_yes 票 => 鋪磚停在那裡，外面原本由自由顆粒畫的遠海被錨定層取代後沒有種子 => 斜視角地平線一條全黑（0226 26.50 -> 18.80）。
+    #   --far_levels K：每個取樣像素依它在平面上的訓練像素大小 f（深度/fx_train 除以 sqrt(|cos 入射角|)）分到第 L 層，
+    #   L＝ceil(log2(P·f/g)) 夾在 [0, K]（第 L 層格邊長 g·2^L，讓每格在該視角約 P 像素，和第 0 層同一個像素準則；沒有公尺常數）。
+    #   第 0 層照舊（所有像素都投，逐位元相同）；L >= 1 的像素另外在自己那層投票，同樣的贊成／反對規則；
+    #   由細到粗接受：贊成 >= min_yes、贊成 > 反對、且已接受的較細海面格蓋不到這格的一半。0＝關（輸出與 v3 相同）。
+    ap.add_argument("--far_levels", type=int, default=0)   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -146,6 +153,13 @@ def main():
             xy = (X @ Rp.T)[:, :2]; return (xy[:, 0] >= lo[0]) & (xy[:, 0] <= hi[0]) & (xy[:, 1] >= lo[1]) & (xy[:, 1] <= hi[1])
         def cell_of(X, g):
             q = X - org; return np.floor(q @ e1 / g).astype(np.int64), np.floor(q @ e2 / g).astype(np.int64)
+        def far_level(nm, us, vs, sz, z):
+            """--far_levels：每個像素在平面上的訓練像素大小 f＝z/FXT/sqrt(|cos 入射角|) => 層 L＝ceil(log2(P·f/g)) 夾在 [0, K]。"""
+            R, t, fx, fy, cx, cy, Wc, Hc = CAM[nm]; sx, sy = sz[0] / Wc, sz[1] / Hc
+            d = np.stack([((us + 0.5) / sx - cx) / fx, ((vs + 0.5) / sy - cy) / fy, np.ones_like(us, float)], -1)
+            cs = np.abs(d @ (R @ n1)) / np.linalg.norm(d, axis=-1)
+            f = np.where(np.isfinite(z) & (z > 0), z, 0.0) / FXT / np.sqrt(np.maximum(cs, 1e-6))
+            return np.clip(np.ceil(np.log2(np.maximum(a.P * f / g, 1e-12))), 0, a.far_levels).astype(np.int64)
         def load_img(nm):
             kp = os.path.join(PD, nm + "_k.png"); ft = os.path.join(D, "estimated_depths_tri", nm + ".npy"); fr = os.path.join(D, "estimated_depths_tri_rel", nm + ".npy")
             if not (os.path.exists(kp) and os.path.exists(ft) and os.path.exists(fr)):
@@ -175,6 +189,8 @@ def main():
         # 第二遍：投票
         YES, NO, CK, CC = [], [], [], []
         LK, UL, FR, GK, GC = [], [], [], [], []           # --grow：像海／不像海／前面有東西 的票、像海像素的顏色
+        FY = {L: [] for L in range(1, a.far_levels + 1)}; FN = {L: [] for L in range(1, a.far_levels + 1)}   # --far_levels：各層贊成／反對（每張每格一票）
+        FCK = {L: [] for L in range(1, a.far_levels + 1)}; FCC = {L: [] for L in range(1, a.far_levels + 1)}
         for nm in names:
             L = load_img(nm)
             if L is None:
@@ -207,6 +223,16 @@ def main():
             yk_, yi_ = np.unique(key[ok & ks], return_index=True); YES.append(yk_); NO.append(np.unique(key[ok & no]))
             if img is not None and len(yk_):
                 sel_ = np.nonzero(ok & ks)[0][yi_]; CK.append(yk_); CC.append(img[vv[sel_], uu[sel_]])
+            if a.far_levels > 0:
+                Lp = far_level(nm, uu.astype(float), vv.astype(float), (Wd, H), z)
+                for L in range(1, a.far_levels + 1):
+                    mL = ok & (Lp == L)
+                    if not mL.any():
+                        continue
+                    iL, jL = cell_of(X, g * 2 ** L); kL = iL * 1000003 + jL
+                    fy_, fyi_ = np.unique(kL[mL & ks], return_index=True); FY[L].append(fy_); FN[L].append(np.unique(kL[mL & no]))
+                    if img is not None and len(fy_):
+                        sl_ = np.nonzero(mL & ks)[0][fyi_]; FCK[L].append(fy_); FCC[L].append(img[vv[sl_], uu[sl_]])
         yk, yc = np.unique(np.concatenate(YES), return_counts=True); nk, nc_ = np.unique(np.concatenate(NO), return_counts=True)
         noc = np.zeros(len(yk), np.int64); pos = np.searchsorted(nk, yk); hit = (pos < len(nk)) & (nk[np.minimum(pos, len(nk) - 1)] == yk); noc[hit] = nc_[pos[hit]]
         sea = (yc >= a.min_yes) & (yc > noc); seak = yk[sea]
@@ -243,6 +269,43 @@ def main():
                 CK += GK; CC += GC
         if len(seak) == 0:
             print(f"b{b}：海面格 0 => 跳過、不寫檔", flush=True); continue
+        # ── --far_levels：由細到粗接受遠海格（已接受的較細海面格蓋到這格一半以上 => 不要）──
+        FAR = {}                                              # L -> 排序好的格鍵值（不含層標記）
+        far_t, far_c, far_g = [], [], []
+        if a.far_levels > 0:
+            acc_cells = [(g, seak)]                           # (邊長, 鍵值) 已接受的各層
+            for L in range(1, a.far_levels + 1):
+                if not FY[L]:
+                    continue
+                gL = g * 2 ** L
+                fyk, fyc = np.unique(np.concatenate(FY[L]), return_counts=True)
+                fnk, fnc = np.unique(np.concatenate(FN[L]), return_counts=True) if FN[L] and sum(len(x) for x in FN[L]) else (np.zeros(0, np.int64), np.zeros(0, np.int64))
+                fno = np.zeros(len(fyk), np.int64); ps_ = np.searchsorted(fnk, fyk); ht_ = (ps_ < len(fnk)) & (fnk[np.minimum(ps_, max(len(fnk) - 1, 0))] == fyk) if len(fnk) else np.zeros(len(fyk), bool)
+                fno[ht_] = fnc[ps_[ht_]]
+                cand = fyk[(fyc >= a.min_yes) & (fyc > fno)]
+                cov = np.zeros(len(cand))
+                for gl, kl in acc_cells:                      # 較細的格心落在這格 => 蓋到 (gl/gL)^2
+                    il = np.round(kl / 1000003).astype(np.int64); jl = kl - il * 1000003
+                    cen = org + np.outer((il + 0.5) * gl, e1) + np.outer((jl + 0.5) * gl, e2)
+                    ic, jc = cell_of(cen, gL); kc, nc_c = np.unique(ic * 1000003 + jc, return_counts=True)
+                    p2 = np.searchsorted(kc, cand); h2 = (p2 < len(kc)) & (kc[np.minimum(p2, max(len(kc) - 1, 0))] == cand) if len(kc) else np.zeros(len(cand), bool)
+                    cov[h2] += nc_c[p2[h2]] * (gl / gL) ** 2
+                keep = np.sort(cand[cov < 0.5])
+                if len(keep) == 0:
+                    continue
+                FAR[L] = keep; acc_cells.append((gL, keep))
+                ti_ = np.round(keep / 1000003).astype(np.int64); tj_ = keep - ti_ * 1000003
+                far_t.append(org + np.outer((ti_ + 0.5) * gL, e1) + np.outer((tj_ + 0.5) * gL, e2)); far_g.append(np.full(len(keep), gL))
+                colL = np.full((len(keep), 3), 128, np.uint8)
+                if FCK[L]:
+                    ck_ = np.concatenate(FCK[L]); cc_ = np.concatenate(FCC[L]); in_ = np.isin(ck_, keep); ck_, cc_ = ck_[in_], cc_[in_]
+                    od_ = np.argsort(ck_, kind="stable"); ck_, cc_ = ck_[od_], cc_[od_]
+                    uk2, st2 = np.unique(ck_, return_index=True)
+                    if len(uk2):
+                        md2 = np.stack([np.array([np.median(x) for x in np.split(cc_[:, ch], st2[1:])]) for ch in range(3)], 1)
+                        colL[np.searchsorted(keep, uk2)] = np.clip(np.round(md2), 0, 255).astype(np.uint8)
+                far_c.append(colL)
+                print(f"b{b}｜遠海第 {L} 層（邊長 {gL * 100:.1f} m）：有贊成票 {len(fyk):,} 格、過票 {len(cand):,}、被較細格蓋掉 {int((cov >= 0.5).sum()):,} => 收 {len(keep):,} 格", flush=True)
         cap = a.cap_avg * float(W8[str(b)])
         # 鋪磚：每個海面格的格心一顆；顏色＝贊成票影像在該格的顏色中位
         ti = np.round(seak / 1000003).astype(np.int64); tj = seak - ti * 1000003
@@ -254,13 +317,27 @@ def main():
         if len(uk_):
             meds = np.stack([np.array([np.median(x) for x in np.split(ccc[:, ch], st_[1:])]) for ch in range(3)], 1)
             col[np.searchsorted(seak, uk_)] = np.clip(np.round(meds), 0, 255).astype(np.uint8)
+        extra = {}
+        if FAR:
+            # 遠海鋪磚接在第 0 層後面（起點標記與錨定層的列序照這個順序）；tile_g＝每顆的格邊長（尺度夾在 [min, max] x 自己的邊長）
+            n0t = len(tiles)
+            tiles = np.concatenate([tiles] + far_t); col = np.concatenate([col] + far_c)
+            extra = dict(tile_g=np.concatenate([np.full(n0t, g)] + far_g), n_tiles0=n0t, far_L=np.array(sorted(FAR), np.int64),
+                         **{f"far_keys_{L}": FAR[L] for L in FAR})
         np.savez(os.path.join(OUT, f"block_{b}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea],
-                 tiles=tiles, colors=col)
+                 tiles=tiles, colors=col, **extra)
         print(f"b{b}｜鋪磚邊長 {g * 100:.2f} m（P {a.P:.0f} px x 最近可見深度中位 {np.median(list(dmin.values())) * 100:.0f} m）｜"
               f"有贊成票的格 {len(yk):,}、海面格 {sea.sum():,}｜P4：鋪磚 {sea.sum():,} 顆＝cap {cap:,.0f} 的 {100 * sea.sum() / cap:.1f}%｜{time.time() - t0:.0f} s", flush=True)
         seaset = seak
         def is_sea_cell(i, j):
             kk = i * 1000003 + j; p_ = np.searchsorted(seaset, kk); return (p_ < len(seaset)) & (seaset[np.minimum(p_, len(seaset) - 1)] == kk)
+        def is_far_cell(X):
+            """平面上的點落在任何一層遠海格（--far_levels）；沒有遠海 => 全 False。"""
+            out = np.zeros(len(X), bool)
+            for L, kL in FAR.items():
+                iL, jL = cell_of(X, g * 2 ** L); kk = iL * 1000003 + jL; p_ = np.searchsorted(kL, kk)
+                out |= (p_ < len(kL)) & (kL[np.minimum(p_, len(kL) - 1)] == kk)
+            return out
         # ★ 規格 6 §4：每塊一個目錄 cap_b<b>/：<影像名>.npy（共識平面逆深度，float16，寬或窄遮罩處）、_k.png（寬遮罩＝2，給 depth_cap_plane_*）、
         #   _n.png（窄遮罩＝該張自己的海面區 ∧ 共識平面有交點，給 sea_front_*）
         if a.masks:
@@ -274,6 +351,8 @@ def main():
                 vv, uu = np.mgrid[0:H, 0:Wd]; vv, uu = vv.ravel(), uu.ravel()
                 X, z, ok = plane_hits(nm, uu.astype(float), vv.astype(float), (Wd, H))
                 i, j = cell_of(X, g); wide = ok & is_sea_cell(i, j)
+                if FAR:
+                    wide |= ok & is_far_cell(X)
                 zt = np.where(tri[vv, uu] > 1e-6, 1.0 / np.maximum(tri[vv, uu], 1e-9), np.inf)
                 wide &= ~(rel_ok[vv, uu] & (zt < z * (1 - a.margin)))
                 narrow = ok & (kd[vv, uu] == 2)
@@ -337,7 +416,8 @@ def main():
                 huge = 3 * s_.max(1) > 8 * g
                 print(f"b{b}｜P5 {lab}：海面格上方離平面 > 3 px 的不透明顆粒 {up.sum():,}（Σo·面積 {area[up].sum() / 1e3:,.0f}k m²）｜下方 {dn.sum():,}（{area[dn].sum() / 1e3:,.0f}k m²）"
                       f"｜海面格上、在平面附近 {int((onsea & ~off).sum()):,}｜巨大面元（3σ > 8 x 鋪磚邊長）海面格內 {int((huge & onsea).sum()):,}、格外 {int((huge & ~onsea).sum()):,}", flush=True)
-        json.dump(dict(block=b, g=g, n=n1.tolist(), c=c1, sea_cells=int(sea.sum()), regions=len(R_)), open(os.path.join(OUT, f"stats_block_{b}.json"), "w"), indent=1)
+        json.dump(dict(block=b, g=g, n=n1.tolist(), c=c1, sea_cells=int(sea.sum()), regions=len(R_),
+                       far_cells={int(L): int(len(v)) for L, v in FAR.items()}), open(os.path.join(OUT, f"stats_block_{b}.json"), "w"), indent=1)
     print("DONE make_sea_object", flush=True)
 
 

@@ -54,6 +54,8 @@ def main():
     ap.add_argument("--grid", type=int, nargs=2, default=[4, 4], help="候選的分區格子（本機測試可用 5 5）")
     ap.add_argument("--views", choices=["heldout", "train"], default="heldout", help="train＝第一個候選自己的訓練相機（本機功能測試用）")
     ap.add_argument("--max_views", type=int, default=100000)
+    ap.add_argument("--save_frames", nargs="*", default=[], help="★ 11-18 存這幾幀（test 影像名去副檔名，例 0226 0269）的「GT｜各變體」橫排 PNG 到 --save_dir（看圖確認用）")
+    ap.add_argument("--save_dir", default="logs/swap_frames")
     ap.add_argument("--load_cpu", action="store_true", help="★ 11-15 合併模型與候選先在 CPU 載入（本機 6 GB 卡＋viewer：整個合併模型一次搬上 GPU 會 OOM）；每個變體組好才上 GPU，結果相同")
     a = ap.parse_args()
     from internal.utils.gaussian_model_loader import GaussianModelLoader
@@ -195,6 +197,11 @@ def main():
                 if pil.size != (out.shape[2], out.shape[1]):
                     pil = pil.resize((out.shape[2], out.shape[1]), Image.LANCZOS)
                 gt = torch.from_numpy(np.array(pil, np.uint8)).float().permute(2, 0, 1).to(dev) / 255.
+                _fn = os.path.splitext(os.path.basename(str(names_t[i])))[0]
+                if _fn in set(a.save_frames):
+                    _sv = __import__("builtins").__dict__.setdefault("_swap_saved", {})
+                    _sv.setdefault(_fn, [("GT", (gt.permute(1, 2, 0).cpu().numpy() * 255).round().astype(np.uint8))]).append(
+                        (vn, (out.permute(1, 2, 0).cpu().numpy() * 255).round().astype(np.uint8)))
                 ft = eot.fail_tiles(gt, out, 48, 0.10, 0.60)
                 se = ((out - gt) ** 2).mean(0); m = region[i].to(dev)
                 mg = regeo[i].to(dev)
@@ -213,6 +220,12 @@ def main():
             rms[vn] = (ms, int(props["means"].shape[0]))
             model.properties = {k: v[:1] for k, v in props.items()}; del props; torch.cuda.empty_cache()
             print(f"  渲染完 {vn}（{len(need)} 幀）", flush=True)
+    if a.save_frames:
+        _sv = __import__("builtins").__dict__.get("_swap_saved", {})
+        os.makedirs(a.save_dir, exist_ok=True)
+        for _fn, lst in _sv.items():
+            Image.fromarray(np.concatenate([x for _, x in lst], 1)).save(os.path.join(a.save_dir, f"b{B}_{_fn}.png"))
+            print(f"[存圖] {os.path.join(a.save_dir, f'b{B}_{_fn}.png')}：" + "｜".join(n for n, _ in lst), flush=True)
     rps = lambda r, s: -10 * np.log10(max(sum(r[i][4] for i in s) / max(sum(r[i][5] for i in s), 1), 1e-12))
     rpg = lambda r, s: -10 * np.log10(max(sum(r[i][6] for i in s) / max(sum(r[i][7] for i in s), 1), 1e-12))
     for sn, s in sets:
