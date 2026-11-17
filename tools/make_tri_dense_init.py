@@ -246,8 +246,12 @@ def main():
         out = os.path.join(D, a.out, "dup1", f"block_{b}.ply")
         XO = np.concatenate([bx, dx]); CO = np.concatenate([bc, np.clip(np.round(dc), 0, 255).astype(np.uint8)]); n_sea = 0
         if a.sea_object:
-            so = np.load(os.path.join(D, a.sea_object, f"block_{b}.npz"))
-            XO = np.concatenate([XO, so["tiles"]]); CO = np.concatenate([CO, so["colors"].astype(np.uint8)]); n_sea = len(so["tiles"])
+            sof = os.path.join(D, a.sea_object, f"block_{b}.npz")
+            if os.path.exists(sof):            # ★ 11-17 全場景：沒有海的塊 make_sea_object 會跳過、不寫 npz => 不加鋪磚，標記全 False
+                so = np.load(sof)
+                XO = np.concatenate([XO, so["tiles"]]); CO = np.concatenate([CO, so["colors"].astype(np.uint8)]); n_sea = len(so["tiles"])
+            else:
+                print(f"b{b}：沒有海面物件（{sof}）=> 不加鋪磚（海面層 0 顆）", flush=True)
             os.makedirs(os.path.dirname(out), exist_ok=True)
             np.save(os.path.join(D, a.out, "dup1", f"block_{b}_sea.npy"), np.concatenate([np.zeros(len(XO) - n_sea, bool), np.ones(n_sea, bool)]))
         write_xyzrgb_ply(out, XO.astype(np.float32), CO)

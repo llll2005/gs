@@ -197,18 +197,24 @@ for t in "${XT[@]:-}"; do
     #   cap 另外加上鋪磚顆數（海面層有自己的名額）；seaback＝上限改用海面物件的寬遮罩與共識平面；seafront＝窄遮罩上罰比平面淺；seanop＝海面格上離開平面的不當母點
     sea3d)  _SO=data/matrix_city/aerial/train/block_all/sea_object; _SI=data/matrix_city/aerial/train/block_all/sfmfill_tri44sea_crop/dup1
             [[ " ${XT[*]} " =~ \ (dense|densenf|densepl|densepl2)\  ]] && { echo "⛔ sea3d 是自己的起點，不能和其他 dense* 一起寫"; exit 2; }
-            [ -f "$_SI/block_$B.ply" ] && [ -f "$_SI/block_${B}_sea.npy" ] && [ -f "$_SO/block_$B.npz" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+            [ -f "$_SI/block_$B.ply" ] && [ -f "$_SI/block_${B}_sea.npy" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺海面物件或起點（tools/make_sea_object.py --blocks $B --masks；tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --plane_sep --drop_outliers --sea_object sea_object --out sfmfill_tri44sea_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44sea_crop); CITYGS_DUP44=1
             # ⚠ 11-17 冒煙抓到：lab 的系統 python3 沒有 numpy，原本的 `|| echo 0` 讓海面名額靜默變 0 => 改用 gspl、讀不到就停
             if [ -f "$_SI/block_${B}_sea.npy" ]; then
               SEA_EXTRA=$(conda run -n gspl --no-capture-output python -c "import numpy as np;print(int(np.load('$_SI/block_${B}_sea.npy').sum()))" | tail -1)
-              [[ "$SEA_EXTRA" =~ ^[0-9]+$ ]] && [ "$SEA_EXTRA" -gt 0 ] || { echo "⛔ 讀不到海面鋪磚數（$_SI/block_${B}_sea.npy => '$SEA_EXTRA'）"; exit 2; }
+              [[ "$SEA_EXTRA" =~ ^[0-9]+$ ]] || { echo "⛔ 讀不到海面鋪磚數（$_SI/block_${B}_sea.npy => '$SEA_EXTRA'）"; exit 2; }
+              [ "$SEA_EXTRA" -gt 0 ] || [ ! -f "$_SO/block_$B.npz" ] || { echo "⛔ b$B 有海面物件但起點沒有鋪磚（起點是舊的？重產 $_SI/block_$B.ply）"; exit 2; }
             else SEA_EXTRA=0; fi
-            XA+=(--model.density.init_args.sea_layer_file "$_SI/block_${B}_sea.npy" --model.density.init_args.sea_layer_obj "$_SO/block_$B.npz") ;;
+            # ★ 11-17 全場景：沒有海的塊（make_sea_object 跳過、沒有 npz）=> 起點照用（陸地＝v2、沒有鋪磚），不開海面層
+            if [ -f "$_SO/block_$B.npz" ] && [ "${SEA_EXTRA:-0}" -gt 0 ]; then
+              XA+=(--model.density.init_args.sea_layer_file "$_SI/block_${B}_sea.npy" --model.density.init_args.sea_layer_obj "$_SO/block_$B.npz")
+            else echo "[sea3d] b$B 沒有海面物件 => 起點照用、不開海面層"; SEA_EXTRA=0; fi ;;
     seaback) [[ " ${XT[*]} " =~ \ (pcs|pcsf)\  ]] && { echo "⛔ seaback 取代 pcs／pcsf（同一個 depth_cap_plane_dir），不能一起寫"; exit 2; }
             [[ " ${XT[*]} " =~ \ tricap ]] || { echo "⛔ seaback 要和 tricap 一起開"; exit 2; }
-            XA+=(--model.metric.init_args.depth_cap_plane_dir data/matrix_city/aerial/train/block_all/sea_object/cap_b$B --model.metric.init_args.depth_cap_plane_kinds sea) ;;
+            if [ -d "data/matrix_city/aerial/train/block_all/sea_object/cap_b$B" ]; then
+              XA+=(--model.metric.init_args.depth_cap_plane_dir data/matrix_city/aerial/train/block_all/sea_object/cap_b$B --model.metric.init_args.depth_cap_plane_kinds sea)
+            else echo "[seaback] b$B 沒有海面物件的上限目錄 => 不加海面上限"; fi ;;
     seafront) XA+=(--model.metric.init_args.sea_front_reg 0.5 --model.metric.init_args.sea_front_margin 0.02 --model.metric.init_args.sea_front_dir data/matrix_city/aerial/train/block_all/sea_object/cap_b$B) ;;
     seanop) XA+=(--model.density.init_args.sea_noparent true --model.density.init_args.sea_layer_obj data/matrix_city/aerial/train/block_all/sea_object/block_$B.npz) ;;
     densepl) [[ " ${XT[*]} " =~ \ dense\  || " ${XT[*]} " =~ \ densenf\  ]] && { echo "⛔ densepl 與 dense／densenf 是不同起點，不能一起寫"; exit 2; }
