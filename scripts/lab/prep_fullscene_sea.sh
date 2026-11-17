@@ -18,7 +18,7 @@ for i in $(seq 1 1440); do
   sleep 30
 done
 pgrep -f "[m]ake_plane_depth[.]py|[m]ake_sea_object[.]py" > /dev/null && { echo "⛔ 等了 12 小時還在跑"; exit 3; }
-grep -q "DONE\|跳過\|鋪磚邊長" logs/sea_object_v2_all_1117.log 2>/dev/null || { echo "⛔ logs/sea_object_v2_all_1117.log 看不到 16 塊海面物件 v2 的輸出"; tail -5 logs/sea_object_v2_all_1117.log; exit 4; }
+grep -q "DONE_V2ALL" logs/sea_object_v2_all_1117.log 2>/dev/null || { echo "⛔ logs/sea_object_v2_all_1117.log 沒有完成標記 DONE_V2ALL（16 塊海面物件 v2 沒跑完或失敗）"; tail -5 logs/sea_object_v2_all_1117.log; exit 4; }
 echo "▶ $(date '+%H:%M:%S') 補 sea_object_v2"
 mkdir -p "$D/sea_object_v2"
 for b in $(seq 0 15); do
