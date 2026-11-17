@@ -507,6 +507,10 @@ class MCMC2DGSDensityController(MCMCDensityController):
     做一次「互為最佳」兩兩合併（同平面、相鄰、不透明），合併結果寫回 i、j 併進 dead_mask 由 relocation 搬走（N 不變）。0＝關。"""
     merge_from_iter: int = 3000
     merge_max_frac: float = 0.02
+    merge_frac_ramp_to: float = -1.0
+    """★ 2026-11-17 合併排程（使用者「不設上限、符合條件就做，但強度一開始不要那麼高，給精修一點時間」）：> 0 時每次合併事件的額度
+    從 merge_max_frac（第一次事件）線性升到這個值（窗口內最後一次事件）；>= 1＝最後幾次符合條件的互為最佳配對全併。
+    搭配較早的 merge_until_iter 留時間精修。要 merge_until_iter > 0。<= 0＝關（固定額度，原行為）。"""
     """每次最多合併的對數（佔 N 的比例）"""
     merge_color_tol: float = 1.0
     """顏色（SH DC→RGB）L1 差門檻；1.0＝不看顏色（讓窗戶與窗框併成實牆，細節交給後續訓練）"""
@@ -3011,7 +3015,20 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if not getattr(self, "_sfm_merge_announced", False):
                 self._sfm_merge_announced = True
                 print(f"[sfm-merge] ✅ 首次觸發 step {global_step}：離 SfM > {_r * 100:.1f} m 的 {int(_far.sum()):,}／{n0:,} 顆，配對成本 × {_me:g}", flush=True)
-        _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=float(self.config.merge_max_frac),
+        _mf = float(self.config.merge_max_frac)
+        _rt = float(getattr(self.config, "merge_frac_ramp_to", -1.0) or -1.0)
+        if _rt > 0:
+            _iv = int(getattr(self.config, "merge_interval", 0) or 0); _f = int(getattr(self.config, "merge_from_iter", 3000))
+            _hi = int(getattr(self.config, "merge_until_iter", -1) or -1)
+            if _hi <= 0 or _iv <= 0:
+                raise ValueError("merge_frac_ramp_to 需要 merge_until_iter > 0 與 merge_interval > 0（排程要知道最後一次事件在哪）")
+            _f0 = -(-_f // _iv) * _iv; _last = (_hi // _iv) * _iv              # 窗口內第一次／最後一次事件的步數
+            _t = 1.0 if _last <= _f0 else min(max((global_step - _f0) / (_last - _f0), 0.0), 1.0)
+            _mf = _mf + (_rt - _mf) * _t
+            print(f"[merge-ramp] {'✅ 首次觸發 ' if not getattr(self, '_mramp_announced', False) else '　'}step {global_step}：額度 {_mf:.3f}"
+                  f"（{self.config.merge_max_frac:g} → {_rt:g}，事件 {_f0}～{_last}、之後精修到結束）", flush=True)
+            self._mramp_announced = True
+        _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=_mf,
                                       color_tol=float(self.config.merge_color_tol),
                                       chunk=int(getattr(self.config, "merge_chunk", 1 << 19)),
                                       exclude=self._merge_exclude(gaussian_model, n0), prio=_prio,

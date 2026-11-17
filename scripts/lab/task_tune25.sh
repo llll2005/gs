@@ -93,6 +93,7 @@ parse() {
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
         v4f|v5|dsf) XT+=("$t") ;;
+        mgr[0-9]*) [[ $t =~ ^mgr[0-9]+$ ]] || { echo "⛔ 寫法：mgr<P>（合併額度 2% 線性升到不設限、最後一次合併在全長的 P%）"; return 2; }; XT+=("$t") ;;
         mq[0-9]*) [[ $t =~ ^mq[0-9]+$ ]] || { echo "⛔ 寫法：mq<k>（合併額度＝每次事件 N 的 k%；100＝不設額度）"; return 2; }; XT+=("$t") ;;
         npri[0-9]*) [[ $t =~ ^npri[0-9]+d?$ ]] || { echo "⛔ 寫法：npri<k>[d]（單目法向先驗，權重 0.0125 x k；d＝也套在深度法向上）"; return 2; }; XT+=("$t") ;;
         coarse5c[0-9]*) [[ $t =~ ^coarse5c[0-9]+(f[0-9]+)?$ ]] || { echo "⛔ 寫法：coarse5c<k 步>[f<拆分百分比>]（例 coarse5c30、coarse5c30f50）"; return 2; }; XT+=("$t") ;;
@@ -109,7 +110,7 @@ parse() {
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
-    case "$t" in mq*) LBL+="合併額度${t#mq}%" ;; lowres) LBL+="低解析度" ;; lres2) LBL+="低解析度加長" ;; lres3) LBL+="低解析度三段" ;; geo50) LBL+="幾何步半解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; densedo) LBL+="稠密起點去下方離群" ;; densedf) LBL+="稠密起點空中補點換陸地" ;; densepl2nd) LBL+="稠密起點平面另算名額不去離群" ;; denserg) LBL+="稠密起點現行程式重產" ;; sea3d) LBL+="海面物件錨定層" ;; seaback) LBL+="海面寬遮罩上限" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
+    case "$t" in mgr[0-9]*) LBL+="合併漸強到${t#mgr}%" ;; mq[0-9]*) LBL+="合併額度${t#mq}%" ;; lowres) LBL+="低解析度" ;; lres2) LBL+="低解析度加長" ;; lres3) LBL+="低解析度三段" ;; geo50) LBL+="幾何步半解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; densedo) LBL+="稠密起點去下方離群" ;; densedf) LBL+="稠密起點空中補點換陸地" ;; densepl2nd) LBL+="稠密起點平面另算名額不去離群" ;; denserg) LBL+="稠密起點現行程式重產" ;; sea3d) LBL+="海面物件錨定層" ;; seaback) LBL+="海面寬遮罩上限" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
@@ -167,7 +168,9 @@ for t in "${XT[@]:-}"; do
     geo50)  XA+=(--model.geo_res_scale 0.5) ;;
     # ★ 11-17 使用者「少顆數：加強合併算法的功能或參數」：新底的合併每次事件只准併 N 的 2%（merge_max_frac 0.02），
     #   但 6000 步起每次符合條件的互為最佳配對有 5～12 萬對、實際只併約 2.2 萬 => 額度是瓶頸。mq<k>＝額度 k%（100＝符合條件的全併）。
-    mq*)    XA+=(--model.density.init_args.merge_max_frac "$(python3 -c "print(${t#mq}/100)")") ;;
+    # ★ 11-17 使用者「不設上限、符合條件就做，但強度一開始不要那麼高，給精修一點時間」：mgr<P>＝額度從 2% 線性升到不設限，最後一次合併在全長 P%
+    mgr[0-9]*) XA+=(--model.density.init_args.merge_frac_ramp_to 1.0 --model.density.init_args.merge_until_iter $((ST * ${t#mgr} / 100))) ;;
+    mq[0-9]*) XA+=(--model.density.init_args.merge_max_frac "$(python3 -c "print(${t#mq}/100)")") ;;
     coarse) CK=outputs/lab/coarse_g44r48sh0_crop/blocks/block_$B/checkpoints/coarse_crop.ckpt
             [ -f "$CK" ] || { echo "⛔ 缺 $CK（task_coarse.sh crop）"; exit 2; }
             XA+=(--model.initialize_from "$CK" --model.overwrite_config false); ENVX+=(CITYGS_KEEP_CFG_RENDERER=1) ;;
