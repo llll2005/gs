@@ -252,6 +252,14 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     在 depth_cap_map 套完塊外遮罩之後再乘上去 => loss、逐顆帳（vcb）、需求地圖補貨（hfd）都跟著遮罩走。路徑＝絕對路徑或相對工作目錄。
     找不到檔 => 該張不設上限（⚠⚠ 一次、之後計數，每 2000 步印缺幾張；缺超過 1% 就是 bug）。""＝關（上限圖與之前逐位元相同）。
     為什麼（規格 3 §0 線索 1）：B 臂的抽母點計價不限朝向時多掉 −0.134／−0.082 dB、只算躺平時 ≈ 0；上限掉分 40% 在立面（`37` §3.1、§7）。"""
+    normal_prior_narrow_reg: float = 0.0
+    """★ 11-18（使用者「你想的都做看看」③ 的後半：少視角處加強幾何先驗；轉角凹槽／塔頂）：逐顆的單目法向先驗，只給「被看到的角度範圍窄」的面元。
+    每個完整路徑步：畫面內、投影中心深度和渲染深度差 <= normal_prior_narrow_tol（相對）的面元，w＝clamp((R − r0)/(1 − r0), 0, 1)
+    （R＝觀看方向集中度，density 的 sh_narrow 統計；要 sh_narrow_kappa > 0 或 sh_narrow_track），
+    loss＝權重 x k x Σ w·(1 − |n_i · n_先驗(投影中心)|) / Σ w。看得清楚的面元（w＝0）完全不受影響。要 normal_prior_dir。0＝關。
+    依據：全場套單目法向先驗（npri1）b2 內凹轉角斜跨 60 → 49～53%，但 F1 −.008～−.021；轉角消融（b1／b4）沒有任何單一機制造成斜跨。"""
+    normal_prior_narrow_r0: float = 0.9
+    normal_prior_narrow_tol: float = 0.02
     normal_prior_reg: float = 0.0
     """★ 2026-11-16 單目法向先驗（Fable H3；使用者 11-16「都做」）：完整路徑步（與 lambda_normal 同一套每 k 步、權重乘 k）加
     w·mean(1 − |cos(渲染法向, 先驗法向)|)，只算先驗遮罩內、塊外遮罩是 A、渲染 alpha > 0.5 的像素。0＝關（逐位元不變）。
@@ -921,6 +929,64 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         n = torch.nn.functional.normalize(t[:3] / 127.5 - 1.0, dim=0)
         return n, t[3] > 127
 
+    def _normal_prior_narrow_step(self, step, batch, outputs, metrics, pbar, gaussian_model, pl_module):
+        """normal_prior_narrow_reg：窄角度看到的面元，法向拉向投影中心的單目法向先驗。"""
+        c = self.config
+        wgt = float(getattr(c, "normal_prior_narrow_reg", 0.0) or 0.0)
+        if wgt <= 0:
+            return
+        k = int(getattr(c, "lambda_normal_interval", 1) or 1)
+        if k > 1 and step % k != 0:
+            return
+        dcn = getattr(pl_module, "density_controller", None)
+        S = getattr(dcn, "_shn_s", None); K = getattr(dcn, "_shn_k", None)
+        X = gaussian_model.get_xyz
+        N = X.shape[0]
+        zmap = outputs.get("surf_depth"); vf = outputs.get("visibility_filter")
+        if S is None or K is None or S.shape[0] != N or K.shape[0] != N or zmap is None or vf is None or vf.shape[0] != N:
+            if not getattr(self, "_npn_warned", False):
+                self._npn_warned = True
+                print(f"⚠⚠ [normal-prior-narrow] 缺觀看方向統計（sh_narrow_kappa／sh_narrow_track 沒開？）或這一步沒有 surf_depth => 不算（step={step}）", flush=True)
+            return
+        name, gt = batch[1][0], batch[1][1]
+        hw = tuple(gt.shape[-2:])
+        pr = self._normal_prior_get(name, hw, X.device)
+        if pr is None:
+            return
+        npr, m = pr
+        cam = batch[0]
+        from .geom_gate import quat_normals
+        with torch.no_grad():
+            p = torch.cat([X.detach().float(), torch.ones_like(X[:, :1], dtype=torch.float32)], 1) @ cam.world_to_camera.float()
+            z = p[:, 2]
+            H, W = hw
+            u = (float(cam.fx) * p[:, 0] / z.clamp_min(1e-6) + float(cam.cx)) * (W / float(cam.width))
+            v = (float(cam.fy) * p[:, 1] / z.clamp_min(1e-6) + float(cam.cy)) * (H / float(cam.height))
+            ui = u.floor().long().clamp(0, W - 1); vi = v.floor().long().clamp(0, H - 1)
+            inimg = (z > 1e-3) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+            zs = zmap.reshape(hw)[vi, ui]
+            surf = (zs > 0) & ((z - zs).abs() <= float(c.normal_prior_narrow_tol) * z)
+            R = torch.where(K >= 2, S.norm(dim=-1) / K.clamp_min(1e-6), torch.ones_like(K)).clamp(0, 1)
+            r0 = float(c.normal_prior_narrow_r0)
+            wn = ((R - r0) / max(1 - r0, 1e-6)).clamp(0, 1)
+            sel = vf.reshape(-1).bool() & inimg & surf & m[vi, ui] & (wn > 0)
+            idx = torch.nonzero(sel, as_tuple=True)[0]
+        if idx.numel() < 50:
+            return
+        nrm = quat_normals(gaussian_model.get_rotations()[idx])
+        prior = npr[:, vi[idx], ui[idx]].T
+        cosv = (nrm * prior).sum(-1).abs()
+        ww = wn[idx]
+        loss = (ww * (1.0 - cosv)).sum() / ww.sum().clamp_min(1e-6)
+        metrics["loss"] = metrics["loss"] + wgt * k * loss
+        metrics["nprior_narrow"] = loss.detach()
+        pbar["nprior_narrow"] = False
+        if not getattr(self, "_npn_announced", False) or step % 2000 == 0:
+            with torch.no_grad():
+                print(f"[normal-prior-narrow] {'✅ 首次觸發 ' if not getattr(self, '_npn_announced', False) else ''}step={step}：窄角度、貼表面、有先驗的面元 {idx.numel():,}"
+                      f"（畫面內 {int(vf.sum()):,}）｜w 中位 {float(ww.median()):.2f}｜與先驗夾角中位 {float(torch.rad2deg(torch.arccos(cosv.detach().clamp(0, 1))).median()):.1f}°｜loss {float(loss):.4f}", flush=True)
+            self._npn_announced = True
+
     def _normal_prior_step(self, step, batch, outputs, metrics, pbar):
         """單目法向先驗的 loss（config.normal_prior_*）；不是完整路徑步、沒有先驗或像素太少就不動 loss。"""
         c = self.config
@@ -1141,6 +1207,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         self._see_through_step(step, batch, outputs, metrics, pbar)
         self._depth_cap_step(step, batch, outputs, metrics, pbar)
         self._normal_prior_step(step, batch, outputs, metrics, pbar)
+        self._normal_prior_narrow_step(step, batch, outputs, metrics, pbar, gaussian_model, pl_module)
         self._sea_front_step(step, batch, outputs, metrics, pbar)
         _w2 = float(getattr(self.config, "rgb_l2_weight", 0.0) or 0.0)
         if _w2 > 0:

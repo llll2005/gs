@@ -630,6 +630,8 @@ class MCMC2DGSDensityController(MCMCDensityController):
     依據：v5 b3 外推邊界的紫色、塔頂少視角 => 高階 SH 只被一兩個方向約束，換角度就跑出怪色。"""
     sh_narrow_r0: float = 0.9
     sh_narrow_decay: float = 0.999
+    sh_narrow_track: bool = False
+    """★ 11-18：只累加觀看方向統計、不收縮 SH（給 metric 的 normal_prior_narrow_reg 用；sh_narrow_kappa > 0 時本來就會累加）。"""
     sh_narrow_every: int = 4
     """★ 11-18 加速：每這麼多步做一次（after_backward 用光柵器的 visibility_filter，不再自己投影全部顆粒）；衰減與收縮換算成同樣的每步強度（decay^every、(1−kappa·w)^every）。"""
     sfm_track: bool = False
@@ -1145,7 +1147,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
         self._ip_step = global_step                     # relocate_gs／add_new_gs 的平面錯開要用（漸增係數）
-        if float(getattr(self.config, "sh_narrow_kappa", 0.0) or 0.0) > 0 and global_step % max(1, int(getattr(self.config, "sh_narrow_every", 4) or 1)) == 0:
+        if (float(getattr(self.config, "sh_narrow_kappa", 0.0) or 0.0) > 0 or bool(getattr(self.config, "sh_narrow_track", False))) \
+                and global_step % max(1, int(getattr(self.config, "sh_narrow_every", 4) or 1)) == 0:
             self._sh_narrow_step(outputs, batch, gaussian_model, global_step, pl_module)   # optimizer step 之前（梯度已算好）收縮
         if (str(getattr(self.config, "sea_layer_file", "") or "") or bool(getattr(self.config, "sea_noparent", False))
                 or float(getattr(self.config, "sea_floater_h", -1.0) or -1.0) > 0) \
@@ -1946,7 +1949,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             r0 = float(c.sh_narrow_r0)
             w = ((R - r0) / max(1 - r0, 1e-6)).clamp(0, 1) * visf
             rest = g["shs_rest"]
-            rest.mul_(((1 - float(c.sh_narrow_kappa) * w) ** ev).to(rest.dtype).view(-1, *([1] * (rest.dim() - 1))))
+            if float(c.sh_narrow_kappa or 0.0) > 0:
+                rest.mul_(((1 - float(c.sh_narrow_kappa) * w) ** ev).to(rest.dtype).view(-1, *([1] * (rest.dim() - 1))))
             vis = visf > 0
         first = not getattr(self, "_shn_announced", False)
         if first or global_step % 2000 == 0:
