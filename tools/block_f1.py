@@ -148,7 +148,12 @@ def main():
                     volume.integrate(rgbd, intrinsic=co.intrinsic, extrinsic=co.extrinsic)
             model.properties = {k: v[:1].to(dev) for k, v in base.items()}; torch.cuda.empty_cache()
             mesh = post_process_mesh(volume.extract_triangle_mesh(), cluster_to_keep=50); del volume
-            mp = os.path.join(a.out, f"b{a.block}_{nm.replace('（', '_').replace('）', '').replace(' ', '_')}.ply")
+            fn = nm.replace('（', '_').replace('）', '').replace(' ', '_')
+            # ★ 11-19 長臂名（tune25 的中文全名）超過檔名 255 位元組 => open3d 寫不出檔、讀回時報 "string is not a file"；過長就截短＋雜湊
+            if len(fn.encode()) > 120:
+                import hashlib
+                fn = fn[:30] + "_" + hashlib.md5(fn.encode()).hexdigest()[:10]
+            mp = os.path.join(a.out, f"b{a.block}_{fn}.ply")
             o3d.io.write_triangle_mesh(mp, mesh); del mesh
             rows.append(score(mp, nm))
     import pandas as pd
