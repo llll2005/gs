@@ -15,8 +15,9 @@ from PIL import Image, ImageDraw
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 ap = argparse.ArgumentParser()
-ap.add_argument("--block", type=int, required=True); ap.add_argument("--obj", required=True)
+ap.add_argument("--block", type=int, required=True); ap.add_argument("--obj", default="", help="海面物件 npz（給 V1～V3 海面視角）；空＝不畫 V1～V3，只畫 --train／--test")
 ap.add_argument("--models", nargs="+", required=True); ap.add_argument("--out", required=True)
+ap.add_argument("--train", nargs="*", default=[], help="★ 訓練影像名（例 2033.png）：用該訓練鏡頭的視角渲染，GT＝input/ 原圖")
 ap.add_argument("--test", nargs="*", default=[]); ap.add_argument("--W", type=int, default=960); ap.add_argument("--H", type=int, default=540)
 ap.add_argument("--fov", type=float, default=60.0)
 ap.add_argument("--D", default="data/matrix_city/aerial/train/block_all")
@@ -28,13 +29,16 @@ from internal.utils.colmap import read_images_binary
 from internal.cameras.cameras import Cameras
 import eval_official_test as eot
 
-z = np.load(a.obj); n = z["n"]; c = float(z["c"])
-tiles = z["tiles"][: int(z["n_tiles0"])] if "n_tiles0" in z.files else z["tiles"]
-sea_c = tiles.mean(0)
+if a.obj:
+    z = np.load(a.obj); n = z["n"]; c = float(z["c"])
+else:
+    z = None; n = np.array([0, 0, 1.0]); c = -0.02565
+tiles = (z["tiles"][: int(z["n_tiles0"])] if "n_tiles0" in z.files else z["tiles"]) if z is not None else None
 imgs = read_images_binary(os.path.join(a.D, "sparse/0/images.bin"))
 names = {l.strip() for l in open(os.path.join(a.D, a.part, "%03d_%03d.txt" % (a.block % 4, a.block // 4))) if l.strip()}
 C = np.array([-v.qvec2rotmat().T @ np.array(v.tvec) for v in imgs.values() if v.name in names])
 hmed = float(np.median(C @ n - c)); cam_c = C.mean(0)
+sea_c = tiles.mean(0) if tiles is not None else cam_c - n * ((cam_c @ n) - c)
 land = cam_c - n * ((cam_c @ n - c) - 0.3 * hmed)                  # 鏡頭重心正下方、離海面 0.3 x 高度
 out_dir = sea_c - cam_c; out_dir = out_dir - (out_dir @ n) * n; out_dir /= max(np.linalg.norm(out_dir), 1e-9)
 
@@ -47,27 +51,38 @@ def look_at(eye, tgt):
 views = [("V1 top-down sea", sea_c + n * 1.3 * hmed, sea_c),
          ("V2 low from sea -> city", sea_c + out_dir * 0.5 * hmed + n * 0.15 * hmed, land),
          ("V3 oblique -> boundary", land + n * 0.8 * hmed, sea_c)]
+if z is None:
+    views = []
 fx = 0.5 * a.W / np.tan(np.radians(a.fov) / 2)
-Rs, Ts = zip(*[look_at(e, t) for _, e, t in views])
 t_ = lambda x, d=torch.float32: torch.tensor(np.array(x), dtype=d)
 nv = len(views)
-cams = Cameras(R=t_(Rs), T=t_(Ts), fx=t_([fx] * nv), fy=t_([fx] * nv), cx=t_([a.W / 2] * nv), cy=t_([a.H / 2] * nv),
+Rs, Ts = zip(*[look_at(e, t) for _, e, t in views]) if nv else ([], [])
+cams = None if nv == 0 else Cameras(R=t_(Rs), T=t_(Ts), fx=t_([fx] * nv), fy=t_([fx] * nv), cx=t_([a.W / 2] * nv), cy=t_([a.H / 2] * nv),
                width=t_([a.W] * nv).to(torch.int16), height=t_([a.H] * nv).to(torch.int16), appearance_id=torch.zeros(nv, dtype=torch.int),
                normalized_appearance_id=torch.zeros(nv), distortion_params=None, camera_type=torch.zeros(nv, dtype=torch.int8))
-tcams = None; tnames = []
+tcams = None; tnames = []; gt_paths = []
 if a.test:
     nt, tc = eot.load_test_cameras(a.test_dir, 1.2)
     sel = [i for i, x in enumerate(nt) if os.path.splitext(x)[0] in set(a.test)]
     tcams = tc; tnames = [(i, nt[i]) for i in sel]
+    gt_paths = [os.path.join(a.test_dir, "images_1.2", nm) for _, nm in tnames]
+elif a.train:
+    # 訓練鏡頭：同 eval_official_test.load_test_cameras 的慣例（down_sample 1.2、內參依實際四捨五入比例縮）
+    nt, tc = eot.load_test_cameras(a.D, 1.2)
+    want = set(a.train)
+    sel = [i for i, x in enumerate(nt) if x in want]
+    tcams = tc; tnames = [(i, nt[i]) for i in sel]
+    gt_paths = [os.path.join(a.D, "input", nm) for _, nm in tnames]
+    print(f"[render_views] 訓練視角 {len(tnames)}／{len(want)}：{[nm for _, nm in tnames]}", flush=True)
 dev = torch.device("cuda"); bg = torch.zeros(3, device=dev)
 cols = []
 labels = []
 if tnames:
     gtcol = [np.zeros((a.H, a.W, 3), np.uint8)] * nv
-    for i, nm in tnames:
-        im = Image.open(os.path.join(a.test_dir, "images_1.2", nm)).convert("RGB").resize((a.W, a.H))
+    for gp in gt_paths:
+        im = Image.open(gp).convert("RGB").resize((a.W, a.H))
         gtcol.append(np.array(im))
-    cols.append(gtcol); labels.append("GT (test)")
+    cols.append(gtcol); labels.append("GT")
 for spec in a.models:
     lab, pat = spec.split("=", 1); fs = sorted(x for x in glob.glob(pat) if "xyz" not in x)
     assert fs, f"找不到 {pat}"
@@ -84,7 +99,7 @@ for spec in a.models:
             col.append(np.array(Image.fromarray((o.permute(1, 2, 0).cpu().numpy() * 255).round().astype(np.uint8)).resize((a.W, a.H))))
     cols.append(col); labels.append(f"M{len(labels) + (0 if tnames else 1)}"); print(f"[render_views] 欄 {labels[-1]} = {lab}（{fs[-1]}）", flush=True)
     del model, renderer; torch.cuda.empty_cache()
-rows = [v[0] for v in views] + [f"test {os.path.splitext(nm)[0]}" for _, nm in tnames]
+rows = [v[0] for v in views] + [f"{'test' if a.test else 'train'} {os.path.splitext(nm)[0]}" for _, nm in tnames]
 canvas = Image.new("RGB", (a.W * len(cols), (a.H + 24) * len(rows) + 24), (20, 20, 20))
 dr = ImageDraw.Draw(canvas)
 for ci, (lab, col) in enumerate(zip(labels, cols)):
