@@ -88,7 +88,7 @@ parse() {
     elif [[ $t =~ ^g([0-9]+)$ ]]; then G=${BASH_REMATCH[1]}
     else
       case "$t" in
-        lowres|lres2|lres3|geo50|coarse|coarse5|sbox|pbw|densenf|densepl|densepl2|densedo|densedf|densepl2nd|denserg|pcs|pcsf|sea3d|sea3dg|sea3dh|sea3df|sea3dx|seaback|seabackg|seabackh|seabackf|seabackx|seafl|seafront|seanop|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
+        lowres|lres2|lres3|geo50|coarse|coarse5|sbox|pbw|densenf|densepl|densepl2|densedo|densedf|densepl2nd|denserg|pcs|pcsf|sea3d|sea3dg|sea3dh|sea3df|sea3dx|sea3dw|seaback|seabackg|seabackh|seabackf|seabackx|seabackw|seafl|seafront|seanop|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
         nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf) XT+=("$t") ;;
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
@@ -110,7 +110,7 @@ parse() {
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
-    case "$t" in mgr[0-9]*) LBL+="合併漸強到${t#mgr}%" ;; mq[0-9]*) LBL+="合併額度${t#mq}%" ;; lowres) LBL+="低解析度" ;; lres2) LBL+="低解析度加長" ;; lres3) LBL+="低解析度三段" ;; geo50) LBL+="幾何步半解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; densedo) LBL+="稠密起點去下方離群" ;; densedf) LBL+="稠密起點空中補點換陸地" ;; densepl2nd) LBL+="稠密起點平面另算名額不去離群" ;; denserg) LBL+="稠密起點現行程式重產" ;; sea3d) LBL+="海面物件錨定層" ;; sea3dg) LBL+="海面物件長過錨定層" ;; sea3dh) LBL+="海面物件水平SfM海平面錨定層" ;; sea3df) LBL+="海面物件水平加遠海分層錨定層" ;; sea3dx) LBL+="海面物件水平加遠海加外推錨定層" ;; seabackx) LBL+="海面水平加遠海外推寬遮罩上限" ;; seabackh) LBL+="海面水平寬遮罩上限" ;; seabackf) LBL+="海面水平加遠海寬遮罩上限" ;; seaback) LBL+="海面寬遮罩上限" ;; seabackg) LBL+="海面長過寬遮罩上限" ;; seafl) LBL+="海面孤立浮塊收回" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
+    case "$t" in mgr[0-9]*) LBL+="合併漸強到${t#mgr}%" ;; mq[0-9]*) LBL+="合併額度${t#mq}%" ;; lowres) LBL+="低解析度" ;; lres2) LBL+="低解析度加長" ;; lres3) LBL+="低解析度三段" ;; geo50) LBL+="幾何步半解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; densedo) LBL+="稠密起點去下方離群" ;; densedf) LBL+="稠密起點空中補點換陸地" ;; densepl2nd) LBL+="稠密起點平面另算名額不去離群" ;; denserg) LBL+="稠密起點現行程式重產" ;; sea3d) LBL+="海面物件錨定層" ;; sea3dg) LBL+="海面物件長過錨定層" ;; sea3dh) LBL+="海面物件水平SfM海平面錨定層" ;; sea3df) LBL+="海面物件水平加遠海分層錨定層" ;; sea3dx) LBL+="海面物件水平加遠海加外推錨定層" ;; sea3dw) LBL+="水體自動高度補空洞帶外推沿用邊緣錨定層" ;; seabackw) LBL+="水體v6寬遮罩上限" ;; seabackx) LBL+="海面水平加遠海外推寬遮罩上限" ;; seabackh) LBL+="海面水平寬遮罩上限" ;; seabackf) LBL+="海面水平加遠海寬遮罩上限" ;; seaback) LBL+="海面寬遮罩上限" ;; seabackg) LBL+="海面長過寬遮罩上限" ;; seafl) LBL+="海面孤立浮塊收回" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
@@ -206,10 +206,11 @@ for t in "${XT[@]:-}"; do
     # ★ 11-18 v3：sea3dh／seabackh＝海面改成水平面、高度＝全場景 SfM 水面中位（sea_object_v3、sfmfill_tri44sea3_crop）
     # ★ 11-18 v4：sea3df／seabackf＝v3（水平面）＋遠海分層（make_sea_object --far_levels 6；sea_object_v4、sfmfill_tri44sea4_crop）——全場景 b3 遠海變黑的修法
     # ★ 11-18 v5：sea3dx／seabackx＝v4＋外推海面（make_sea_object --far_fill：訓練鏡頭看不到的海平面鋪固定磚；sea_object_v5、sfmfill_tri44sea5_crop）
-    sea3d|sea3dg|sea3dh|sea3df|sea3dx)  case "$t" in sea3dg) _SOD=sea_object_v2; _SID=sfmfill_tri44sea2_crop ;; sea3dh) _SOD=sea_object_v3; _SID=sfmfill_tri44sea3_crop ;; sea3df) _SOD=sea_object_v4; _SID=sfmfill_tri44sea4_crop ;; sea3dx) _SOD=sea_object_v5; _SID=sfmfill_tri44sea5_crop ;; *) _SOD=sea_object; _SID=sfmfill_tri44sea_crop ;; esac
+    # ★ 11-18 v6：sea3dw／seabackw＝水體自動高度（tools/water_bodies.py）＋補空洞帶（--gap）＋外推範圍由資料決定＋外推外觀沿用觀測邊緣（sea_object_v6、sfmfill_tri44sea6_crop）
+    sea3d|sea3dg|sea3dh|sea3df|sea3dx|sea3dw)  case "$t" in sea3dg) _SOD=sea_object_v2; _SID=sfmfill_tri44sea2_crop ;; sea3dh) _SOD=sea_object_v3; _SID=sfmfill_tri44sea3_crop ;; sea3df) _SOD=sea_object_v4; _SID=sfmfill_tri44sea4_crop ;; sea3dx) _SOD=sea_object_v5; _SID=sfmfill_tri44sea5_crop ;; sea3dw) _SOD=sea_object_v6; _SID=sfmfill_tri44sea6_crop ;; *) _SOD=sea_object; _SID=sfmfill_tri44sea_crop ;; esac
             _SO=data/matrix_city/aerial/train/block_all/$_SOD; _SI=data/matrix_city/aerial/train/block_all/$_SID/dup1
             [[ " ${XT[*]} " =~ \ (dense|densenf|densepl|densepl2)\  ]] && { echo "⛔ sea3d 是自己的起點，不能和其他 dense* 一起寫"; exit 2; }
-            [ "$(printf '%s\n' "${XT[@]}" | grep -c -E '^sea3d[ghfx]?$')" -gt 1 ] && { echo "⛔ sea3d／sea3dg／sea3dh／sea3df／sea3dx 只能寫一個"; exit 2; }
+            [ "$(printf '%s\n' "${XT[@]}" | grep -c -E '^sea3d[ghfxw]?$')" -gt 1 ] && { echo "⛔ sea3d／sea3dg／sea3dh／sea3df／sea3dx／sea3dw 只能寫一個"; exit 2; }
             [ -f "$_SI/block_$B.ply" ] && [ -f "$_SI/block_${B}_sea.npy" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺海面物件或起點（tools/make_sea_object.py --blocks $B --masks；tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --plane_sep --drop_outliers --sea_object sea_object --out sfmfill_tri44sea_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=$_SID); CITYGS_DUP44=1
@@ -223,15 +224,15 @@ for t in "${XT[@]:-}"; do
             if [ -f "$_SO/block_$B.npz" ] && [ "${SEA_EXTRA:-0}" -gt 0 ]; then
               XA+=(--model.density.init_args.sea_layer_file "$_SI/block_${B}_sea.npy" --model.density.init_args.sea_layer_obj "$_SO/block_$B.npz")
             else echo "[sea3d] b$B 沒有海面物件 => 起點照用、不開海面層"; SEA_EXTRA=0; fi ;;
-    seaback|seabackg|seabackh|seabackf|seabackx) case "$t" in seabackg) _SOD=sea_object_v2 ;; seabackh) _SOD=sea_object_v3 ;; seabackf) _SOD=sea_object_v4 ;; seabackx) _SOD=sea_object_v5 ;; *) _SOD=sea_object ;; esac
+    seaback|seabackg|seabackh|seabackf|seabackx|seabackw) case "$t" in seabackg) _SOD=sea_object_v2 ;; seabackh) _SOD=sea_object_v3 ;; seabackf) _SOD=sea_object_v4 ;; seabackx) _SOD=sea_object_v5 ;; seabackw) _SOD=sea_object_v6 ;; *) _SOD=sea_object ;; esac
             [[ " ${XT[*]} " =~ \ (pcs|pcsf)\  ]] && { echo "⛔ seaback 取代 pcs／pcsf（同一個 depth_cap_plane_dir），不能一起寫"; exit 2; }
             [[ " ${XT[*]} " =~ \ tricap ]] || { echo "⛔ seaback 要和 tricap 一起開"; exit 2; }
             if [ -d "data/matrix_city/aerial/train/block_all/$_SOD/cap_b$B" ]; then
               XA+=(--model.metric.init_args.depth_cap_plane_dir data/matrix_city/aerial/train/block_all/$_SOD/cap_b$B --model.metric.init_args.depth_cap_plane_kinds sea)
             else echo "[seaback] b$B 沒有海面物件的上限目錄 => 不加海面上限"; fi ;;
     # ★ 11-17 規格 6 v2 B：海面格上方 > 10 格距、離可靠 SfM > 10 格距的顆粒，增生事件時搬走、增生後刪（要和 sea3d／sea3dg 一起；沒有海的塊不生效）
-    seafl)  [[ " ${XT[*]} " =~ \ (sea3d|sea3dg|sea3dh|sea3df|sea3dx)\  ]] || { echo "⛔ seafl 要和 sea3d／sea3dg／sea3dh／sea3df／sea3dx 一起寫"; exit 2; }
-            _SOD=$([[ " ${XT[*]} " =~ \ sea3dg\  ]] && echo sea_object_v2 || ([[ " ${XT[*]} " =~ \ sea3dh\  ]] && echo sea_object_v3 || ([[ " ${XT[*]} " =~ \ sea3df\  ]] && echo sea_object_v4 || ([[ " ${XT[*]} " =~ \ sea3dx\  ]] && echo sea_object_v5 || echo sea_object))))
+    seafl)  [[ " ${XT[*]} " =~ \ (sea3d|sea3dg|sea3dh|sea3df|sea3dx|sea3dw)\  ]] || { echo "⛔ seafl 要和 sea3d* 一起寫"; exit 2; }
+            _SOD=sea_object; for _v in g:v2 h:v3 f:v4 x:v5 w:v6; do [[ " ${XT[*]} " =~ \ sea3d${_v%%:*}\  ]] && _SOD=sea_object_${_v#*:}; done
             [ -f "data/matrix_city/aerial/train/block_all/$_SOD/block_$B.npz" ] \
               && XA+=(--model.density.init_args.sea_floater_h 10 --model.density.init_args.sea_floater_sfm 10 --model.density.init_args.sea_layer_obj data/matrix_city/aerial/train/block_all/$_SOD/block_$B.npz) \
               || echo "[seafl] b$B 沒有海面物件 => 不收回" ;;

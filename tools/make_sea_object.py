@@ -72,7 +72,17 @@ def main():
     #   有被看到或太大 => 切四塊。顏色＝本塊海面格顏色中位；訓練時位置、法向、尺度（＝格邊長）、不透明度（0.995）都固定（tile_frozen；那裡沒有梯度）。0＝關。
     ap.add_argument("--far_fill", type=float, default=0.0)
     ap.add_argument("--far_fill_top", type=int, default=8)
-    ap.add_argument("--far_fill_P", type=float, default=64.0, help="外推磚的像素準則（格邊長 <= P x 像素大小；外推區沒有監督、顏色是常數，不需要細格）")   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
+    ap.add_argument("--far_fill_P", type=float, default=64.0, help="外推磚的像素準則（格邊長 <= P x 像素大小；外推區沒有監督、顏色是常數，不需要細格）")
+    # ★ 11-18 v6（使用者「海平面高度改自動算」「判定出同一個面、分開處理」「v6 除了評測都可以作」）：
+    #   --water_bodies <npz>：tools/water_bodies.py 的水體與自動高度；每塊的海面＝本塊裁切盒內佔最多格的水體的水平面（取代 --sea_level 手填）
+    #   --gap：補空洞帶（有被看到、但太斜沒拿到海面票的格）：第 0 層長格條件放寬為「像海票 >= 1 且 不像海／前面有東西／後面 都是 0」（仍要相連、沒有 SfM 結構）；
+    #          遠海各層也收「像海票 >= 1 且沒有任何反證、格內沒有 SfM 結構」的格。這些磚照常訓練（不固定）。
+    #   --far_fill_auto：外推範圍改由資料決定＝每張訓練影像在平面上看得到的最遠水平距離（影像四邊取樣）的 p95，取代 far_fill x 鏡頭高度
+    #   外推磚另存 fill_nb（每顆最近的 k 顆非固定海面磚）=> 訓練時外觀（SH）沿用同一水體觀測邊緣的平均，不再是單一中位色
+    ap.add_argument("--water_bodies", default="")
+    ap.add_argument("--gap", action="store_true")
+    ap.add_argument("--far_fill_auto", action="store_true")
+    ap.add_argument("--fill_nb_k", type=int, default=8)   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -86,6 +96,9 @@ def main():
     cams = read_cameras_binary(os.path.join(D, "sparse/0/cameras.bin")); imgs = read_images_binary(os.path.join(D, "sparse/0/images.bin"))
     by_name = {v.name: v for v in imgs.values()}
     W8 = json.load(open(a.alloc))["weights"]
+    WB = np.load(a.water_bodies) if a.water_bodies else None
+    if WB is not None:
+        print(f"[水體] {a.water_bodies}：{len(WB['z'])} 個水體，高度 " + "、".join(f"#{i + 1} {z * 100:.1f} m{'（退回）' if fb else ''}" for i, (z, fb) in enumerate(zip(WB['z'], WB['fallback']))), flush=True)
     M = None
     if a.premise:
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe")); _argv = sys.argv; sys.argv = sys.argv[:1]
@@ -146,6 +159,18 @@ def main():
         if a.sea_level is not None:
             print(f"b{b}｜--sea_level：共識平面（傾斜 {_tilt:.2f}°、截距 {c1:.5f}）換成水平面 z = {a.sea_level:.5f}", flush=True)
             n1 = np.array([0.0, 0.0, 1.0]); c1 = float(a.sea_level)
+        elif WB is not None:
+            L_ = WB["labels"]; x0_, y0_, r_ = float(WB["x0"]), float(WB["y0"]), float(WB["res"])
+            ii_, jj_ = np.nonzero(L_ > 0)
+            cxy = np.c_[x0_ + (ii_ + 0.5) * r_, y0_ + (jj_ + 0.5) * r_, np.zeros(len(ii_))]
+            inb_ = ((cxy @ Rp.T)[:, :2] >= lo).all(1) & ((cxy @ Rp.T)[:, :2] <= hi).all(1)
+            if not inb_.any():
+                print(f"b{b}：裁切盒內沒有任何水體格 => 跳過", flush=True); continue
+            ids_, cn_ = np.unique(L_[ii_[inb_], jj_[inb_]], return_counts=True); bid = int(ids_[np.argmax(cn_)])
+            zb = float(WB["z"][bid - 1])
+            print(f"b{b}｜水體 #{bid}（盒內 {int(cn_.max()):,} 格" + (f"；另有 " + "、".join(f"#{int(x)} {int(y):,} 格" for x, y in zip(ids_, cn_) if x != bid) + "（同一塊多水體還沒分開處理）" if len(ids_) > 1 else "")
+                  + f"）｜共識平面（傾斜 {_tilt:.2f}°、截距 {c1:.5f}）換成水平面 z = {zb:.5f}（自動）", flush=True)
+            n1 = np.array([0.0, 0.0, 1.0]); c1 = zb
         # ── 平面基底與裁切 ──
         e1 = np.cross(n1, [1.0, 0, 0]); e1 = e1 / np.linalg.norm(e1) if np.linalg.norm(e1) > 1e-6 else np.array([0, 1.0, 0]); e2 = np.cross(n1, e1)
         org = n1 * c1
@@ -199,6 +224,7 @@ def main():
         LK, UL, FR, GK, GC = [], [], [], [], []           # --grow：像海／不像海／前面有東西 的票、像海像素的顏色
         FY = {L: [] for L in range(1, a.far_levels + 1)}; FN = {L: [] for L in range(1, a.far_levels + 1)}   # --far_levels：各層贊成／反對（每張每格一票）
         FCK = {L: [] for L in range(1, a.far_levels + 1)}; FCC = {L: [] for L in range(1, a.far_levels + 1)}
+        FLK = {L: [] for L in range(1, a.far_levels + 1)}; FAG = {L: [] for L in range(1, a.far_levels + 1)}   # --gap：遠海各層的像海票／反證票（不像海、前面有東西、後面）
         for nm in names:
             L = load_img(nm)
             if L is None:
@@ -218,6 +244,7 @@ def main():
             else:
                 no = rel_ok[vv, uu] & (zt > z * (1 + a.margin)) & ~ks
             i, j = cell_of(X, g); key = i * 1000003 + j
+            like = rest = front = None
             if a.grow and img is not None and (ok & ks).sum() >= 50:
                 imf = img.astype(np.float32)
                 mu = cv2.blur(imf, (5, 5)); sd_ = np.sqrt(np.maximum(cv2.blur(imf * imf, (5, 5)) - mu * mu, 0)).mean(-1)
@@ -241,6 +268,11 @@ def main():
                     fy_, fyi_ = np.unique(kL[mL & ks], return_index=True); FY[L].append(fy_); FN[L].append(np.unique(kL[mL & no]))
                     if img is not None and len(fy_):
                         sl_ = np.nonzero(mL & ks)[0][fyi_]; FCK[L].append(fy_); FCC[L].append(img[vv[sl_], uu[sl_]])
+                    if a.gap and like is not None:
+                        fl_, fli_ = np.unique(kL[mL & like], return_index=True); FLK[L].append(fl_)
+                        FAG[L].append(np.unique(kL[mL & ((rest & ~like) | (~ks & front) | no)]))
+                        if img is not None and len(fl_):
+                            sl_ = np.nonzero(mL & like)[0][fli_]; FCK[L].append(fl_); FCC[L].append(img[vv[sl_], uu[sl_]])
         yk, yc = np.unique(np.concatenate(YES), return_counts=True); nk, nc_ = np.unique(np.concatenate(NO), return_counts=True)
         noc = np.zeros(len(yk), np.int64); pos = np.searchsorted(nk, yk); hit = (pos < len(nk)) & (nk[np.minimum(pos, len(nk) - 1)] == yk); noc[hit] = nc_[pos[hit]]
         sea = (yc >= a.min_yes) & (yc > noc); seak = yk[sea]
@@ -255,6 +287,10 @@ def main():
             hs = SFM_REL @ n1 - c1; si, sj = cell_of(SFM_REL - np.outer(hs, n1), g)
             struct = set((si[hs > g / 2] * 1000003 + sj[hs > g / 2]).tolist())
             ok_cell = {k_ for k_, v_ in cL.items() if v_ >= a.min_yes and v_ > cU.get(k_, 0) + cF.get(k_, 0) + cN.get(k_, 0) and k_ not in struct}
+            if a.gap:                                          # v6：有像海票、完全沒有反證的格也可以長（太斜看、票很少的那一圈）
+                n_ok0 = len(ok_cell)
+                ok_cell |= {k_ for k_, v_ in cL.items() if v_ >= 1 and cU.get(k_, 0) + cF.get(k_, 0) + cN.get(k_, 0) == 0 and k_ not in struct}
+                print(f"b{b}｜--gap：第 0 層可長格 {n_ok0:,} => {len(ok_cell):,}", flush=True)
             cur = set(seak.tolist()); front_ = list(cur)
             while front_:
                 nxt = []
@@ -283,14 +319,25 @@ def main():
         if a.far_levels > 0:
             acc_cells = [(g, seak)]                           # (邊長, 鍵值) 已接受的各層
             for L in range(1, a.far_levels + 1):
-                if not FY[L]:
+                if not FY[L] and not FLK[L]:
                     continue
                 gL = g * 2 ** L
-                fyk, fyc = np.unique(np.concatenate(FY[L]), return_counts=True)
+                fyk, fyc = np.unique(np.concatenate(FY[L]), return_counts=True) if FY[L] else (np.zeros(0, np.int64), np.zeros(0, np.int64))
                 fnk, fnc = np.unique(np.concatenate(FN[L]), return_counts=True) if FN[L] and sum(len(x) for x in FN[L]) else (np.zeros(0, np.int64), np.zeros(0, np.int64))
                 fno = np.zeros(len(fyk), np.int64); ps_ = np.searchsorted(fnk, fyk); ht_ = (ps_ < len(fnk)) & (fnk[np.minimum(ps_, max(len(fnk) - 1, 0))] == fyk) if len(fnk) else np.zeros(len(fyk), bool)
                 fno[ht_] = fnc[ps_[ht_]]
                 cand = fyk[(fyc >= a.min_yes) & (fyc > fno)]
+                n_gap = 0
+                if a.gap and FLK[L]:
+                    lk2 = np.unique(np.concatenate(FLK[L])); ag2 = np.unique(np.concatenate(FAG[L])) if FAG[L] else np.zeros(0, np.int64)
+                    if "SFM_REL" not in globals():
+                        from internal.utils import colmap_fast
+                        _d = colmap_fast.points3D_arrays(os.path.join(D, "sparse/0/points3D.bin"))
+                        globals()["SFM_REL"] = np.ascontiguousarray(_d["xyz"][(np.diff(_d["off"]) >= 3) & (_d["err"] < 1.5)], dtype=np.float64)
+                    hs2 = SFM_REL @ n1 - c1; si2, sj2 = cell_of(SFM_REL - np.outer(hs2, n1), gL)
+                    st2 = np.unique((si2 * 1000003 + sj2)[hs2 > g / 2])
+                    gapc = lk2[~np.isin(lk2, ag2) & ~np.isin(lk2, st2) & ~np.isin(lk2, cand)]
+                    n_gap = len(gapc); cand = np.unique(np.concatenate([cand, gapc]))
                 cov = np.zeros(len(cand))
                 for gl, kl in acc_cells:                      # 較細的格心落在這格 => 蓋到 (gl/gL)^2
                     il = np.round(kl / 1000003).astype(np.int64); jl = kl - il * 1000003
@@ -313,13 +360,25 @@ def main():
                         md2 = np.stack([np.array([np.median(x) for x in np.split(cc_[:, ch], st2[1:])]) for ch in range(3)], 1)
                         colL[np.searchsorted(keep, uk2)] = np.clip(np.round(md2), 0, 255).astype(np.uint8)
                 far_c.append(colL)
-                print(f"b{b}｜遠海第 {L} 層（邊長 {gL * 100:.1f} m）：有贊成票 {len(fyk):,} 格、過票 {len(cand):,}、被較細格蓋掉 {int((cov >= 0.5).sum()):,} => 收 {len(keep):,} 格", flush=True)
+                print(f"b{b}｜遠海第 {L} 層（邊長 {gL * 100:.1f} m）：有贊成票 {len(fyk):,} 格、過票 {len(cand):,}（其中 --gap 補的 {n_gap:,}）、被較細格蓋掉 {int((cov >= 0.5).sum()):,} => 收 {len(keep):,} 格", flush=True)
         fill_t, fill_g, n_fill = [], [], 0
         if a.far_fill > 0:
             Cc = np.array([-(v[0].T @ v[1]) for v in CAM.values()]); hc = Cc @ n1 - c1; hmed = float(np.median(hc[hc > 0]))
             from scipy.spatial import cKDTree
             qc = Cc - org; cuv = np.stack([qc @ e1, qc @ e2], 1); tr2 = cKDTree(cuv); tr3 = cKDTree(Cc)
             pad = a.far_fill * hmed
+            if a.far_fill_auto:                                    # v6：每張訓練影像在平面上看得到的最遠水平距離（四邊取樣）的 p95
+                reach = []
+                for nm_ in names:
+                    R, t, fx, fy, cx, cy, Wc, Hc = CAM[nm_]
+                    us_ = np.r_[np.linspace(0, Wc - 1, 33), np.linspace(0, Wc - 1, 33), np.zeros(17), np.full(17, Wc - 1)]
+                    vs_ = np.r_[np.zeros(33), np.full(33, Hc - 1), np.linspace(0, Hc - 1, 17), np.linspace(0, Hc - 1, 17)]
+                    Xh, zh, okh = plane_hits(nm_, us_, vs_, (Wc, Hc))
+                    if okh.any():
+                        Cn = -(R.T @ t); reach.append(float(np.max(np.linalg.norm((Xh[okh] - Cn)[:, :2], axis=1))))
+                if reach:
+                    pad = float(np.percentile(reach, 95))
+                    print(f"b{b}｜外推範圍（--far_fill_auto）：訓練影像在平面上看得到的最遠水平距離 p50 {np.median(reach):.3f}、p95 {pad:.3f}（原 far_fill x 鏡頭高度 {a.far_fill * hmed:.3f}）", flush=True)
             camv = list(CAM.values())
             def observed(Pw):
                 ob_ = np.zeros(len(Pw), bool)
@@ -390,6 +449,10 @@ def main():
             extra = dict(tile_g=np.concatenate([np.full(n0t, g)] + far_g + fill_g), n_tiles0=n0t, far_L=np.array(sorted(FAR), np.int64),
                          tile_frozen=np.concatenate([np.zeros(n0t + nfar, bool), np.ones(n_fill, bool)]), n_fill=n_fill,
                          **{f"far_keys_{L}": FAR[L] for L in FAR})
+            if n_fill and a.fill_nb_k > 0:                     # v6：外推磚的外觀沿用最近的 k 顆非固定海面磚（同一塊＝同一水體的平面）
+                from scipy.spatial import cKDTree
+                nf_ = n0t + nfar; trn = cKDTree(tiles[:nf_, :2]); _, nbi = trn.query(tiles[nf_:, :2], k=min(a.fill_nb_k, nf_))
+                extra["fill_nb"] = np.asarray(nbi, np.int64).reshape(n_fill, -1)
         np.savez(os.path.join(OUT, f"block_{b}.npz"), n=n1, c=c1, origin=org, e1=e1, e2=e2, g=g, keys=seak, base=1000003, yes=yc[sea], no=noc[sea],
                  tiles=tiles, colors=col, **extra)
         print(f"b{b}｜鋪磚邊長 {g * 100:.2f} m（P {a.P:.0f} px x 最近可見深度中位 {np.median(list(dmin.values())) * 100:.0f} m）｜"

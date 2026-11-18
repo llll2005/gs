@@ -1863,6 +1863,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         self._sea_tg = torch.tensor(ob["tile_g"], dtype=torch.float32, device=dev) if "tile_g" in ob.files else None
         # ★ 11-18 v4b 外推海面磚（make_sea_object --far_fill）：訓練鏡頭看不到 => 沒有梯度，位置／法向／尺度（＝格邊長）／不透明度（0.995）全固定
         self._sea_frz = torch.tensor(ob["tile_frozen"], dtype=torch.bool, device=dev) if "tile_frozen" in ob.files and bool(ob["tile_frozen"].any()) else None
+        # ★ 11-18 v6：外推磚的外觀（SH）沿用最近 k 顆非固定海面磚的平均（make_sea_object 的 fill_nb；每 8 步更新）
+        self._sea_fnb = torch.tensor(ob["fill_nb"], dtype=torch.long, device=dev) if "fill_nb" in ob.files and self._sea_frz is not None else None
+        self._sea_ntile = int(ob["tiles"].shape[0]) if "tiles" in ob.files else 0
         f = str(getattr(c, "sea_layer_file", "") or "")
         if not f:
             print(f"[sea] 只開非母點（sea_noparent）：海面格 {len(ob['keys']):,}、鋪磚邊長 {self._sea_g * 100:.2f} m", flush=True)
@@ -1900,12 +1903,15 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return
         ck = getattr(self, "_sea_sel_ck", None)
         if ck is not None and ck[0] is t and ck[1] == t._version:
-            sel, fsel = ck[2], ck[3]
+            sel, fsel, t2r = ck[2], ck[3], ck[4]
         else:
             sel = torch.nonzero(t >= 0, as_tuple=True)[0]
             fz = getattr(self, "_sea_frz", None)
             fsel = sel[fz[t[sel]]] if fz is not None else None
-            self._sea_sel_ck = (t, t._version, sel, fsel)
+            t2r = None
+            if getattr(self, "_sea_fnb", None) is not None:          # 鋪磚序號 -> 模型列（被刪的磚＝-1）
+                t2r = torch.full((max(self._sea_ntile, int(t.max()) + 1),), -1, dtype=torch.long, device=t.device); t2r[t[sel]] = sel
+            self._sea_sel_ck = (t, t._version, sel, fsel, t2r)
         if sel.numel() == 0:
             return
         g = gaussian_model.gaussians; c = self.config
@@ -1937,6 +1943,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if fsel is not None and fsel.numel():               # 外推海面磚：尺度＝格邊長、不透明度 0.995（固定）
                 g["scales"][fsel] = torch.log(tg[t[fsel]]).to(g["scales"].dtype)[:, None].expand(-1, g["scales"].shape[1])
                 g["opacities"][fsel] = math.log(0.995 / 0.005)
+                fnb = getattr(self, "_sea_fnb", None)
+                if fnb is not None and t2r is not None and global_step % 8 == 0:
+                    nf0 = self._sea_ntile - fnb.shape[0]
+                    frows = t2r[nf0 + torch.arange(fnb.shape[0], device=fnb.device)]; rnb = t2r[fnb]; okm = (rnb >= 0) & (frows[:, None] >= 0)
+                    for key in ("shs_dc", "shs_rest"):
+                        if key not in g:
+                            continue
+                        P = g[key]; v = P[rnb.clamp_min(0)]
+                        w = okm.to(v.dtype).view(*okm.shape, *([1] * (v.dim() - 2)))
+                        mean = (v * w).sum(1) / w.sum(1).clamp_min(1)
+                        fr = frows >= 0
+                        P[frows[fr]] = mean[fr].to(P.dtype)
         if report:
             self._sea_announced = True
             o = torch.sigmoid(g["opacities"][sel].float()).reshape(-1)
