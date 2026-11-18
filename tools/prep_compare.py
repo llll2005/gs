@@ -80,15 +80,40 @@ for b in range(16):
         ok = sum(1 for f in fs if os.path.exists(os.path.join(S, d, f)) and md5(os.path.join(S, d, f)) == md5(os.path.join(T, d, f)))
         if ok != len(fs) or b in (0, 15):
             print(f"[塊外遮罩 b{b}] 逐位元相同 {ok}／{len(fs)} {'✅' if ok == len(fs) else '⚠⚠'}", flush=True)
-# 稠密起點（種子不同）
+# ★ 11-19 新底 8 的海面鏈：平面深度（逐位元）、海面物件 v2／v9（海面格集合、平面）、水體、海面 v9 起點（種子不同：點數與最近鄰距離）
+names = sample("estimated_depths_plane", 200, ".npy") if os.path.isdir(os.path.join(T, "estimated_depths_plane")) else []
+if names:
+    same_files("estimated_depths_plane", names, "平面深度（抽 200）")
+for sub in ("sea_object_v2", "sea_object_v9"):
+    if not os.path.isdir(os.path.join(T, sub)):
+        continue
+    for b in range(16):
+        a, c = os.path.join(S, sub, f"block_{b}.npz"), os.path.join(T, sub, f"block_{b}.npz")
+        if not (os.path.exists(a) or os.path.exists(c)):
+            continue
+        if not (os.path.exists(a) and os.path.exists(c)):
+            print(f"[{sub} b{b}] 只有一邊有檔（現行 {os.path.exists(a)}、新 {os.path.exists(c)}）⚠⚠", flush=True); continue
+        za, zb = np.load(a), np.load(c)
+        ka, kb = set(za["keys"].tolist()), set(zb["keys"].tolist())
+        same = ka == kb and abs(float(za["c"]) - float(zb["c"])) < 1e-9 and abs(float(za["g"]) - float(zb["g"])) < 1e-12
+        if not same or b in (1, 3):
+            print(f"[{sub} b{b}] 海面格 現行 {len(ka):,}、新 {len(kb):,}（交集 {len(ka & kb):,}）｜平面 c {float(za['c']):.6f} vs {float(zb['c']):.6f} {'✅' if same else '⚠⚠'}", flush=True)
+if os.path.exists(os.path.join(T, "water_bodies.npz")):
+    wa, wb = np.load(os.path.join(S, "water_bodies.npz")), np.load(os.path.join(T, "water_bodies.npz"))
+    print(f"[水體] 鍵 {sorted(wb.files)}｜各鍵相同：{all(np.array_equal(wa[k], wb[k]) for k in wb.files if k in wa.files)}", flush=True)
 try:
     from plyfile import PlyData
     from scipy.spatial import cKDTree
-    for b in (1, 4):
-        L = lambda p: (lambda v: np.stack([v["x"], v["y"], v["z"]], 1).astype(np.float64))(PlyData.read(p)["vertex"].data)
-        A = L(os.path.join(S, "sfmfill_tri44_crop/dup1", f"block_{b}.ply")); B = L(os.path.join(T, "sfmfill_tri44_crop/dup1", f"block_{b}.ply"))
-        d, _ = cKDTree(A).query(B)
-        print(f"[稠密起點 b{b}（逐塊種子）] 點數 現行 {len(A):,}、新 {len(B):,}（{100 * (len(B) / len(A) - 1):+.2f}%）｜新點到現行最近距離 中位 {np.median(d) * 100:.2f} m、p90 {np.percentile(d, 90) * 100:.2f} m", flush=True)
+    for sid in ("sfmfill_tri44sea9_crop", "sfmfill_tri44sea9nd_crop"):
+        if not os.path.isdir(os.path.join(T, sid)):
+            continue
+        for b in (1, 4, 6):
+            pa, pb = os.path.join(S, sid, "dup1", f"block_{b}.ply"), os.path.join(T, sid, "dup1", f"block_{b}.ply")
+            if not (os.path.exists(pa) and os.path.exists(pb)):
+                print(f"[{sid} b{b}] 缺檔（現行 {os.path.exists(pa)}、新 {os.path.exists(pb)}）"); continue
+            L = lambda p: (lambda v: np.stack([v["x"], v["y"], v["z"]], 1).astype(np.float64))(PlyData.read(p)["vertex"].data)
+            A, B = L(pa), L(pb); d, _ = cKDTree(A).query(B)
+            print(f"[{sid} b{b}（逐塊種子）] 點數 現行 {len(A):,}、新 {len(B):,}（{100 * (len(B) / len(A) - 1):+.2f}%）｜新點到現行最近距離 中位 {np.median(d) * 100:.2f} m、p90 {np.percentile(d, 90) * 100:.2f} m", flush=True)
 except Exception as e:
-    print(f"[稠密起點] 比不了：{e}")
+    print(f"[海面 v9 起點] 比不了：{e}")
 print("DONE prep_compare")
