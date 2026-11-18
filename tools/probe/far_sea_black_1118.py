@@ -21,6 +21,7 @@ ap.add_argument("--part", default="partition/partitions-dim_4_4_visibility_0.08"
 ap.add_argument("--plane_dir", default="estimated_depths_plane")
 ap.add_argument("--sea_obj", default="sea_object_v4")
 ap.add_argument("--nsamp", type=int, default=4000)
+ap.add_argument("--all_images", action="store_true", help="★ 11-18 用全部訓練影像（sparse/0 全部），不只本塊分區清單；只算看得到的張數與它們屬於哪些塊（分區清單）")
 a = ap.parse_args()
 import torch
 import eval_official_test as eot
@@ -37,6 +38,15 @@ def inbox(X):
 cams = read_cameras_binary(os.path.join(D, "sparse/0/cameras.bin")); imgs = read_images_binary(os.path.join(D, "sparse/0/images.bin"))
 by_name = {v.name: v for v in imgs.values()}
 tn = [l.strip() for l in open(os.path.join(D, a.part, "%03d_%03d.txt" % (b % 4, b // 4))) if l.strip() and l.strip() in by_name]
+OWN = {}                                                    # 影像名 -> 它在哪些塊的分區清單裡
+for bb in range(16):
+    fp_ = os.path.join(D, a.part, "%03d_%03d.txt" % (bb % 4, bb // 4))
+    if os.path.exists(fp_):
+        for l in open(fp_):
+            if l.strip():
+                OWN.setdefault(l.strip(), []).append(bb)
+if a.all_images:
+    tn = sorted(by_name)
 TC = []
 for nm in tn:
     im = by_name[nm]; cm = cams[im.camera_id]; pr = cm.params
@@ -93,11 +103,17 @@ for fr in a.frames:
         print(f"   落在 {a.sea_obj} 海面格：第 0 層 {100 * on0.mean():.1f}%、遠海層 {100 * onf.mean():.1f}%、外推磚 {100 * onx.mean():.1f}%｜三者合計 {100 * (on0 | onf | onx).mean():.1f}%", flush=True)
     # b 訓練影像怎麼看這些點
     nvis = np.zeros(len(X), int); kinds = np.zeros((len(X), 4), int); relok = np.zeros(len(X), int); infront = np.zeros(len(X), int)
+    seen_by = {}                                            # --all_images：看得到的影像屬於哪些塊
     for (nm, Rt, tt_, fx2, fy2, cx2, cy2, Wc, Hc) in TC:
         Xc = X @ Rt.T + tt_; z = Xc[:, 2]
         u = fx2 * Xc[:, 0] / np.maximum(z, 1e-9) + cx2; v = fy2 * Xc[:, 1] / np.maximum(z, 1e-9) + cy2
         ok = (z > 1e-6) & (u >= 0) & (u < Wc) & (v >= 0) & (v < Hc)
         if not ok.any():
+            continue
+        if a.all_images:
+            nvis += ok
+            for bb in OWN.get(nm, [-1]):
+                seen_by[bb] = seen_by.get(bb, 0) + int(ok.sum())
             continue
         kp = os.path.join(D, a.plane_dir, nm + "_k.png")
         if not os.path.exists(kp):
@@ -117,7 +133,11 @@ for fr in a.frames:
             zt = np.where(tri[v3, u3] > 1e-6, 1 / np.maximum(tri[v3, u3], 1e-9), np.inf)
             infront += ok & r_ok & (zt < z * 0.99)
     tot = np.maximum(nvis, 1)
-    print(f"   b{b} 訓練影像 {len(TC)} 張：每點看得到的張數 中位 {np.median(nvis):.0f}（0 張的點 {100 * (nvis == 0).mean():.1f}%）", flush=True)
+    print(f"   {'全部' if a.all_images else f'b{b} '}訓練影像 {len(TC)} 張：每點看得到的張數 中位 {np.median(nvis):.0f}、p90 {np.percentile(nvis, 90):.0f}（0 張的點 {100 * (nvis == 0).mean():.1f}%）", flush=True)
+    if a.all_images:
+        tot_ = sum(seen_by.values()) or 1
+        print("   看得到的（影像,點）對屬於哪塊的分區清單：" + "、".join(f"{'不在任何塊' if k < 0 else f'b{k}'} {100 * v / tot_:.1f}%" for k, v in sorted(seen_by.items(), key=lambda kv: -kv[1])[:8]), flush=True)
+        continue
     seen = nvis > 0
     if seen.any():
         print(f"   看得到時該像素平面種類（逐點比例的中位）：無 {np.median(kinds[seen, 0] / tot[seen]):.2f}、立面 {np.median(kinds[seen, 1] / tot[seen]):.2f}、海面 {np.median(kinds[seen, 2] / tot[seen]):.2f}"
