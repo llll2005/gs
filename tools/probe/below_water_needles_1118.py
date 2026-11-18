@@ -3,6 +3,7 @@
 每個模型：水面（海面物件的平面）以下 > 0.5 格、o > 0.3 的自由面元，分「海面格上」與「陸地底下」；細長（長短軸比 > 5）與「細長且亮（平均 RGB > 0.4）」另計。
 用法：python tools/probe/below_water_needles_1118.py --obj <sea npz> 名=<ckpt glob> ...
 """
+import numpy as np, glob, sys, os, torch
 sys.path.insert(0, ".")
 os.environ.setdefault("CITYGS_SFM_FAST", "1")
 from internal.utils import colmap_fast
