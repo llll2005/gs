@@ -623,6 +623,10 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """★ 11-18 v7（使用者 viewer：暗色楔形）：海面格（含外推區）下方、低於平面 > 這個倍數 x 格邊長、離可靠 SfM > sea_floater_sfm 格的自由顆粒也收回
     （b3 v6：長 > 5 m 的平躺顆粒 58% 在水面下、暗色大顆 75% 在水面下 2～9 m，從磚縫透出來）。-1＝關。要 sea_floater_h > 0（同一個收回流程）。"""
     sea_floater_below_anywhere: bool = False
+    sea_floater_excl_water: float = -1.0
+    """★ 11-19（使用者「作」；前提 labrun/seafl_premise_1119.py）：> 0 時，浮塊收回的「保護用可靠 SfM」拿掉水面上的點
+    （投到平面落在海面格、離水面 <= 這個倍數 x 格邊長）。原本水面上的 SfM 點（b1 2,674 個）讓水面附近的浮塊與水面下針狀面元全被保護：
+    60k 新底 8 b1 現行條件收 0／237.8k m²（上方）、0／99.9k m²（水面下）；拿掉水面 SfM＋上方 1 格＋離 SfM 1 格 => 收 236.0k／99.6k。-1＝關（逐位元同原本）。"""
     """★ 11-18（使用者 viewer：v9 平視時陸地底下衝上來的白色針狀面元＝b3 9 顆、長 25～55 m、比水面低 ~17 m、高階 SH 0.39）：
     水面下的收回（sea_floater_below）不再限海面格——沿海城市最低的可見表面就是水面，低於水面 > sea_floater_below 格、
     離可靠 SfM（3D）> sea_floater_sfm 格的自由顆粒，陸地底下也收。False＝原本（只在海面格上）。"""
@@ -2100,7 +2104,16 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     print("⚠⚠ [sea-floater] 找不到 points3D.bin => 不收回（關掉）", flush=True)
                     self.config.sea_floater_h = -1.0
                     return None
-                tr = self._sea_sfm_tree = cKDTree(self._reliable_sfm(f))
+                S_ = self._reliable_sfm(f)
+                kw = float(getattr(self.config, "sea_floater_excl_water", -1.0) or -1.0)
+                if kw > 0 and len(S_):                              # ★ 11-19 水面上的 SfM 點不當保護（它們就是水面本身）
+                    St = torch.from_numpy(S_).to(X.device).float()
+                    hs = St @ n - self._sea_c
+                    Ps = St - hs[:, None] * n[None] - self._sea_org[None]
+                    wat = ((hs.abs() <= kw * self._sea_g) & self._sea_insea(Ps)).cpu().numpy()
+                    print(f"[sea-floater] ✅ 保護用可靠 SfM 拿掉水面上的點（海面格內、離水面 <= {kw:g} 格）{int(wat.sum()):,}／{len(S_):,}", flush=True)
+                    S_ = S_[~wat]
+                tr = self._sea_sfm_tree = cKDTree(S_)
             dist, _ = tr.query(X[idx].double().cpu().numpy())
             far = torch.from_numpy(dist > float(getattr(self.config, "sea_floater_sfm", 10.0)) * self._sea_g).to(X.device)
             out[idx[far]] = True; n_far = int(far.sum())
