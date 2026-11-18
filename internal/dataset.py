@@ -197,6 +197,7 @@ class CacheDataLoader(torch.utils.data.DataLoader):
             print("cache all images")
             from internal.utils.stage_timer import mark
             mark("快取全部影像 開始（{} 張）".format(len(self.indices)))
+            self._write_cache_list()
             self.cached = self._cache_data(self.indices)
             mark("快取全部影像 完成")
 
@@ -234,6 +235,36 @@ class CacheDataLoader(torch.utils.data.DataLoader):
 
                 self.cache_output_queue.put(None)  # simulate a queue with zero size
                 self.cache_output_queue.put(self._cache_data(to_cache, pbar_leave=False))
+
+    def _write_cache_list(self):
+        """★ 11-19 預讀下一塊（CITYGS_CACHE_LIST=<檔>）：把這次快取會讀的檔案（影像、遮罩、深度與可靠度 npy）依序寫成清單，
+        給 scripts/lab/_common.sh 的 CITYGS_PREFETCH_NEXT 在上一塊訓練時（硬碟閒著）先讀進 page cache。只寫清單，不影響訓練。"""
+        out = os.environ.get("CITYGS_CACHE_LIST", "")
+        if not out:
+            return
+        try:
+            ims = getattr(self.dataset, "image_set", None)
+            if ims is None:
+                return
+            paths = []
+            for i in self.indices:
+                for x in (ims.image_paths[i], ims.mask_paths[i] if getattr(ims, "mask_paths", None) else None):
+                    if isinstance(x, str):
+                        paths.append(x)
+                ex = ims.extra_data[i] if getattr(ims, "extra_data", None) else None
+                for x in (ex if isinstance(ex, (tuple, list)) else (ex,)):
+                    if isinstance(x, str) and os.path.isfile(x):
+                        paths.append(x)
+            os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+            with open(out + ".tmp", "w") as fh:
+                fh.write("\n".join(os.path.abspath(x) for x in paths) + "\n")
+            os.replace(out + ".tmp", out)
+            print(f"[prefetch] 快取清單 {len(paths):,} 個檔 => {out}", flush=True)
+            if os.environ.get("CITYGS_CACHE_LIST_ONLY", "0") == "1":   # 只產清單（全場景前先把 16 塊的清單備好），不訓練
+                print("[prefetch] CITYGS_CACHE_LIST_ONLY=1 => 只寫清單、結束行程", flush=True)
+                os._exit(0)
+        except Exception as e:                                   # 清單只是加速用，失敗不影響訓練
+            print(f"⚠ [prefetch] 寫快取清單失敗：{e}", flush=True)
 
     def _cache_data(self, indices: list, pbar_leave: bool = True):
         cached = []

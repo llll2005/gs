@@ -151,6 +151,22 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
     fi
     echo "[demo] ★ demo 模式：SfM 快速讀取、關驗證、$( [[ " ${demo[*]} " == *input_r1.2* ]] && echo 讀預縮影像 || echo 影像現縮 )、不產生 log（只留台帳與 run_summary.json）"
   fi
+  # ★ 11-19 預讀下一塊（全場景 13.1／96.9 分在快取影像，冷硬碟 35～120 ms／張、熱 page cache 約 17 ms／張；訓練中硬碟閒著）：
+  #   每次快取都寫清單 logs/cache_lists/block_<B>.txt；CITYGS_PREFETCH_NEXT=<塊> => 等 CITYGS_PREFETCH_DELAY 秒（預設 150，
+  #   本塊的快取已讀完）後在背景用最低 IO 優先序把那塊上次的清單讀進 page cache。只影響讀檔快慢，不改訓練結果。
+  export CITYGS_CACHE_LIST="logs/cache_lists/block_${blk}.txt"
+  if [ -n "${CITYGS_PREFETCH_NEXT:-}" ]; then
+    local _pl="logs/cache_lists/block_${CITYGS_PREFETCH_NEXT}.txt"
+    if [ -f "$_pl" ]; then
+      ( sleep "${CITYGS_PREFETCH_DELAY:-150}"; _t0=$(date +%s)
+        _io=(); command -v ionice > /dev/null && _io=(ionice -c3)
+        nice -n 19 "${_io[@]}" xargs -d '\n' -a "$_pl" cat > /dev/null 2>&1
+        echo "[prefetch] $(date +%T) 預讀 b${CITYGS_PREFETCH_NEXT} $(wc -l < "$_pl") 個檔完成（$(( $(date +%s) - _t0 )) s）" ) &
+      echo "[prefetch] $(date +%T) 已排背景預讀 b${CITYGS_PREFETCH_NEXT}（$(wc -l < "$_pl") 個檔，${CITYGS_PREFETCH_DELAY:-150} s 後開始）"
+    else
+      echo "[prefetch] 沒有 $_pl（那塊還沒跑過、沒有清單）=> 不預讀"
+    fi
+  fi
   local _t_start; _t_start=$(date +%s.%N)
   echo "[階段] $(date +%T) shell：conda run 前（python 行程開始前）"   # ★ 11-14 啟動時間拆解（internal/utils/stage_timer.py 同格式）
   conda run -n gspl --no-capture-output python -u main.py fit \
