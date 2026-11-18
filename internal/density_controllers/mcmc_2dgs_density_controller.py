@@ -622,6 +622,10 @@ class MCMC2DGSDensityController(MCMCDensityController):
     sea_floater_below: float = -1.0
     """★ 11-18 v7（使用者 viewer：暗色楔形）：海面格（含外推區）下方、低於平面 > 這個倍數 x 格邊長、離可靠 SfM > sea_floater_sfm 格的自由顆粒也收回
     （b3 v6：長 > 5 m 的平躺顆粒 58% 在水面下、暗色大顆 75% 在水面下 2～9 m，從磚縫透出來）。-1＝關。要 sea_floater_h > 0（同一個收回流程）。"""
+    sea_floater_below_anywhere: bool = False
+    """★ 11-18（使用者 viewer：v9 平視時陸地底下衝上來的白色針狀面元＝b3 9 顆、長 25～55 m、比水面低 ~17 m、高階 SH 0.39）：
+    水面下的收回（sea_floater_below）不再限海面格——沿海城市最低的可見表面就是水面，低於水面 > sea_floater_below 格、
+    離可靠 SfM（3D）> sea_floater_sfm 格的自由顆粒，陸地底下也收。False＝原本（只在海面格上）。"""
     sh_narrow_kappa: float = 0.0
     """★ 11-18（使用者「讓它可以猜資訊不足的部分」③）：看到的角度範圍窄的顆粒，高階 SH（視角相關顏色）往 0 收。
     每步對畫面內的顆粒累加「顆粒 -> 相機」單位向量 S 與次數 K（指數衰減 sh_narrow_decay；跟著 _PER_PARTICLE 剪／補／排序），
@@ -2075,9 +2079,14 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             cand = cand & ~sm
         out = torch.zeros(N, dtype=torch.bool, device=X.device)
         idx = torch.nonzero(cand, as_tuple=True)[0]
+        n_land = 0
         if idx.numel():
             P = X[idx].float() - d[idx, None] * n[None] - self._sea_org[None]
-            idx = idx[self._sea_insea(P)]
+            keep = self._sea_insea(P)
+            if kb > 0 and bool(getattr(self.config, "sea_floater_below_anywhere", False)):
+                land = (d[idx] < -kb * self._sea_g) & ~keep        # 水面下、不在海面格（陸地底下）
+                n_land = int(land.sum()); keep = keep | land
+            idx = idx[keep]
         n_far = 0
         if idx.numel():
             tr = getattr(self, "_sea_sfm_tree", None)
@@ -2098,7 +2107,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         tot = getattr(self, "_sea_floater_total", 0) + n_far; self._sea_floater_total = tot
         if not getattr(self, "_sea_floater_announced", False) or n_far > 0:
             print(f"[sea-floater] {'✅ 首次觸發 ' if not getattr(self, '_sea_floater_announced', False) else '　'}step {step}：海面格上方 > {kh:g} 格距"
-                  f"（{kh * self._sea_g * 100:.1f} m）的 {int(idx.numel()):,} 顆中，離 SfM > {getattr(self.config, 'sea_floater_sfm', 10.0):g} 格距的 {n_far:,} 顆收回（累計 {tot:,}）", flush=True)
+                  f"（{kh * self._sea_g * 100:.1f} m）的 {int(idx.numel()):,} 顆中，離 SfM > {getattr(self.config, 'sea_floater_sfm', 10.0):g} 格距的 {n_far:,} 顆收回（累計 {tot:,}）"
+                  + (f"｜其中陸地底下的候選 {n_land:,}" if bool(getattr(self.config, "sea_floater_below_anywhere", False)) else ""), flush=True)
             self._sea_floater_announced = True
         return out
 
