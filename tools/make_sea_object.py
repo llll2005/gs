@@ -326,7 +326,7 @@ def main():
                   f"（原海面格 {len(seak):,} => {len(seak) + n_grown:,}）", flush=True)
             if n_grown:
                 seak = np.sort(np.concatenate([seak, grown]))
-                yc = np.concatenate([yc[sea], np.array([cL[k_] for k_ in grown.tolist()], np.int64)]); noc = np.concatenate([noc[sea], np.array([cN.get(k_, 0) for k_ in grown.tolist()], np.int64)])
+                yc = np.concatenate([yc[sea], np.array([cL.get(k_, 0) for k_ in grown.tolist()], np.int64)]); noc = np.concatenate([noc[sea], np.array([cN.get(k_, 0) for k_ in grown.tolist()], np.int64)])
                 o_ = np.argsort(np.concatenate([yk[sea], grown])); yc, noc = yc[o_], noc[o_]
                 sea = np.ones(len(seak), bool); yk = seak
                 CK += GK; CC += GC
