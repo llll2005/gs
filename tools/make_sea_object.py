@@ -91,6 +91,10 @@ def main():
     #   --gap2：第 0 層長格改成不看顏色：有被看到（任何一張的射線打到）、格內沒有 SfM 結構、沒有可靠深度在平面前面（上面有東西）或後面、和海面相連 => 收（照常訓練）。
     #   顏色判準只當參考不當反證。遠海各層同理（有被看到、沒有前面／後面的可靠深度、沒有 SfM 結構）。
     ap.add_argument("--gap2", action="store_true")
+    # ★ 11-18 --gap3（港口煙團根因：那幾格被看到 ~200 次、像海 59～78、不像海 0～2，但「可靠深度在平面後面」59～84、「前面有東西」17～26 —— GT 是水面；
+    #   5 m 內沒有 SfM 點、校正深度由遠處碼頭與海面點內插，忽深忽淺卻標成可靠）：水不透明 => 海面上「看到平面後面」必然是深度錯，不當反證；
+    #   改成：像海 >= max(1, 2 x 前面有東西)、不像海 <= 0.2 x 像海、沒有 SfM 結構、和海面相連 => 收。要 --grow。
+    ap.add_argument("--gap3", action="store_true")
     ap.add_argument("--debug_xy", type=float, nargs="*", default=[], help="除錯：世界 xy 成對（x1 y1 x2 y2 ...），印出這些位置第 0 層格的各種票數、SfM 結構、是否被看到、最後是不是海面格")
     ap.add_argument("--fill_sample", action="store_true")   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
@@ -303,6 +307,10 @@ def main():
             hs = SFM_REL @ n1 - c1; si, sj = cell_of(SFM_REL - np.outer(hs, n1), g)
             struct = set((si[hs > g / 2] * 1000003 + sj[hs > g / 2]).tolist())
             ok_cell = {k_ for k_, v_ in cL.items() if v_ >= a.min_yes and v_ > cU.get(k_, 0) + cF.get(k_, 0) + cN.get(k_, 0) and k_ not in struct}
+            if a.gap3:
+                n_ok0 = len(ok_cell)
+                ok_cell |= {k_ for k_, v_ in cL.items() if v_ >= max(1, 2 * cF.get(k_, 0)) and cU.get(k_, 0) <= 0.2 * v_ and k_ not in struct}
+                print(f"b{b}｜--gap3：第 0 層可長格 {n_ok0:,} => {len(ok_cell):,}（後面的可靠深度不當反證）", flush=True)
             if a.gap2:                                         # α：不看顏色：有被看到、沒有前面／後面的可靠深度、沒有 SfM 結構
                 cO = cnt(OBS); n_ok0 = len(ok_cell)
                 ok_cell |= {k_ for k_ in cO if cF.get(k_, 0) + cN.get(k_, 0) == 0 and k_ not in struct}
