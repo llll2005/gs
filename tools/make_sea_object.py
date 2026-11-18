@@ -91,6 +91,7 @@ def main():
     #   --gap2：第 0 層長格改成不看顏色：有被看到（任何一張的射線打到）、格內沒有 SfM 結構、沒有可靠深度在平面前面（上面有東西）或後面、和海面相連 => 收（照常訓練）。
     #   顏色判準只當參考不當反證。遠海各層同理（有被看到、沒有前面／後面的可靠深度、沒有 SfM 結構）。
     ap.add_argument("--gap2", action="store_true")
+    ap.add_argument("--debug_xy", type=float, nargs="*", default=[], help="除錯：世界 xy 成對（x1 y1 x2 y2 ...），印出這些位置第 0 層格的各種票數、SfM 結構、是否被看到、最後是不是海面格")
     ap.add_argument("--fill_sample", action="store_true")   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
@@ -330,6 +331,16 @@ def main():
                 o_ = np.argsort(np.concatenate([yk[sea], grown])); yc, noc = yc[o_], noc[o_]
                 sea = np.ones(len(seak), bool); yk = seak
                 CK += GK; CC += GC
+        if a.debug_xy and len(a.debug_xy) >= 2:
+            _pp = np.array(a.debug_xy, float).reshape(-1, 2); _P3 = np.c_[_pp, (c1 - _pp @ n1[:2]) / max(abs(n1[2]), 1e-9)]
+            _di, _dj = cell_of(_P3, g); _dk = _di * 1000003 + _dj
+            _cO = cnt(OBS) if a.gap2 and OBS else {}
+            _struct = struct if (a.grow and LK) else set()
+            _yd = dict(zip(yk.tolist(), yc.tolist())) if len(yk) else {}
+            for (x_, y_), k_ in zip(_pp, _dk.tolist()):
+                print(f"[debug] b{b} xy ({x_:.3f},{y_:.3f}) 格 {k_}｜贊成 {_yd.get(k_, 0)}、反對（後面） {cN.get(k_, 0) if a.grow and LK else '-'}、前面有東西 {cF.get(k_, 0) if a.grow and LK else '-'}、"
+                      f"像海 {cL.get(k_, 0) if a.grow and LK else '-'}、不像海 {cU.get(k_, 0) if a.grow and LK else '-'}、被看到 {_cO.get(k_, 0)}｜SfM 結構 {k_ in _struct}｜"
+                      f"可長 {k_ in ok_cell if a.grow and LK else '-'}｜最後是海面格 {bool(np.isin(k_, seak))}", flush=True)
         if len(seak) == 0:
             print(f"b{b}：海面格 0 => 跳過、不寫檔", flush=True); continue
         # ── --far_levels：由細到粗接受遠海格（已接受的較細海面格蓋到這格一半以上 => 不要）──
