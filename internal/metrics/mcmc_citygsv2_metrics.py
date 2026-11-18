@@ -80,6 +80,10 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     本旗標只移除**固定的下壓力（L1）**，光度梯度對 opacity 的學習照常 ⇒ 兩極化保留。
     """
 
+    reg_visible_only: bool = False
+    """★ 11-18（使用者「讓它可以猜資訊不足的部分」）：逐顆正則（opacity L1、scale、二元熵）只算這一步畫面內的顆粒（visibility_filter），對畫面內取平均。
+    原本每一步對全部 N 顆取平均 => 光度證據只在顆粒被看到的那幾步出現、正則卻每步都在 => 只被 k/N 張看到的顆粒（塔頂、邊界斜看）正則相對強了 N/k 倍、少數視角的證據被壓掉。
+    改成畫面內取平均後，被看到比例 p 的顆粒平均每步正則強度＝p／(平均可見比例) x 原本 => 常被看到的不變、少被看到的跟證據同比例減弱。False＝逐位元不變。"""
     opacity_entropy_reg: float = 0.0
     """>0 時加上 opacity 的**二元熵**正則 H(o) = -o ln o - (1-o) ln(1-o)（對全部顆粒取平均），
     把 o 往 0 或 1 推（兩極化）。2026-10-01 使用者提的構想：兩極化後靠近 0 的會被 trim／MCMC 回收 ⇒
@@ -1157,11 +1161,26 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
 
         opacities = gaussian_model.get_opacities().squeeze(-1)  # [N], activated in (0, 1)
         non_immune = opacities.detach() <= self.config.immune_opacity_threshold
+        _rv = None
+        if bool(getattr(self.config, "reg_visible_only", False)):
+            _vf = outputs.get("visibility_filter") if isinstance(outputs, dict) else None
+            if _vf is not None and _vf.shape[0] == opacities.shape[0]:
+                _rv = _vf.reshape(-1).bool()
+                if not getattr(self, "_rv_announced", False) or step % 2000 == 0:
+                    print(f"[reg-visible] {'✅ 首次觸發 ' if not getattr(self, '_rv_announced', False) else ''}step={step}：逐顆正則只算畫面內 {int(_rv.sum()):,}／{_rv.numel():,} 顆"
+                          f"（{100 * float(_rv.float().mean()):.1f}%）", flush=True)
+                    self._rv_announced = True
+            elif not getattr(self, "_rv_warned", False):
+                self._rv_warned = True
+                print("⚠⚠ [reg-visible] 拿不到 visibility_filter（或長度不符）=> 這一步照舊對全部顆粒算正則", flush=True)
+        if _rv is not None:
+            non_immune = non_immune & _rv
         if bool(non_immune.any()):
             opacity_reg = opacities[non_immune].mean()        # |opacity| == opacity in (0,1)
         else:
             opacity_reg = opacities.sum() * 0.0               # grad-safe zero
-        scale_reg = gaussian_model.get_scales().abs().mean()
+        scale_reg = gaussian_model.get_scales().abs().mean() if _rv is None else \
+            (gaussian_model.get_scales()[_rv].abs().mean() if bool(_rv.any()) else gaussian_model.get_scales().sum() * 0.0)
 
         _oreg_w = self.config.opacity_reg
         if 0 <= self.config.opacity_reg_until_iter <= step:
@@ -1200,7 +1219,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 raise ValueError(f"opacity_entropy_side={_side!r}（只接受 both／down）")
             if _gate is not None:
                 _Hi = _Hi * ~((_o.detach() >= 0.5) & ~_gate)      # ★ 10-29 閘門外不給往 1 推（往 0 那半照舊）
-            _H = _Hi.mean()
+            _H = _Hi.mean() if _rv is None else (_Hi[_rv].mean() if bool(_rv.any()) else _Hi.sum() * 0.0)
             metrics["loss"] = metrics["loss"] + _ew * _H
             metrics["op_ent"] = _H.detach()
             pbar["op_ent"] = False

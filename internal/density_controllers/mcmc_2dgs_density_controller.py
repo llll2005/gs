@@ -617,6 +617,14 @@ class MCMC2DGSDensityController(MCMCDensityController):
     增生後在 harvest_prune_dead 的節奏直接刪。鋪磚邊長＝海面物件的 g（最近可見訓練相機 16 px 的足跡），不是場景公尺。
     依據：S1 b1 那顆 123 m 高、9x6 m、離 SfM 173 m；海面上限只罰平面後面，上方沒有東西推它。要 sea_layer_obj。"""
     sea_floater_sfm: float = 10.0
+    sh_narrow_kappa: float = 0.0
+    """★ 11-18（使用者「讓它可以猜資訊不足的部分」③）：看到的角度範圍窄的顆粒，高階 SH（視角相關顏色）往 0 收。
+    每步對畫面內的顆粒累加「顆粒 -> 相機」單位向量 S 與次數 K（指數衰減 sh_narrow_decay；跟著 _PER_PARTICLE 剪／補／排序），
+    集中度 R＝|S|/K（1＝都從同一方向看、0＝各方向都有；K < 2 當成 1）；w＝clamp((R − r0)/(1 − r0), 0, 1)；
+    optimizer step 之後畫面內的顆粒 shs_rest *= (1 − kappa·w)（近端收縮，不靠 loss 尺度）。0＝關（逐位元不變）。
+    依據：v5 b3 外推邊界的紫色、塔頂少視角 => 高階 SH 只被一兩個方向約束，換角度就跑出怪色。"""
+    sh_narrow_r0: float = 0.9
+    sh_narrow_decay: float = 0.999
     sfm_track: bool = False
     """★ 2026-11-05 只追蹤、不鎖（sfm_lock 關著時才有意義）：同樣找出錨點（初始化裡的可靠 SfM 點），但不保護、不還原，
     只在 sfm 報告裡印它們的下場——被 trim 剪掉、被合併刪掉、被搬家／補洞挪走、還活著的位移與透明度。訓練行為不變。"""
@@ -1119,6 +1127,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     raise ValueError(f"densify_until_iter（{c.densify_until_iter}）要 <= round2_from（{c.round2_from}）：第一輪的增生要在 S1 前結束")
                 if not bool(getattr(c, "round2_free", False)):
                     pl_module.on_train_batch_end_hooks.append(self._r2_plane_hold)   # 排在雜訊之後 => 雜訊的法向分量也投影掉
+            if float(getattr(self.config, "sh_narrow_kappa", 0.0) or 0.0) > 0:
+                pl_module.on_train_batch_end_hooks.append(self._sh_narrow_step)     # optimizer step 之後收縮
             if str(getattr(self.config, "sea_layer_file", "") or ""):
                 if not str(getattr(self.config, "sea_layer_obj", "") or ""):
                     raise ValueError("sea_layer_file 要搭配 sea_layer_obj（海面物件 npz）")
@@ -1477,7 +1487,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                             or global_step + self.config.densification_interval >= self._grow_end(global_step)):
                 self._morton_reorder(gaussian_model, optimizers, global_step, pl_module, batch)
 
-    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_sea": -1, "_noup_z": float("inf"),
+    _PER_PARTICLE = {"_birth": -1, "_occ_n": 0, "_see_n": 0, "_anchor": -1, "_sea": -1, "_noup_z": float("inf"), "_shn_s": 0.0, "_shn_k": 0.0,
                      "_pxf_log": float("-inf"), "_sfm_under": 0,
                      "_r2_surf": False, "_r2_born": True, "_r2_p0": 0.0, "_r2_n0": 0.0,
                      "_v5_free": 0.0, "_v5_cov": 0.0}
@@ -1892,6 +1902,46 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
     def _sea_all(self, n: int):
         t = getattr(self, "_sea", None)
         return (t >= 0) if t is not None and t.shape[0] == n else None
+
+    def _sh_narrow_step(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
+        """sh_narrow_kappa：累加畫面內顆粒的觀看方向，集中度高（角度範圍窄）的高階 SH 收縮。"""
+        c = self.config
+        g = gaussian_model.gaussians
+        if "shs_rest" not in g:
+            return
+        cam = batch[0]
+        X = g["means"].detach()
+        N = X.shape[0]; dev = X.device
+        S = getattr(self, "_shn_s", None); K = getattr(self, "_shn_k", None)
+        if S is None or S.shape[0] != N or S.dim() != 2:
+            S = torch.zeros(N, 3, device=dev); self._shn_s = S
+        if K is None or K.shape[0] != N:
+            K = torch.zeros(N, device=dev); self._shn_k = K
+        with torch.no_grad():
+            p = torch.cat([X.float(), torch.ones_like(X[:, :1], dtype=torch.float32)], 1) @ cam.world_to_camera.float()
+            zc = p[:, 2]
+            u = float(cam.fx) * p[:, 0] / zc.clamp_min(1e-6) + float(cam.cx)
+            v = float(cam.fy) * p[:, 1] / zc.clamp_min(1e-6) + float(cam.cy)
+            vis = (zc > 1e-3) & (u >= 0) & (u < float(cam.width)) & (v >= 0) & (v < float(cam.height))
+            gm = float(c.sh_narrow_decay)
+            S.mul_(gm); K.mul_(gm)
+            d = cam.camera_center.to(dev).float()[None] - X.float()
+            d = d / d.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+            S.add_(d * vis[:, None].float()); K.add_(vis.float())
+            R = torch.where(K >= 2, S.norm(dim=-1) / K.clamp_min(1e-6), torch.ones_like(K)).clamp(0, 1)
+            r0 = float(c.sh_narrow_r0)
+            w = ((R - r0) / max(1 - r0, 1e-6)).clamp(0, 1) * vis.float()
+            rest = g["shs_rest"]
+            rest.mul_((1 - float(c.sh_narrow_kappa) * w).to(rest.dtype).view(-1, *([1] * (rest.dim() - 1))))
+        first = not getattr(self, "_shn_announced", False)
+        if first or global_step % 2000 == 0:
+            self._shn_announced = True
+            with torch.no_grad():
+                nv = int(vis.sum()); rn = rest.detach().flatten(1).norm(dim=-1)
+                nar = vis & (w > 0.5); wid = vis & (w == 0)
+                print(f"[sh-narrow] {'✅ 首次觸發 ' if first else ''}step {global_step}：畫面內 {nv:,}／{N:,}｜角度窄（w > 0.5）{100 * float(nar.sum()) / max(nv, 1):.1f}%、"
+                      f"不收縮（w = 0）{100 * float(wid.sum()) / max(nv, 1):.1f}%｜高階 SH 範數中位 窄 {float(rn[nar].median()) if bool(nar.any()) else float('nan'):.4f}、"
+                      f"寬 {float(rn[wid].median()) if bool(wid.any()) else float('nan'):.4f}｜kappa {c.sh_narrow_kappa:g}、r0 {c.sh_narrow_r0:g}", flush=True)
 
     def _sea_restore(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
         """每步結束：海面層的位置還原到格心、法向固定為平面法向（面內轉角照學）、尺度夾在界內。"""
