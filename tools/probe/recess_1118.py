@@ -125,7 +125,11 @@ for spec in a.init:
     from plyfile import PlyData
     v = PlyData.read(f)["vertex"].data; X = np.stack([v["x"], v["y"], v["z"]], 1).astype(np.float64); X = X[inblk(X)]
     r = cover(X); covs["起點:" + labn] = r["凹槽牆面"][-1]
-    print(f"[起點] {labn}：1 m 內有點 凹槽牆面 {r['凹槽牆面'][0]:.1f}%｜平牆 {r['平牆'][0]:.1f}%", flush=True)
+    dc, kc = ctree.query(X); xi = ci[kc]; yi = jn[xi]
+    d1 = ((X - fx_[xi]) * fn_[xi]).sum(1) * M; d2 = ((X - fx_[yi]) * fn_[yi]).sum(1) * M
+    inair0 = (dc <= a.R_m / M) & (d1 > 0.5) & (d2 > 0.5); near0 = dc <= a.R_m / M
+    print(f"[起點] {labn}：1 m 內有點 凹槽牆面 {r['凹槽牆面'][0]:.1f}%｜平牆 {r['平牆'][0]:.1f}%｜凹槽附近（離內凹轉角 <= {a.R_m:g} m）的點 {int(near0.sum()):,}，"
+          f"其中在凹槽空氣裡（兩面牆前方 > 0.5 m）{int(inair0.sum()):,}（{100 * inair0.sum() / max(near0.sum(), 1):.1f}%）", flush=True)
 for spec in a.models:
     labn, pat = spec.split("=", 1); f = sorted(x for x in glob.glob(pat) if "xyz" not in x)[-1]
     sd = torch.load(f, map_location="cpu", weights_only=False)["state_dict"]; g = "gaussian_model.gaussians."
@@ -137,9 +141,9 @@ for spec in a.models:
     # 凹槽空氣裡的顆粒（兩面牆前方）：最近內凹轉角點的兩面牆都在前方 > 0.5 m、離轉角 <= R
     dc, kc = ctree.query(m); xi = ci[kc]; yi = jn[xi]
     d1 = ((m - fx_[xi]) * fn_[xi]).sum(1) * M; d2 = ((m - fx_[yi]) * fn_[yi]).sum(1) * M
-    inair = (dc <= a.R_m / M) & (d1 > 0.5) & (d2 > 0.5)
+    inair = (dc <= a.R_m / M) & (d1 > 0.5) & (d2 > 0.5); nearm = dc <= a.R_m / M
     print(f"[模型] {labn}：1 m 內有面元 凹槽牆面 {r['凹槽牆面'][0]:.1f}%（貼牆 {r['凹槽牆面'][1]:.1f}%）｜平牆 {r['平牆'][0]:.1f}%（貼牆 {r['平牆'][1]:.1f}%）｜"
-          f"凹槽空氣裡（兩面牆前方 > 0.5 m）的不透明面元 {int(inair.sum()):,}", flush=True)
+          f"凹槽空氣裡（兩面牆前方 > 0.5 m）的不透明面元 {int(inair.sum()):,}（凹槽附近的 {100 * inair.sum() / max(nearm.sum(), 1):.1f}%）", flush=True)
 # 每條凹槽
 ri = np.where(recess)[0]
 rows = []
@@ -165,7 +169,7 @@ if a.occl and rows:
     sys.argv = _argv
     import cv2
     print("\n--occl：用 GT 深度驗遮擋（每條凹槽抽點）", flush=True)
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(0); TRI = []
     for r in rows[: a.top]:
         s = np.where(rec_cl[ri] == r["cl"])[0]; s = rng.choice(s, min(a.occl_n, len(s)), replace=False); X = fx_[ri[s]]; N_ = fn_[ri[s]]
         seen = np.zeros(len(X), int)
@@ -180,6 +184,24 @@ if a.occl and rows:
                 continue
             zg = gt * MS.K_UNIT; hh, ww = zg.shape
             ui = np.clip((u * ww / W).astype(int), 0, ww - 1); vi = np.clip((v * hh / H).astype(int), 0, hh - 1)
-            seen += ok & (np.abs(zg[vi, ui] - z) <= 0.02 * z)
+            vis_ = ok & (np.abs(zg[vi, ui] - z) <= 0.02 * z)
+            seen += vis_
+            ft_ = f"{D}/estimated_depths_tri/{nm}.npy"; fr_ = f"{D}/estimated_depths_tri_rel/{nm}.npy"
+            if vis_.any() and os.path.exists(ft_):
+                tri = np.load(ft_).squeeze(); h3, w3 = tri.shape
+                u3 = np.clip((u * w3 / W).astype(int), 0, w3 - 1); v3 = np.clip((v * h3 / H).astype(int), 0, h3 - 1)
+                ti = tri[v3, u3]; okt = vis_ & (ti > 1e-6)
+                if os.path.exists(fr_):
+                    rl = np.load(fr_); rel_ok = ((rl[v3, u3] & 7) <= 1) & ((rl[v3, u3] >> 3) <= 3)
+                else:
+                    rel_ok = np.ones(len(X), bool)
+                zt = np.where(okt, 1.0 / np.maximum(ti, 1e-9), np.nan)
+                TRI.append(np.c_[(zt[okt] / z[okt] - 1.0), rel_ok[okt].astype(float)])
         print(f"  凹槽 #{r['cl']}：抽 {len(X)} 點，真的看得到（GT 深度對得上）的訓練影像數 中位 {np.median(seen):.0f}、p10 {np.percentile(seen, 10):.0f}、0 張的點 {100 * (seen == 0).mean():.0f}%", flush=True)
+        if TRI:
+            T_ = np.concatenate(TRI); TRI.clear()
+            for nm_, mm in (("全部", np.ones(len(T_), bool)), ("可靠", T_[:, 1] > 0)):
+                e = T_[mm, 0]
+                if len(e):
+                    print(f"     校正深度 vs 真深度（{nm_}，{len(e):,} 個像素觀測）：相對誤差中位 {100 * np.median(e):+.1f}%｜偏淺（在牆前方）> 2% 佔 {100 * (e < -0.02).mean():.0f}%、偏深 > 2% 佔 {100 * (e > 0.02).mean():.0f}%", flush=True)
 print("DONE recess", flush=True)
