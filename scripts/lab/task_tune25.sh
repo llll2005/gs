@@ -94,7 +94,7 @@ parse() {
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
         v4f|v5|dsf) XT+=("$t") ;;
         mgr[0-9]*) [[ $t =~ ^mgr[0-9]+$ ]] || { echo "⛔ 寫法：mgr<P>（合併額度 2% 線性升到不設限、最後一次合併在全長的 P%）"; return 2; }; XT+=("$t") ;;
-        shn[0-9]*) [[ $t =~ ^shn[0-9]+$ ]] || { echo "⛔ 寫法：shn<k>（角度窄的高階 SH 每個畫面內步收縮 k/100）"; return 2; }; XT+=("$t") ;;
+        shn[0-9]*) [[ $t =~ ^shn[0-9]+(e[0-9]+)?$ ]] || { echo "⛔ 寫法：shn<k>[e<n>]（角度窄的高階 SH 每個畫面內步收縮 k/100；e<n>＝每 n 步做一次，預設 4）"; return 2; }; XT+=("$t") ;;
         regvis) XT+=("$t") ;;
         mq[0-9]*) [[ $t =~ ^mq[0-9]+$ ]] || { echo "⛔ 寫法：mq<k>（合併額度＝每次事件 N 的 k%；100＝不設額度）"; return 2; }; XT+=("$t") ;;
         npri[0-9]*) [[ $t =~ ^npri[0-9]+d?$ ]] || { echo "⛔ 寫法：npri<k>[d]（單目法向先驗，權重 0.0125 x k；d＝也套在深度法向上）"; return 2; }; XT+=("$t") ;;
@@ -176,7 +176,8 @@ for t in "${XT[@]:-}"; do
     #   regvis＝逐顆正則（opacity L1、scale、二元熵）只算畫面內顆粒（少被看到的顆粒正則不再被放大 N/k 倍）
     #   shn<k>＝看到的角度範圍窄的顆粒，高階 SH 每個畫面內步收縮 k/100（集中度門檻 r0 0.9）
     regvis) XA+=(--model.metric.init_args.reg_visible_only true) ;;
-    shn[0-9]*) XA+=(--model.density.init_args.sh_narrow_kappa "$(python3 -c "print(${t#shn}/100)")") ;;
+    shn[0-9]*) _k=${t#shn}; _e=4; [[ $_k == *e* ]] && { _e=${_k#*e}; _k=${_k%%e*}; }
+            XA+=(--model.density.init_args.sh_narrow_kappa "$(python3 -c "print($_k/100)")" --model.density.init_args.sh_narrow_every "$_e") ;;
     mq[0-9]*) XA+=(--model.density.init_args.merge_max_frac "$(python3 -c "print(${t#mq}/100)")") ;;
     coarse) CK=outputs/lab/coarse_g44r48sh0_crop/blocks/block_$B/checkpoints/coarse_crop.ckpt
             [ -f "$CK" ] || { echo "⛔ 缺 $CK（task_coarse.sh crop）"; exit 2; }

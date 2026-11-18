@@ -1173,14 +1173,19 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             elif not getattr(self, "_rv_warned", False):
                 self._rv_warned = True
                 print("⚠⚠ [reg-visible] 拿不到 visibility_filter（或長度不符）=> 這一步照舊對全部顆粒算正則", flush=True)
-        if _rv is not None:
-            non_immune = non_immune & _rv
-        if bool(non_immune.any()):
-            opacity_reg = opacities[non_immune].mean()        # |opacity| == opacity in (0,1)
+        if _rv is None:
+            if bool(non_immune.any()):
+                opacity_reg = opacities[non_immune].mean()        # |opacity| == opacity in (0,1)
+            else:
+                opacity_reg = opacities.sum() * 0.0               # grad-safe zero
+            scale_reg = gaussian_model.get_scales().abs().mean()
         else:
-            opacity_reg = opacities.sum() * 0.0               # grad-safe zero
-        scale_reg = gaussian_model.get_scales().abs().mean() if _rv is None else \
-            (gaussian_model.get_scales()[_rv].abs().mean() if bool(_rv.any()) else gaussian_model.get_scales().sum() * 0.0)
+            # ★ 11-18 加速：用權重平均取代布林索引（布林索引＝每次一個 GPU→CPU 同步；數值同義，只差浮點加總順序）
+            _rvf = _rv.to(opacities.dtype)
+            _niw = non_immune.to(opacities.dtype) * _rvf
+            opacity_reg = (opacities * _niw).sum() / _niw.sum().clamp_min(1.0)
+            _sc = gaussian_model.get_scales().abs()
+            scale_reg = (_sc * _rvf[:, None]).sum() / (_rvf.sum().clamp_min(1.0) * _sc.shape[1])
 
         _oreg_w = self.config.opacity_reg
         if 0 <= self.config.opacity_reg_until_iter <= step:
@@ -1219,7 +1224,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 raise ValueError(f"opacity_entropy_side={_side!r}（只接受 both／down）")
             if _gate is not None:
                 _Hi = _Hi * ~((_o.detach() >= 0.5) & ~_gate)      # ★ 10-29 閘門外不給往 1 推（往 0 那半照舊）
-            _H = _Hi.mean() if _rv is None else (_Hi[_rv].mean() if bool(_rv.any()) else _Hi.sum() * 0.0)
+            _H = _Hi.mean() if _rv is None else (_Hi * _rvf).sum() / _rvf.sum().clamp_min(1.0)
             metrics["loss"] = metrics["loss"] + _ew * _H
             metrics["op_ent"] = _H.detach()
             pbar["op_ent"] = False

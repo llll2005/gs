@@ -630,6 +630,8 @@ class MCMC2DGSDensityController(MCMCDensityController):
     依據：v5 b3 外推邊界的紫色、塔頂少視角 => 高階 SH 只被一兩個方向約束，換角度就跑出怪色。"""
     sh_narrow_r0: float = 0.9
     sh_narrow_decay: float = 0.999
+    sh_narrow_every: int = 4
+    """★ 11-18 加速：每這麼多步做一次（after_backward 用光柵器的 visibility_filter，不再自己投影全部顆粒）；衰減與收縮換算成同樣的每步強度（decay^every、(1−kappa·w)^every）。"""
     sfm_track: bool = False
     """★ 2026-11-05 只追蹤、不鎖（sfm_lock 關著時才有意義）：同樣找出錨點（初始化裡的可靠 SfM 點），但不保護、不還原，
     只在 sfm 報告裡印它們的下場——被 trim 剪掉、被合併刪掉、被搬家／補洞挪走、還活著的位移與透明度。訓練行為不變。"""
@@ -1132,8 +1134,6 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                     raise ValueError(f"densify_until_iter（{c.densify_until_iter}）要 <= round2_from（{c.round2_from}）：第一輪的增生要在 S1 前結束")
                 if not bool(getattr(c, "round2_free", False)):
                     pl_module.on_train_batch_end_hooks.append(self._r2_plane_hold)   # 排在雜訊之後 => 雜訊的法向分量也投影掉
-            if float(getattr(self.config, "sh_narrow_kappa", 0.0) or 0.0) > 0:
-                pl_module.on_train_batch_end_hooks.append(self._sh_narrow_step)     # optimizer step 之後收縮
             if str(getattr(self.config, "sea_layer_file", "") or ""):
                 if not str(getattr(self.config, "sea_layer_obj", "") or ""):
                     raise ValueError("sea_layer_file 要搭配 sea_layer_obj（海面物件 npz）")
@@ -1145,6 +1145,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
         self._ip_step = global_step                     # relocate_gs／add_new_gs 的平面錯開要用（漸增係數）
+        if float(getattr(self.config, "sh_narrow_kappa", 0.0) or 0.0) > 0 and global_step % max(1, int(getattr(self.config, "sh_narrow_every", 4) or 1)) == 0:
+            self._sh_narrow_step(outputs, batch, gaussian_model, global_step, pl_module)   # optimizer step 之前（梯度已算好）收縮
         if (str(getattr(self.config, "sea_layer_file", "") or "") or bool(getattr(self.config, "sea_noparent", False))
                 or float(getattr(self.config, "sea_floater_h", -1.0) or -1.0) > 0) \
                 and not getattr(self, "_sea_ready", False):
@@ -1921,27 +1923,31 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         cam = batch[0]
         X = g["means"].detach()
         N = X.shape[0]; dev = X.device
+        vf = outputs.get("visibility_filter") if isinstance(outputs, dict) else None
+        if vf is None or vf.shape[0] != N:
+            if not getattr(self, "_shn_warned", False):
+                self._shn_warned = True
+                print("⚠⚠ [sh-narrow] 拿不到 visibility_filter（或長度不符）=> 這一步不做", flush=True)
+            return
         S = getattr(self, "_shn_s", None); K = getattr(self, "_shn_k", None)
         if S is None or S.shape[0] != N or S.dim() != 2:
             S = torch.zeros(N, 3, device=dev); self._shn_s = S
         if K is None or K.shape[0] != N:
             K = torch.zeros(N, device=dev); self._shn_k = K
+        ev = max(1, int(getattr(c, "sh_narrow_every", 4) or 1))
         with torch.no_grad():
-            p = torch.cat([X.float(), torch.ones_like(X[:, :1], dtype=torch.float32)], 1) @ cam.world_to_camera.float()
-            zc = p[:, 2]
-            u = float(cam.fx) * p[:, 0] / zc.clamp_min(1e-6) + float(cam.cx)
-            v = float(cam.fy) * p[:, 1] / zc.clamp_min(1e-6) + float(cam.cy)
-            vis = (zc > 1e-3) & (u >= 0) & (u < float(cam.width)) & (v >= 0) & (v < float(cam.height))
-            gm = float(c.sh_narrow_decay)
+            visf = vf.reshape(-1).float()
+            gm = float(c.sh_narrow_decay) ** ev
             S.mul_(gm); K.mul_(gm)
             d = cam.camera_center.to(dev).float()[None] - X.float()
-            d = d / d.norm(dim=-1, keepdim=True).clamp_min(1e-9)
-            S.add_(d * vis[:, None].float()); K.add_(vis.float())
+            d = d * (visf / d.norm(dim=-1).clamp_min(1e-9))[:, None]
+            S.add_(d); K.add_(visf)
             R = torch.where(K >= 2, S.norm(dim=-1) / K.clamp_min(1e-6), torch.ones_like(K)).clamp(0, 1)
             r0 = float(c.sh_narrow_r0)
-            w = ((R - r0) / max(1 - r0, 1e-6)).clamp(0, 1) * vis.float()
+            w = ((R - r0) / max(1 - r0, 1e-6)).clamp(0, 1) * visf
             rest = g["shs_rest"]
-            rest.mul_((1 - float(c.sh_narrow_kappa) * w).to(rest.dtype).view(-1, *([1] * (rest.dim() - 1))))
+            rest.mul_(((1 - float(c.sh_narrow_kappa) * w) ** ev).to(rest.dtype).view(-1, *([1] * (rest.dim() - 1))))
+            vis = visf > 0
         first = not getattr(self, "_shn_announced", False)
         if first or global_step % 2000 == 0:
             self._shn_announced = True
