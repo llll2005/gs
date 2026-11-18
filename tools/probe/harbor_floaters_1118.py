@@ -42,6 +42,10 @@ for f in a.ckpt:
             mm = (hu >= hb[a_]) & (hu < hb[a_ + 1]) & (du >= db[b_]) & (du < db[b_ + 1])
             row.append(f"{int(mm.sum()):>6,}／{area[mm].sum() / 1e3:>6.1f}k")
         print(f"   {hb[a_]:g}～{hb[a_ + 1]:g}".ljust(14) + "  ".join(row) if hb[a_ + 1] < 1e8 else f"   >{hb[a_]:g}".ljust(14) + "  ".join(row))
+    bel = free & (h < -0.5 * g) & insea(P)                  # ★ 11-18 水面下（v6 viewer 的暗色楔形）
+    ab = o[bel] * 2 * np.pi * s[bel, 0] * s[bel, 1] * 1e4
+    lab_ = s[bel].max(1) > 5 * 0.01
+    print(f"   水面下 > 0.5 g 的自由不透明顆粒 {int(bel.sum()):,}（Σo·面積 {ab.sum() / 1e3:,.1f}k m²）｜其中長軸 > 5 m 的 {int(lab_.sum()):,}（{ab[lab_].sum() / 1e3:,.1f}k m²）", flush=True)
     caught = (hu > 10) & (du > 10)
     print(f"   浮塊收回會收的（h > 10 g 且離 SfM > 10 g）：{int(caught.sum()):,}｜殘留（其他）：{int((~caught).sum()):,}（Σo·面積 {area[~caught].sum() / 1e3:,.1f}k m²）", flush=True)
     R = m[on][~caught]

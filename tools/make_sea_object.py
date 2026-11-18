@@ -82,7 +82,12 @@ def main():
     ap.add_argument("--water_bodies", default="")
     ap.add_argument("--gap", action="store_true")
     ap.add_argument("--far_fill_auto", action="store_true")
-    ap.add_argument("--fill_nb_k", type=int, default=8)   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
+    ap.add_argument("--fill_nb_k", type=int, default=8)
+    # ★ 11-18 v7（使用者 viewer：v6 外推區「跟原本的海根本是不同的東西」=> 選①紋理取樣）：
+    #   --far_fill_uniform：外推磚一律用第 0 層（跟觀測海面同一個邊長；四叉樹只用來找沒被看到的範圍），不再越遠越大
+    #   --fill_sample：每顆外推磚固定抄本塊一顆隨機的觀測海面磚（第 0 層、非固定）的顏色 => 統計上跟觀測海面同一種紋理（花紋是抽樣的，不是重建）
+    ap.add_argument("--far_fill_uniform", action="store_true")
+    ap.add_argument("--fill_sample", action="store_true")   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
     from internal.utils.colmap import read_cameras_binary, read_images_binary, qvec2rotmat
@@ -407,7 +412,7 @@ def main():
                 obs = observed(Pw.reshape(-1, 3)).reshape(-1, 5)
                 d3, _ = tr3.query(Pw[:, 0]); hh = np.maximum(np.abs(Cc[tr3.query(Pw[:, 0])[1]] @ n1 - c1), 1e-9)
                 fpx = d3 / FXT / np.sqrt(np.clip(hh / np.maximum(d3, 1e-9), 1e-3, 1.0))
-                small = gL <= a.far_fill_P * fpx
+                small = (gL <= a.far_fill_P * fpx) if not a.far_fill_uniform else np.full(len(I), L == 0)
                 cov = np.zeros(len(I))
                 kk_ = I * 1000003 + J
                 for gl, kl in acc_all:
@@ -449,7 +454,14 @@ def main():
             extra = dict(tile_g=np.concatenate([np.full(n0t, g)] + far_g + fill_g), n_tiles0=n0t, far_L=np.array(sorted(FAR), np.int64),
                          tile_frozen=np.concatenate([np.zeros(n0t + nfar, bool), np.ones(n_fill, bool)]), n_fill=n_fill,
                          **{f"far_keys_{L}": FAR[L] for L in FAR})
-            if n_fill and a.fill_nb_k > 0:                     # v6：外推磚的外觀沿用最近的 k 顆非固定海面磚（同一塊＝同一水體的平面）
+            if n_fill and a.fill_sample:                       # v7：每顆外推磚固定抄一顆隨機的第 0 層觀測海面磚（起點顏色也抄它的）
+                rs_ = np.random.default_rng(b)
+                src = rs_.integers(0, n0t, size=n_fill).astype(np.int64)
+                extra["fill_src"] = src
+                col[n0t + nfar:] = col[src]
+                fi_, fj_ = cell_of(tiles[n0t + nfar:], g)
+                extra["fill_keys"] = np.sort(fi_ * 1000003 + fj_) if a.far_fill_uniform else np.zeros(0, np.int64)
+            if n_fill and a.fill_nb_k > 0 and not a.fill_sample:   # v6：外推磚的外觀沿用最近的 k 顆非固定海面磚（同一塊＝同一水體的平面）
                 from scipy.spatial import cKDTree
                 nf_ = n0t + nfar; trn = cKDTree(tiles[:nf_, :2]); _, nbi = trn.query(tiles[nf_:, :2], k=min(a.fill_nb_k, nf_))
                 extra["fill_nb"] = np.asarray(nbi, np.int64).reshape(n_fill, -1)

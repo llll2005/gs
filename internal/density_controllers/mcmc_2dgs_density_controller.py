@@ -617,6 +617,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     增生後在 harvest_prune_dead 的節奏直接刪。鋪磚邊長＝海面物件的 g（最近可見訓練相機 16 px 的足跡），不是場景公尺。
     依據：S1 b1 那顆 123 m 高、9x6 m、離 SfM 173 m；海面上限只罰平面後面，上方沒有東西推它。要 sea_layer_obj。"""
     sea_floater_sfm: float = 10.0
+    sea_fill_scale: float = 1.0
+    """★ 11-18 v7：外推海面磚的尺度＝這個倍數 x 格邊長（固定）。觀測海面磚學到的尺度約 0.73～1.1 格 => v7 用 0.9。"""
+    sea_floater_below: float = -1.0
+    """★ 11-18 v7（使用者 viewer：暗色楔形）：海面格（含外推區）下方、低於平面 > 這個倍數 x 格邊長、離可靠 SfM > sea_floater_sfm 格的自由顆粒也收回
+    （b3 v6：長 > 5 m 的平躺顆粒 58% 在水面下、暗色大顆 75% 在水面下 2～9 m，從磚縫透出來）。-1＝關。要 sea_floater_h > 0（同一個收回流程）。"""
     sh_narrow_kappa: float = 0.0
     """★ 11-18（使用者「讓它可以猜資訊不足的部分」③）：看到的角度範圍窄的顆粒，高階 SH（視角相關顏色）往 0 收。
     每步對畫面內的顆粒累加「顆粒 -> 相機」單位向量 S 與次數 K（指數衰減 sh_narrow_decay；跟著 _PER_PARTICLE 剪／補／排序），
@@ -1875,6 +1880,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         self._sea_frz = torch.tensor(ob["tile_frozen"], dtype=torch.bool, device=dev) if "tile_frozen" in ob.files and bool(ob["tile_frozen"].any()) else None
         # ★ 11-18 v6：外推磚的外觀（SH）沿用最近 k 顆非固定海面磚的平均（make_sea_object 的 fill_nb；每 8 步更新）
         self._sea_fnb = torch.tensor(ob["fill_nb"], dtype=torch.long, device=dev) if "fill_nb" in ob.files and self._sea_frz is not None else None
+        # ★ 11-18 v7：外推磚固定抄一顆隨機觀測磚的顏色（DC；高階 SH 歸 0）；外推格也算海面格（浮塊收回用）
+        self._sea_fsrc = torch.tensor(ob["fill_src"], dtype=torch.long, device=dev) if "fill_src" in ob.files and self._sea_frz is not None else None
+        if "fill_keys" in ob.files and len(ob["fill_keys"]):
+            self._sea_far = list(self._sea_far) + [(self._sea_g, torch.tensor(np.sort(ob["fill_keys"]), dtype=torch.long, device=dev))]
         self._sea_ntile = int(ob["tiles"].shape[0]) if "tiles" in ob.files else 0
         f = str(getattr(c, "sea_layer_file", "") or "")
         if not f:
@@ -1959,7 +1968,7 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             fz = getattr(self, "_sea_frz", None)
             fsel = sel[fz[t[sel]]] if fz is not None else None
             t2r = None
-            if getattr(self, "_sea_fnb", None) is not None:          # 鋪磚序號 -> 模型列（被刪的磚＝-1）
+            if getattr(self, "_sea_fnb", None) is not None or getattr(self, "_sea_fsrc", None) is not None:   # 鋪磚序號 -> 模型列（被刪的磚＝-1）
                 t2r = torch.full((max(self._sea_ntile, int(t.max()) + 1),), -1, dtype=torch.long, device=t.device); t2r[t[sel]] = sel
             self._sea_sel_ck = (t, t._version, sel, fsel, t2r)
         if sel.numel() == 0:
@@ -1990,9 +1999,17 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             if report:
                 at_lo = (sc <= lo).float().mean(); at_hi = (sc >= hi).float().mean()
             g["scales"][sel] = sc.clamp(lo, hi) if tg is None else torch.minimum(torch.maximum(sc, lo), hi)
-            if fsel is not None and fsel.numel():               # 外推海面磚：尺度＝格邊長、不透明度 0.995（固定）
-                g["scales"][fsel] = torch.log(tg[t[fsel]]).to(g["scales"].dtype)[:, None].expand(-1, g["scales"].shape[1])
+            if fsel is not None and fsel.numel():               # 外推海面磚：尺度＝sea_fill_scale x 格邊長、不透明度 0.995（固定）
+                g["scales"][fsel] = torch.log(tg[t[fsel]] * float(getattr(c, "sea_fill_scale", 1.0) or 1.0)).to(g["scales"].dtype)[:, None].expand(-1, g["scales"].shape[1])
                 g["opacities"][fsel] = math.log(0.995 / 0.005)
+                fsrc = getattr(self, "_sea_fsrc", None)
+                if fsrc is not None and t2r is not None and global_step % 8 == 0:
+                    nf0 = self._sea_ntile - fsrc.shape[0]
+                    frows = t2r[nf0 + torch.arange(fsrc.shape[0], device=fsrc.device)]; rsrc = t2r[fsrc]; okm = (frows >= 0) & (rsrc >= 0)
+                    if "shs_dc" in g:
+                        g["shs_dc"][frows[okm]] = g["shs_dc"][rsrc[okm]]
+                    if "shs_rest" in g:
+                        g["shs_rest"][frows[okm]] = 0
                 fnb = getattr(self, "_sea_fnb", None)
                 if fnb is not None and t2r is not None and global_step % 8 == 0:
                     nf0 = self._sea_ntile - fnb.shape[0]
@@ -2040,6 +2057,9 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         X = gaussian_model.gaussians["means"].detach(); N = X.shape[0]
         n = self._sea_n; d = X.float() @ n - self._sea_c
         cand = d > kh * self._sea_g
+        kb = float(getattr(self.config, "sea_floater_below", -1.0) or -1.0)
+        if kb > 0:                                              # v7：水面下的也收
+            cand = cand | (d < -kb * self._sea_g)
         sm = self._sea_all(N)
         if sm is not None:
             cand = cand & ~sm
