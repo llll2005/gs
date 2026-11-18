@@ -24,6 +24,7 @@ ap.add_argument("--block", type=int, required=True); ap.add_argument("--models",
 ap.add_argument("--gt", default="data/geometry_gt/MC_Aerial/Block_all_ds.ply")
 ap.add_argument("--R_m", type=float, default=8.0); ap.add_argument("--cell_m", type=float, default=6.0); ap.add_argument("--top", type=int, default=12)
 ap.add_argument("--occl", action="store_true"); ap.add_argument("--occl_n", type=int, default=60)
+ap.add_argument("--write_clean_init", default="", help="★ 診斷用（用 GT，不是方法）：第一個 --init 拿掉凹槽空氣裡（兩面牆前方 > 0.5 m、離內凹轉角 <= R）的點，寫到這個 PLY（其他欄位照抄）")
 a = ap.parse_args()
 D = "data/matrix_city/aerial/train/block_all"; B = a.block; M = 100.0
 p = torch.load(f"{D}/partition/partitions-dim_4_4_visibility_0.08/partitions.pt", map_location="cpu", weights_only=False)
@@ -128,6 +129,14 @@ for spec in a.init:
     dc, kc = ctree.query(X); xi = ci[kc]; yi = jn[xi]
     d1 = ((X - fx_[xi]) * fn_[xi]).sum(1) * M; d2 = ((X - fx_[yi]) * fn_[yi]).sum(1) * M
     inair0 = (dc <= a.R_m / M) & (d1 > 0.5) & (d2 > 0.5); near0 = dc <= a.R_m / M
+    if a.write_clean_init and spec == a.init[0]:
+        from plyfile import PlyData, PlyElement
+        pd_ = PlyData.read(f); vv_ = pd_["vertex"].data
+        Xall = np.stack([vv_["x"], vv_["y"], vv_["z"]], 1).astype(np.float64)
+        ib = inblk(Xall); drop = np.zeros(len(Xall), bool); drop[np.where(ib)[0][inair0]] = True
+        os.makedirs(os.path.dirname(os.path.abspath(a.write_clean_init)), exist_ok=True)
+        PlyData([PlyElement.describe(vv_[~drop], "vertex")], text=False).write(a.write_clean_init)
+        print(f"[診斷起點] {a.write_clean_init}：拿掉凹槽空氣裡的 {int(drop.sum()):,} 點（{len(Xall):,} => {int((~drop).sum()):,}；用 GT，只供診斷）", flush=True)
     print(f"[起點] {labn}：1 m 內有點 凹槽牆面 {r['凹槽牆面'][0]:.1f}%｜平牆 {r['平牆'][0]:.1f}%｜凹槽附近（離內凹轉角 <= {a.R_m:g} m）的點 {int(near0.sum()):,}，"
           f"其中在凹槽空氣裡（兩面牆前方 > 0.5 m）{int(inair0.sum()):,}（{100 * inair0.sum() / max(near0.sum(), 1):.1f}%）", flush=True)
 for spec in a.models:
