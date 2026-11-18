@@ -87,6 +87,10 @@ def main():
     #   --far_fill_uniform：外推磚一律用第 0 層（跟觀測海面同一個邊長；四叉樹只用來找沒被看到的範圍），不再越遠越大
     #   --fill_sample：每顆外推磚固定抄本塊一顆隨機的觀測海面磚（第 0 層、非固定）的顏色 => 統計上跟觀測海面同一種紋理（花紋是抽樣的，不是重建）
     ap.add_argument("--far_fill_uniform", action="store_true")
+    # ★ 11-18 α（使用者同意不外推；交界空洞帶＝低空 45° 訓練鏡頭斜看到、但顏色變亮變霧 => 「像海」判準判成不像海 => 反證 => 沒鋪磚、黑洞）：
+    #   --gap2：第 0 層長格改成不看顏色：有被看到（任何一張的射線打到）、格內沒有 SfM 結構、沒有可靠深度在平面前面（上面有東西）或後面、和海面相連 => 收（照常訓練）。
+    #   顏色判準只當參考不當反證。遠海各層同理（有被看到、沒有前面／後面的可靠深度、沒有 SfM 結構）。
+    ap.add_argument("--gap2", action="store_true")
     ap.add_argument("--fill_sample", action="store_true")   # 11-17 使用者同意改用 abstain（前提三種規則對照後）
     a = ap.parse_args()
     import torch
@@ -227,6 +231,7 @@ def main():
         # 第二遍：投票
         YES, NO, CK, CC = [], [], [], []
         LK, UL, FR, GK, GC = [], [], [], [], []           # --grow：像海／不像海／前面有東西 的票、像海像素的顏色
+        OBS = []                                           # --gap2：每張影像有射線打到的格（被看到）
         FY = {L: [] for L in range(1, a.far_levels + 1)}; FN = {L: [] for L in range(1, a.far_levels + 1)}   # --far_levels：各層贊成／反對（每張每格一票）
         FCK = {L: [] for L in range(1, a.far_levels + 1)}; FCC = {L: [] for L in range(1, a.far_levels + 1)}
         FLK = {L: [] for L in range(1, a.far_levels + 1)}; FAG = {L: [] for L in range(1, a.far_levels + 1)}   # --gap：遠海各層的像海票／反證票（不像海、前面有東西、後面）
@@ -261,6 +266,11 @@ def main():
                 if len(lk_):
                     sl_ = np.nonzero(like)[0][li_]; GK.append(lk_); GC.append(img[vv[sl_], uu[sl_]])
             yk_, yi_ = np.unique(key[ok & ks], return_index=True); YES.append(yk_); NO.append(np.unique(key[ok & no]))
+            if a.gap2:
+                OBS.append(np.unique(key[ok]))
+                if front is None:                          # 這張沒進顏色判準（海面像素太少）=> 前面有東西的票照樣要記
+                    front = rel_ok[vv, uu] & (zt < z * (1 - a.margin))
+                    FR.append(np.unique(key[ok & ~ks & front]))
             if img is not None and len(yk_):
                 sel_ = np.nonzero(ok & ks)[0][yi_]; CK.append(yk_); CC.append(img[vv[sel_], uu[sel_]])
             if a.far_levels > 0:
@@ -292,6 +302,10 @@ def main():
             hs = SFM_REL @ n1 - c1; si, sj = cell_of(SFM_REL - np.outer(hs, n1), g)
             struct = set((si[hs > g / 2] * 1000003 + sj[hs > g / 2]).tolist())
             ok_cell = {k_ for k_, v_ in cL.items() if v_ >= a.min_yes and v_ > cU.get(k_, 0) + cF.get(k_, 0) + cN.get(k_, 0) and k_ not in struct}
+            if a.gap2:                                         # α：不看顏色：有被看到、沒有前面／後面的可靠深度、沒有 SfM 結構
+                cO = cnt(OBS); n_ok0 = len(ok_cell)
+                ok_cell |= {k_ for k_ in cO if cF.get(k_, 0) + cN.get(k_, 0) == 0 and k_ not in struct}
+                print(f"b{b}｜--gap2：第 0 層可長格 {n_ok0:,} => {len(ok_cell):,}（被看到的格 {len(cO):,}）", flush=True)
             if a.gap:                                          # v6：有像海票、完全沒有反證的格也可以長（太斜看、票很少的那一圈）
                 n_ok0 = len(ok_cell)
                 ok_cell |= {k_ for k_, v_ in cL.items() if v_ >= 1 and cU.get(k_, 0) + cF.get(k_, 0) + cN.get(k_, 0) == 0 and k_ not in struct}
