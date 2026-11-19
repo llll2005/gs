@@ -23,8 +23,9 @@ OURS=outputs/lab/full44_best/checkpoints/merged.ckpt
 OFF=../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/checkpoints/epoch=6-step=30000.ckpt
 # ★ 11-13 使用者「CityGS full blk merge 的 F1 跟各項數據，沒有就補量」：ours_a＝A＋dist4 全場景合併模型（相機照舊取 full44 那份，與 CityGS 同一組）
 OURS_A=outputs/lab/g44s30ksfm10fssh16di4_best1maskdistrfed10b4/checkpoints/merged.ckpt
-ck_of () { case "$1" in ours) echo "$OURS" ;; ours_a) echo "$OURS_A" ;; official) echo "$OFF" ;; *) echo "" ;; esac; }
-MODE=$1; NAME=${2:-}; DIRN="$NAME${STRIDE:+_s$STRIDE}"
+# ★ 11-19 其他名稱＝outputs/lab/<名稱>/checkpoints/merged.ckpt（任何全場景跑次；例 g44tn_…nodo_best1maskdistrfed10b4），輸出資料夾用 GEOM_LABEL（預設＝名稱）
+ck_of () { case "$1" in ours) echo "$OURS" ;; ours_a) echo "$OURS_A" ;; official) echo "$OFF" ;; *) [ -f "outputs/lab/$1/checkpoints/merged.ckpt" ] && echo "outputs/lab/$1/checkpoints/merged.ckpt" || echo "" ;; esac; }
+MODE=$1; NAME=${2:-}; DIRN="${GEOM_LABEL:-$NAME}${STRIDE:+_s$STRIDE}"
 case "$MODE" in
   prep)
     [ -f "$GT/Block_all_ds.ply" ] && { echo "✅ GT 已在 $GT"; exit 0; }

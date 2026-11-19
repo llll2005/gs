@@ -140,6 +140,7 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   #   C 改讀預先縮好的影像 input_r1.2（tools/make_resized_images.py；與現縮逐位元相同；沒有就照舊現縮）
   #   不產生 log：不開 TensorBoard／lightning_logs、不跑 audit／config diff／圖表資料包；
   #   保留：run 台帳一行（logs/quad_progress.log）、<輸出>/run_summary.json（時間拆解、顆數、VRAM 峰值；task_total_s 由這裡補）
+  # ★ 11-19 CITYGS_SEED＝訓練亂數種子（Lightning seed_everything，預設 42）；種子重跑用（跑次名用 CITYGS_RUN_NAME 區分）
   local demo=()
   if [ "${CITYGS_DEMO:-0}" = 1 ]; then
     export CITYGS_SFM_FAST=1
@@ -175,7 +176,7 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config "$CFG" \
     --data.parser.block_id "$blk" \
-    -n "$name" "${resume[@]}" "$@" "${demo[@]}"
+    -n "$name" "${resume[@]}" "$@" "${demo[@]}" ${CITYGS_SEED:+--seed_everything "$CITYGS_SEED"}
   local rc=$?
   [ "$rc" -ne 0 ] && { echo "❌ $name block $blk 失敗 rc=$rc"; return "$rc"; }
   echo "=== $name / block $blk 完成 $(date) ==="
