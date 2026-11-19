@@ -119,11 +119,12 @@ def parse_byblock(path):
 
 
 def plot_pipe(prep_tsv, byblock, merge_s, test_s, out):
-    prep = []
+    prep = {}   # 同一步重跑過（PREP_ONLY）取最後一次、且只取成功的（rc=0）；依步驟編號排序
     for ln in open(prep_tsv, encoding="utf-8"):
         p = ln.rstrip("\n").split("\t")
-        if len(p) >= 2 and p[1].isdigit():
-            prep.append((re.sub(r"^\d+\s*", "", p[0]), int(p[1])))
+        if len(p) >= 3 and p[1].isdigit() and p[2] == "0":
+            k = int(p[0].split()[0]); prep[k] = (re.sub(r"^\d+\s*", "", p[0]), int(p[1]))
+    prep = [prep[k] for k in sorted(prep)]
     bb = parse_byblock(byblock)
     stages = [(f"準備：{n}", s, 0) for n, s in prep]
     stages += [("訓練：啟動（16 塊合計）", bb["startup"], 1), ("訓練：純訓練（16 塊合計）", bb["train"], 1),
@@ -136,9 +137,12 @@ def plot_pipe(prep_tsv, byblock, merge_s, test_s, out):
     for g in (0, 1, 2):
         v = sum(s for _, s, gg in stages if gg == g)
         a1.barh(0, v / 3600, left=x, height=0.6, color=grp[g][1], edgecolor=SURF, linewidth=2)
-        a1.text(x + v / 7200, 0, f"{grp[g][0]}\n{v / 3600:.2f} h（{100 * v / tot:.0f}%）", ha="center", va="center", fontsize=9, color=INK)
+        if v / tot >= 0.08:
+            a1.text(x + v / 7200, 0, f"{grp[g][0]}\n{v / 3600:.2f} h（{100 * v / tot:.0f}%）", ha="center", va="center", fontsize=9, color=INK)
+        else:   # 太窄的段：標在條的右邊
+            a1.text(x + v / 3600 + tot / 3600 * 0.01, 0, f"{grp[g][0]} {v / 60:.0f} 分", ha="left", va="center", fontsize=9, color=INK)
         x += v / 3600
-    a1.set_yticks([]); a1.set_xlim(0, tot / 3600); a1.grid(axis="y", visible=False)
+    a1.set_yticks([]); a1.set_xlim(0, tot / 3600 * 1.12); a1.grid(axis="y", visible=False)
     a1.set_title(f"(a) 從原始影像到可用模型：合計 {tot / 3600:.2f} h（不含評測）", loc="left", fontsize=11.5, color=INK)
     a1.set_xlabel("小時", fontsize=9, color=INK2)
     # (b) 每一階段
