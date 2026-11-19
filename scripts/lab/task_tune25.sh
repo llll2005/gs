@@ -187,11 +187,11 @@ for t in "${XT[@]:-}"; do
     c[0-9]*) CAPAVG=$(( ${t#c} * 100000 )) ;;
     # ★ 11-18 凹槽研究（診斷用）：tl<k>＝每 k x 1000 步存中間檔（時間軸）；denseor＝稠密起點拿掉凹槽空氣裡的點（用 GT 判，只供診斷；sfmfill_tri44orec_crop，tools/probe/recess_1118.py --write_clean_init）
     tl[0-9]*) _st=$(( ${t#tl} * 1000 )); export CITYGS_SAVE_ITERS="[$(seq -s, $_st $_st $(( ST - 1 )))]" ;;
-    denseor) [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44orec_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+    denseor) [ -f "$CDATA/sfmfill_tri44orec_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44orec_crop/dup1/block_$B.ply（tools/probe/recess_1118.py --write_clean_init）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44orec_crop); CITYGS_DUP44=1 ;;
     # ★ 11-18 nprn<k>＝少視角處加強幾何先驗：觀看方向集中（窄角度）的面元，逐顆法向拉向投影中心的單目法向（權重 0.0125 x k；只算貼表面的）；自動開 sh_narrow_track
-    nprn[0-9]*) _NP=data/matrix_city/aerial/train/block_all/normal_prior_mono
+    nprn[0-9]*) _NP=$CDATA/normal_prior_mono
             [ -d "$_NP" ] || [ "${CITYGS_DRY:-0}" = 1 ] || { echo "⛔ 缺 $_NP（tools/make_mono_normals.py --blocks $B）"; exit 2; }
             XA+=(--model.metric.init_args.normal_prior_narrow_reg "$(awk -v k="${t#nprn}" 'BEGIN{printf "%g", 0.0125 * k}')" --model.metric.init_args.normal_prior_dir "$_NP"
                  --model.density.init_args.sh_narrow_track true) ;;
@@ -211,7 +211,7 @@ for t in "${XT[@]:-}"; do
     #   pcs／pcsf＝深度上限補到平面外推深度的像素（海面／海面＋立面）；需要 tricap 開著（上限本身）
     # ★ 11-17 densepl2＝v2：陸地照原本稠密起點的密度，平面點另外用自己的名額與體素邊長（v1 平面佔掉名額、陸地變稀 => 地下 +0.2～0.5 層）
     densepl2) [[ " ${XT[*]} " =~ \ (dense|densenf|densepl)\  ]] && { echo "⛔ densepl2 不能和其他 dense* 起點一起寫"; exit 2; }
-            [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44pl2_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+            [ -f "$CDATA/sfmfill_tri44pl2_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44pl2_crop/dup1/block_$B.ply（tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --plane_sep --out sfmfill_tri44pl2_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44pl2_crop); CITYGS_DUP44=1 ;;
     # ★ 11-17 晚 拆解平面 v2 的陸地地下層變多（使用者「兩個都做」）：從新底 6 的稠密起點一次只改一項
@@ -224,8 +224,8 @@ for t in "${XT[@]:-}"; do
             case "$t" in densedo) _CD=sfmfill_tri44do_crop; _GA="--drop_outliers" ;; densedf) _CD=sfmfill_tri44df_crop; _GA="--drop_fill" ;;
                          densepl2nd) _CD=sfmfill_tri44pl2nd_crop; _GA="--drop_fill --plane_dir estimated_depths_plane --plane_sep" ;;
                          denserg) _CD=sfmfill_tri44chk_crop; _GA="" ;; esac   # 拆解的對照：現行程式不帶旗標重產（b4 與 11-10 原檔 37% 逐點相同、其餘差 2～5 mm、點數 −0.15%）
-            [ -f "data/matrix_city/aerial/train/block_all/$_CD/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
-              || { echo "⛔ 缺 $_CD/dup1/block_$B.ply（tools/make_tri_dense_init.py data/matrix_city/aerial/train/block_all --blocks $B $_GA --out $_CD）"; exit 2; }
+            [ -f "$CDATA/$_CD/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+              || { echo "⛔ 缺 $_CD/dup1/block_$B.ply（tools/make_tri_dense_init.py $CDATA --blocks $B $_GA --out $_CD）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=$_CD); CITYGS_DUP44=1 ;;
     # ★ 11-17 規格 6（海面物件）：sea3d＝起點用 sfmfill_tri44sea_crop（陸地＝v2、平面點只留立面、海面＝每個海面格一顆鋪磚）＋錨定的海面層，
     #   cap 另外加上鋪磚顆數（海面層有自己的名額）；seaback＝上限改用海面物件的寬遮罩與共識平面；seafront＝窄遮罩上罰比平面淺；seanop＝海面格上離開平面的不當母點
@@ -239,7 +239,7 @@ for t in "${XT[@]:-}"; do
     # ★ 11-18 v9：v8＋--gap3（海面上「可靠深度在平面後面」不當反證：港口煙團那幾格被錯深度擋掉；sea_object_v9、sfmfill_tri44sea9_crop）
     sea3d|sea3dg|sea3dh|sea3df|sea3dx|sea3dw|sea3dv|sea3du|sea3dt)  case "$t" in sea3dt) _SOD=sea_object_v9; _SID=sfmfill_tri44sea9_crop ;; sea3du) _SOD=sea_object_v8; _SID=sfmfill_tri44sea8_crop ;; sea3dv) _SOD=sea_object_v7; _SID=sfmfill_tri44sea7_crop; XA+=(--model.density.init_args.sea_fill_scale 0.9) ;; sea3dg) _SOD=sea_object_v2; _SID=sfmfill_tri44sea2_crop ;; sea3dh) _SOD=sea_object_v3; _SID=sfmfill_tri44sea3_crop ;; sea3df) _SOD=sea_object_v4; _SID=sfmfill_tri44sea4_crop ;; sea3dx) _SOD=sea_object_v5; _SID=sfmfill_tri44sea5_crop ;; sea3dw) _SOD=sea_object_v6; _SID=sfmfill_tri44sea6_crop ;; *) _SOD=sea_object; _SID=sfmfill_tri44sea_crop ;; esac
             [[ " ${XT[*]} " =~ \ nodo\  ]] && _SID=${_SID%_crop}nd_crop      # ★ 11-19 不去下方離群的海面起點
-            _SO=data/matrix_city/aerial/train/block_all/$_SOD; _SI=data/matrix_city/aerial/train/block_all/$_SID/dup1
+            _SO=$CDATA/$_SOD; _SI=$CDATA/$_SID/dup1
             [[ " ${XT[*]} " =~ \ (dense|densenf|densepl|densepl2)\  ]] && { echo "⛔ sea3d 是自己的起點，不能和其他 dense* 一起寫"; exit 2; }
             [ "$(printf '%s\n' "${XT[@]}" | grep -c -E '^sea3d[ghfxwvut]?$')" -gt 1 ] && { echo "⛔ sea3d* 只能寫一個"; exit 2; }
             [ -f "$_SI/block_$B.ply" ] && [ -f "$_SI/block_${B}_sea.npy" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
@@ -258,8 +258,8 @@ for t in "${XT[@]:-}"; do
     seaback|seabackg|seabackh|seabackf|seabackx|seabackw|seabackv|seabacku|seabackt) case "$t" in seabackt) _SOD=sea_object_v9 ;; seabacku) _SOD=sea_object_v8 ;; seabackv) _SOD=sea_object_v7 ;; seabackg) _SOD=sea_object_v2 ;; seabackh) _SOD=sea_object_v3 ;; seabackf) _SOD=sea_object_v4 ;; seabackx) _SOD=sea_object_v5 ;; seabackw) _SOD=sea_object_v6 ;; *) _SOD=sea_object ;; esac
             [[ " ${XT[*]} " =~ \ (pcs|pcsf)\  ]] && { echo "⛔ seaback 取代 pcs／pcsf（同一個 depth_cap_plane_dir），不能一起寫"; exit 2; }
             [[ " ${XT[*]} " =~ \ tricap ]] || { echo "⛔ seaback 要和 tricap 一起開"; exit 2; }
-            if [ -d "data/matrix_city/aerial/train/block_all/$_SOD/cap_b$B" ]; then
-              XA+=(--model.metric.init_args.depth_cap_plane_dir data/matrix_city/aerial/train/block_all/$_SOD/cap_b$B --model.metric.init_args.depth_cap_plane_kinds sea)
+            if [ -d "$CDATA/$_SOD/cap_b$B" ]; then
+              XA+=(--model.metric.init_args.depth_cap_plane_dir $CDATA/$_SOD/cap_b$B --model.metric.init_args.depth_cap_plane_kinds sea)
             else echo "[seaback] b$B 沒有海面物件的上限目錄 => 不加海面上限"; fi ;;
     # ★ 11-17 規格 6 v2 B：海面格上方 > 10 格距、離可靠 SfM > 10 格距的顆粒，增生事件時搬走、增生後刪（要和 sea3d／sea3dg 一起；沒有海的塊不生效）
     # ★ 11-18 seafl2（要和 seafl 一起寫）：港口浮塊（probe harbor_floaters_1118：v5 b3 海面格上方 706 顆全在 10 格以下、多數離 SfM < 10 格 => seafl 一顆都收不到）=> 放寬到高於 2 格、離 SfM > 3 格
@@ -273,28 +273,28 @@ for t in "${XT[@]:-}"; do
     seaflbl) [[ " ${XT[*]} " =~ \ seaflb\  ]] || { echo "⛔ seaflbl 要和 seaflb 一起寫"; exit 2; }; XA+=(--model.density.init_args.sea_floater_below_anywhere true) ;;
     seafl)  [[ " ${XT[*]} " =~ \ (sea3d|sea3dg|sea3dh|sea3df|sea3dx|sea3dw|sea3dv|sea3du|sea3dt)\  ]] || { echo "⛔ seafl 要和 sea3d* 一起寫"; exit 2; }
             _SOD=sea_object; for _v in g:v2 h:v3 f:v4 x:v5 w:v6 v:v7 u:v8 t:v9; do [[ " ${XT[*]} " =~ \ sea3d${_v%%:*}\  ]] && _SOD=sea_object_${_v#*:}; done
-            [ -f "data/matrix_city/aerial/train/block_all/$_SOD/block_$B.npz" ] \
-              && XA+=(--model.density.init_args.sea_floater_h 10 --model.density.init_args.sea_floater_sfm 10 --model.density.init_args.sea_layer_obj data/matrix_city/aerial/train/block_all/$_SOD/block_$B.npz) \
+            [ -f "$CDATA/$_SOD/block_$B.npz" ] \
+              && XA+=(--model.density.init_args.sea_floater_h 10 --model.density.init_args.sea_floater_sfm 10 --model.density.init_args.sea_layer_obj $CDATA/$_SOD/block_$B.npz) \
               && { [[ " ${XT[*]} " =~ \ seafl2\  ]] && XA+=(--model.density.init_args.sea_floater_h 2 --model.density.init_args.sea_floater_sfm 3) || true; } \
               && { [[ " ${XT[*]} " =~ \ seafl3\  ]] && XA+=(--model.density.init_args.sea_floater_h 1 --model.density.init_args.sea_floater_sfm 1 --model.density.init_args.sea_floater_excl_water 1) || true; } \
               || echo "[seafl] b$B 沒有海面物件 => 不收回" ;;
-    seafront) XA+=(--model.metric.init_args.sea_front_reg 0.5 --model.metric.init_args.sea_front_margin 0.02 --model.metric.init_args.sea_front_dir data/matrix_city/aerial/train/block_all/sea_object/cap_b$B) ;;
-    seanop) XA+=(--model.density.init_args.sea_noparent true --model.density.init_args.sea_layer_obj data/matrix_city/aerial/train/block_all/sea_object/block_$B.npz) ;;
+    seafront) XA+=(--model.metric.init_args.sea_front_reg 0.5 --model.metric.init_args.sea_front_margin 0.02 --model.metric.init_args.sea_front_dir $CDATA/sea_object/cap_b$B) ;;
+    seanop) XA+=(--model.density.init_args.sea_noparent true --model.density.init_args.sea_layer_obj $CDATA/sea_object/block_$B.npz) ;;
     densepl) [[ " ${XT[*]} " =~ \ dense\  || " ${XT[*]} " =~ \ densenf\  ]] && { echo "⛔ densepl 與 dense／densenf 是不同起點，不能一起寫"; exit 2; }
-            [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44pl_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+            [ -f "$CDATA/sfmfill_tri44pl_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44pl_crop/dup1/block_$B.ply（tools/make_plane_depth.py --blocks $B；tools/make_tri_dense_init.py --blocks $B --drop_fill --plane_dir estimated_depths_plane --out sfmfill_tri44pl_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44pl_crop); CITYGS_DUP44=1 ;;
-    pcs|pcsf) _PD=data/matrix_city/aerial/train/block_all/estimated_depths_plane
+    pcs|pcsf) _PD=$CDATA/estimated_depths_plane
             [ -d "$_PD" ] || [ "${CITYGS_DRY:-0}" = 1 ] || { echo "⛔ 缺 $_PD（tools/make_plane_depth.py --blocks $B）"; exit 2; }
             [[ " ${XT[*]} " =~ \ tricap ]] || { echo "⛔ $t 要和 tricap（深度上限本身）一起開"; exit 2; }
             XA+=(--model.metric.init_args.depth_cap_plane_dir "$_PD" --model.metric.init_args.depth_cap_plane_kinds "$([ "$t" = pcs ] && echo sea || echo facade,sea)") ;;
     densenf) [[ " ${XT[*]} " =~ \ dense\  ]] && { echo "⛔ densenf 與 dense 是兩種起點，不能一起寫"; exit 2; }
-            [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44nf_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
+            [ -f "$CDATA/sfmfill_tri44nf_crop/dup1/block_$B.ply" ] || [ "${CITYGS_DRY:-0}" = 1 ] \
               || { echo "⛔ 缺 sfmfill_tri44nf_crop/dup1/block_$B.ply（tools/make_tri_dense_init.py --blocks $B --drop_fill --outside_hull --out sfmfill_tri44nf_crop）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44nf_crop); CITYGS_DUP44=1 ;;
     # ★ 11-16 單目法向先驗（Fable H3；使用者「都做」）：完整路徑步加 w(1−|cos(渲染法向, 單目法向)|)，w＝0.0125 x k（同法向一致性的尺度）；
     #   先驗＝tools/make_mono_normals.py（校正深度不可靠、局部平面、深度在本張 SfM 範圍內的立面像素）
-    npri*)  _NP=data/matrix_city/aerial/train/block_all/normal_prior_mono
+    npri*)  _NP=$CDATA/normal_prior_mono
             [ -d "$_NP" ] || [ "${CITYGS_DRY:-0}" = 1 ] || { echo "⛔ 缺 $_NP（tools/make_mono_normals.py --blocks $B）"; exit 2; }
             _k=${t#npri}; _k=${_k%d}
             XA+=(--model.metric.init_args.normal_prior_reg "$(awk -v k="$_k" 'BEGIN{printf "%g", 0.0125 * k}')" --model.metric.init_args.normal_prior_dir "$_NP")
@@ -321,7 +321,7 @@ for t in "${XT[@]:-}"; do
             [ "$t" = mvugrow ] && XA+=(--model.density.init_args.merge_vis_under_harvest false)
             [ "$t" = mvugnd ] && XA+=(--model.density.init_args.merge_vis_under_ground true) ;;
     tri|trihf|trist|trigate|tribh|hfd|tricap*)
-            _TD=data/matrix_city/aerial/train/block_all/estimated_depths_tri
+            _TD=$CDATA/estimated_depths_tri
             [ -d "$_TD" ] && [ -d "${_TD}_rel" ] || { echo "⛔ 缺 $_TD（先跑 tools/make_tri_depths.py）"; exit 2; }
             XA+=(--data.parser.depth_dir estimated_depths_tri --data.parser.depth_scale_name estimated_depth_scales_tri
                  --data.parser.depth_rel_dir estimated_depths_tri_rel)
@@ -346,10 +346,10 @@ for t in "${XT[@]:-}"; do
     vcb)    XA+=(--model.renderer.init_args.trim_behind_price 1) ;;
     sbp)    XA+=(--model.density.init_args.sample_behind_price 1) ;;
     bpf)    XA+=(--model.renderer.init_args.behind_price_flat 0.8 --model.density.init_args.behind_price_flat 0.8) ;;
-    dense)  [ -f "data/matrix_city/aerial/train/block_all/sfmfill_tri44_crop/dup1/block_$B.ply" ] || { echo "⛔ 缺稠密初始化（tools/make_tri_dense_init.py --blocks $B）"; exit 2; }
+    dense)  [ -f "$CDATA/sfmfill_tri44_crop/dup1/block_$B.ply" ] || { echo "⛔ 缺稠密初始化（tools/make_tri_dense_init.py --blocks $B）"; exit 2; }
             ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44_crop); CITYGS_DUP44=1 ;;
     sni)    XA+=(--model.density.init_args.sfm_normal_init true) ;;
-    trimask) [ -f "data/matrix_city/aerial/train/block_all/block_masks44_tri/block_$B/stats.json" ] || { echo "⛔ 缺校正深度遮罩 block_masks44_tri/block_$B"; exit 2; }
+    trimask) [ -f "$CDATA/block_masks44_tri/block_$B/stats.json" ] || { echo "⛔ 缺校正深度遮罩 block_masks44_tri/block_$B"; exit 2; }
             ENVX+=(CITYGS_MASK_DIR=block_masks44_tri) ;;
     r2)     S1=$((ST * R2S / 100)); D1=$((S1 * 6 / 10)); D1=$((D1 / 100 * 100)); U2=$((S1 + (ST - S1) / 2)); U2=$((U2 / 100 * 100))
             XA+=(--model.density.init_args.densify_until_iter $D1 --model.density.init_args.merge_until_iter $S1
@@ -421,7 +421,7 @@ for t in "${XT[@]:-}"; do
     sink*)  [[ " ${XT[*]} " =~ \ noev[0-9] ]] || { echo "⛔ sink 要和 noev<k> 一起用"; exit 2; }
             XA+=(--model.density.init_args.sfm_noup_sink_px "${t#sink}") ;;   # 權重乘 k 是 metric 自己做的（gs2d_metrics）；(step+1) % 8 與法向、深度上限同一步
     cmflat) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ cmflat 要和 tricap<W> 一起用（沒有上限就沒有遮罩可套）"; exit 2; }
-            _CM=data/matrix_city/aerial/train/block_all/cap_masks_flat
+            _CM=$CDATA/cap_masks_flat
             [ -f "$_CM/stats_block_$B.json" ] || { echo "⛔ 缺上限遮罩 $_CM/stats_block_$B.json（tools/make_cap_masks.py --kind flat --blocks $B）"; exit 2; }
             XA+=(--model.metric.init_args.depth_cap_mask_dir "$_CM") ;;
   esac

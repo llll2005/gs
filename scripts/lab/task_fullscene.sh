@@ -24,7 +24,7 @@ case "${1:-}" in -h|--help) exec bash "$(dirname "$0")/../_help.sh" "$0" ;; "") 
 set -u -o pipefail
 cd "$(dirname "$0")/../.." || exit 1
 MODE=$1; shift
-D=data/matrix_city/aerial/train/block_all
+D="${CITYGS_DATA:-data/matrix_city/aerial/train/block_all}"
 INIT=$D/sfmfill_sweep44
 PY="conda run -n gspl --no-capture-output python -u"
 ARM=${FULLSCENE_ARM:-best1run}

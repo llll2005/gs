@@ -75,7 +75,7 @@ shift 2
 GRID=${CITYGS_GRID:-55}
 G44=()
 if [ "$GRID" = 44 ]; then
-  _pf="data/matrix_city/aerial/train/block_all/partition/partitions-dim_4_4_visibility_0.08/$(printf '%03d_%03d' $((BLK % 4)) $((BLK / 4))).txt"
+  _pf="$CDATA/partition/partitions-dim_4_4_visibility_0.08/$(printf '%03d_%03d' $((BLK % 4)) $((BLK / 4))).txt"
   [ -f "$_pf" ] || { echo "⛔ 缺 4x4 分區檔 $_pf"; exit 2; }
   NCAM=$(grep -cv '^\s*$' "$_pf"); B0=0
   K44=$(awk -v b="$BLK" '$1==b{print $2}' logs/full44_init.tsv 2>/dev/null)
@@ -158,7 +158,7 @@ case "$CASEARM" in
                 bestmask|bestmaskdist100|bestmaskpt|bestmaskdistrf|bestmaskdistrfo|bestmaskdistrfne|bestmaskdistrfoe|bestmaskdistrfed|bestmaskdistrfed15|bestmaskdistrfed10b4)    [ "$GRID" = 44 ] || { echo "⛔ bestmask 只支援 4x4"; exit 2; }
                              # ★ 2026-11-09 CITYGS_MASK_DIR：換遮罩目錄（預設 block_masks44；接縫保留比例實驗用 block_masks44_r15＝m_in 0.15／m_c 0.30，
                              #   搭配 CITYGS_CROP_INIT=sfmfill_sweep44_crop_r30）
-                             _MD=data/matrix_city/aerial/train/block_all/${CITYGS_MASK_DIR:-block_masks44}/block_$BLK
+                             _MD=$CDATA/${CITYGS_MASK_DIR:-block_masks44}/block_$BLK
                              [ "${CITYGS_MASK_DIR:-block_masks44}" = block_masks44 ] || echo "[mask] ★ 換遮罩目錄：$_MD"
                              [ -f "$_MD/stats.json" ] || { echo "⛔ 缺遮罩 $_MD（先跑 tools/block_mask44.py --blocks $BLK）"; exit 2; }
                              # ★ 2026-10-24 CITYGS_CROP_INIT：換裁盒初始化目錄（預設 sfmfill_sweep44_crop；深度補點臂用 sfmfill_depth44_crop，
@@ -166,7 +166,7 @@ case "$CASEARM" in
                              _CI=${CITYGS_CROP_INIT:-sfmfill_sweep44_crop}
                              P="$_CI/dup$K44/block_${BLK}.ply"
                              [ "$_CI" = sfmfill_sweep44_crop ] || echo "[init] ★ 換裁盒初始化：$P"
-                             [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺裁盒初始化 $P（tools/block_mask44.py --crop_ply ${_CI%_crop}）"; exit 2; }
+                             [ -f "$CDATA/$P" ] || { echo "⛔ 缺裁盒初始化 $P（tools/block_mask44.py --crop_ply ${_CI%_crop}）"; exit 2; }
                              EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"
                                     --model.random_background true --model.metric.init_args.block_mask_dir "$_MD")
                              case "$CASEARM" in
@@ -222,14 +222,14 @@ case "$CASEARM" in
   #   問題：這個增益在**完整配方**（absgrad + noise + trim）下還在不在。
   #   ⚠ 走 points_from ply 而不是 initialize_from：後者連 scale 初始化也換掉，就不是單變數了。
   sfmfill)    P="sfmfill_init/block_${BLK}.ply"
-              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 sfmfill_init/block_${BLK}.ply"; exit 2; }
+              [ -f "$CDATA/$P" ] || { echo "⛔ 缺 sfmfill_init/block_${BLK}.ply"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
   # ★ init 第五臂（2026-09-29）：20k 零機制下 dup4 對 sfmfill +1.38/+1.28 dB，但分數幾乎完全跟著**起始顆數**
   #   （dup 只把同一批 SfM 點複製 4 份＋抖動，沒有新位置資訊；20k 配方 densify 在 10k 停 => 起始少的長不到）
   #   問題：完整配方（60k、densify 到 30k、cap 2.6M，大家都會長到 cap 附近）下這個增益還在不在。
   #   PLY = task_sfmfill_sweep2.sh gen 的 dup4（其餘參數同 sfmfill 基準），同樣走 points_from ply。
   sfmdup4)    P="sfmfill_sweep/dup4/block_${BLK}.ply"
-              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
+              [ -f "$CDATA/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
   # ★ 2026-10-01：dup4 為什麼贏（60k 同 N +0.27/+0.32）—— 兩個候選機制分開測：
   #   fastgrow  預設 SfM init，只把 add_ratio 1.05 -> 1.2（每次增生的倍率），讓族群像 dup4 一樣約 2~3k 步就長滿
@@ -256,7 +256,7 @@ case "$CASEARM" in
   #   門檻依 zeroprune（cs60_sfmdup4 b6，事後剪不重訓）：15k 刪 4.5%／Load -15%／val 0；30k 6.6%／-32%／-0.008；42k 12%／-17%／-0.15
   besttrim3)  _S=sfmfill_sweep; [ "$GRID" = 44 ] && _S=sfmfill_sweep44
               P="$_S/dupcap/block_${BLK}.ply"
-              _DD=data/matrix_city/aerial/train/block_all
+              _DD=$CDATA
               if [ ! -f "$_DD/$P" ]; then
                 # 起始要 >= cap 2.6M：從 dup5 抽；4x4 的 dup5 若不存在就先產（同 full44 prep 的參數），不夠 2.6M 再加份數
                 for _k in 5 6 7 8; do
@@ -276,7 +276,7 @@ case "$CASEARM" in
                      --model.renderer.init_args.trim_schedule "15000:3e-4,30000:1e-3,45000:3e-3"); EXP=5 ;;
   best|bestvt|bestoe|bestvo|bestres|bestpoolA|bestpoolB|bestpoolAB|bestpoolAp|bestpoolApF|bestvpc|bestelong|besttrimVC|besttrimVCb|bestoeVC)
               P=$(_bestply)
-              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
+              [ -f "$CDATA/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P"); EXP=2
               case "$CASEARM" in bestvt|bestvo)
                 EXTRA+=(--model.renderer.init_args.trim_by_value_per_cost true --model.renderer.init_args.trim_by_tile_topk true)
@@ -327,10 +327,10 @@ case "$CASEARM" in
   #   sfmdup5＝複製 5 份（起始 > cap）、sfmdup4j10／sfmdup4j025＝dup4 但抖動 1.0／0.25（jitter 從沒測過）
   sfmdup5|sfmdup4j10|sfmdup4j025)
               P="sfmfill_sweep/${ARM#sfm}/block_${BLK}.ply"
-              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P（先跑 scripts/lab/gen_dup_variants.sh）"; exit 2; }
+              [ -f "$CDATA/$P" ] || { echo "⛔ 缺 $P（先跑 scripts/lab/gen_dup_variants.sh）"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
   sfmdup2)    P="sfmfill_sweep/dup2/block_${BLK}.ply"
-              [ -f "data/matrix_city/aerial/train/block_all/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
+              [ -f "$CDATA/$P" ] || { echo "⛔ 缺 $P"; exit 2; }
               EXTRA=(--data.parser.points_from ply --data.parser.ply_file "$P");   EXP=2 ;;
   # ══════════ 2026-10-02 配方各項在新年代重驗（使用者：增生比例／absgrad／opacity_reg／noise_gate／trim）══════════
   #   這些設定都是**舊年代**（影像↔姿態錯開）選的，新年代沒有任何單變數測試（lab resolved config 全掃過：

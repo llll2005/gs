@@ -88,6 +88,8 @@ case "${TORCH_CUDA_ARCH_LIST:-}" in
     exit 3 ;;
 esac
 echo "TORCH_CUDA_ARCH_LIST=[${TORCH_CUDA_ARCH_LIST:-未設}]"
+# ★ 11-19 資料集（論文用 Mill-19 等）：CITYGS_DATA＝資料夾（預設 MatrixCity 空拍；不設＝訓練指令一字不變）、CITYGS_DSF＝載入時降採樣倍數（預設 1.2）
+CDATA="${CITYGS_DATA:-data/matrix_city/aerial/train/block_all}"; export CDATA
 run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   local name="$1" blk="$2"; shift 2
   # ★ 2026-10-03 乾跑：CITYGS_DRY=1 只印出完整的訓練指令（寫指令、查某臂到底加了什麼時用），
@@ -145,10 +147,10 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   if [ "${CITYGS_DEMO:-0}" = 1 ]; then
     export CITYGS_SFM_FAST=1
     demo+=(--trainer.limit_val_batches 0 --trainer.num_sanity_val_steps 0 --logger none)   # ⚠ internal/cli.py 的 --logger 會蓋掉 --trainer.logger
-    if [ -f "data/matrix_city/aerial/train/block_all/input_r1.2/.complete" ]; then   # 產生到一半的目錄不能用
-      demo+=(--data.parser.image_dir input_r1.2)
+    if [ -f "$CDATA/input_r${CITYGS_DSF:-1.2}/.complete" ]; then   # 產生到一半的目錄不能用
+      demo+=(--data.parser.image_dir "input_r${CITYGS_DSF:-1.2}")
     else
-      echo "⚠ [demo] 缺 data/matrix_city/aerial/train/block_all/input_r1.2/.complete（tools/make_resized_images.py 跑完才有）=> 影像照舊現縮"
+      echo "⚠ [demo] 缺 $CDATA/input_r${CITYGS_DSF:-1.2}/.complete（tools/make_resized_images.py 跑完才有）=> 影像照舊現縮"
     fi
     echo "[demo] ★ demo 模式：SfM 快速讀取、關驗證、$( [[ " ${demo[*]} " == *input_r1.2* ]] && echo 讀預縮影像 || echo 影像現縮 )、不產生 log（只留台帳與 run_summary.json）"
   fi
@@ -176,7 +178,8 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   conda run -n gspl --no-capture-output python -u main.py fit \
     --config "$CFG" \
     --data.parser.block_id "$blk" \
-    -n "$name" "${resume[@]}" "$@" "${demo[@]}" ${CITYGS_SEED:+--seed_everything "$CITYGS_SEED"}
+    -n "$name" "${resume[@]}" "$@" "${demo[@]}" ${CITYGS_SEED:+--seed_everything "$CITYGS_SEED"} \
+    ${CITYGS_DATA:+--data.path "$CITYGS_DATA"} ${CITYGS_DSF:+--data.parser.down_sample_factor "$CITYGS_DSF"}
   local rc=$?
   [ "$rc" -ne 0 ] && { echo "❌ $name block $blk 失敗 rc=$rc"; return "$rc"; }
   echo "=== $name / block $blk 完成 $(date) ==="
