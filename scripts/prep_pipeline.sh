@@ -12,6 +12,7 @@
 # 拿掉的（新底用不到）：舊版塊外遮罩 block_masks44（65 分）、補點的其他 dup、舊 5x5 depth_init、平面外推、SfM 可見性快取（v4 已關）。
 # 用法（lab，[solo]：第 1 步要 GPU、其餘吃滿 CPU，不能和計時中的訓練同時跑）：
 #   bash scripts/prep_pipeline.sh <現行資料夾> <目標資料夾> [平行數]
+#   PREP_FROM=<N>：從第 N 步接著跑；PREP_ONLY="5 11"：只跑這幾步（前面的產出照用，計時表接在後面寫、不清空；11-19 第 11 步失敗後重跑第 5、11 步用）
 case "${1:-}" in -h|--help|"") sed -n 2,13p "$0"; exit 0 ;; esac
 set -u
 SRC=$(realpath "$1"); DST=$2; J=${3:-8}
@@ -19,10 +20,13 @@ cd "$(dirname "$0")/.." || exit 1
 mkdir -p "$DST"; DST=$(realpath "$DST")
 for x in input sparse estimated_depths estimated_depth_scales.json; do [ -e "$DST/$x" ] || ln -s "$SRC/$x" "$DST/$x"; done
 PY="conda run -n gspl --no-capture-output python -u"
-TS="$DST/prep_timing.tsv"; : > "$TS"
-LOG="$DST/prep.log"; : > "$LOG"
+FROM=${PREP_FROM:-1}
+TS="$DST/prep_timing.tsv"; LOG="$DST/prep.log"
+[ "$FROM" = 1 ] && [ -z "${PREP_ONLY:-}" ] && { : > "$TS"; : > "$LOG"; }
 stage () {   # stage <名稱> <指令...>
   local n=$1; shift; local t0; t0=$(date +%s)
+  [ "${n%% *}" -ge "$FROM" ] 2>/dev/null || { echo "（跳過 $n：PREP_FROM=$FROM）"; return 0; }
+  if [ -n "${PREP_ONLY:-}" ] && [[ " $PREP_ONLY " != *" ${n%% *} "* ]]; then echo "（跳過 $n：PREP_ONLY=$PREP_ONLY）"; return 0; fi
   echo "▶ $(date '+%H:%M:%S') $n" | tee -a "$LOG"
   "$@" >> "$LOG" 2>&1; local rc=$?
   local dt=$(( $(date +%s) - t0 ))
@@ -38,9 +42,11 @@ s1 () {
   wait $p1 || return 1; wait $p2 || return 2
 }
 s5 () {
-  CITYGS_SFM_FAST=1 $PY tools/make_sfm_fill_init.py "$DST" --blocks 0 1 2 3 4 5 7 8 9 10 11 13 14 15 --block_dim 4 4 --dup 1 --out-dir "$DST/sfmfill_sweep44" || return 1
-  CITYGS_SFM_FAST=1 $PY tools/make_sfm_fill_init.py "$DST" --blocks 6 12 --block_dim 4 4 --dup 1 --out-dir "$DST/sfmfill_sweep44" || return 2
+  CITYGS_SFM_FAST=1 $PY tools/make_sfm_fill_init.py "$DST" --blocks 0 1 2 3 4 5 7 8 9 10 11 13 14 15 --block_dim 4 4 --dup 1 --out-dir "$DST/sfmfill_sweep44/dup1" || return 1
+  CITYGS_SFM_FAST=1 $PY tools/make_sfm_fill_init.py "$DST" --blocks 6 12 --block_dim 4 4 --dup 1 --out-dir "$DST/sfmfill_sweep44/dup1" || return 2
   $PY tools/block_mask44.py --data "$DST" --blocks $(seq 0 15) --crop_ply sfmfill_sweep44 --skip_masks || return 3
+  # ★ 11-19 自檢：裁盒沒產出就當失敗（之前路徑錯時這一步 rc=0 但沒有任何檔案）
+  [ "$(ls "$DST/sfmfill_sweep44_crop/dup1/"block_*.ply 2>/dev/null | wc -l)" = 16 ] || { echo "⛔ 裁盒起點不是 16 塊"; return 4; }
 }
 s6 () { seq 0 15 | xargs -P "$J" -I{} $PY tools/block_mask44.py --data "$DST" --blocks {} --depth_dir estimated_depths_tri --depth_raw --out "$DST/block_masks44_tri"; }
 JS=${PREP_SEA_J:-4}   # 海面物件每塊要載整塊的影像與深度 => 平行數另外設（預設 4）

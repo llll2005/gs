@@ -35,8 +35,9 @@ EOF
 ALLOC=configs/cap_alloc_sfm_g44_mill19_$SC.json
 s1 () { $PY utils/run_depth_anything_v2.py "$DS/input" --output "$DS/estimated_depths" -d 4 & local p1=$!
         $PY tools/make_resized_images.py "$DS" --factor 4 --nproc "$J" & local p2=$!; wait $p1 || return 1; wait $p2 || return 2; }
-s5 () { $PY tools/make_sfm_fill_init.py "$DS" --blocks $(seq 0 15) --block_dim 4 4 --dup 1 --out-dir "$DS/sfmfill_sweep44" || return 1
-        $PY tools/block_mask44.py --data "$DS" --blocks $(seq 0 15) --crop_ply sfmfill_sweep44 --skip_masks || return 2; }
+s5 () { $PY tools/make_sfm_fill_init.py "$DS" --blocks $(seq 0 15) --block_dim 4 4 --dup 1 --out-dir "$DS/sfmfill_sweep44/dup1" || return 1
+        $PY tools/block_mask44.py --data "$DS" --blocks $(seq 0 15) --crop_ply sfmfill_sweep44 --skip_masks || return 2
+        [ "$(ls "$DS/sfmfill_sweep44_crop/dup1/"block_*.ply 2>/dev/null | wc -l)" = 16 ] || { echo "⛔ 裁盒起點不是 16 塊（11-19 路徑 bug 的自檢）"; return 3; }; }
 s6 () { seq 0 15 | xargs -P "$J" -I{} $PY tools/block_mask44.py --data "$DS" --blocks {} --depth_dir estimated_depths_tri --depth_raw --out "$DS/block_masks44_tri"; }
 s8 () { seq 0 15 | xargs -P "$J" -I{} $PY tools/make_tri_dense_init.py "$DS" --blocks {} --seed_per_block --alloc "$ALLOC"; }
 stage "1 單目深度（存 1/4 解析度）‖ 預縮影像 4 倍" s1
