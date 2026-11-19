@@ -160,8 +160,11 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
     if [ -f "$_pl" ]; then
       ( sleep "${CITYGS_PREFETCH_DELAY:-150}"; _t0=$(date +%s)
         _io=(); command -v ionice > /dev/null && _io=(ionice -c3)
-        nice -n 19 "${_io[@]}" xargs -d '\n' -a "$_pl" cat > /dev/null 2>&1
-        echo "[prefetch] $(date +%T) 預讀 b${CITYGS_PREFETCH_NEXT} $(wc -l < "$_pl") 個檔完成（$(( $(date +%s) - _t0 )) s）" ) &
+        nice -n 19 "${_io[@]}" xargs -d '\n' -a "$_pl" cat > /dev/null 2>&1; _t1=$(date +%s)
+        # ★ 11-19 讀第二次：只讀過一次的頁面在「不常用」清單，lab 容器記憶體上限 48 GiB 已滿 => 下一塊行程配置記憶體時最先被回收
+        #   （新底 9 候選全場景：預讀都在下一塊開始前讀完，16 塊裡仍有 9 塊快取 26～80 s）；第二次讀（都在記憶體裡、很快）讓頁面升到常用清單。
+        nice -n 19 xargs -d '\n' -a "$_pl" cat > /dev/null 2>&1
+        echo "[prefetch] $(date +%T) 預讀 b${CITYGS_PREFETCH_NEXT} $(wc -l < "$_pl") 個檔完成（第一次 $(( _t1 - _t0 )) s、第二次 $(( $(date +%s) - _t1 )) s）" ) &
       echo "[prefetch] $(date +%T) 已排背景預讀 b${CITYGS_PREFETCH_NEXT}（$(wc -l < "$_pl") 個檔，${CITYGS_PREFETCH_DELAY:-150} s 後開始）"
     else
       echo "[prefetch] 沒有 $_pl（那塊還沒跑過、沒有清單）=> 不預讀"
