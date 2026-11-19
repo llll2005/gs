@@ -162,6 +162,7 @@ def main():
     ap.add_argument("--down_sample", type=float, default=1.2)
     ap.add_argument("--margin", type=float, default=0.0, help="expand the block AABB by this much")
     ap.add_argument("--save_dir", default=None)
+    ap.add_argument("--skip_marker", action="store_true", help="★ 11-19 其他資料集（Mill-19 等）：不檢查 MatrixCity test 集的 .built_by_official_steps 標記")
     ap.add_argument("--per_image_csv", default=None, help="逐張 name,psnr,ssim,lpips,bright_ratio（2026-10-09：對官方工具逐幀比對）")
     ap.add_argument("--fail_tile", type=int, default=48, help="失敗 tile 判準（同 tools/failure_map.py）：tile 邊長 px；GT std>=--fail_min_std 且 corr<--fail_r_min")
     ap.add_argument("--fail_min_std", type=float, default=0.10)
@@ -172,7 +173,7 @@ def main():
     a = ap.parse_args()
 
     dev = "cuda"
-    if not os.path.exists(os.path.join(a.test_dir, ".built_by_official_steps")):
+    if not a.skip_marker and not os.path.exists(os.path.join(a.test_dir, ".built_by_official_steps")):
         raise SystemExit(f"⛔ {a.test_dir} 不是照官方步驟重建的 test 集（缺 .built_by_official_steps）。\n"
                          "  舊的 block_all_test/input 對應是錯的（見檔頭）；先跑 task_citygs_origin.sh prep_test_official")
     names, cameras = load_test_cameras(a.test_dir, a.down_sample)

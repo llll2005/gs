@@ -436,7 +436,7 @@ if [[ " ${XT[*]} " =~ \ r2wl\  ]]; then   # 放在所有元件之後
   XA+=(--model.density.init_args.round2_from 0)
   echo "[r2wl] 只關第二輪的增生：增生到 $D1、合併到 $S1、熵 x2 雙向從 $((S1 / 6)) 起、S1（$S1）之後熵只往 0（0.002）、cap 100%"
 fi
-CAP=$(python3 -c "import json;print(int(round(${CAPAVG:-1000000} * json.load(open('configs/cap_alloc_sfm_g44.json'))['weights']['$B'])))")
+CAP=$(python3 -c "import json;print(int(round(${CAPAVG:-1000000} * json.load(open('${CITYGS_CAP_ALLOC:-configs/cap_alloc_sfm_g44.json}'))['weights']['$B'])))")   # ★ 11-19 CITYGS_CAP_ALLOC：其他資料集的 SfM 分配檔
 [ -n "${SEA_EXTRA:-}" ] && [ "${SEA_EXTRA:-0}" -gt 0 ] && { echo "[sea3d] cap 另加海面鋪磚 $SEA_EXTRA 顆（海面層自己的名額）：$CAP => $((CAP + SEA_EXTRA))"; CAP=$((CAP + SEA_EXTRA)); }
 # ★ 11-13 規格 5 §1 逐段計時模式（task_mech_time.sh 的 MT_TUNE_ARMS 用）：TUNE_PROFILE_STEPS＝訓練到這一步就停（排程仍照全長）、
 #   CITYGS_STEP_PROFILE（穩態從 TUNE_PROFILE_WARMUP 步起）、不跑圖表資料包、跑次名＝TUNE_PROFILE_NAME（不進任何家族）
