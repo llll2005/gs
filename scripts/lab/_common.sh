@@ -157,9 +157,10 @@ run_fit () {   # run_fit <run_name> <block_id> [額外參數...]
   # ★ 11-19 預讀下一塊（全場景 13.1／96.9 分在快取影像，冷硬碟 35～120 ms／張、熱 page cache 約 17 ms／張；訓練中硬碟閒著）：
   #   每次快取都寫清單 logs/cache_lists/block_<B>.txt；CITYGS_PREFETCH_NEXT=<塊> => 等 CITYGS_PREFETCH_DELAY 秒（預設 150，
   #   本塊的快取已讀完）後在背景用最低 IO 優先序把那塊上次的清單讀進 page cache。只影響讀檔快慢，不改訓練結果。
-  export CITYGS_CACHE_LIST="logs/cache_lists/block_${blk}.txt"
+  local _clp=""; [ -n "${CITYGS_DATA:-}" ] && _clp="$(basename "$CITYGS_DATA")_"   # ★ 11-19 其他資料集的清單加前綴（不蓋掉 MatrixCity 的）
+  export CITYGS_CACHE_LIST="logs/cache_lists/${_clp}block_${blk}.txt"
   if [ -n "${CITYGS_PREFETCH_NEXT:-}" ]; then
-    local _pl="logs/cache_lists/block_${CITYGS_PREFETCH_NEXT}.txt"
+    local _pl="logs/cache_lists/${_clp}block_${CITYGS_PREFETCH_NEXT}.txt"
     if [ -f "$_pl" ]; then
       ( sleep "${CITYGS_PREFETCH_DELAY:-150}"; _t0=$(date +%s)
         _io=(); command -v ionice > /dev/null && _io=(ionice -c3)
