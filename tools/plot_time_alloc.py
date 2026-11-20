@@ -51,7 +51,7 @@ def plot_step(path, out):
     w = {k: v[1] for k, v in seg.items()}
     # 7 類（固定順序＝固定顏色）：forward、loss、backward、密度控制、optimizer、迴圈外、其他
     other = sum(v for k, v in w.items() if k not in (3, 4, 6, 7, 9, 0))
-    cats = [("光柵器 forward", w[3]), ("loss（L1＋SSIM＋正則）", w[4]), ("光柵器 backward", w[6]),
+    cats = [("光柵器 forward", w[3]), ("loss（L1＋SSIM＋正則）", w[4]), ("backward（整個反向：光柵器＋SSIM＋正則）", w[6]),
             ("密度控制（增生／搬家／合併）", w[7]), ("optimizer", w[9]),
             ("迴圈外（MCMC 雜訊等 hook＋資料載入）", w[0]), ("其他小段", other)]
     GAP = "#c9c8c2"   # 未歸類（真實步時間 − 各段之和；中性灰，不是類別色）
@@ -79,7 +79,7 @@ def plot_step(path, out):
     # (b) 依步型：一般步 vs 每 8 步的完整路徑步（＋增生事件那一步另註）
     ax = fig.add_subplot(gs[1])
     rows = [("一般步", cls["lean"]), ("完整路徑步（每 8 步：法向＋深度上限＋dist）", cls["full"])]
-    keys = [("光柵器 forward", "fwd"), ("loss（L1＋SSIM＋正則）", "loss"), ("光柵器 backward", "bwd"),
+    keys = [("光柵器 forward", "fwd"), ("loss（L1＋SSIM＋正則）", "loss"), ("backward（整個反向：光柵器＋SSIM＋正則）", "bwd"),
             ("密度控制（增生／搬家／合併）", "dens"), ("optimizer", "optim"), ("迴圈外（MCMC 雜訊等 hook＋資料載入）", "outer"),
             ("其他小段", "small"), ("未歸類（段與段之間的空檔）", "gap")]
     for c in (cls["lean"], cls["full"]):
