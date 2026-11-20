@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 C0 = 0.28209479177387814
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--ckpt", required=True); ap.add_argument("--sea", required=True); ap.add_argument("--out", required=True)
+ap.add_argument("--ckpt", required=True); ap.add_argument("--sea", required=True, nargs="+", help="海面物件 npz（可給多個檔或一個 glob 字串）"); ap.add_argument("--out", required=True)
 ap.add_argument("--dtheta_deg", type=float, default=0.5)
 ap.add_argument("--r_max_k", type=float, default=20.0, help="鋪到 佔用範圍半徑 × 這個倍數")
 ap.add_argument("--occ_k", type=float, default=4.0, help="佔用格寬＝海面格距 g × 這個倍數")
@@ -27,7 +27,7 @@ ap.add_argument("--opacity", type=float, default=0.99)
 a = ap.parse_args()
 
 # 1. 海面物件
-fs = sorted(glob.glob(a.sea))
+fs = sorted({f for s in a.sea for f in (glob.glob(s) or [s])})
 T, Ccol, G, cs, ns = [], [], [], [], []
 for f in fs:
     z = np.load(f)
