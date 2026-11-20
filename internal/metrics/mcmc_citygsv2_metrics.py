@@ -23,6 +23,39 @@ import torch
 from .citygsv2_metrics import CityGSV2Metrics, CityGSV2MetricsModule
 
 
+class _FusedPerGaussianReg(torch.autograd.Function):
+    """★ 2026-11-21 純數學化簡 #3＋#6＋#7（紀錄/實驗分析/39；微基準 tools/probe/fused_reg_bench_1121.py）：逐顆的熵與尺度正則一次算完。
+    輸入原始參數 x（opacity logit，[N]）、s（log 尺度，[N, 2]）、權重 w（畫面內＝1，[N]）、熵遮罩 m（[N]，含方向／閘門）。
+      H = Σ m·H(σ(x)) / Σw，H(σ(x)) = softplus(x) − x·σ(x)（與 −o ln o − (1−o) ln(1−o) 數學相同、不需夾值與兩個 log）
+      S = Σ w·exp(s) / (2 Σw)（exp > 0 => 原本的 .abs() 多餘）
+    梯度：dH/dx = −x·σ(1−σ)·m/Σw、dS/ds = exp(s)·w/(2Σw)。與原寫法差在：熵原本夾在 [1e-6, 1−1e-6]（|x| > 13.8 時梯度 0），這裡 ≤ 1.4e-5（可忽略）。"""
+    @staticmethod
+    def forward(ctx, x, s, w, m, ent_on: bool):
+        wsum = w.sum().clamp_min(1.0)
+        sc = torch.exp(s)
+        S = (sc * w[:, None]).sum() / (wsum * s.shape[1])
+        if ent_on:
+            o = torch.sigmoid(x)
+            H = ((torch.nn.functional.softplus(x) - x * o) * m).sum() / wsum
+        else:
+            o = None
+            H = torch.zeros((), dtype=x.dtype, device=x.device)
+        ctx.save_for_backward(x, sc, w, m, wsum, *( (o,) if o is not None else () ))
+        ctx.ent_on = ent_on
+        return H, S
+
+    @staticmethod
+    def backward(ctx, gH, gS):
+        if ctx.ent_on:
+            x, sc, w, m, wsum, o = ctx.saved_tensors
+            gx = (gH / wsum) * (-x * o * (1 - o)) * m
+        else:
+            x, sc, w, m, wsum = ctx.saved_tensors
+            gx = None
+        gs = (gS / (wsum * sc.shape[1])) * sc * w[:, None]
+        return gx, gs, None, None, None
+
+
 def see_through_loss(alpha, surf_depth, inv_gt, A, margin: float, w_hole: float = 1.0, w_deep: float = 1.0):
     """單側「不能看穿表面」（10-31）。A＝第一表面在本塊的像素（塊外遮罩 1）；inv_gt＝單目逆深度（已縮放到場景單位，<=0＝無效）。
     回傳 (loss, 統計)：loss＝[w_hole·Σ_A (1−α) ＋ w_deep·Σ_{A, α>0.5, 有效} relu(1/(1+margin) − z_gt/z_render)] / |A|。
@@ -80,6 +113,10 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     本旗標只移除**固定的下壓力（L1）**，光度梯度對 opacity 的學習照常 ⇒ 兩極化保留。
     """
 
+    fused_reg: bool = False
+    """★ 2026-11-21 純數學化簡 #3＋#6＋#7＋#8（紀錄/實驗分析/39）：逐顆的熵與尺度正則融合成一個自訂 autograd（熵用 softplus 閉式、尺度不 abs）、
+    權重 0 的 opacity L1 不算、塊外遮罩合成改 where（值與梯度逐位元相同）。本機微基準（150 萬顆、900x1600）每步 forward＋backward 5.67 -> 3.61 ms。
+    只在 opacity L1 權重 0 且模型沒有預先啟用時走融合路徑，其他情況照舊。預設關。"""
     reg_visible_only: bool = False
     """★ 11-18（使用者「讓它可以猜資訊不足的部分」）：逐顆正則（opacity L1、scale、二元熵）只算這一步畫面內的顆粒（visibility_filter），對畫面內取平均。
     原本每一步對全部 N 顆取平均 => 光度證據只在顆粒被看到的那幾步出現、正則卻每步都在 => 只被 k/N 張看到的顆粒（塔頂、邊界斜看）正則相對強了 N/k 倍、少數視角的證據被壓掉。
@@ -478,9 +515,12 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         gtf = gt if gt.is_floating_point() else gt.float() / 255.0
         g2 = torch.where(Bm, bg.to(gtf.dtype).view(3, 1, 1).expand_as(gtf), gtf)
         g2 = torch.where(Cm, r.detach().to(gtf.dtype), g2)
-        c = Cm.to(r.dtype)
         out = dict(outputs)
-        out["render"] = r * (1 - c) + r.detach() * c
+        if bool(getattr(self.config, "fused_reg", False)):
+            out["render"] = torch.where(Cm, r.detach(), r)     # ★ 11-21 #8：值與梯度都和下面那行逐位元相同，少 3 個影像大小的 kernel
+        else:
+            c = Cm.to(r.dtype)
+            out["render"] = r * (1 - c) + r.detach() * c
         batch = (batch[0], (name, g2) + tuple(batch[1][2:])) + tuple(batch[2:])
         return batch, out
 
@@ -1240,7 +1280,21 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             elif not getattr(self, "_rv_warned", False):
                 self._rv_warned = True
                 print("⚠⚠ [reg-visible] 拿不到 visibility_filter（或長度不符）=> 這一步照舊對全部顆粒算正則", flush=True)
-        if _rv is None:
+        _oreg_w = self.config.opacity_reg
+        if 0 <= self.config.opacity_reg_until_iter <= step:
+            _oreg_w = 0.0      # 收割期只移除 L1 下壓力，光度梯度照常（見 config docstring）
+        # ★ 11-21 #3＋#6＋#7：融合路徑（opacity L1 權重 0、模型沒有預先啟用時）；熵在下面與方向／閘門一起算
+        _fr = bool(getattr(self.config, "fused_reg", False)) and _oreg_w == 0 \
+            and getattr(getattr(gaussian_model, "scale_activation", None), "__name__", "") == "scale_activation" \
+            and getattr(getattr(gaussian_model, "opacity_activation", None), "__name__", "") == "opacity_activation"
+        if _fr:
+            if not getattr(self, "_fr_announced", False):
+                self._fr_announced = True
+                print(f"[fused-reg] ✅ 首次觸發 step={step}：逐顆熵＋尺度融合（softplus 閉式、尺度不 abs）、opacity L1（權重 0）不算、遮罩合成用 where", flush=True)
+            opacity_reg = torch.zeros((), dtype=opacities.dtype, device=opacities.device)
+            scale_reg = None                                  # 在熵那段一起算
+            _rvf = _rv.to(opacities.dtype) if _rv is not None else None
+        elif _rv is None:
             if bool(non_immune.any()):
                 opacity_reg = opacities[non_immune].mean()        # |opacity| == opacity in (0,1)
             else:
@@ -1254,13 +1308,10 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             _sc = gaussian_model.get_scales().abs()
             scale_reg = (_sc * _rvf[:, None]).sum() / (_rvf.sum().clamp_min(1.0) * _sc.shape[1])
 
-        _oreg_w = self.config.opacity_reg
-        if 0 <= self.config.opacity_reg_until_iter <= step:
-            _oreg_w = 0.0      # 收割期只移除 L1 下壓力，光度梯度照常（見 config docstring）
-
-        metrics["loss"] = metrics["loss"] \
-            + _oreg_w * opacity_reg \
-            + self.config.scale_reg * scale_reg
+        if not _fr:
+            metrics["loss"] = metrics["loss"] \
+                + _oreg_w * opacity_reg \
+                + self.config.scale_reg * scale_reg
 
         _under = getattr(getattr(pl_module, "density_controller", None), "_sfm_under", None) \
             if bool(getattr(self.config, "vis_gate_need_under", False)) else None
@@ -1282,7 +1333,27 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
         if _phase == "both" and _ew > 0 and not getattr(self, "_ent_both_announced", False):
             self._ent_both_announced = True
             print(f"[opacity-entropy] ✅ step={step} 單向（down）改回雙向，權重={_ew:g}", flush=True)
-        if _ew > 0 and step >= int(getattr(self.config, "opacity_entropy_from_iter", 0)):
+        _ent_on = _ew > 0 and step >= int(getattr(self.config, "opacity_entropy_from_iter", 0))
+        if _fr:
+            # ★ 11-21 融合：熵遮罩＝畫面內權重 x 方向（down：x < 0 <=> o < 0.5）x 閘門外不往 1 推
+            if _side not in ("down", "both"):
+                raise ValueError(f"opacity_entropy_side={_side!r}（只接受 both／down）")
+            _x = gaussian_model.gaussians["opacities"].reshape(-1)
+            _w = _rvf if _rv is not None else torch.ones_like(_x)
+            _m = _w
+            if _ent_on:
+                if _side == "down":
+                    _m = _m * (_x.detach() < 0).to(_x.dtype)
+                if _gate is not None:
+                    _m = _m * (~((_x.detach() >= 0) & ~_gate)).to(_x.dtype)
+            _H, scale_reg = _FusedPerGaussianReg.apply(_x, gaussian_model.gaussians["scales"], _w.detach(), _m.detach(), bool(_ent_on))
+            metrics["loss"] = metrics["loss"] + self.config.scale_reg * scale_reg
+            if _ent_on:
+                metrics["loss"] = metrics["loss"] + _ew * _H
+                metrics["op_ent"] = _H.detach()
+                pbar["op_ent"] = False
+            _ent_on = False                                    # 下面的原寫法不再算
+        if _ent_on:
             _o = opacities.clamp(1e-6, 1 - 1e-6)
             _Hi = -(_o * torch.log(_o) + (1 - _o) * torch.log(1 - _o))
             if _side == "down":
