@@ -100,6 +100,7 @@ parse() {
         nprn[0-9]*) [[ $t =~ ^nprn[0-9]+$ ]] || { echo "⛔ 寫法：nprn<k>（窄角度面元的逐顆單目法向先驗，權重 0.0125 x k）"; return 2; }; XT+=("$t") ;;
         shn[0-9]*) [[ $t =~ ^shn[0-9]+(e[0-9]+)?$ ]] || { echo "⛔ 寫法：shn<k>[e<n>]（角度窄的高階 SH 每個畫面內步收縮 k/100；e<n>＝每 n 步做一次，預設 4）"; return 2; }; XT+=("$t") ;;
         regvis) XT+=("$t") ;;
+        aih|xc|frg|nzm|pxl|m39) XT+=("$t") ;;   # ★ 11-21 純數學化簡（紀錄/實驗分析/39）
         mq[0-9]*) [[ $t =~ ^mq[0-9]+$ ]] || { echo "⛔ 寫法：mq<k>（合併額度＝每次事件 N 的 k%；100＝不設額度）"; return 2; }; XT+=("$t") ;;
         npri[0-9]*) [[ $t =~ ^npri[0-9]+d?$ ]] || { echo "⛔ 寫法：npri<k>[d]（單目法向先驗，權重 0.0125 x k；d＝也套在深度法向上）"; return 2; }; XT+=("$t") ;;
         coarse5c[0-9]*) [[ $t =~ ^coarse5c[0-9]+(f[0-9]+)?$ ]] || { echo "⛔ 寫法：coarse5c<k 步>[f<拆分百分比>]（例 coarse5c30、coarse5c30f50）"; return 2; }; XT+=("$t") ;;
@@ -120,7 +121,7 @@ parse() {
   FAM="g44tn_s${S}g${G}$(IFS=; echo "${XT[*]:-}")_"
   LBL="${S}k增生${G}"
   for t in "${XT[@]:-}"; do
-    case "$t" in tl[0-9]*) LBL+="時間軸每${t#tl}k存檔" ;; denseor) LBL+="稠密起點拿掉凹槽空氣點GT診斷" ;; c[0-9]*) LBL+="平均cap${t#c}0萬" ;; nprn[0-9]*) LBL+="窄角度面元單目法向x${t#nprn}" ;; shd[0-3]) LBL+="SH${t#shd}階" ;; di[0-9]*) LBL+="增生事件每${t#di}步" ;; shn[0-9]*) LBL+="角度窄高階SH收縮${t#shn}" ;; regvis) LBL+="正則只算畫面內" ;; nodo) LBL+="海面起點不去下方離群" ;; ag[0-9]*) LBL+="absgrad權重${t#ag}" ;; cmflat[0-9]) LBL+="上限只罰躺平門檻0.${t#cmflat}" ;; seafl3) LBL+="浮塊收回不受水面SfM保護1格" ;; mgr[0-9]*) LBL+="合併漸強到${t#mgr}%" ;; mq[0-9]*) LBL+="合併額度${t#mq}%" ;; lowres) LBL+="低解析度" ;; lres2) LBL+="低解析度加長" ;; lres3) LBL+="低解析度三段" ;; geo50) LBL+="幾何步半解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; densedo) LBL+="稠密起點去下方離群" ;; densedf) LBL+="稠密起點空中補點換陸地" ;; densepl2nd) LBL+="稠密起點平面另算名額不去離群" ;; denserg) LBL+="稠密起點現行程式重產" ;; sea3d) LBL+="海面物件錨定層" ;; sea3dg) LBL+="海面物件長過錨定層" ;; sea3dh) LBL+="海面物件水平SfM海平面錨定層" ;; sea3df) LBL+="海面物件水平加遠海分層錨定層" ;; sea3dx) LBL+="海面物件水平加遠海加外推錨定層" ;; sea3dw) LBL+="水體自動高度補空洞帶外推沿用邊緣錨定層" ;; sea3dv) LBL+="水體v7外推小磚紋理取樣錨定層" ;; sea3du) LBL+="水體v8不外推補交界不看顏色錨定層" ;; sea3dt) LBL+="水體v9後面深度不當反證錨定層" ;; seabackt) LBL+="水體v9寬遮罩上限" ;; seabacku) LBL+="水體v8寬遮罩上限" ;; seabackv) LBL+="水體v7寬遮罩上限" ;; seaflb) LBL+="水面下浮塊也收回" ;; seabackw) LBL+="水體v6寬遮罩上限" ;; seabackx) LBL+="海面水平加遠海外推寬遮罩上限" ;; seabackh) LBL+="海面水平寬遮罩上限" ;; seabackf) LBL+="海面水平加遠海寬遮罩上限" ;; seaback) LBL+="海面寬遮罩上限" ;; seabackg) LBL+="海面長過寬遮罩上限" ;; seafl) LBL+="海面孤立浮塊收回" ;; seafl2) LBL+="海面浮塊收回放寬到2格3格" ;; seaflbl) LBL+="水面下收回含陸地底下" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
+    case "$t" in tl[0-9]*) LBL+="時間軸每${t#tl}k存檔" ;; denseor) LBL+="稠密起點拿掉凹槽空氣點GT診斷" ;; c[0-9]*) LBL+="平均cap${t#c}0萬" ;; nprn[0-9]*) LBL+="窄角度面元單目法向x${t#nprn}" ;; shd[0-3]) LBL+="SH${t#shd}階" ;; di[0-9]*) LBL+="增生事件每${t#di}步" ;; shn[0-9]*) LBL+="角度窄高階SH收縮${t#shn}" ;; regvis) LBL+="正則只算畫面內" ;; aih) LBL+="反單應交點" ;; xc) LBL+="幾何配對遮罩" ;; frg) LBL+="逐顆正則融合" ;; nzm) LBL+="雜訊同分布化簡" ;; pxl) LBL+="像素下限線性化" ;; m39) LBL+="純數學化簡五項" ;; nodo) LBL+="海面起點不去下方離群" ;; ag[0-9]*) LBL+="absgrad權重${t#ag}" ;; cmflat[0-9]) LBL+="上限只罰躺平門檻0.${t#cmflat}" ;; seafl3) LBL+="浮塊收回不受水面SfM保護1格" ;; mgr[0-9]*) LBL+="合併漸強到${t#mgr}%" ;; mq[0-9]*) LBL+="合併額度${t#mq}%" ;; lowres) LBL+="低解析度" ;; lres2) LBL+="低解析度加長" ;; lres3) LBL+="低解析度三段" ;; geo50) LBL+="幾何步半解析度" ;; coarse) LBL+="coarse起點" ;; coarse5) LBL+="新底5coarse起點" ;; coarse5c*) LBL+="新底5coarse${t#coarse5c}起點" ;; npri*d) _k=${t#npri}; LBL+="單目法向先驗x${_k%d}含深度法向" ;; npri*) LBL+="單目法向先驗x${t#npri}" ;; sbox) LBL+="精確盒跳過" ;; pbw) LBL+="逐warp配對位元" ;; densenf) LBL+="稠密起點不撒空中點" ;; densepl) LBL+="稠密起點平面補點" ;; densepl2) LBL+="稠密起點平面另算名額" ;; densedo) LBL+="稠密起點去下方離群" ;; densedf) LBL+="稠密起點空中補點換陸地" ;; densepl2nd) LBL+="稠密起點平面另算名額不去離群" ;; denserg) LBL+="稠密起點現行程式重產" ;; sea3d) LBL+="海面物件錨定層" ;; sea3dg) LBL+="海面物件長過錨定層" ;; sea3dh) LBL+="海面物件水平SfM海平面錨定層" ;; sea3df) LBL+="海面物件水平加遠海分層錨定層" ;; sea3dx) LBL+="海面物件水平加遠海加外推錨定層" ;; sea3dw) LBL+="水體自動高度補空洞帶外推沿用邊緣錨定層" ;; sea3dv) LBL+="水體v7外推小磚紋理取樣錨定層" ;; sea3du) LBL+="水體v8不外推補交界不看顏色錨定層" ;; sea3dt) LBL+="水體v9後面深度不當反證錨定層" ;; seabackt) LBL+="水體v9寬遮罩上限" ;; seabacku) LBL+="水體v8寬遮罩上限" ;; seabackv) LBL+="水體v7寬遮罩上限" ;; seaflb) LBL+="水面下浮塊也收回" ;; seabackw) LBL+="水體v6寬遮罩上限" ;; seabackx) LBL+="海面水平加遠海外推寬遮罩上限" ;; seabackh) LBL+="海面水平寬遮罩上限" ;; seabackf) LBL+="海面水平加遠海寬遮罩上限" ;; seaback) LBL+="海面寬遮罩上限" ;; seabackg) LBL+="海面長過寬遮罩上限" ;; seafl) LBL+="海面孤立浮塊收回" ;; seafl2) LBL+="海面浮塊收回放寬到2格3格" ;; seaflbl) LBL+="水面下收回含陸地底下" ;; seafront) LBL+="海面窄遮罩罰前面" ;; seanop) LBL+="海面格非母點" ;; pcs) LBL+="海面平面上限" ;; pcsf) LBL+="海面與立面平面上限" ;; np16) LBL+="鄰域平面" ;; lr050) LBL+="lr減半" ;; mvu) LBL+="合併地下" ;;
       mvugrow) LBL+="合併地下只增生期" ;; mvugnd) LBL+="合併地下只貼地" ;;
       tri) LBL+="校正深度" ;; trihf) LBL+="校正深度補洞2%" ;; trist) LBL+="校正深度不能看穿2%" ;; trigate) LBL+="校正深度閘門收緊" ;; tribh) LBL+="只擋後面增生" ;; hfd) LBL+="需求地圖補貨" ;; vcb) LBL+="落後計價剪枝" ;; sbp) LBL+="落後計價抽母點" ;; bpf) LBL+="計價只算躺平" ;;
       tricap*) LBL+="逐貢獻深度上限${t#tricap}" ;;
@@ -189,6 +190,18 @@ for t in "${XT[@]:-}"; do
     #   regvis＝逐顆正則（opacity L1、scale、二元熵）只算畫面內顆粒（少被看到的顆粒正則不再被放大 N/k 倍）
     #   shn<k>＝看到的角度範圍窄的顆粒，高階 SH 每個畫面內步收縮 k/100（集中度門檻 r0 0.9）
     regvis) XA+=(--model.metric.init_args.reg_visible_only true) ;;
+    # ★ 11-21 純數學化簡（紀錄/實驗分析/39；全部「逐位元相同／捨入等級／同分布」的改寫，本機驗證過；要 lab 重編光柵器）
+    #   aih＝反單應交點（lean 步交點與梯度；renderer.inv_homog）、xc＝幾何配對遮罩（lean forward 的精確 warp 跳過；renderer.exact_strip_cull）
+    #   frg＝逐顆熵＋尺度融合、權重 0 的 opacity L1 不算、遮罩合成用 where（metric.fused_reg）
+    #   nzm＝MCMC 雜訊閘門比原始參數＋兩個切向量同分布（density.noise_math）、pxl＝px_floor 下限 GEMM 線性化＋解析度改變只平移（density.pxf_linear）
+    #   m39＝五項全開
+    aih) XA+=(--model.renderer.init_args.inv_homog true) ;;
+    xc)  XA+=(--model.renderer.init_args.exact_strip_cull true) ;;
+    frg) XA+=(--model.metric.init_args.fused_reg true) ;;
+    nzm) XA+=(--model.density.init_args.noise_math true) ;;
+    pxl) XA+=(--model.density.init_args.pxf_linear true) ;;
+    m39) XA+=(--model.renderer.init_args.inv_homog true --model.renderer.init_args.exact_strip_cull true --model.metric.init_args.fused_reg true
+              --model.density.init_args.noise_math true --model.density.init_args.pxf_linear true) ;;
     # ★ 11-19 nodo（使用者「試試」）：海面起點改用不去下方離群的版本（拆解：--drop_outliers 讓地下層 +0.18～+0.41；平面 v2＝另算名額＋去離群 +0.22～+0.40；
     #   PSNR 全打平）=> 起點目錄 <原名去 _crop>nd_crop（prep_fullscene_sea9.sh initnd 產）；只改起點，其他照舊
     nodo) [[ " ${XT[*]} " =~ \ sea3d[a-z]*\  ]] || { echo "⛔ nodo 要和 sea3d* 一起寫（只換海面起點）"; exit 2; } ;;
