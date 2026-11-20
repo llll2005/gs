@@ -138,7 +138,8 @@ def plot_pipe(prep_tsv, byblock, merge_s, test_s, out):
         v = sum(s for _, s, gg in stages if gg == g)
         a1.barh(0, v / 3600, left=x, height=0.6, color=grp[g][1], edgecolor=SURF, linewidth=2)
         if v / tot >= 0.08:
-            a1.text(x + v / 7200, 0, f"{grp[g][0]}\n{v / 3600:.2f} h（{100 * v / tot:.0f}%）", ha="center", va="center", fontsize=9, color=INK)
+            sub = f"\n純訓練 {bb['train'] / 3600:.2f} h＋啟動／存檔 {(v - bb['train']) / 3600:.2f} h" if g == 1 else ""
+            a1.text(x + v / 7200, 0, f"{grp[g][0]}\n{v / 3600:.2f} h（{100 * v / tot:.0f}%）{sub}", ha="center", va="center", fontsize=9, color=INK)
         else:   # 太窄的段：標在條的右邊
             a1.text(x + v / 3600 + tot / 3600 * 0.01, 0, f"{grp[g][0]} {v / 60:.0f} 分", ha="left", va="center", fontsize=9, color=INK)
         x += v / 3600
