@@ -134,10 +134,15 @@ parse() {
 if [ "$1" = eval ]; then
   B=${2:?塊}; TAG=${3:?標籤}; shift 3
   # TUNE_BASE／TUNE_BASE_LBL＝評估的基準跑次與名稱（預設新基準 30k；11-10 3x3 改建在新基準＋鄰域平面上 => 基準換成 30k 的鄰域平面臂）
-  BASE=${TUNE_BASE:-$NB_RUN}; BLBL=${TUNE_BASE_LBL:-新基準30k}
-  R=(); ARGS=("$BLBL=$BASE"); SW=($A_RUN $BASE)
-  [ "$BASE" = "$NB_RUN" ] || { ARGS+=(新基準30k=$NB_RUN); SW+=($NB_RUN); }
-  ARGS+=(A+dist4=$A_RUN)
+  # ★ 11-20 收尾（使用者「都用我們最終設定」）：不再固定帶「新基準30k」「A+dist4」兩個舊參考列（跑次已刪）；TUNE_REFS=1 才帶。
+  #   TUNE_BASE 必填（＝對照跑次，例：現行配方）。
+  [ -n "${TUNE_BASE:-}" ] || { echo "⛔ eval 要給 TUNE_BASE（對照跑次）與 TUNE_BASE_LBL"; exit 2; }
+  BASE=$TUNE_BASE; BLBL=${TUNE_BASE_LBL:-對照}
+  R=(); ARGS=("$BLBL=$BASE"); SW=($BASE)
+  if [ "${TUNE_REFS:-0}" = 1 ]; then
+    [ "$BASE" = "$NB_RUN" ] || { ARGS+=(新基準30k=$NB_RUN); SW+=($NB_RUN); }
+    ARGS+=(A+dist4=$A_RUN); SW=($A_RUN "${SW[@]}")
+  fi
   # TUNE_EXTRA="名稱=跑次 ..."：另外帶幾個現成跑次一起比（例：合併地下 v1＝g44s30ksfm10nbmvu_best1maskdistrfed10b4）
   for kv in ${TUNE_EXTRA:-}; do
     [ -d "outputs/${TUNE_ROOT:-lab}/${kv#*=}/blocks/block_$B" ] && { ARGS+=("$kv"); SW+=("${kv#*=}"); } || echo "⚠ 缺 $kv"
