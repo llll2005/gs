@@ -884,6 +884,14 @@ class MCMC2DGSDensityController(MCMCDensityController):
     ⚠ 非位元等價（RNG 串流不同），需要端到端驗分數。
     ⚠ 與 `fast_noise` 互補：那個是代數改寫（不 materialize N x 3 x 3），這個是減少 N。"""
 
+    pxf_linear: bool = False
+    """★ 2026-11-21 純數學化簡 #11（紀錄/實驗分析/39；tools/probe/pxfloor_time_1121.py）：px_floor 下限的重算線性化＋解析度改變不重算。
+    ① 可見性 0 <= u < W、0 <= v < H、z > 0 乘上 z > 0 之後都是 (X, 1) 的線性函數（u·z、(W − u)·z、v·z、(H − v)·z、z），值 z/fx 也是 =>
+       每顆 x 每台相機的投影＋除法換成一次 [n, 4] @ [4, 5K] 的矩陣乘＋比較（FP32、不用 TF32）。
+       本機 b2（143 萬顆、1009 台相機）1650 -> 595 ms；可見與否 0 顆不同、值差 ≤ 9.5e-7（log 空間）。
+    ② fl = log(kappa·q / res)，res 只是加法常數 => 解析度改變時 fl += log(res_old) − log(res_new)（精確），不必重投影（三段低解析度省 3 次全量重算）。
+    預設關。"""
+
     noise_math: bool = False
     """★ 2026-11-21 純數學化簡 #4＋#5（紀錄/實驗分析/39；微基準 tools/probe/noise_bench_1121.py）。需 `noise_gate_eps` > 0，取代 `fast_noise` 那條路徑：
     ① 閘門 sigmoid(100(0.005 − σ(x))) > eps 是 opacity 的單調函數 => 直接比原始參數 x < logit(0.005 − logit(eps)/100)（eps=1e-3 時 −2.526），不必對全部 N 算兩次 sigmoid；
@@ -2787,6 +2795,34 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             out[i:i + chunk] = torch.where(torch.isfinite(q), torch.log(kappa * q / max(res, 1e-6)), torch.full_like(q, float("-inf")))
         return out
 
+    @staticmethod
+    def _px_floor_log_linear(means, cams, res: float, kappa: float, chunk: int = 8192):
+        """★ 11-21 與 _px_floor_log 同義（見 config.pxf_linear）：可見性與 z/fx 都是 (X,1) 的線性函數 => 一次 GEMM＋比較。"""
+        dev = means.device
+        W2C = cams.world_to_camera.to(dev).float()
+        fx = cams.fx.to(dev).float(); fy = cams.fy.to(dev).float(); cx = cams.cx.to(dev).float(); cy = cams.cy.to(dev).float()
+        Wd = cams.width.to(dev).float(); Hd = cams.height.to(dev).float()
+        K = W2C.shape[0]
+        Mx = W2C[:, :, 0]; My = W2C[:, :, 1]; Mz = W2C[:, :, 2]      # [K,4]：對 (X,1) 的相機座標係數（p_cam = [p,1] @ W2C）
+        Lu = fx[:, None] * Mx + cx[:, None] * Mz                     # u·z
+        Lv = fy[:, None] * My + cy[:, None] * Mz                     # v·z
+        A = torch.cat([Mz / fx[:, None], Lu, Wd[:, None] * Mz - Lu, Lv, Hd[:, None] * Mz - Lv], 0).T.contiguous()   # [4, 5K]
+        zmin = (1e-6 / fx)[None]
+        out = torch.empty(means.shape[0], device=dev)
+        prev = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = False
+        try:
+            for i in range(0, means.shape[0], chunk):
+                X = means[i:i + chunk].float()
+                P = torch.cat([X, torch.ones_like(X[:, :1])], 1) @ A
+                z, u, uw, v, vh = P.split(K, 1)
+                vis = (z > zmin) & (u >= 0) & (uw > 0) & (v >= 0) & (vh > 0)
+                q = torch.where(vis, z, torch.full_like(z, float("inf"))).min(1).values
+                out[i:i + chunk] = torch.where(torch.isfinite(q), torch.log(kappa * q / max(res, 1e-6)), torch.full_like(q, float("-inf")))
+        finally:
+            torch.backends.cuda.matmul.allow_tf32 = prev
+        return out
+
     def _px_floor_clamp(self, outputs, batch, gaussian_model, global_step: int, pl_module) -> None:
         """每步結束：尺度夾在「最近可見相機裡 px_floor 像素」以上（點精靈吸收態的修法；見 config.px_floor）。"""
         kappa = float(self.config.px_floor)
@@ -2795,10 +2831,18 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         fl = getattr(self, "_pxf_log", None)
         k = max(1, int(getattr(self.config, "px_floor_interval", 50) or 50))
         with torch.no_grad():
+            _lin = bool(getattr(self.config, "pxf_linear", False))
+            _r0 = getattr(self, "_pxf_res", None)
+            if _lin and fl is not None and fl.shape[0] == m.shape[0] and global_step % k != 0 and _r0 is not None and res != _r0:
+                # ★ 11-21 pxf_linear ②：fl = log(kappa q / res) => 解析度改變只平移（精確；-inf 照舊）
+                fl = fl + (math.log(max(_r0, 1e-6)) - math.log(max(res, 1e-6)))
+                self._pxf_log = fl; self._pxf_res = res
+                print(f"[px-floor] step {global_step}：解析度 x{_r0:g} -> x{res:g}，下限平移 {math.log(max(_r0, 1e-6)) - math.log(max(res, 1e-6)):+.4f}（log），不重投影", flush=True)
             if fl is None or fl.shape[0] != m.shape[0] or global_step % k == 0 or res != getattr(self, "_pxf_res", None):
                 import time
                 _t0 = time.perf_counter()
-                fl = self._px_floor_log(m, pl_module.trainer.datamodule.dataparser_outputs.train_set.cameras, res, kappa)
+                _fn = self._px_floor_log_linear if _lin else self._px_floor_log
+                fl = _fn(m, pl_module.trainer.datamodule.dataparser_outputs.train_set.cameras, res, kappa)
                 if not getattr(self, "_pxf_announced", False) and m.is_cuda:
                     torch.cuda.synchronize()
                 self._pxf_ms = (time.perf_counter() - _t0) * 1e3
