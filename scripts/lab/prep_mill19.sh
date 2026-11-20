@@ -2,7 +2,7 @@
 # ★ 2026-11-19 論文③ 真實資料 Mill-19（Mega-NeRF；使用者同意下載）：把一個場景整理成我們流程要的樣子，再跑新底的資料準備。
 #   協定照 CityGS 第一版：載入時降採樣 4 倍、train 訓練、val 評測（val 全圖，不做外觀嵌入）；COLMAP 用 CityGS 提供的 colmap_results。
 #   新底 9 去掉海面元件（Mill-19 沒有水）；起點用 dense（sfmfill_tri44_crop）；4x4 分塊（沿用 44 的檔名慣例）。
-# 用法（佇列）：[solo] bash scripts/lab/prep_mill19.sh <building|rubble>
+# 用法（佇列）：[solo] bash scripts/lab/prep_mill19.sh <building|rubble>      PREP_FROM=<N>＝從第 N 步接著跑（前面的產出照用、計時表不清空）
 #   之後訓練：CITYGS_DATA=data/mill19/<場景>_ours CITYGS_DSF=4 CITYGS_CAP_ALLOC=configs/cap_alloc_sfm_g44_mill19_<場景>.json CITYGS_DEMO=1 \
 #             CITYGS_RUN_NAME=lab/mill19_<場景>_base9 bash scripts/lab/task_tune25.sh <塊> s17g70+np16+tricap0p5+cmflat+trimask+lres3+geo8+log0+dense+capfc+sbox+pbw+geo50+regvis
 case "${1:-}" in -h|--help|"") sed -n 2,7p "$0"; exit 0 ;; esac
@@ -12,8 +12,9 @@ SC=$1; SRC=data/mill19/$SC-pixsfm; DS=data/mill19/${SC}_ours; TS=data/mill19/${S
 PY="conda run -n gspl --no-capture-output python -u"
 [ -d "$SRC/train/rgbs" ] && [ -d "$SRC/val/rgbs" ] || { echo "⛔ 缺 $SRC/{train,val}/rgbs（先下載解壓 $SC-pixsfm.tgz）"; exit 2; }
 [ -d "data/colmap_results/$SC/train/sparse/0" ] && [ -d "data/colmap_results/$SC/val/sparse/0" ] || { echo "⛔ 缺 data/colmap_results/$SC/{train,val}/sparse/0"; exit 2; }
-TL="$DS/prep_timing.tsv"; mkdir -p "$DS" "$TS"; : > "$TL"
-stage () { local n=$1; shift; local t0; t0=$(date +%s); echo "▶ $(date '+%H:%M:%S') $n"; "$@"; local rc=$?
+TL="$DS/prep_timing.tsv"; mkdir -p "$DS" "$TS"; FROM=${PREP_FROM:-1}; [ "$FROM" = 1 ] && : > "$TL"
+stage () { local n=$1; shift; [ "${n%% *}" -ge "$FROM" ] || { echo "（跳過 $n：PREP_FROM=$FROM）"; return 0; }
+  local t0; t0=$(date +%s); echo "▶ $(date '+%H:%M:%S') $n"; "$@"; local rc=$?
   printf '%s\t%d\t%d\n' "$n" "$(( $(date +%s) - t0 ))" "$rc" >> "$TL"; echo "✔ $n：$(( $(date +%s) - t0 )) s（rc=$rc）"; [ "$rc" = 0 ] || { echo "⛔ $n 失敗"; exit 3; }; }
 # 0 目錄：input -> rgbs、sparse 複製（我們的工具會在 sparse 旁寫快取，不動 colmap_results）
 [ -e "$DS/input" ] || ln -s "$(realpath $SRC/train/rgbs)" "$DS/input"
@@ -43,11 +44,13 @@ s8 () { seq 0 15 | xargs -P "$J" -I{} $PY tools/make_tri_dense_init.py "$DS" --b
 stage "1 單目深度（存 1/4 解析度）‖ 預縮影像 4 倍" s1
 stage "2 單目深度尺度" $PY utils/get_depth_scales.py "$DS" --depth_dir "$DS/estimated_depths" --output "$DS/estimated_depth_scales.json"
 stage "3 校正深度（相機 / 8）" $PY tools/make_tri_depths.py "$DS" --nproc 16 --down 8
-stage "4 分區 4x4" $PY utils/partition_from_colmap.py "$DS" --block_dim 4 4 --content_threshold 0.08
+# ★ 11-21 rubble 的 SfM 範圍不含原點（x 最小 −953.6、y 最小 6.0）=> 分區原點要 auto（點雲外接盒中心）；building 用預設原點 (0,0) 已分好，不改
+PART_ORIGIN=(); [ "$SC" = rubble ] && PART_ORIGIN=(--origin auto)
+stage "4 分區 4x4" $PY utils/partition_from_colmap.py "$DS" --block_dim 4 4 --content_threshold 0.08 "${PART_ORIGIN[@]}"
 stage "5 SfM＋補點底＋裁盒" s5
 stage "6 塊外遮罩（校正深度版）" s6
 stage "7 顆數分配（SfM 點數）" $PY tools/sfm_cap_alloc.py "$DS" --out "$ALLOC"
 stage "8 稠密起點" s8
-stage "9 上限遮罩（躺平）" $PY tools/make_cap_masks.py --data "$DS" --kind flat
+stage "9 上限遮罩（躺平）" $PY tools/make_cap_masks.py --data "$DS" --kind flat --blocks $(seq 0 15)   # ★ 11-21 補 --blocks（必填；11-20 building 在這步失敗）
 echo "合計 $(awk -F'\t' '{s+=$2} END{print int(s/60)}' "$TL") 分（$TL）"
 echo "DONE prep_mill19 $SC"
