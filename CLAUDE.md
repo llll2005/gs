@@ -25,7 +25,7 @@ the final-report reference); improvements adopted since 10-30 => `紀錄/進展_
 with a `_至<date>` suffix: 研究總覽 (now `研究總覽_v6_至2026-11-19.md`), 完整Pipeline數學詳解, 機制出處, 實驗分析 30/37/38, 規格 3–6, 指令手冊, 從零部署,
 理論_ADMM, 論文核對表, 現行方案與公式, 演算法與變數盤點, flow figures. New experiment lines start at `紀錄/實驗分析/39_*`. Current base = 新底 9
 (`task_tune25.sh <blk> s17g70+np16+tricap0p5+cmflat+trimask+lres3+geo8+log0+sea3dt+capfc+sbox+pbw+seabackt+seafl+seafl2+seafl3+seaflb+geo50+regvis+nodo`,
-full scene 27.750/.8631/.1599 at 1.23 h). **Default since 11-19 (user) = that arm + `+c15` (avg 1.5M/block): 27.940/.8721/.1425 at 1.49 h, beats CityGS on all three metrics.** Pointers below to 研究總覽 §0 / 完整Pipeline數學詳解 are historical.**
+full scene 27.750/.8631/.1599 at 1.23 h). **Default since 11-19 (user) = that arm + `+c15` (avg 1.5M/block): 27.940/.8721/.1425 at 1.49 h, beats CityGS on all three metrics.** **11-20 (user): depth-support gate removed => current recipe = that arm + `+c15+nogate`** (gate showed no measurable effect on the 1.5M base; runs queued before 11-20 keep the gate so they stay comparable to the 1.5M reference). Pointers below to 研究總覽 §0 / 完整Pipeline數學詳解 are historical.**
 
 **Records have a single entry (reorganised 2026-10-03): `紀錄/README.md` -> `紀錄/研究總覽.md` (the only body;
 §0 = one-page current status, §10 = which old-era conclusions were re-measured) -> `紀錄/實驗分析/NN_*.md`, each paired with a
