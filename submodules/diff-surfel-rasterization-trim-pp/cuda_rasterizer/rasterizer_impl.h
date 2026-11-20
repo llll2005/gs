@@ -35,6 +35,7 @@ namespace CudaRasterizer
 		int* internal_radii;
 		float2* means2D;
 		float* transMat;
+		float* aih;          // ★ 2026-11-21 反單應交點（P*9；只在 lean bit 16384 時填，見 FORWARD::computeAIH）
 		float4* normal_opacity;
 		float* rgb;
 		uint32_t* point_offsets;

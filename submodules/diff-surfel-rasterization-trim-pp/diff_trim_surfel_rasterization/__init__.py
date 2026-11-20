@@ -114,7 +114,11 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-11-16 bit12 = A-1 逐 warp 精確支撐盒跳過（lean 與非 record 的完整路徑；渲染逐位元相同）
                 | (4096 if getattr(raster_settings, "skip_box", False) else 0)
                 # ★ 2026-11-16 bit13 = A-3 配對位元存 8 個 warp 的遮罩（需 bwd_pair_bit；forward 寫、backward 逐 warp 跳）
-                | (8192 if getattr(raster_settings, "pair_bit_warp", False) else 0)),
+                | (8192 if getattr(raster_settings, "pair_bit_warp", False) else 0)
+                # ★ 2026-11-21 bit14 = 反單應交點（forward MODE 1；backward 同步 bit10）
+                | (16384 if getattr(raster_settings, "inv_homog", False) else 0)
+                # ★ 2026-11-21 bit15 = 精確支撐 vs 像素條（需 skip_box 與 inv_homog；forward MODE 1；渲染逐位元相同）
+                | (32768 if getattr(raster_settings, "exact_strip_cull", False) else 0)),
             sh_rest,
             # ★ 2026-11-05 逐像素不計分遮罩（uint8 H*W，1＝略過；只在 lean 訓練 forward 生效）；None＝空張量＝不略過
             (getattr(raster_settings, "pix_skip", None) if getattr(raster_settings, "pix_skip", None) is not None
@@ -259,7 +263,11 @@ class _RasterizeGaussians(torch.autograd.Function):
                 | (128 if getattr(raster_settings, "alpha_999", False) else 0)
                 # ★ 2026-11-16 bit8 = A-1 逐 warp 精確支撐盒跳過、bit9 = A-3 逐 warp 配對位元（＋近平面判準跟 forward 一樣）
                 | (256 if getattr(raster_settings, "skip_box", False) else 0)
-                | (512 if (getattr(raster_settings, "pair_bit_warp", False) and getattr(raster_settings, "bwd_pair_bit", False)) else 0),
+                | (512 if (getattr(raster_settings, "pair_bit_warp", False) and getattr(raster_settings, "bwd_pair_bit", False)) else 0)
+                # ★ 2026-11-21 bit10 = 反單應交點（只在 renderCUDA_opt 非 DST；必須與 forward 的 lean bit 16384 一起）
+                | (1024 if getattr(raster_settings, "inv_homog", False) else 0)
+                # ★ 2026-11-21 bit11 = 幾何配對遮罩（只在 GEOM renderCUDA；opt 路徑用配對位元）
+                | (2048 if getattr(raster_settings, "exact_strip_cull", False) else 0),
                 sh_rest, a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp)
 
         _cap = _depth_cap_of(raster_settings) if geom_grad else None    # ★ 11-11 逐貢獻深度上限：backward 期間再把上限圖交給光柵器
@@ -368,6 +376,14 @@ class GaussianRasterizationSettings(NamedTuple):
     # ★ 2026-11-16 A-3（Fable）：配對位元（bwd_pair_bit）從「整個 tile 有沒有人混合」改成「8 個 warp 各自有沒有人混合」，backward 每個 warp
     #   只走自己位元為 1 的配對；同時 backward 的近平面判準改成跟 forward 一樣（否則 forward 判掉的側對面元 backward 還會算梯度）。需 bwd_pair_bit。
     pair_bit_warp : bool = False
+    # ★ 2026-11-21 純數學化簡 #1（紀錄/實驗分析/39）：射線-面元交點改用反單應 p' = (0,0,1/Z_c) + (x-x_mu) q0 + (y-y_mu) q1（每顆面元 9 個數），
+    #   深度＝1/p'.z（本來就要的倒數），取代每配對的兩平面外積與兩次除法；backward 每配對只算 dL/dp'，每顆一次換回 dL/dT。
+    #   只在 lean 訓練 forward（MODE 1）與 backward 的 opt 非 DST 路徑生效；數學上相同、浮點誤差與原寫法同級（不逐位元相同）。
+    inv_homog : bool = False
+    # ★ 2026-11-21 純數學化簡 #2：幾何配對遮罩——每個（tile, 面元）一次算出 8 個 warp（16x2 像素條）是否碰到精確支撐「橢圓∪低通圓盤」
+    #   （每列一元二次、無除法、放寬 1%＋0.02 保守），warp 只查自己那一位。forward 的 lean／完整路徑（非 record）與 GEOM backward。
+    #   離線量 skip_box 不跳的 warp 迭代再刪 41%；被跳的配對 alpha 必 < 1/255 => 渲染逐位元相同（V/C 同 skip_box：覆蓋數照算、V 少 < T/255 的項）。
+    exact_strip_cull : bool = False
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

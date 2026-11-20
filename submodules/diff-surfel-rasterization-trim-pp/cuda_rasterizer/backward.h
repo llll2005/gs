@@ -50,7 +50,8 @@ namespace BACKWARD
 		float* dL_dopacity,
 		float* dL_dcolors,
 		int flags = 1,    // bit0 geom、bit1 關 absgrad（見 backward.cu）
-		const uint8_t* pair_used = nullptr);   // ★ 2026-10-16 配對貢獻 bit（只在 renderCUDA_opt 用）
+		const uint8_t* pair_used = nullptr,   // ★ 2026-10-16 配對貢獻 bit（只在 renderCUDA_opt 用）
+		const float* aih = nullptr);   // ★ 2026-11-21 反單應交點（只在 renderCUDA_opt 非 DST；nullptr＝原寫法）
 
 	void preprocess(
 		int P, int D, int M,

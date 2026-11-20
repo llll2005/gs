@@ -59,7 +59,11 @@ def cmd_dump(a):
     renderer.bwd_sat_skip = bool(getattr(a, "bwd_sat", 0))   # ★ 2026-10-09 backward 最佳化
     renderer.bwd_reduce = bool(getattr(a, "bwd_red", 0))
     renderer.bwd_pair_bit = bool(getattr(a, "pair_bit", 0))   # ★ 2026-10-16 配對貢獻 bit
-    ck = torch.load(a.ckpt, map_location="cpu")
+    _aih = int(getattr(a, "aih", -1))   # ★ 2026-11-21 反單應交點：1／0 明確指定；-1＝沿用 ckpt（舊 ckpt 沒有這個屬性 => 關）
+    if _aih >= 0:
+        renderer.inv_homog = bool(_aih)
+    renderer.exact_strip_cull = bool(int(getattr(a, "xcull", 0)))   # ★ 11-21 精確支撐 vs 像素條（需 inv_homog＋skip_box）
+    ck = torch.load(a.ckpt, map_location="cpu", weights_only=False)
     dmh = ck["datamodule_hyper_parameters"]
     _pp = dmh["parser"]
     if getattr(_pp, "points_from", None) == "ply" and not os.path.exists(os.path.join(dmh["path"], _pp.ply_file)):
@@ -69,6 +73,11 @@ def cmd_dump(a):
     del ck
     idx = np.linspace(0, len(cams) - 1, a.ncam).round().astype(int).tolist()
     params = dict(model.gaussians.items())
+    _pt = float(getattr(a, "perturb", 0.0) or 0.0)
+    if _pt > 0:   # ★ 11-21 捨入等級的輸入擾動（位置 × (1 + eps·randn)）：量「同一個演算法對浮點捨入的敏感度」，當作不同捨入實作的比較基準
+        with torch.no_grad():
+            g_ = torch.Generator(device=dev).manual_seed(4321)
+            params["means"].mul_(1 + _pt * torch.randn(params["means"].shape, device=dev, generator=g_))
     for p in params.values():
         p.requires_grad_(True)
     bg = torch.zeros(3, device=dev)
@@ -87,7 +96,7 @@ def cmd_dump(a):
         return out
 
     res = {"renders": [], "radii": [], "trans": [], "cover": [], "tiles": [], "dists": [], "N": N,
-           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}{('+ab' + str(_ab)) if _ab >= 0 else ''}{'+sat' if renderer.bwd_sat_skip else ''}{'+red' if renderer.bwd_reduce else ''}{'+pb' if renderer.bwd_pair_bit else ''}{('+dist' + str(DW)) if DW > 0 else ''}"}
+           "lean": f"{a.lean}{'+rr' if renderer.record_reduce else ''}{'+tc' if renderer.tile_cull else ''}{('+ab' + str(_ab)) if _ab >= 0 else ''}{'+sat' if renderer.bwd_sat_skip else ''}{'+red' if renderer.bwd_reduce else ''}{'+pb' if renderer.bwd_pair_bit else ''}{('+dist' + str(DW)) if DW > 0 else ''}{'+aih' if getattr(renderer, 'inv_homog', False) else ''}{'+xc' if getattr(renderer, 'exact_strip_cull', False) else ''}"}
     gsum = {k: torch.zeros_like(p, dtype=torch.float64) for k, p in params.items()}
     vsum = None
     for c in idx:
@@ -521,6 +530,9 @@ def main():
     d.add_argument("--tile-cull", dest="tile_cull", type=int, default=0)
     d.add_argument("--bwd-sat", dest="bwd_sat", type=int, default=0); d.add_argument("--bwd-red", dest="bwd_red", type=int, default=0)
     d.add_argument("--pair-bit", dest="pair_bit", type=int, default=0)
+    d.add_argument("--aih", type=int, default=-1, help="★ 11-21 反單應交點 1／0；-1＝沿用 ckpt")
+    d.add_argument("--xcull", type=int, default=0, help="★ 11-21 精確支撐 vs 像素條 1／0")
+    d.add_argument("--perturb", type=float, default=0.0, help="★ 11-21 位置乘 (1 + eps·randn)；量浮點捨入敏感度用（例 1.2e-7 ≈ float32 的 1 ulp）")
     d.add_argument("--dist", type=float, default=0.0, help="loss 加 dist*mean(rend_dist)；lean=1 時走 dist 版 lean（2026-10-19）")
     d.add_argument("--absgrad", type=int, default=-1, help="1/0＝absgrad_gate 開且明確要／不要 absgrad 累加；-1＝不碰")
     c = sp.add_parser("compare"); c.add_argument("a"); c.add_argument("b"); c.add_argument("--label", default="")

@@ -278,6 +278,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
+	obtain(chunk, geom.aih, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
@@ -392,6 +393,8 @@ int CudaRasterizer::Rasterizer::forward(
 		throw std::runtime_error("For non-RGB, provide precomputed Gaussian colors!");
 	}
 
+	// ★ 2026-11-21 lean bit 16384 = 反單應交點、bit 32768 = 幾何配對遮罩：兩者都要每顆 9 個數，preprocess 順便寫（forward.cu aihFromGeom）
+	const bool aih_f = ((lean & 16384) || (lean & 32768)) && !record_transmittance && transMat_precomp == nullptr;
 	// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
@@ -420,7 +423,8 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.rects,
 		exact_conic_aabb,
 		prefiltered,
-		shs_rest
+		shs_rest,
+		aih_f ? geomState.aih : nullptr
 	), debug)
 
 	// Compute prefix sum over full list of touched tile counts by Gaussians
@@ -500,7 +504,8 @@ int CudaRasterizer::Rasterizer::forward(
 	}
 	// ★ 2026-11-16 A-1／A-3（Fable；使用者「要改 cuda 的都同意」）：bit 4096＝逐 warp 精確支撐盒跳過（lean 與非 record 的完整路徑）、
 	//   bit 8192＝配對位元改存 8 個 warp 的遮罩（需 bit 16）。預設都關＝原行為。
-	FORWARD::setSkipFlags(((lean & 4096) ? 1 : 0) | ((lean & 8192) ? 4 : 0));
+	// ★ 2026-11-21 bit 32768＝精確支撐 vs 像素條（需 bit 4096 skip_box 與 bit 16384 反單應；forward MODE 1）
+	FORWARD::setSkipFlags(((lean & 4096) ? 1 : 0) | ((lean & 8192) ? 4 : 0) | ((lean & 16384) ? 8 : 0) | ((lean & 32768) ? 16 : 0));
 	FORWARD::setRecordT((lean & 256) != 0);   // ★ 2026-11-07 bit 256 = record 模式累加 Σ T（逐顆可見度）
 	FORWARD::setTSat((lean & 1024) ? 0.001f : ((lean & 2048) ? 0.00001f : 0.0001f));   // ★ 2026-11-08 bit 1024 = 飽和門檻 1e-3、bit 2048 = 1e-5（原 1e-4）
 	FORWARD::setAlphaMax((lean & 512) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 512 = alpha 上限 0.999
@@ -529,7 +534,9 @@ int CudaRasterizer::Rasterizer::forward(
 		// ★ 2026-11-05 不計分像素只在 lean 訓練 forward（MODE 1／5）略過；完整路徑、record、audit 一律不略過
 		(fmode == 1 || fmode == 5) ? pix_skip : nullptr,
 		// ★ 2026-11-05 bit 128 = 訓練中累加 V/C 走 warp 先加總（forward.cu renderCUDA 的 WACC）
-		(lean & 128) != 0 && (fmode == 1 || fmode == 5)), debug)
+		(lean & 128) != 0 && (fmode == 1 || fmode == 5),
+		// ★ 2026-11-21 反單應 9 個數：MODE 1 拿來算交點（位元 8）、MODE 0／1／5 拿來算幾何配對遮罩（位元 16）
+		(aih_f && (fmode == 0 || fmode == 1 || fmode == 5)) ? geomState.aih : nullptr), debug)
 
 	return num_rendered;
 }
@@ -595,7 +602,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* transMat_ptr = (transMat_precomp != nullptr) ? transMat_precomp : geomState.transMat;
 	BACKWARD::setAlphaMax((geom_grad & 128) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 128 = alpha 上限 0.999（與 forward 相同）
 	// ★ 2026-11-16 backward 旗標 bit 256＝逐 warp 精確支撐盒跳過（opt 與 GEOM 兩條路徑）、bit 512＝逐 warp 配對位元（需 bit 16；同時把近平面判準改成跟 forward 一樣）
-	BACKWARD::setSkipFlags(((geom_grad & 256) ? 2 : 0) | ((geom_grad & 512) ? 4 : 0));
+	BACKWARD::setSkipFlags(((geom_grad & 256) ? 2 : 0) | ((geom_grad & 512) ? 4 : 0) | ((geom_grad & 2048) ? 16 : 0));
 	CHECK_CUDA(BACKWARD::render(
 		tile_grid,
 		block,
@@ -620,7 +627,9 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dcolor,
 		geom_grad,
 		// ★ 2026-10-16 bit 16：用 forward 記下的配對貢獻 bit（forward 同一個旗標；非 lean 時 forward 已把它填成全 1）
-		(geom_grad & 16) ? binningState.pair_used : nullptr), debug)
+		(geom_grad & 16) ? binningState.pair_used : nullptr,
+		// ★ 2026-11-21 bit 1024 = 反單應交點（forward 同一步已由 lean bit 16384 填好 geomState.aih；BACKWARD::render 再判斷是否適用）
+		(geom_grad & (1024 | 2048)) ? geomState.aih : nullptr), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,

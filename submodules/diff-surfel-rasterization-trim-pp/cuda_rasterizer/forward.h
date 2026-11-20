@@ -50,7 +50,8 @@ namespace FORWARD
 		ushort4* rects,
 		bool exact_conic_aabb,
 		bool prefiltered,
-		const float* shs_rest = nullptr);   // ★ 2026-10-24 非 nullptr => SH 分開存放（shs 是 dc，M 是含 dc 的總係數數）
+		const float* shs_rest = nullptr,   // ★ 2026-10-24 非 nullptr => SH 分開存放（shs 是 dc，M 是含 dc 的總係數數）
+		float* aih = nullptr);   // ★ 2026-11-21 反單應 9 個數（非 nullptr 時 preprocess 順便寫；見 forward.cu aihFromGeom）
 
 	// Main rasterization method.
 	// ★ 2026-11-07 record 模式累加 Σ T 而不是 Σ T*alpha（lean bit 256；見 forward.cu g_record_T）
@@ -86,7 +87,13 @@ namespace FORWARD
 		int mode = 0,
 		uint8_t* pair_used = nullptr,   // ★ 2026-10-16 配對貢獻 bit（只在 mode 1 寫）
 		const uint8_t* pix_skip = nullptr,   // ★ 2026-11-05 逐像素不計分遮罩（只在 mode 1／5 讀）
-		bool wacc = false);   // ★ 2026-11-05 訓練中累加 V/C 走 warp 先加總（只在 mode 1／5 且有累加時）
+		bool wacc = false,   // ★ 2026-11-05 訓練中累加 V/C 走 warp 先加總（只在 mode 1／5 且有累加時）
+		const float* aih = nullptr);   // ★ 2026-11-21 反單應交點（只在 mode 1 讀；nullptr＝原寫法）
+
+	// ★ 2026-11-21 反單應交點的每顆 9 個數（q0, q1, x_mu, y_mu, 1/Z_c）；只寫 radii > 0 的顆粒
+	void computeAIH(int P, const float* means3D, const glm::vec2* scales, const glm::vec4* rotations,
+		const float* viewmatrix, const float focal_x, const float focal_y, const int W, const int H, const float pp_shifty,
+		const int* radii, float* aih);
 }
 
 

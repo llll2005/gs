@@ -331,4 +331,54 @@ throw std::runtime_error(cudaGetErrorString(ret)); \
 } \
 }
 
+// ★ 2026-11-21 純數學化簡 #2（紀錄/實驗分析/39；離線量測 tools/probe/conic_strip_cull_1121.py：skip_box 不跳的 warp 迭代還能再刪 41%）：
+//   warp 層級「精確支撐 vs 16x2 像素條」測試，取代外接矩形的鬆弛。支撐＝{rho3d <= tau} ∪ {rho2d <= tau}，tau = 2 ln(255 o)。
+//   rho3d <= tau <=> F = p'x^2 + p'y^2 - tau p'z^2 <= 0，p' = (dx q0.x + dy q1.x, dx q0.y + dy q1.y, iz + dx q0.z + dy q1.z)（反單應、錨定）。
+//   每列像素中心 y 固定 => F(dx) = A dx^2 + B dx + C；[dx0, dx1] 上有 F <= 0 <=> 端點 <= 0，或（A > 0、頂點在區間內、B^2 >= 4AC）——不需要除法。
+//   低通圓盤：rho2d = |xy0 - pix|^2 / FilterSize^2 <= tau <=> 距離^2 <= 0.5 tau。tau 由呼叫端放寬（保守）；F 對 p' 齊二次 => p'z < 0 的另一葉只會多放行（安全）。
+__device__ __forceinline__ bool aihStripHit(const float3 q0, const float3 q1, const float3 an, const float tau, const float2 xy0,
+	const float sx0, const float sx1, const float sy0, const float sy1)
+{
+	const float A = q0.x * q0.x + q0.y * q0.y - tau * q0.z * q0.z;
+	const float K = q0.x * q1.x + q0.y * q1.y;
+	const float L = q1.x * q1.x + q1.y * q1.y;
+	const float dx0 = sx0 - an.x, dx1 = sx1 - an.x;
+	const float rd2 = 0.5f * tau;
+	const float cxn = fminf(fmaxf(xy0.x, sx0), sx1) - xy0.x;
+	#pragma unroll
+	for (int r = 0; r < 2; r++) {
+		const float yrow = r ? sy1 : sy0;
+		const float dyd = yrow - xy0.y;
+		if (cxn * cxn + dyd * dyd <= rd2) return true;
+		const float dy = yrow - an.y;
+		const float w0 = dy * q1.z + an.z;
+		const float B = 2.f * (dy * K - tau * q0.z * w0);
+		const float C = dy * dy * L - tau * w0 * w0;
+		if ((A * dx0 + B) * dx0 + C <= 0.f || (A * dx1 + B) * dx1 + C <= 0.f) return true;
+		if (A > 0.f && -B >= 2.f * A * dx0 && -B <= 2.f * A * dx1 && B * B >= 4.f * A * C) return true;
+	}
+	return false;
+}
+
+// ★ 11-21 幾何配對遮罩：負責載入這顆面元的那條執行緒，一次算完本 tile 8 個 warp（16x2 像素條）的精確測試，存 8 bit；
+//   之後每個 warp 只查自己那一位（取代每個 warp 32 條 lane 重複算同一個測試；也讓沒有配對位元的路徑——完整路徑 forward／GEOM backward——能用）。
+//   Ag＝反單應 9 個數（q0, q1, x_mu, y_mu, 1/Z_c）；tau 由呼叫端放寬；pix_min＝tile 左上像素。
+__device__ __forceinline__ unsigned aihTileMask(const float* Ag, const float tau, const float2 xy0, const uint2 pix_min)
+{
+	const float3 q0 = {Ag[0], Ag[1], Ag[2]}, q1 = {Ag[3], Ag[4], Ag[5]}, an = {Ag[6], Ag[7], Ag[8]};
+	const float sx0 = (float)pix_min.x + 0.5f, sx1 = sx0 + 15.f;
+	unsigned m = 0u;
+	#pragma unroll
+	for (int w = 0; w < 8; w++) {
+		const float sy0 = (float)pix_min.y + 2.f * w + 0.5f;
+		if (aihStripHit(q0, q1, an, tau, xy0, sx0, sx1, sy0, sy0 + 1.f)) m |= (1u << w);
+	}
+	return m;
+}
+// 放寬的 tau（1%＋0.02，保守）；o <= 1/255 不會進 binning，保險起見回傳極大值（永不跳）
+__device__ __forceinline__ float aihTauLoose(const float op)
+{
+	return (op > 1.0f / 255.0f) ? (2.f * logf(255.f * op) * 1.01f + 0.02f) : 1e30f;
+}
+
 #endif

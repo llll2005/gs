@@ -2308,6 +2308,73 @@ def n38_overhead(d):
     save(fig, d, "n38_overhead.png")
 
 
+# ══════════════ 39 純數學化簡（11-21；數字＝紀錄/實驗分析/39_純數學化簡.md 的表） ══════════════
+N39_PREC = [  # (寫法, |Δ(u,v)| 中位, p99, dL/dT p99)
+    ("原寫法（外積）", 2.25e-5, 1.02e-3, 1.5e-4),
+    ("反單應：Q float32 伴隨", 4.30e-5, 2.14e-3, None),
+    ("反單應：幾何閉式、不錨定", 4.71e-5, 2.01e-3, 3.2e-4),
+    ("反單應：幾何閉式＋錨定", 2.29e-5, 1.10e-3, 7.2e-5),
+]
+N39_CULL = [("0219", 196632, 117508, 117383), ("1417", 95269, 57536, 56671), ("1879", 25932, 12815, 12695)]
+N39_TIME = [  # (開關, forward＋loss %, backward %, 合計 %, 合計 95% 下限, 上限)
+    ("反單應（獨立 kernel）b2", 1.21, -1.38, -0.36, -0.47, -0.31),
+    ("反單應（併進 preprocess）b2", 0.57, -1.44, -0.60, -0.63, -0.54),
+    ("幾何配對遮罩（反單應關）b2", -4.95, 0.00, -2.05, -2.27, -1.75),
+    ("幾何配對遮罩（反單應開）b2", -6.29, 0.00, -2.54, -2.64, -2.46),
+    ("兩個都開 vs 都關 b2", -5.50, -1.45, -3.10, -3.20, -3.02),
+    ("兩個都開 vs 都關 b4", -3.20, -1.14, -1.95, -2.44, -1.63),
+    ("遮罩用在完整路徑步 b2", 0.73, -0.39, 0.08, -0.04, 0.18),
+]
+
+
+def n39_precision(d):
+    """反單應交點的 float32 精度（對 float64 真值）。"""
+    fig, ax = plt.subplots(figsize=(18, 3.6))
+    x = np.arange(len(N39_PREC)); w = 0.27
+    b1 = ax.bar(x - w, [r[1] for r in N39_PREC], w, color=C1, label="|Δ(u,v)| 中位")
+    b2 = ax.bar(x, [r[2] for r in N39_PREC], w, color=C2, label="|Δ(u,v)| p99")
+    b3 = ax.bar(x + w, [r[3] if r[3] else np.nan for r in N39_PREC], w, color=C3, label="dL/dT 相對誤差 p99")
+    for bs in (b1, b2, b3):
+        for b in bs:
+            h = b.get_height()
+            if np.isfinite(h):
+                ax.annotate(f"{h:.1e}", (b.get_x() + b.get_width() / 2, h), xytext=(0, 2), textcoords="offset points", ha="center", fontsize=7.5, color=INK2)
+    ax.set_yscale("log"); ax.set_xticks(x, [r[0] for r in N39_PREC], fontsize=9); ax.legend(fontsize=8, loc="upper right")
+    ax.set_title("反單應交點：錨定在中心投影後，交點誤差與原寫法同級、梯度 dL/dT 誤差小 2 倍（CPU、b4 真實面元＋相機、float64 當真值）", fontsize=9.5)
+    save(fig, d, "n39_precision.png")
+
+
+def n39_cull(d):
+    """幾何配對遮罩的離線上限：skip_box 不跳 vs 精確測試 vs 離散真值。"""
+    fig, ax = plt.subplots(figsize=(18, 3.4))
+    x = np.arange(len(N39_CULL)); w = 0.27
+    bb = ax.bar(x - w, [r[1] / 1e3 for r in N39_CULL], w, color=MUTED, label="skip_box 不跳（現在實際走的 warp 迭代）")
+    be = ax.bar(x, [r[2] / 1e3 for r in N39_CULL], w, color=C1, label="精確「橢圓∪低通圓盤 vs 像素條」不跳")
+    bt = ax.bar(x + w, [r[3] / 1e3 for r in N39_CULL], w, color=C3, label="離散真值（有像素 alpha >= 1/255）")
+    for bs, rs, k in ((be, N39_CULL, 2), (bt, N39_CULL, 3)):
+        for b, r in zip(bs, rs):
+            ax.annotate(f"{r[k] / r[1]:.1%}", (b.get_x() + b.get_width() / 2, b.get_height()), xytext=(0, 2), textcoords="offset points", ha="center", fontsize=8, color=INK2)
+    ax.set_xticks(x, [f"視角 {r[0]}" for r in N39_CULL]); ax.set_ylabel("（面元, warp）迭代數（千）"); ax.legend(fontsize=8)
+    ax.set_title("精確測試把 skip_box 還在走的 warp 迭代再刪 41%，幾乎貼著真值（b2、各 8,000 顆；未計 T 飽和 => 實際省得較少）", fontsize=9.5)
+    save(fig, d, "n39_cull.png")
+
+
+def n39_time(d):
+    """成對交替計時（本機 4050）：forward＋loss、backward、合計的變化。"""
+    fig, ax = plt.subplots(figsize=(18, 4.2))
+    y = np.arange(len(N39_TIME)); h = 0.26
+    ax.barh(y - h, [r[1] for r in N39_TIME], h, color=C2, label="forward＋loss")
+    ax.barh(y, [r[2] for r in N39_TIME], h, color=C4, label="backward")
+    tb = ax.barh(y + h, [r[3] for r in N39_TIME], h, color=C1, label="合計（誤差線＝95% 區間）",
+                 xerr=[[r[3] - r[4] for r in N39_TIME], [r[5] - r[3] for r in N39_TIME]], error_kw=dict(ecolor=INK2, lw=0.8))
+    for i, r in enumerate(N39_TIME):
+        ax.text(min(r[3], r[4]) - 0.15, i + h, f"{r[3]:+.2f}%", va="center", ha="right", fontsize=8, color=INK2)
+    ax.axvline(0, color=INK2, lw=0.8)
+    ax.set_yticks(y, [r[0] for r in N39_TIME], fontsize=8.6); ax.invert_yaxis(); ax.set_xlabel("對「關」的成對差（%，負＝變快）"); ax.legend(fontsize=8, loc="lower left")
+    ax.set_title("算術少一半（反單應）只省 0.6%；迭代少四成（幾何配對遮罩）省 2.5% => 光柵器受迭代次數限制、不受算術限制", fontsize=9.5)
+    save(fig, d, "n39_time.png")
+
+
 DOCS = {
     "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -2342,6 +2409,7 @@ DOCS = {
     "37_SfM三角形校正深度": ["n37_d1"],
     "37_SfM三角形校正深度_至1113": ["n37_round2", "n37_trimask", "n37_d1"],
     "38_時間拆解與配方瘦身": ["n38_seg", "n38_slim", "n37_round2", "n38_overhead"],
+    "39_純數學化簡": ["n39_precision", "n39_cull", "n39_time"],
 }
 
 
@@ -2383,7 +2451,7 @@ def main():
               n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof,
               n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full, n26_arms, n26_ground, n26_thick, n26_mono,
               n27_arms, n27_fate, n27_tower, n28_steps, n28_flags, n28_sync, n29_pred, n29_price, n29_holdout, n25_arms,
-              n37_round2, n37_trimask, n37_d1, n38_seg, n38_slim, n38_overhead):
+              n37_round2, n37_trimask, n37_d1, n38_seg, n38_slim, n38_overhead, n39_precision, n39_cull, n39_time):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]

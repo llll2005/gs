@@ -287,6 +287,54 @@ __device__ bool computeAABB(const float *transMat, float2 & center, float2 & ext
 }
 
 // Perform initial steps for each Gaussian prior to rasterization.
+// ★ 2026-11-21 反單應交點（純數學化簡 #1；紀錄/實驗分析/39）。transMat 的三列 Tu, Tv, Tw 滿足 Tu·h = xZ、Tv·h = yZ、Tw·h = Z（h = (u,v,1)），
+//   即 M = K C，K = [[fx,0,cx],[0,fy,cy],[0,0,1]]、C = [s0 t0, s1 t1, mu]（相機座標的兩個切向量與中心）。
+//   => h / Z = M^{-1} (x, y, 1) = C^{-1} K^{-1} (x, y, 1)；C^{-1} 的三列有閉式（單位向量外積，沒有相消）：
+//        r0 = (t1 x mu) / (s0 n·mu)、r1 = (mu x t0) / (s1 n·mu)、r2 = n / (n·mu)，n = t0 x t1
+//   錨定在中心投影 (x_mu, y_mu)（M^{-1}(x_mu, y_mu, 1) = (0, 0, 1/Z_c)）以避免逐像素求值的相消：
+//        p' = (0, 0, 1/Z_c) + (x - x_mu) q0 + (y - y_mu) q1，q0 = (r0.x, r1.x, r2.x)/fx、q1 = (r0.y, r1.y, r2.y)/fy
+//   輸出 aih[9i..9i+8] = q0, q1, x_mu, y_mu, 1/Z_c（只對 radii > 0 的顆粒；其餘不讀）。CPU 驗證：tools/probe/invhomog_verify_1121.py
+__device__ __forceinline__ void aihFromGeom(const glm::vec3 p_world, const glm::vec4 quat, const glm::vec2 s,
+	const float* viewmat, const float fx, const float fy, const float cx, const float cy, float* A)
+{
+	const glm::mat3 W = glm::mat3(
+		viewmat[0], viewmat[1], viewmat[2],
+		viewmat[4], viewmat[5], viewmat[6],
+		viewmat[8], viewmat[9], viewmat[10]);
+	const glm::vec3 cam_pos = glm::vec3(viewmat[12], viewmat[13], viewmat[14]);
+	const glm::vec3 mu = W * p_world + cam_pos;
+	const glm::mat3 R = quat_to_rotmat(quat);                 // 同 computeTransMat（含正規化）
+	const glm::vec3 t0 = W * R[0], t1 = W * R[1];
+	const glm::vec3 n = glm::cross(t0, t1);
+	float nm = glm::dot(n, mu);
+	if (fabsf(nm) < 1e-30f) nm = (nm < 0.f) ? -1e-30f : 1e-30f;   // 相機恰在面元平面上（側對）：與原寫法一樣交給低通濾波分支
+	const float inm = 1.0f / nm;
+	const glm::vec3 r0 = glm::cross(t1, mu) * (inm / s.x);
+	const glm::vec3 r1 = glm::cross(mu, t0) * (inm / s.y);
+	const glm::vec3 r2 = n * inm;
+	const float ifx = 1.0f / fx, ify = 1.0f / fy, iz = 1.0f / mu.z;
+	A[0] = r0.x * ifx; A[1] = r1.x * ifx; A[2] = r2.x * ifx;
+	A[3] = r0.y * ify; A[4] = r1.y * ify; A[5] = r2.y * ify;
+	A[6] = fx * mu.x * iz + cx; A[7] = fy * mu.y * iz + cy; A[8] = iz;
+}
+
+__global__ void computeAIHCUDA(int P, const float* orig_points, const glm::vec2* scales, const glm::vec4* rotations,
+	const float* viewmat, const float fx, const float fy, const float cx, const float cy, const int* radii, float* aih)
+{
+	auto idx = cg::this_grid().thread_rank();
+	if (idx >= P || !(radii[idx] > 0)) return;
+	aihFromGeom(glm::vec3(orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2]), rotations[idx], scales[idx],
+		viewmat, fx, fy, cx, cy, aih + 9 * idx);
+}
+
+void FORWARD::computeAIH(int P, const float* means3D, const glm::vec2* scales, const glm::vec4* rotations,
+	const float* viewmatrix, const float focal_x, const float focal_y, const int W, const int H, const float pp_shifty,
+	const int* radii, float* aih)
+{
+	computeAIHCUDA << <(P + 255) / 256, 256 >> > (P, means3D, scales, rotations, viewmatrix,
+		focal_x, focal_y, float(W) / 2.0f, float(H) / 2.0f + pp_shifty, radii, aih);
+}
+
 // ★ 2026-10-24 SPLIT（模板參數）：SH 分開存放，shs＝dc、shs_rest＝其餘係數。SPLIT=false 時與原 kernel 相同。
 template<int C, bool SPLIT>
 __global__ void preprocessCUDA(int P, int D, int M,
@@ -316,7 +364,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	ushort4* rects,
 	bool exact_conic_aabb,
 	bool prefiltered,
-	const float* shs_rest)
+	const float* shs_rest,
+	float* aih)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -483,6 +532,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// 線性化路徑存的值與 getRect 算的完全一樣 => 逐位元相同。
 	rects[idx] = make_ushort4((unsigned short)rect_min.x, (unsigned short)rect_min.y,
 	                          (unsigned short)rect_max.x, (unsigned short)rect_max.y);
+	// ★ 11-21 反單應 9 個數併進 preprocess（原本另一個 kernel 重讀 means／rotations／scales：forward +1.2%）
+	if (aih != nullptr && transMat_precomp == nullptr)
+		aihFromGeom(p_world, quat, scale, viewmatrix, intrins.x, intrins.y, intrins.z, intrins.w, aih + 9 * idx);
 }
 
 // Main rasterization method. Collaboratively works on one tile per
@@ -517,8 +569,12 @@ renderCUDA(
 	int* __restrict__ num_covered_pixels,
 	bool record_transmittance,
 	uint8_t* __restrict__ pair_used,
-	const uint8_t* __restrict__ pix_skip)
+	const uint8_t* __restrict__ pix_skip,
+	const float* __restrict__ aih)
 {
+	// ★ 2026-11-21 aih（反單應交點；只在 MODE 1 且非 nullptr 時讀；見 computeAIHCUDA）：每顆面元 9 個數 (q0, q1, x_mu, y_mu, 1/Z_c)，
+	//   交點 p' = (0, 0, 1/Z_c) + (x - x_mu) q0 + (y - y_mu) q1、深度 = 1/p'.z、s = p'.xy · 深度。
+	//   與外積寫法 p = k x l 數學上相同（p = det(T) · p'），每配對少一次除法與外積；nullptr＝原寫法一字不動。
 	// ★ 2026-11-05 pix_skip（只在 lean 訓練 MODE 1／5 且非 nullptr 時讀）：逐像素 1＝不計分（塊外遮罩的 C 區）
 	//   => 該像素從一開始就 done：不混合任何顆粒、輸出背景色、T=1、最後貢獻者 0（backward 自然不處理它）。
 	//   整個 tile 都是 C 時第一輪的 __syncthreads_count 就整塊結束。V/C 累加也不算這些像素。
@@ -536,6 +592,7 @@ renderCUDA(
 	// Check if this thread is associated with a valid pixel or outside.
 	bool inside = pix.x < W&& pix.y < H;
 	constexpr bool LEANLIKE = (MODE == 1 || MODE == 5);   // 訓練用的 lean forward（MODE 5 多算 distortion）
+	const bool aih_on = (MODE == 1) && (aih != nullptr) && (g_skipf & 8);   // ★ 11-21 反單應交點（MODE 1 不用深度，只用近平面判準）
 	// Done threads can help with fetching, but don't rasterize
 	bool done = !inside || (LEANLIKE && pix_skip != nullptr && pix_skip[pix_id] != 0);
 
@@ -563,6 +620,9 @@ renderCUDA(
 	const bool a1 = (LEANLIKE || (MODE == 0 && !record_transmittance)) && (g_skipf & 1);   // MODE 0 的 record pass 在 alpha 判斷前就計數 => 不跳
 	const bool a3 = rec_pair && (g_skipf & 4);
 	__shared__ float4 s_box[(LEANLIKE || MODE == 0) ? BLOCK_SIZE : 1];
+	// ★ 11-21 幾何配對遮罩（精確支撐 vs 像素條）：lean（MODE 1／5）與完整路徑非 record（MODE 0）；record pass 在 alpha 判斷前計數 => 不跳
+	const bool xc = (aih != nullptr) && (g_skipf & 16) && (LEANLIKE || (MODE == 0 && !record_transmittance));
+	__shared__ unsigned char s_xm[(LEANLIKE || MODE == 0) ? BLOCK_SIZE : 1];
 	__shared__ unsigned long long s_wm[(MODE == 1) ? BLOCK_SIZE : 1];
 	const int wid = block.thread_rank() >> 5;
 	const float sx0 = (float)pix_min.x + 0.5f, sx1 = (float)pix_min.x + 15.5f;
@@ -609,9 +669,16 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
+			if (aih_on) {   // ★ 11-21 反單應：同樣 3 個 float3 的槽位改放 q0、q1、(x_mu, y_mu, 1/Z_c)
+				const float* A = aih + 9 * coll_id;
+				collected_Tu[block.thread_rank()] = {A[0], A[1], A[2]};
+				collected_Tv[block.thread_rank()] = {A[3], A[4], A[5]};
+				collected_Tw[block.thread_rank()] = {A[6], A[7], A[8]};
+			} else {
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+			}
 			if (a1) {   // 精確支撐盒：alpha >= 1/255 <=> rho <= 2 ln(255 o)；圓錐盒（R）∪ 低通圓盤（FilterSize R）＋外擴 1 px（浮點保險）
 				const float op = normal_opacity[coll_id].w;
 				float4 bx = make_float4(-1e30f, 1e30f, -1e30f, 1e30f);
@@ -626,6 +693,10 @@ renderCUDA(
 				}
 				s_box[block.thread_rank()] = bx;
 			}
+		}
+		if (xc && range.x + progress < range.y) {   // ★ 11-21 幾何配對遮罩（每個（tile, 面元）一次）
+			const int cid = collected_id[block.thread_rank()];
+			s_xm[block.thread_rank()] = (unsigned char)aihTileMask(aih + 9 * cid, aihTauLoose(normal_opacity[cid].w), points_xy_image[cid], pix_min);
 		}
 		if (rec_pair) s_used[block.thread_rank()] = 0;
 		if (a3) s_wm[block.thread_rank()] = 0ull;
@@ -652,11 +723,26 @@ renderCUDA(
 					contributor++;
 					if (a1) { const float4 b = s_box[j];
 						if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) { acc_hit = true; acc_ta = 0.f; break; } }   // 覆蓋數照算（C 逐位元相同）、V 少掉 < T/255 的項
+					if (xc && !((s_xm[j] >> wid) & 1u)) { acc_hit = true; acc_ta = 0.f; break; }   // ★ 11-21 幾何配對遮罩（同上的處理）
 
 					// Fisrt compute two homogeneous planes, See Eq. (8)
 					float3 Tu = collected_Tu[j];
 					float3 Tv = collected_Tv[j];
 					float3 Tw = collected_Tw[j];
+					float2 s; float rho3d; float near_i;
+					if (aih_on) {   // ★ 11-21 反單應：p' = (0,0,1/Z_c) + dx q0 + dy q1（Tu/Tv/Tw 槽位＝q0/q1/(x_mu,y_mu,1/Z_c)）
+						const float dxp = pixf.x - Tw.x, dyp = pixf.y - Tw.y;
+						const float pz = Tw.z + dxp * Tu.z + dyp * Tv.z;
+		#if BACKFACE_CULL
+					// May hanle this by replacing a low pass filter,
+					// but this case is extremely rare.
+					if (pz == 0.0f) break; // there is not intersection
+		#endif
+						const float wz = 1.0f / pz;
+						s = make_float2((dxp * Tu.x + dyp * Tv.x) * wz, (dxp * Tu.y + dyp * Tv.y) * wz);
+						rho3d = (s.x * s.x + s.y * s.y);
+						near_i = wz;   // 交點深度 = det(T)/p.z = 1/p'.z
+					} else {
 					float3 k = {-Tu.x + pixf.x * Tw.x, -Tu.y + pixf.x * Tw.y, -Tu.z + pixf.x * Tw.z};
 					float3 l = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
 					// cross product of two planes is a line (i.e., homogeneous point), See Eq. (10)
@@ -667,9 +753,11 @@ renderCUDA(
 					if (p.z == 0.0) break; // there is not intersection
 		#endif
 					// 3d homogeneous point to 2d point on the splat
-					float2 s = {p.x / p.z, p.y / p.z};
+					s = {p.x / p.z, p.y / p.z};
 					// 3d distance. Compute Mahalanobis distance in the canonical splat' space
-					float rho3d = (s.x * s.x + s.y * s.y);
+					rho3d = (s.x * s.x + s.y * s.y);
+					near_i = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
+					}
 
 					// Add low pass filter according to Botsch et al. [2005],
 					// see Eq. (11) from 2DGS paper.
@@ -680,7 +768,7 @@ renderCUDA(
 					float rho = min(rho3d, rho2d);
 
 					float depth = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z; // splat depth
-					if ((s.x * Tw.x + s.y * Tw.y) + Tw.z < NEAR_PLANE) break;
+					if (near_i < NEAR_PLANE) break;
 					float4 nor_o = collected_normal_opacity[j];
 					float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
 					float power = -0.5f * rho;
@@ -769,11 +857,26 @@ renderCUDA(
 			contributor++;
 			if (a1) { const float4 b = s_box[j];
 				if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) { if (rec_acc) atomicAdd(&s_cn1[j], 1); continue; } }
+			if (xc && !((s_xm[j] >> wid) & 1u)) { if (rec_acc) atomicAdd(&s_cn1[j], 1); continue; }   // ★ 11-21 幾何配對遮罩
 
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			float3 Tu = collected_Tu[j];
 			float3 Tv = collected_Tv[j];
 			float3 Tw = collected_Tw[j];
+			float2 s; float rho3d; float near_i;
+			if (aih_on) {   // ★ 11-21 反單應：p' = (0,0,1/Z_c) + dx q0 + dy q1（Tu/Tv/Tw 槽位＝q0/q1/(x_mu,y_mu,1/Z_c)）
+				const float dxp = pixf.x - Tw.x, dyp = pixf.y - Tw.y;
+				const float pz = Tw.z + dxp * Tu.z + dyp * Tv.z;
+#if BACKFACE_CULL
+			// May hanle this by replacing a low pass filter,
+			// but this case is extremely rare.
+			if (pz == 0.0f) continue; // there is not intersection
+#endif
+				const float wz = 1.0f / pz;
+				s = make_float2((dxp * Tu.x + dyp * Tv.x) * wz, (dxp * Tu.y + dyp * Tv.y) * wz);
+				rho3d = (s.x * s.x + s.y * s.y);
+				near_i = wz;   // 交點深度 = det(T)/p.z = 1/p'.z
+			} else {
 			float3 k = {-Tu.x + pixf.x * Tw.x, -Tu.y + pixf.x * Tw.y, -Tu.z + pixf.x * Tw.z};
 			float3 l = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
 			// cross product of two planes is a line (i.e., homogeneous point), See Eq. (10)
@@ -784,9 +887,11 @@ renderCUDA(
 			if (p.z == 0.0) continue; // there is not intersection
 #endif
 			// 3d homogeneous point to 2d point on the splat
-			float2 s = {p.x / p.z, p.y / p.z};
+			s = {p.x / p.z, p.y / p.z};
 			// 3d distance. Compute Mahalanobis distance in the canonical splat' space
-			float rho3d = (s.x * s.x + s.y * s.y);
+			rho3d = (s.x * s.x + s.y * s.y);
+			near_i = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
+			}
 
 			// Add low pass filter according to Botsch et al. [2005],
 			// see Eq. (11) from 2DGS paper.
@@ -797,7 +902,7 @@ renderCUDA(
 			float rho = min(rho3d, rho2d);
 
 			float depth = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z; // splat depth
-			if ((s.x * Tw.x + s.y * Tw.y) + Tw.z < NEAR_PLANE) continue;
+			if (near_i < NEAR_PLANE) continue;
 			float4 nor_o = collected_normal_opacity[j];
 			float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
 			float power = -0.5f * rho;
@@ -1213,10 +1318,11 @@ void FORWARD::render(
 	int mode,
 	uint8_t* pair_used,
 	const uint8_t* pix_skip,
-	bool wacc)
+	bool wacc,
+	const float* aih)
 {
 #define _RENDER_ARGS ranges, point_list, W, H, focal_x, focal_y, means2D, colors, transMats, depths, \
-		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance, pair_used, pix_skip
+		normal_opacity, final_T, n_contrib, bg_color, out_color, out_others, transmittance, num_covered_pixels, record_transmittance, pair_used, pix_skip, aih
 	if (mode == 3) { auditCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
 		out_others, transmittance, num_covered_pixels); return; }
 	if (mode == 4) { recordReduceCUDA << <grid, block >> > (ranges, point_list, W, H, means2D, transMats, normal_opacity,
@@ -1245,8 +1351,10 @@ void FORWARD::render(
 		num_covered_pixels,
 		record_transmittance,
 		nullptr,
+		nullptr,
 		nullptr);
 }
+
 
 void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
@@ -1275,11 +1383,12 @@ void FORWARD::preprocess(int P, int D, int M,
 	ushort4* rects,
 	bool exact_conic_aabb,
 	bool prefiltered,
-	const float* shs_rest)
+	const float* shs_rest,
+	float* aih)
 {
 #define PRE_ARGS P, D, M, means3D, scales, scale_modifier, rotations, opacities, shs, clamped, transMat_precomp, colors_precomp, \
 		viewmatrix, projmatrix, cam_pos, W, H, tan_fovx, tan_fovy, pp_shifty, focal_x, focal_y, radii, means2D, depths, transMats, \
-		rgb, normal_opacity, grid, tiles_touched, rects, exact_conic_aabb, prefiltered, shs_rest
+		rgb, normal_opacity, grid, tiles_touched, rects, exact_conic_aabb, prefiltered, shs_rest, aih
 	if (shs_rest != nullptr) {   // ★ 2026-10-24 SH 分開存放
 		preprocessCUDA<NUM_CHANNELS, true> << <(P + 255) / 256, 256 >> > (PRE_ARGS);
 		return;
@@ -1313,6 +1422,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		rects,
 		exact_conic_aabb,
 		prefiltered,
-		nullptr
+		nullptr,
+		aih
 		);
 }

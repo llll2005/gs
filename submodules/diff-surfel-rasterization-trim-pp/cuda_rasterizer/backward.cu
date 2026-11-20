@@ -16,7 +16,10 @@
 
 // ★ 2026-11-07 alpha 上限，必須與 forward 相同（見 forward.cu g_alpha_max）；旗標 bit 128（rasterizer_impl.cu 每次 backward 前設定）
 __device__ float g_alpha_max_b = 0.99f;
-__device__ int g_skipf_b = 0;   // ★ 2026-11-16 A-1／A-3（見 BACKWARD::setSkipFlags）
+__device__ int g_skipf_b = 0;
+// ★ 2026-11-21 反單應交點：BACKWARD::render 真的走了 renderCUDA_opt（非 DST）且用了 aih 時記下指標，
+//   BACKWARD::preprocess 開頭據此把 dL_dtransMat 的 9 格（Σ dx·g、Σ dy·g、Σ g）換算回 dL/dT，用完清掉。
+static const float* s_aih_conv = nullptr;   // ★ 2026-11-16 A-1／A-3（見 BACKWARD::setSkipFlags）
 // ★ 2026-11-16 A-1／A-3：與 forward.cu computeAABB_R 逐字相同（兩個編譯單元各一份）
 __device__ static bool computeAABB_R_b(const float *transMat, const float R, float2 & center, float2 & extent)
 {
@@ -328,7 +331,8 @@ renderCUDA(
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dnormal3D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors)
+	float* __restrict__ dL_dcolors,
+	const float* __restrict__ aih)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
@@ -353,6 +357,8 @@ renderCUDA(
 	// ★ 2026-11-16 A-1／A-3：A-1 也用在完整路徑步
 	const bool a1g = (g_skipf_b & 2) != 0;
 	__shared__ float4 collected_boxg[BLOCK_SIZE];
+	const bool xcg = (aih != nullptr) && (g_skipf_b & 16);   // ★ 11-21 幾何配對遮罩（forward.cu 同名說明；完整路徑步沒有配對位元可用）
+	__shared__ unsigned char s_xmg[BLOCK_SIZE];
 	const int widg = block.thread_rank() >> 5;
 	const float gx0 = (float)pix_min.x + 0.5f, gx1 = (float)pix_min.x + 15.5f;
 	const float gy0 = (float)pix_min.y + 2.f * widg + 0.5f, gy1 = gy0 + 1.f;
@@ -460,6 +466,8 @@ renderCUDA(
 				}
 				collected_boxg[block.thread_rank()] = bx;
 			}
+			if (xcg)
+				s_xmg[block.thread_rank()] = (unsigned char)aihTileMask(aih + 9 * coll_id, aihTauLoose(normal_opacity[coll_id].w), points_xy_image[coll_id], pix_min);
 				// collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
@@ -472,6 +480,7 @@ renderCUDA(
 			contributor--;
 			if (contributor >= last_contributor)
 				continue;
+			if (xcg && !((s_xmg[j] >> widg) & 1u)) continue;   // ★ 11-21
 			if (a1g) { const float4 b = collected_boxg[j]; if (b.y < gx0 || b.x > gx1 || b.w < gy0 || b.z > gy1) continue; }
 
 			// compute ray-splat intersection as before
@@ -700,8 +709,12 @@ renderCUDA_opt(
 	float* __restrict__ dL_dcolors,
 	const uint8_t* __restrict__ pair_used,
 	const float* __restrict__ dL_depths,
-	const bool zskip)
+	const bool zskip,
+	const float* __restrict__ aih)
 {
+	// ★ 2026-11-21 aih（反單應交點；只在 DST=false 且非 nullptr）：Tu/Tv/Tw 槽位改放 q0、q1、(x_mu, y_mu, 1/Z_c)，
+	//   逐配對只算 dL/dp'（p' = (0,0,1/Z_c) + dx q0 + dy q1），存進 dL_dtransMat 的 9 格＝Σ dx·g、Σ dy·g、Σ g；
+	//   每顆面元在 BACKWARD::preprocess 開頭換算回 dL/dT（aihToTransGradCUDA，dL/dM = -Q^T G Q^T）。nullptr＝原寫法一字不動。
 	// ★ 2026-11-05 ZSKIP（zskip=true）：上游梯度全為 0 的像素（顏色 3 通道、DST 時再加 distortion）整個不處理——
 	//   它對每個配對的 16 個梯度量都恰為 0（dL_dalpha 的每一項都乘到 dL_dpixel 或 dL_dreg），原本只是算完再丟。
 	//   做法＝把它的最後貢獻者當成 0：valid 恆為 false、也不參與 SAT 的 tile 內最大值 => 整塊都是零梯度的 tile 直接結束。
@@ -755,6 +768,7 @@ renderCUDA_opt(
 	// ★ 2026-11-16 A-1／A-3
 	const bool a1 = (g_skipf_b & 2) != 0;
 	const bool a3 = pb && (g_skipf_b & 4) != 0;
+	const bool aih_on = !DST && (aih != nullptr);   // ★ 11-21 反單應
 	__shared__ float4 collected_box[BLOCK_SIZE];
 	__shared__ unsigned char collected_m[BLOCK_SIZE];
 	const int wid = warp.meta_group_rank();
@@ -808,9 +822,16 @@ renderCUDA_opt(
 			collected_q[slot] = q;
 			collected_xy[slot] = points_xy_image[coll_id];
 			collected_normal_opacity[slot] = normal_opacity[coll_id];
+			if (aih_on) {   // ★ 11-21
+				const float* A = aih + 9 * coll_id;
+				collected_Tu[slot] = {A[0], A[1], A[2]};
+				collected_Tv[slot] = {A[3], A[4], A[5]};
+				collected_Tw[slot] = {A[6], A[7], A[8]};
+			} else {
 			collected_Tu[slot] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[slot] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[slot] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+			}
 			for (int c = 0; c < C; c++)
 				collected_colors[c * BLOCK_SIZE + slot] = colors[coll_id * C + c];
 			if (a3) collected_m[slot] = pair_used[range.x + q];
@@ -849,20 +870,28 @@ renderCUDA_opt(
 			for (int k = 0; k < OPT_NG; k++) g[k] = 0.f;
 			if (valid) {
 				const float3 Tu = collected_Tu[j], Tv = collected_Tv[j], Tw = collected_Tw[j];
-				const float3 k3 = {-Tu.x + pixf.x * Tw.x, -Tu.y + pixf.x * Tw.y, -Tu.z + pixf.x * Tw.z};
-				const float3 l3 = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
-				const float3 p = crossProduct(k3, l3);
+				float3 k3, l3, p; float dxp = 0.f, dyp = 0.f;
+				if (aih_on) {   // ★ 11-21 反單應：p' = (0,0,1/Z_c) + dx q0 + dy q1（不需要 k、l）
+					dxp = pixf.x - Tw.x; dyp = pixf.y - Tw.y;
+					p = make_float3(dxp * Tu.x + dyp * Tv.x, dxp * Tu.y + dyp * Tv.y, Tw.z + dxp * Tu.z + dyp * Tv.z);
+				} else {
+				k3 = {-Tu.x + pixf.x * Tw.x, -Tu.y + pixf.x * Tw.y, -Tu.z + pixf.x * Tw.z};
+				l3 = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
+				p = crossProduct(k3, l3);
+				}
 #if BACKFACE_CULL
 				if (p.z == 0.0) valid = false;
 #endif
 				if (valid) {
-					const float2 s = {p.x / p.z, p.y / p.z};
+					const float wz = aih_on ? 1.0f / p.z : 0.f;   // ★ 11-21 交點深度（反單應時＝1/p'.z）
+					const float2 s = aih_on ? make_float2(p.x * wz, p.y * wz) : float2{p.x / p.z, p.y / p.z};
 					const float rho3d = (s.x * s.x + s.y * s.y);
 					const float2 xy = collected_xy[j];
 					const float2 d = {xy.x - pixf.x, xy.y - pixf.y};
 					const float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
 					const float rho = min(rho3d, rho2d);
-					const float c_d = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z;
+					const float c_d = aih_on ? ((rho3d <= rho2d) ? wz : 1.0f / Tw.z)
+					                         : ((rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z);
 					const float4 nor_o = collected_normal_opacity[j];
 					const float power = -0.5f * rho;
 					const float G = exp(power);
@@ -874,7 +903,7 @@ renderCUDA_opt(
 					//   BWD_NEAR_LIKE_FWD=1 改成與 forward 相同（只為驗證配對 bit 的梯度差來源；預設 0＝舊行為）
 					// ★ 11-16 A-3（逐 warp 配對位元）開著時近平面判準一律跟 forward 一樣：否則 forward 判掉、沒混合的側對面元，
 					//   backward 還會算它的梯度（現有配對 bit 的梯度差就是這個；BWD_NEAR_LIKE_FWD 1 時與雜訊同級）
-					const float near_d = (BWD_NEAR_LIKE_FWD || a3) ? ((s.x * Tw.x + s.y * Tw.y) + Tw.z) : c_d;
+					const float near_d = (BWD_NEAR_LIKE_FWD || a3) ? (aih_on ? wz : ((s.x * Tw.x + s.y * Tw.y) + Tw.z)) : c_d;
 					if (near_d < NEAR_PLANE || power > 0.0f || alpha < 1.0f / 255.0f) valid = false;
 					if (valid) {
 						T = T / (1.f - alpha);
@@ -911,6 +940,13 @@ renderCUDA_opt(
 							const float2 dL_ds = DST ? float2{ dL_dG * -G * s.x + dL_dz * Tw.x, dL_dG * -G * s.y + dL_dz * Tw.y }
 							                         : float2{ dL_dG * -G * s.x, dL_dG * -G * s.y };
 							if (ABS) g[14] = fabsf(dL_ds.x) + fabsf(dL_ds.y);
+							if (aih_on) {   // ★ 11-21 dL/dp'（同原本 dL_dp 的形式，1/p.z 換成 wz）；9 格＝dx·g、dy·g、g
+								const float gx = dL_ds.x * wz, gy = dL_ds.y * wz;
+								const float gz = -(gx * s.x + gy * s.y);
+								g[3] = dxp * gx; g[4] = dxp * gy; g[5] = dxp * gz;
+								g[6] = dyp * gx; g[7] = dyp * gy; g[8] = dyp * gz;
+								g[9] = gx; g[10] = gy; g[11] = gz;
+							} else {
 							const float dsx_pz = dL_ds.x / p.z;
 							const float dsy_pz = dL_ds.y / p.z;
 							const float3 dL_dp = {dsx_pz, dsy_pz, -(dsx_pz * s.x + dsy_pz * s.y)};
@@ -922,6 +958,7 @@ renderCUDA_opt(
 							g[10] = pixf.x * dL_dk.y + pixf.y * dL_dl.y;
 							g[11] = pixf.x * dL_dk.z + pixf.y * dL_dl.z;
 							if (DST) { g[9] += dL_dz * s.x; g[10] += dL_dz * s.y; g[11] += dL_dz * 1.0f; }
+							}
 						} else {
 							g[12] = dL_dG * (-G * FilterInvSquare * d.x);
 							g[13] = dL_dG * (-G * FilterInvSquare * d.y);
@@ -1243,6 +1280,34 @@ __global__ void __launch_bounds__(SHA_T) preprocessShAdamCUDA(
 	}
 }
 
+// ★ 2026-11-21 反單應交點的梯度換算（每顆一次；取代原本每配對的兩次外積）。
+//   render 存的是 a0 = Σ dx·g、a1 = Σ dy·g、a2 = Σ g（g = dL/dp'），p' = Q (x, y, 1)、Q = M^{-1} 的三欄 q0 q1 q2：
+//     dL/dQ 的三欄 = (a0 + x_mu a2, a1 + y_mu a2, a2)；q2 = (0, 0, 1/Z_c) - x_mu q0 - y_mu q1
+//     dL/dM = -Q^T (dL/dQ) Q^T（反矩陣的微分），M 的列＝Tu, Tv, Tw（transMat[3r + c] = M[r][c]）
+//   CPU 驗證（float64 對 autograd 相對誤差 1e-14）：tools/probe/invhomog_verify_1121.py
+__global__ void aihToTransGradCUDA(int P, const int* radii, const float* aih, float* dL_dtransMats)
+{
+	auto idx = cg::this_grid().thread_rank();
+	if (idx >= P || !(radii[idx] > 0)) return;
+	const float* A = aih + 9 * idx;
+	float* Gp = dL_dtransMats + 9 * idx;
+	const glm::vec3 q0(A[0], A[1], A[2]), q1(A[3], A[4], A[5]);
+	const float xm = A[6], ym = A[7], iz = A[8];
+	const glm::vec3 a0(Gp[0], Gp[1], Gp[2]), a1(Gp[3], Gp[4], Gp[5]), a2(Gp[6], Gp[7], Gp[8]);
+	// v2（錨定換算）：p' = Qt (dx, dy, 1)、Qt = [q0, q1, (0,0,1/Z_c)] = M̃^{-1}、M̃ = A^{-1} M（Tu - x_mu Tw、Tv - y_mu Tw、Tw）
+	//   dL/dM̃ = -Qt^T (a0 a1 a2) Qt^T；dL/dM = A^{-T} dL/dM̃ => 第 0、1 列不變，第 2 列（Tw）= D2 - x_mu D0 - y_mu D1。
+	//   v1（先還原未錨定的 Q、G 再相乘）會讓 x_mu≈800 的大項在乘積裡相消：CPU 量 dL/dT 誤差 p99 3.2e-4（原寫法 1.5e-4、v2 7.2e-5）
+	const glm::mat3 Qt(q0, q1, glm::vec3(0.f, 0.f, iz));        // glm 欄優先：Qt[c] = 第 c 欄
+	const glm::mat3 Ga(a0, a1, a2);
+	const glm::mat3 QtT = glm::transpose(Qt);
+	const glm::mat3 D = -(QtT * Ga * QtT);                        // D[c][r] = 第 r 列第 c 欄
+	for (int c = 0; c < 3; c++) {
+		Gp[0 + c] = D[c][0];
+		Gp[3 + c] = D[c][1];
+		Gp[6 + c] = D[c][2] - xm * D[c][0] - ym * D[c][1];
+	}
+}
+
 __global__ void computeAABB(int P, 
 	const int * radii,
 	const float W, const float H,
@@ -1329,6 +1394,11 @@ void BACKWARD::preprocess(
 	// modified and gradient w.r.t. 3D covariance matrix has been computed.	
 	// propagate gradients to transMat
 
+	// ★ 2026-11-21 反單應交點：先把 render 存的 dL/dp' 累加量換回 dL/dT（必須在 computeAABB 之前：它會加上 mean2D 那條路並回寫 dL_dmean2D）
+	if (s_aih_conv != nullptr) {
+		aihToTransGradCUDA << <(P + 255) / 256, 256 >> > (P, radii, s_aih_conv, dL_dtransMats);
+		s_aih_conv = nullptr;
+	}
 	// we do not use the center actually
 	float W = focal_x * tan_fovx;
 	float H = focal_y * tan_fovy;
@@ -1432,7 +1502,8 @@ void BACKWARD::render(
 	float* dL_dopacity,
 	float* dL_dcolors,
 	int flags,
-	const uint8_t* pair_used)
+	const uint8_t* pair_used,
+	const float* aih)
 {
 	// flags：bit0 = geom（幾何梯度）、bit1 = 關掉 absgrad（舊呼叫端傳 true/false => bit1=0 => absgrad 照舊開）
 	const bool geom = (flags & 1) != 0;
@@ -1442,8 +1513,11 @@ void BACKWARD::render(
 	const bool pbit = (flags & 16) != 0 && pair_used != nullptr;   // ★ 2026-10-16 配對貢獻 bit
 	const bool dst = (flags & 32) != 0;                              // ★ 2026-10-19 dist 版 lean（只在 geom 關時；forward 要是 MODE 5）
 	const bool zskip = (flags & 64) != 0;                            // ★ 2026-11-05 上游梯度全 0 的像素不處理（只在 renderCUDA_opt）
+	// ★ 2026-11-21 反單應交點只在 renderCUDA_opt 的非 DST 實例；其他路徑一律原寫法、也不換算
+	s_aih_conv = ((flags & 1024) && aih != nullptr && !geom && !dst && (sat || red || pbit || zskip)) ? aih : nullptr;
+	const float* xc_ptr = (flags & 2048) ? aih : nullptr;   // ★ 11-21 幾何配對遮罩（只給 renderCUDA；opt 路徑有配對位元）
 	if (!geom && (sat || red || pbit || dst || zskip)) {
-#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr), (dst ? dL_depths : nullptr), zskip
+#define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr), (dst ? dL_depths : nullptr), zskip, s_aih_conv
 #define OPT_L(A, S, R, D) renderCUDA_opt<NUM_CHANNELS, A, S, R, D> << <grid, block >> >(OPT_ARGS)
 #define OPT_SR(A, D) { if (sat && red) OPT_L(A, true, true, D); else if (sat) OPT_L(A, true, false, D); else if (red) OPT_L(A, false, true, D); else OPT_L(A, false, false, D); }
 		if (dst) { if (absg) OPT_SR(true, true) else OPT_SR(false, true) }
@@ -1453,7 +1527,7 @@ void BACKWARD::render(
 #undef OPT_ARGS
 		return;
 	}
-#define RCUDA_ARGS ranges, point_list, W, H, focal_x, focal_y, bg_color, means2D, normal_opacity, transMats, colors, depths, final_Ts, n_contrib, dL_dpixels, dL_depths, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dcolors
+#define RCUDA_ARGS ranges, point_list, W, H, focal_x, focal_y, bg_color, means2D, normal_opacity, transMats, colors, depths, final_Ts, n_contrib, dL_dpixels, dL_depths, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dcolors, xc_ptr
 	if (!geom) {
 		if (absg) renderCUDA<NUM_CHANNELS, false, true> << <grid, block >> >(RCUDA_ARGS);
 		else renderCUDA<NUM_CHANNELS, false, false> << <grid, block >> >(RCUDA_ARGS);
@@ -1483,6 +1557,7 @@ void BACKWARD::render(
 		dL_dmean2D,
 		dL_dnormal3D,
 		dL_dopacity,
-		dL_dcolors
+		dL_dcolors,
+		xc_ptr
 		);
 }
