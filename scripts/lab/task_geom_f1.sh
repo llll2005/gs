@@ -20,6 +20,8 @@ PY="conda run -n gspl --no-capture-output python -u"
 GT=data/geometry_gt/MC_Aerial
 OUT=outputs/lab/geom_f1
 OURS=outputs/lab/full44_best/checkpoints/merged.ckpt
+# ★ 11-20 full44_best 已刪（收尾清 lab）=> 抽網格的相機清單改取現行 1.5M 的合併檔（同一組訓練相機，結果不變）；可用 GEOM_CAMS 覆寫
+CAMS=${GEOM_CAMS:-outputs/lab/g44tn_s17g70np16tricap0p5cmflattrimasklres3geo8log0sea3dtcapfcsboxpbwseabacktseaflseafl2seafl3seaflbgeo50regvisnodoc15_best1maskdistrfed10b4/checkpoints/merged.ckpt}
 OFF=../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/checkpoints/epoch=6-step=30000.ckpt
 # ★ 11-13 使用者「CityGS full blk merge 的 F1 跟各項數據，沒有就補量」：ours_a＝A＋dist4 全場景合併模型（相機照舊取 full44 那份，與 CityGS 同一組）
 OURS_A=outputs/lab/g44s30ksfm10fssh16di4_best1maskdistrfed10b4/checkpoints/merged.ckpt
@@ -36,7 +38,7 @@ case "$MODE" in
   mesh)
     C=$(ck_of "$NAME"); [ -n "$C" ] && [ -f "$C" ] || { echo "⛔ 未知或缺 ckpt：$NAME（$C）"; exit 2; }
     mkdir -p "$OUT/$DIRN"
-    $PY tools/mesh_tsdf_stream.py --ckpt "$C" --cameras_ckpt "$OURS" --out "$OUT/$DIRN" --stride "${STRIDE:-1}" \
+    $PY tools/mesh_tsdf_stream.py --ckpt "$C" --cameras_ckpt "$CAMS" --out "$OUT/$DIRN" --stride "${STRIDE:-1}" \
       --voxel_size 0.01 --sdf_trunc 0.04 --depth_trunc 5.0 --num_cluster 50 2>&1 | grep -v -i warn | tee "$OUT/$DIRN/mesh.log"
     exit "${PIPESTATUS[0]}" ;;
   f1)
