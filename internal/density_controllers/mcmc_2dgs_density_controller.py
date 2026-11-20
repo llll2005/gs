@@ -884,6 +884,13 @@ class MCMC2DGSDensityController(MCMCDensityController):
     ⚠ 非位元等價（RNG 串流不同），需要端到端驗分數。
     ⚠ 與 `fast_noise` 互補：那個是代數改寫（不 materialize N x 3 x 3），這個是減少 N。"""
 
+    noise_math: bool = False
+    """★ 2026-11-21 純數學化簡 #4＋#5（紀錄/實驗分析/39；微基準 tools/probe/noise_bench_1121.py）。需 `noise_gate_eps` > 0，取代 `fast_noise` 那條路徑：
+    ① 閘門 sigmoid(100(0.005 − σ(x))) > eps 是 opacity 的單調函數 => 直接比原始參數 x < logit(0.005 − logit(eps)/100)（eps=1e-3 時 −2.526），不必對全部 N 算兩次 sigmoid；
+    ② v 是等向高斯 => R^T v 與 v 同分布 => R (s^2 ⊙ (R^T v)) 與 s1^2 v1 t1 + s2^2 v2 t2 同分布（t1, t2＝R 的前兩欄、第三個尺度是 0）：
+       只取兩個常態亂數、只從四元數算兩欄、不必兩次 bmm。同分布（共變異數都是 R S^4 R^T），不是逐樣本相同（RNG 串流不同 ≈ 換種子）。
+    本機（b2 1.43M 顆、會動的 1.04%）：0.84 -> 0.31 ms／步。仍有一次 nonzero 的 GPU->CPU 同步（無子集的寫法要對全部 N 算、5.6 ms，不划算）。預設關。"""
+
     fast_noise: bool = False
     """MCMC noise 的等價改寫：`cov @ v = R S S^T R^T v = R (s^2 * (R^T v))`
     （`compute_cov_3d` 明文是 `(RS)(RS)^T`，S 對角 ⇒ 不必 materialize N x 3 x 3）。
@@ -4104,9 +4111,39 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             return
 
         with torch.no_grad():
+            _eps = getattr(self.config, "noise_gate_eps", 0.0)
+            # ★ 2026-11-21 noise_math（#4＋#5）：原始參數門檻＋兩個切向量的同分布寫法（見 config docstring）
+            if bool(getattr(self.config, "noise_math", False)) and _eps > 0 \
+                    and getattr(getattr(gaussian_model, "opacity_activation", None), "__name__", "") == "opacity_activation" \
+                    and getattr(getattr(gaussian_model, "scale_activation", None), "__name__", "") == "scale_activation":
+                _tau = getattr(self, "_noise_tau_raw", None)
+                if _tau is None or getattr(self, "_noise_tau_eps", None) != _eps:
+                    _to = 0.005 - math.log(_eps / (1 - _eps)) / 100.0
+                    _tau = self._noise_tau_raw = math.log(_to / (1 - _to)); self._noise_tau_eps = _eps
+                    print(f"[noise-math] ✅ 首次觸發：閘門 o < {_to:.5f} <=> 原始參數 < {_tau:.5f}；雜訊＝s1² v1 t1 + s2² v2 t2（與 R(S²⊙Rᵀv) 同分布）", flush=True)
+                _xr = gaussian_model.gaussians["opacities"].reshape(-1)
+                _sel = torch.nonzero(_xr < _tau, as_tuple=True)[0]
+                if _sel.numel() == 0:
+                    return
+                xyz_lr = -1
+                for opt in pl_module.gaussian_optimizers:
+                    for param_group in opt.param_groups:
+                        if param_group["name"] == "means":
+                            xyz_lr = param_group["lr"]
+                    if xyz_lr >= 0:
+                        break
+                assert xyz_lr >= 0
+                _q = torch.nn.functional.normalize(gaussian_model.gaussians["rotations"][_sel], dim=-1)
+                _w, _a, _b, _c = _q.unbind(-1)
+                _t1 = torch.stack([1 - 2 * (_b * _b + _c * _c), 2 * (_a * _b + _w * _c), 2 * (_a * _c - _w * _b)], -1)   # R 的第 1 欄（同 CUDA quat_to_rotmat）
+                _t2 = torch.stack([2 * (_a * _b - _w * _c), 1 - 2 * (_a * _a + _c * _c), 2 * (_b * _c + _w * _a)], -1)   # 第 2 欄
+                _s2 = torch.exp(2 * gaussian_model.gaussians["scales"][_sel])                                            # s^2（尺度 = exp(raw)）
+                _g = (self.op_sigmoid(1 - torch.sigmoid(_xr[_sel])) * (self.config.noise_lr * xyz_lr))[:, None]
+                _v = torch.randn((_sel.shape[0], 2), dtype=_s2.dtype, device=_s2.device)
+                gaussian_model.means.index_add_(0, _sel, _g * (_v[:, :1] * _s2[:, :1] * _t1 + _v[:, 1:] * _s2[:, 1:] * _t2))
+                return
             # ★ 稀疏化（noise_gate_eps）：gate 對高 opacity 粒子本來就 ~0，
             #   先選出真正會動的那些，後面所有 O(N) 的工作都只對它們做。
-            _eps = getattr(self.config, "noise_gate_eps", 0.0)
             _sel = None
             if _eps > 0:
                 _g_all = self.op_sigmoid(1.0 - gaussian_model.get_opacities()).squeeze(-1)
