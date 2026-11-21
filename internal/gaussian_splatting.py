@@ -689,6 +689,14 @@ class GaussianSplatting(LightningModule):
     def on_save_checkpoint(self, checkpoint) -> None:
         from internal.utils.stage_timer import mark
         mark("存 ckpt（step {}）".format(self.trainer.global_step))
+        # ★ 2026-11-21 晚 紀錄/實驗分析/40 §1.6：訓練中高階 SH 存成 K 維基底係數 => ckpt 還原成 15 維（合併、評估、viewer 照舊能讀）。
+        #   ⚠ optimizer_states 裡 shs_rest 的 Adam 仍是 K 維 => 這種 ckpt 不能直接接續訓練。
+        _U = getattr(self.gaussian_model, "_sh_U", None)
+        if _U is not None:
+            _k = "gaussian_model.gaussians.shs_rest"
+            _sd = checkpoint.get("state_dict", {})
+            if _k in _sd and _sd[_k].dim() == 3 and _sd[_k].shape[1] == _U.shape[1]:
+                _sd[_k] = torch.einsum("lj,njc->nlc", _U.to(_sd[_k].device, _sd[_k].dtype), _sd[_k]).contiguous()
         # store some extra parameters
         # checkpoint["gaussian_model_extra_state_dict"] = {
         #     "max_radii2D": self.gaussian_model.max_radii2D,
@@ -1745,7 +1753,10 @@ class GaussianSplatting(LightningModule):
                                           "iteration_{}".format(self.trainer.global_step))
                 os.makedirs(output_dir, exist_ok=True)
                 output_path = os.path.join(output_dir, filename)
-                GaussianPlyUtils.load_from_model(self.gaussian_model).to_ply_format().save_to_ply(output_path + ".tmp")
+                _props = dict(self.gaussian_model.properties)
+                if getattr(self.gaussian_model, "_sh_U", None) is not None:       # ★ 40 §1.6 還原 15 維
+                    _props["shs_rest"] = torch.einsum("lj,njc->nlc", self.gaussian_model._sh_U, _props["shs_rest"])
+                GaussianPlyUtils.load_from_model_properties(_props, sh_degree=self.gaussian_model.max_sh_degree).to_ply_format().save_to_ply(output_path + ".tmp")
                 os.rename(output_path + ".tmp", output_path)
 
             print("Gaussians saved to {}".format(output_path))

@@ -63,6 +63,7 @@ namespace FORWARD
 	void setSkipFlags(int f);   // ★ 2026-11-16 A-1／A-3：1＝A-1 forward（逐 warp 精確支撐盒跳過）、4＝A-3（pair_used 存 8 個 warp 的遮罩）
 	// ★ 2026-11-11 逐像素深度上限圖（裝置端指標＋像素數；nullptr／0＝清掉）
 	void setDepthCap(const float* cap_inv, int n);
+	void setShBasis(const float* U, int K);   // ★ 2026-11-21 晚 SH 可觀測子空間基底（U 225 個 float、列距 15；K＝0 關）
 	void setDepthCapAcc(float* bh, float* tot);   // ★ 2026-11-11 逐顆落在上限後面的 T·α
 
 	void render(

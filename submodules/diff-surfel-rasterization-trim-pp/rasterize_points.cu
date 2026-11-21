@@ -438,6 +438,23 @@ void SetDepthCap(const torch::Tensor& cap)
 	}
 }
 
+// ★ 2026-11-21 晚 SH 可觀測子空間基底（紀錄/實驗分析/40）：U＝CPU 或 CUDA 上的 float32 [15, K]（K＝1..15），空張量＝關。
+//   開著時 shs_rest 必須是 [P, K, 3]（K 個基底係數），光柵器在 forward 展開成 15 個、backward 把梯度乘 U^T 縮回 K 個。
+void SetShBasis(const torch::Tensor& U)
+{
+	if (U.numel() == 0) { CudaRasterizer::Rasterizer::setShBasis(nullptr, 0); return; }
+	TORCH_CHECK(U.dim() == 2 && U.size(0) == 15 && U.size(1) >= 1 && U.size(1) <= 15 && U.scalar_type() == at::kFloat, "sh_basis：U 必須是 float32 [15, K]、K = 1..15");
+	torch::Tensor Uc = U.to(torch::kCPU).contiguous();
+	float host[225];
+	for (int i = 0; i < 225; i++) host[i] = 0.f;
+	const int K = (int)U.size(1);
+	const float* src = Uc.data_ptr<float>();
+	for (int l = 0; l < 15; l++)
+		for (int j = 0; j < K; j++)
+			host[l * 15 + j] = src[l * K + j];
+	CudaRasterizer::Rasterizer::setShBasis(host, K);
+}
+
 // ★ 2026-11-13 規格 3 §4-3（使用者 11-13「只補前面作」）：上限 B 的梯度模式。0＝現狀；3＝只補前面（後面的貢獻收不到 B 的梯度、前面的只經由 α）。
 void SetDepthCapGradMode(int mode)
 {

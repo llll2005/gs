@@ -146,6 +146,72 @@ __device__ glm::vec3 computeColorFromSHSplit(int idx, int deg, int max_coeffs, c
 	return glm::max(result, 0.0f);
 }
 
+// ★ 2026-11-21 晚 SH 可觀測子空間基底（紀錄/實驗分析/40）：高階 SH 只存 K 個係數 a（每色版），rest_l = Σ_j U[l][j] a_j（l = 0..14）。
+//   U 放常數記憶體（列距 15）；K = 0 = 關（不會走到這裡：只有 BASIS 模板實例才呼叫）。算式其餘與 computeColorFromSHSplit 逐字相同。
+__constant__ float c_shU_f[225];
+__constant__ int c_shK_f;
+static int s_shK_f = 0;
+void FORWARD::setShBasis(const float* U, int K)
+{
+	if (K > 0) cudaMemcpyToSymbol(c_shU_f, U, sizeof(float) * 225);
+	cudaMemcpyToSymbol(c_shK_f, &K, sizeof(int));
+	s_shK_f = K;
+}
+__device__ glm::vec3 computeColorFromSHBasis(int idx, int deg, const glm::vec3* means, glm::vec3 campos,
+	const float* shs_dc, const float* shs_rest, bool* clamped)
+{
+	const int K = c_shK_f;
+	const glm::vec3* aa = ((const glm::vec3*)shs_rest) + idx * K;
+	glm::vec3 av[15];
+	for (int j = 0; j < K; j++) av[j] = aa[j];
+	glm::vec3 rr[15];
+	for (int l = 0; l < 15; l++) {
+		glm::vec3 acc(0.f);
+		for (int j = 0; j < K; j++) acc += c_shU_f[l * 15 + j] * av[j];
+		rr[l] = acc;
+	}
+	glm::vec3 pos = means[idx];
+	glm::vec3 dir = pos - campos;
+	dir = dir / glm::length(dir);
+#define SHK(k) rr[(k) - 1]
+	glm::vec3 result = SH_C0 * ((const glm::vec3*)shs_dc)[idx];
+	if (deg > 0)
+	{
+		float x = dir.x;
+		float y = dir.y;
+		float z = dir.z;
+		result = result - SH_C1 * y * SHK(1) + SH_C1 * z * SHK(2) - SH_C1 * x * SHK(3);
+		if (deg > 1)
+		{
+			float xx = x * x, yy = y * y, zz = z * z;
+			float xy = x * y, yz = y * z, xz = x * z;
+			result = result +
+				SH_C2[0] * xy * SHK(4) +
+				SH_C2[1] * yz * SHK(5) +
+				SH_C2[2] * (2.0f * zz - xx - yy) * SHK(6) +
+				SH_C2[3] * xz * SHK(7) +
+				SH_C2[4] * (xx - yy) * SHK(8);
+			if (deg > 2)
+			{
+				result = result +
+					SH_C3[0] * y * (3.0f * xx - yy) * SHK(9) +
+					SH_C3[1] * xy * z * SHK(10) +
+					SH_C3[2] * y * (4.0f * zz - xx - yy) * SHK(11) +
+					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * SHK(12) +
+					SH_C3[4] * x * (4.0f * zz - xx - yy) * SHK(13) +
+					SH_C3[5] * z * (xx - yy) * SHK(14) +
+					SH_C3[6] * x * (xx - 3.0f * yy) * SHK(15);
+			}
+		}
+	}
+#undef SHK
+	result += 0.5f;
+	clamped[3 * idx + 0] = (result.x < 0);
+	clamped[3 * idx + 1] = (result.y < 0);
+	clamped[3 * idx + 2] = (result.z < 0);
+	return glm::max(result, 0.0f);
+}
+
 // Compute a 2D-to-2D mapping matrix from a tangent plane into a image plane
 // given a 2D gaussian parameters.
 __device__ bool computeTransMat(const glm::vec3 &p_world, const glm::vec4 &quat, const glm::vec2 &scale, const float *viewmat, const float4 &intrins, float tan_fovx, float tan_fovy, float* transMat, float3 &normal) {
@@ -336,7 +402,7 @@ void FORWARD::computeAIH(int P, const float* means3D, const glm::vec2* scales, c
 }
 
 // ★ 2026-10-24 SPLIT（模板參數）：SH 分開存放，shs＝dc、shs_rest＝其餘係數。SPLIT=false 時與原 kernel 相同。
-template<int C, bool SPLIT>
+template<int C, bool SPLIT, bool BASIS = false>   // ★ 11-21 晚 BASIS：高階 SH 走可觀測子空間基底（需 SPLIT）
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
 	const glm::vec2* scales,
@@ -515,7 +581,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// compute colors
 	if (colors_precomp == nullptr) {
-		glm::vec3 result = SPLIT ? computeColorFromSHSplit(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, shs_rest, clamped)
+		glm::vec3 result = SPLIT ? (BASIS ? computeColorFromSHBasis(idx, D, (glm::vec3*)orig_points, *cam_pos, shs, shs_rest, clamped)
+		                                  : computeColorFromSHSplit(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, shs_rest, clamped))
 		                         : computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
 		rgb[idx * C + 0] = result.x;
 		rgb[idx * C + 1] = result.y;
@@ -1389,6 +1456,10 @@ void FORWARD::preprocess(int P, int D, int M,
 #define PRE_ARGS P, D, M, means3D, scales, scale_modifier, rotations, opacities, shs, clamped, transMat_precomp, colors_precomp, \
 		viewmatrix, projmatrix, cam_pos, W, H, tan_fovx, tan_fovy, pp_shifty, focal_x, focal_y, radii, means2D, depths, transMats, \
 		rgb, normal_opacity, grid, tiles_touched, rects, exact_conic_aabb, prefiltered, shs_rest, aih
+	if (shs_rest != nullptr && s_shK_f > 0) {   // ★ 11-21 晚 SH 可觀測子空間基底
+		preprocessCUDA<NUM_CHANNELS, true, true> << <(P + 255) / 256, 256 >> > (PRE_ARGS);
+		return;
+	}
 	if (shs_rest != nullptr) {   // ★ 2026-10-24 SH 分開存放
 		preprocessCUDA<NUM_CHANNELS, true> << <(P + 255) / 256, 256 >> > (PRE_ARGS);
 		return;

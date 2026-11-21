@@ -516,3 +516,12 @@ def fused_adam_(param, grad, exp_avg, exp_avg_sq, mask, beta1, beta2, eps, step_
             mask = _EMPTY_MASK[param.device] = torch.empty(0, dtype=torch.bool, device=param.device)
     _C.fused_adam(param, grad, exp_avg, exp_avg_sq, mask, beta1, 1 - beta1, beta2, 1 - beta2, eps, step_size, bc2_sqrt,
                   FUSED_ADAM_VARIANT if variant is None else int(variant))
+
+
+def set_sh_basis(U):
+    """★ 2026-11-21 晚 SH 可觀測子空間基底（紀錄/實驗分析/40）：U＝float32 [15, K]（K＝1..15）；None 或空張量＝關。
+    開著時 shs_rest 要傳 [N, K, 3]（K 個基底係數），光柵器 forward 展開成 rest_l = Σ_j U[l, j] a_j、backward 梯度乘 U^T。
+    是程式全域狀態（常數記憶體）：同一個 process 只能有一組基底。"""
+    if U is None:
+        U = torch.empty(0)
+    _C.set_sh_basis(U.detach().float().cpu().contiguous())

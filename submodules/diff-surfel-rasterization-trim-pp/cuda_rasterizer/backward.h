@@ -24,6 +24,7 @@ namespace BACKWARD
 	// ★ 2026-11-07 alpha 上限（必須與 forward 相同；flags bit 128 => 0.999）
 	void setAlphaMax(float a);
 	void setSkipFlags(int f);   // ★ 2026-11-16 A-1／A-3：2＝A-1 backward、4＝A-3 backward（逐 warp 只走自己位元為 1 的配對）
+	void setShBasis(const float* U, int K);   // ★ 2026-11-21 晚 SH 可觀測子空間基底（forward.h 同名）
 	// ★ 2026-11-11 逐像素深度上限圖（裝置端指標＋像素數；nullptr／0＝清掉）
 	void setDepthCap(const float* cap_inv, int n);
 	void setDepthCapGradMode(int mode);   // ★ 2026-11-13 規格 3 §4-3（0＝現狀、3＝只補前面）

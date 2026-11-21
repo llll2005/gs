@@ -192,15 +192,15 @@ __device__ __forceinline__ void shAdam1(float& p, const float g, float& m, float
 // ★ 2026-10-24 SH 分開存放的 backward：梯度算式與 computeColorFromSH（backward）逐字相同；只換係數來源，
 //   每個係數的梯度輸出到 g[0..15]（呼叫端決定寫到哪：分開的梯度陣列，或 shared memory 再合併做 Adam）。
 //   對位置的回傳（view-dependent color）照原版累加進 dL_dmeans。未算到的高階係數（deg < 3）g 維持 0。
-__device__ void computeColorFromSHSplitBwd(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos,
-	const float* shs_dc, const float* shs_rest, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans,
+// ★ 11-21 晚：內層直接吃「這顆的 15 個高階係數」rr（基底模式傳展開後的區域陣列）；外層 computeColorFromSHSplitBwd 照舊從 shs_rest 取。
+__device__ __forceinline__ void computeColorFromSHSplitBwdRR(int idx, int deg, const glm::vec3* means, glm::vec3 campos,
+	const float* shs_dc, const glm::vec3* rr, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans,
 	glm::vec3* g)
 {
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir_orig = pos - campos;
 	glm::vec3 dir = dir_orig / glm::length(dir_orig);
 
-	const glm::vec3* rr = ((const glm::vec3*)shs_rest) + idx * (max_coeffs - 1);
 #define SHK(k) rr[(k) - 1]
 	for (int k = 0; k < 16; k++) g[k] = glm::vec3(0.f);
 
@@ -300,6 +300,47 @@ __device__ void computeColorFromSHSplitBwd(int idx, int deg, int max_coeffs, con
 	glm::vec3 dL_ddir(glm::dot(dRGBdx, dL_dRGB), glm::dot(dRGBdy, dL_dRGB), glm::dot(dRGBdz, dL_dRGB));
 	float3 dL_dmean = dnormvdv(float3{ dir_orig.x, dir_orig.y, dir_orig.z }, float3{ dL_ddir.x, dL_ddir.y, dL_ddir.z });
 	dL_dmeans[idx] += glm::vec3(dL_dmean.x, dL_dmean.y, dL_dmean.z);
+}
+
+__device__ void computeColorFromSHSplitBwd(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos,
+	const float* shs_dc, const float* shs_rest, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans,
+	glm::vec3* g)
+{
+	const glm::vec3* rr = ((const glm::vec3*)shs_rest) + idx * (max_coeffs - 1);
+	computeColorFromSHSplitBwdRR(idx, deg, means, campos, shs_dc, rr, clamped, dL_dcolor, dL_dmeans, g);
+}
+
+// ★ 2026-11-21 晚 SH 可觀測子空間基底（紀錄/實驗分析/40；forward.cu 同名說明）：a（K 個／色版）-> rr = U a；梯度 dL/da = U^T dL/drr。
+__constant__ float c_shU_b[225];
+__constant__ int c_shK_b;
+static int s_shK_b = 0;
+void BACKWARD::setShBasis(const float* U, int K)
+{
+	if (K > 0) cudaMemcpyToSymbol(c_shU_b, U, sizeof(float) * 225);
+	cudaMemcpyToSymbol(c_shK_b, &K, sizeof(int));
+	s_shK_b = K;
+}
+__device__ __forceinline__ void shBasisExpand(const float* shs_rest, int idx, glm::vec3* rr)
+{
+	const int K = c_shK_b;
+	const glm::vec3* aa = ((const glm::vec3*)shs_rest) + idx * K;
+	glm::vec3 av[15];
+	for (int j = 0; j < K; j++) av[j] = aa[j];
+	for (int l = 0; l < 15; l++) {
+		glm::vec3 acc(0.f);
+		for (int j = 0; j < K; j++) acc += c_shU_b[l * 15 + j] * av[j];
+		rr[l] = acc;
+	}
+}
+// g[1..15]（對 rr 的梯度）-> ga[0..K-1]（對 a 的梯度）
+__device__ __forceinline__ void shBasisReduce(const glm::vec3* g, glm::vec3* ga)
+{
+	const int K = c_shK_b;
+	for (int j = 0; j < K; j++) {
+		glm::vec3 acc(0.f);
+		for (int l = 0; l < 15; l++) acc += c_shU_b[l * 15 + j] * g[l + 1];
+		ga[j] = acc;
+	}
 }
 
 
@@ -1114,7 +1155,7 @@ inline __device__ void computeTransMat(
 
 
 
-// ★ 2026-10-24 SHMODE：0＝原 kernel（SH 串接、寫 dL_dshs）；1＝SH 分開存放、梯度分兩個陣列寫（dc／rest）。
+// ★ 2026-10-24 SHMODE：0＝原 kernel（SH 串接、寫 dL_dshs）；1＝SH 分開存放、梯度分兩個陣列寫（dc／rest）；2＝（11-21 晚）高階 SH 走可觀測子空間基底。
 //   SHMODE=0 時程式路徑與原版相同。SH 的 Adam 融進 backward 走另一個 kernel（preprocessShAdamCUDA）。
 template<int C, int SHMODE>
 __global__ void preprocessCUDA(
@@ -1184,6 +1225,18 @@ __global__ void preprocessCUDA(
 	if (SHMODE == 0) {
 	if (shs)
 		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs, clamped, (glm::vec3*)dL_dcolors, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs);
+	} else if (SHMODE == 2) {   // ★ 11-21 晚 SH 可觀測子空間基底：rest 存 K 個係數（M＝1＋K 是儲存步距）
+		glm::vec3 g[16];
+		glm::vec3 rr[15];
+		shBasisExpand(shs_rest, idx, rr);
+		computeColorFromSHSplitBwdRR(idx, D, (glm::vec3*)means3D, *campos, shs, rr, clamped,
+			(glm::vec3*)dL_dcolors, (glm::vec3*)dL_dmean3Ds, g);
+		((glm::vec3*)dL_dshs)[idx] = g[0];
+		glm::vec3 ga[15];
+		shBasisReduce(g, ga);
+		const int K = c_shK_b;
+		for (int j = 0; j < K; j++)
+			((glm::vec3*)dL_dshs_rest)[idx * K + j] = ga[j];
 	} else {
 		glm::vec3 g[16];
 		computeColorFromSHSplitBwd(idx, D, M, (glm::vec3*)means3D, *campos, shs, shs_rest, clamped,
@@ -1204,7 +1257,7 @@ __global__ void preprocessCUDA(
 //   累加順序相同），A.apply_rest 那一步用累加和走 Adam 並歸零；dc 每步都更新（同 Python 版只跳過 shs_rest 那組）。
 //   dbg_ddc／dbg_drest 非 nullptr（驗證）：把用到的梯度也寫出來。
 #define SHA_T 128
-template<int C>
+template<int C, bool BASIS = false>   // ★ 11-21 晚 BASIS：高階 SH 走可觀測子空間基底（M＝1＋K）
 __global__ void __launch_bounds__(SHA_T) preprocessShAdamCUDA(
 	int P, int D, int M,
 	const float3* means3D,
@@ -1250,6 +1303,15 @@ __global__ void __launch_bounds__(SHA_T) preprocessShAdamCUDA(
 		dL_dmean3Ds[idx] = dL_dmean3D;
 		dL_dscales[idx] = dL_dscale;
 		dL_drots[idx] = dL_drot;
+		if (BASIS) {
+			glm::vec3 rr[15];
+			shBasisExpand(shs_rest, idx, rr);
+			computeColorFromSHSplitBwdRR(idx, D, (glm::vec3*)means3D, *campos, shs_dc, rr, clamped,
+				(const glm::vec3*)dL_dcolors, dL_dmean3Ds, g);
+			glm::vec3 ga[15];
+			shBasisReduce(g, ga);
+			for (int j = 0; j < c_shK_b; j++) g[1 + j] = ga[j];   // 下面依 M＝1＋K 寫 s_g：g[0]＝dc、g[1..K]＝a
+		} else
 		computeColorFromSHSplitBwd(idx, D, M, (glm::vec3*)means3D, *campos, shs_dc, shs_rest, clamped,
 			(const glm::vec3*)dL_dcolors, dL_dmean3Ds, g);
 	}
@@ -1421,16 +1483,25 @@ void BACKWARD::preprocess(
 	// ★ 2026-10-24 SH 分開存放／Adam 融進 backward（sh_adam.h）
 	if (shs_rest != nullptr && sh_adam != nullptr) {
 		// 驗證模式：dL_dshs／dL_dshs_rest 非 nullptr => 也寫出用到的 SH 梯度
-		preprocessShAdamCUDA<NUM_CHANNELS><< <(P + SHA_T - 1) / SHA_T, SHA_T >> >(
-			P, D, M, (float3*)means3D, transMats, radii, (float*)shs, shs_rest, clamped, (glm::vec2*)scales, (glm::vec4*)rotations,
-			viewmatrix, focal_x, focal_y, tan_fovx, tan_fovy, pp_shifty, campos, dL_dtransMats, dL_dnormal3Ds, dL_dcolors,
-			dL_dmean3Ds, dL_dscales, dL_drots, dL_dshs, dL_dshs_rest, *sh_adam);
+#define SHA_ARGS P, D, M, (float3*)means3D, transMats, radii, (float*)shs, shs_rest, clamped, (glm::vec2*)scales, (glm::vec4*)rotations, \
+			viewmatrix, focal_x, focal_y, tan_fovx, tan_fovy, pp_shifty, campos, dL_dtransMats, dL_dnormal3Ds, dL_dcolors, \
+			dL_dmean3Ds, dL_dscales, dL_drots, dL_dshs, dL_dshs_rest, *sh_adam
+		if (s_shK_b > 0)   // ★ 11-21 晚 SH 可觀測子空間基底
+			preprocessShAdamCUDA<NUM_CHANNELS, true><< <(P + SHA_T - 1) / SHA_T, SHA_T >> >(SHA_ARGS);
+		else
+			preprocessShAdamCUDA<NUM_CHANNELS><< <(P + SHA_T - 1) / SHA_T, SHA_T >> >(SHA_ARGS);
+#undef SHA_ARGS
 		return;
 	}
 	if (shs_rest != nullptr) {
-		preprocessCUDA<NUM_CHANNELS, 1><< <(P + 255) / 256, 256 >> >(P, D, M, (float3*)means3D, transMats, radii, shs, clamped,
-			(glm::vec2*)scales, (glm::vec4*)rotations, scale_modifier, viewmatrix, projmatrix, focal_x, focal_y, tan_fovx, tan_fovy,
-			pp_shifty, campos, dL_dtransMats, dL_dnormal3Ds, dL_dcolors, dL_dshs, dL_dmean3Ds, dL_dscales, dL_drots, shs_rest, dL_dshs_rest);
+#define SHP_ARGS P, D, M, (float3*)means3D, transMats, radii, shs, clamped, \
+			(glm::vec2*)scales, (glm::vec4*)rotations, scale_modifier, viewmatrix, projmatrix, focal_x, focal_y, tan_fovx, tan_fovy, \
+			pp_shifty, campos, dL_dtransMats, dL_dnormal3Ds, dL_dcolors, dL_dshs, dL_dmean3Ds, dL_dscales, dL_drots, shs_rest, dL_dshs_rest
+		if (s_shK_b > 0)   // ★ 11-21 晚 SH 可觀測子空間基底
+			preprocessCUDA<NUM_CHANNELS, 2><< <(P + 255) / 256, 256 >> >(SHP_ARGS);
+		else
+			preprocessCUDA<NUM_CHANNELS, 1><< <(P + 255) / 256, 256 >> >(SHP_ARGS);
+#undef SHP_ARGS
 		return;
 	}
 	preprocessCUDA<NUM_CHANNELS, 0><< <(P + 255) / 256, 256 >> > (

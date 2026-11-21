@@ -80,6 +80,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             exact_strip_cull: bool = False,
             aih_homog: bool = False,
             sh_proj_k: int = 0,
+            sh_basis_k: int = 0,
             bwd_zero_grad_skip: bool = False,
             skip_unscored_pixels: bool = False,
             trim_running_vc: bool = False,
@@ -176,6 +177,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   只驗「訓練時限制在 k 維」的畫質；省記憶體要另做參數化。0＝關。
         self.sh_proj_k = int(sh_proj_k)
         self._sh_P = None
+        # ★ 2026-11-21 晚 40 §1.6：sh_basis_k > 0＝真正的低維參數化——高階 SH 只存 K＝k−1 個係數 a（每色版），rest = U a；
+        #   U＝該塊訓練相機幾何算出的高階 Schur 子空間（同 sh_proj_k 的保留 DC 版）。第一次訓練步把 shs_rest [N,15,3] 換成 [N,K,3]
+        #   （參數、Adam 兩份、梯度都只有 K 維）；光柵器 forward 展開、backward 乘 U^T（set_sh_basis）。存 ckpt 時還原成 15 維（工具照舊能讀）。
+        self.sh_basis_k = int(sh_basis_k)
         # ★ 2026-11-05 不計分像素（塊外遮罩的 C 區，b3／b12 佔 12～14% 像素、11～13% tile；使用者 11-05「排一次測試」）：
         #   bwd_zero_grad_skip    backward 不處理上游梯度全 0 的像素（C 區在 metric 被 detach => 梯度恰為 0；dist 步除外）。
         #                         梯度只差浮點加總順序（與 bwd_reduce 同級）。需要 lean_train。
@@ -547,12 +552,16 @@ class SepDepthTrim2DGSRenderer(Renderer):
 
         # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
         # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
-        shs, colors_precomp = self._get_color_inputs(pc, viewpoint_camera, record_transmittance)
+        if getattr(pc, "_sh_U", None) is not None and type(self)._get_color_inputs is SepDepthTrim2DGSRenderer._get_color_inputs:
+            shs, colors_precomp = pc.shs_dc, None       # ★ 40 §1.6：基底模式一定走分開存放 => 不必先展開／串接成 16 個係數
+        else:
+            shs, colors_precomp = self._get_color_inputs(pc, viewpoint_camera, record_transmittance)
         # ★ 2026-10-24 SH 分開存放（只在訓練步、基底的 SH 顏色路徑、沒有塊外池時）
         _sh_adam = kwargs.get("_sh_adam", None)
         shs_rest = None
-        if (getattr(self, "sh_split", False) or _sh_adam is not None) and bool(kwargs.get("_lean", False)) \
-                and not record_transmittance and colors_precomp is None \
+        _sh_basis_on = getattr(pc, "_sh_U", None) is not None             # ★ 40 §1.6：rest 是 K 維基底係數 => 任何渲染都必須分開交給光柵器
+        if (((getattr(self, "sh_split", False) or _sh_adam is not None) and bool(kwargs.get("_lean", False)) and not record_transmittance)
+                or _sh_basis_on) and colors_precomp is None \
                 and type(self)._get_color_inputs is SepDepthTrim2DGSRenderer._get_color_inputs \
                 and getattr(pc, "_outside_pool", None) is None and hasattr(pc, "shs_dc") \
                 and pc.shs_rest.numel() > 0:    # ★ 11-10 SH0（coarse）沒有高階 SH => 走一般路徑（光柵器 split 以 rest 非空判定）
@@ -726,6 +735,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
         return rets
     
     def training_forward(self, step, module, viewpoint_camera, pc, bg_color, render_types=None, **kwargs):
+        if getattr(self, "sh_basis_k", 0) > 0 and getattr(pc, "_sh_U", None) is None and module is not None:   # ★ 40 §1.6
+            self._sh_basis_convert(module, pc)
         if getattr(self, "absgrad_gate", False) and "_absgrad" not in kwargs:   # 呼叫端明確指定時（驗證工具）不覆寫
             # 誰會讀 |dL/ds|：MCMC 的 add_new_gs（增生期）、harvest_relocate（收割期續搬）、absgrad_report（只印）
             cfg = getattr(getattr(module, "density_controller", None), "config", None)
@@ -1163,6 +1174,69 @@ class SepDepthTrim2DGSRenderer(Renderer):
                   f"（目標 {n_target:,}；N {n0:,} -> {pc.n_gaussians:,}）｜深度中位 {float(P.new_tensor(0) + Sc.median() * fx / float(self.reseed_scale_px)):.3f}"
                   f"｜大小中位 {float(Sc.median()):.4f}" + (f"｜自檢：投回像素最大誤差 {chk:.3f} px {'✅' if chk < 0.05 else '⚠⚠ 慣例可能不對'}" if chk is not None and not getattr(self, '_reseed_chk_done', False) else ""), flush=True)
             self._reseed_chk_done = True
+
+    @torch.no_grad()
+    def _sh_basis_convert(self, module, pc):
+        """★ 40 §1.6：高階 SH 換成 K 維基底係數（只做一次）。"""
+        import types
+        from internal.density_controllers.density_controller import Utils as DCU
+        import diff_trim_surfel_rasterization as _R
+        if not hasattr(_R, "set_sh_basis"):
+            raise RuntimeError("設了 sh_basis_k 但光柵器沒有 set_sh_basis —— 沒重編")
+        Mb = self._sh_mbar(module, tag=f"sh-basis k={self.sh_basis_k}")
+        m00, m0r, Mrr = Mb[0, 0], Mb[0, 1:], Mb[1:, 1:]
+        Sc = Mrr - torch.outer(m0r, m0r) / m00
+        es, Uf = torch.linalg.eigh(Sc); Uf = Uf.flip(1)
+        K = self.sh_basis_k - 1
+        dev = pc.get_xyz.device
+        U = Uf[:, :K].to(dev)                                              # [15,K] float64
+        w = (m0r / m00).to(dev)                                            # [15]
+        dc, rest = pc.gaussians["shs_dc"].data.double(), pc.gaussians["shs_rest"].data.double()
+        a = torch.einsum("lj,nlc->njc", U, rest)
+        dres = rest - torch.einsum("lj,njc->nlc", U, a)
+        dc_new = dc + torch.einsum("l,nlc->nc", w, dres)[:, None, :]       # 帶內最小平方補償（起點 rest＝0 時不變）
+        new = DCU.replace_tensors_to_properties({"shs_dc": dc_new.float().contiguous(), "shs_rest": a.float().contiguous()},
+                                                module.gaussian_optimizers)
+        pc.update_properties(new)
+        pc._sh_U = U.float()
+        _R.set_sh_basis(pc._sh_U)
+
+        def _get_shs_basis(self_):
+            r = torch.einsum("lj,njc->nlc", self_._sh_U, self_.gaussians["shs_rest"])
+            return torch.cat((self_.gaussians["shs_dc"], r), dim=1)
+        pc.get_shs = types.MethodType(_get_shs_basis, pc)                 # 非分開路徑（不該走到，保險）也拿到正確的 16 個係數
+        print(f"[sh-basis] ✅ 高階 SH 改成 {K} 維基底係數：shs_rest {tuple(rest.shape)} -> {tuple(a.shape)}；"
+              f"每顆參數 {3 + 45} -> {3 + 3 * K} 個 SH float（Adam 兩份與梯度同比例）", flush=True)
+
+    @torch.no_grad()
+    def _sh_mbar(self, module, tag="sh-proj"):
+        """★ 40：這塊訓練相機幾何的 M̄ = mean_i M_i/tr(M_i)（M_i = Σ_可見相機 Y(d)Y(d)^T），CPU float64 [16,16]。"""
+        from internal.utils.sh_utils import eval_sh_basis16
+        cams = module.trainer.datamodule.dataparser_outputs.train_set.cameras
+        pc = module.gaussian_model
+        X = pc.get_xyz.detach()
+        dev = X.device
+        g = torch.Generator(device="cpu").manual_seed(0)
+        sel = torch.randperm(X.shape[0], generator=g)[: min(200_000, X.shape[0])].to(dev)
+        Xs = X[sel].double()
+        M = torch.zeros(Xs.shape[0], 16, 16, dtype=torch.float64, device=dev); cnt = torch.zeros(Xs.shape[0], device=dev)
+        for i in range(len(cams)):
+            R = cams.R[i].to(dev).double(); T = cams.T[i].to(dev).double()
+            Xc = Xs @ R.T + T; z = Xc[:, 2]
+            u = float(cams.fx[i]) * Xc[:, 0] / z.clamp_min(1e-6) + float(cams.cx[i]); v = float(cams.fy[i]) * Xc[:, 1] / z.clamp_min(1e-6) + float(cams.cy[i])
+            m = (z > 0.2) & (u >= 0) & (u < float(cams.width[i])) & (v >= 0) & (v < float(cams.height[i]))
+            if not bool(m.any()):
+                continue
+            d = Xs[m] + (R.T @ T)[None]; d = d / d.norm(dim=1, keepdim=True)
+            Y = eval_sh_basis16(d)
+            M[m] += Y[:, :, None] * Y[:, None, :]; cnt[m] += 1
+        ok = cnt > 0
+        Mn = M[ok] / M[ok].diagonal(dim1=1, dim2=2).sum(1)[:, None, None]
+        Mb = Mn.mean(0).cpu()
+        ev = torch.linalg.eigvalsh(Mb).flip(0)
+        print(f"[{tag}] {len(cams)} 台相機、{int(ok.sum()):,} 顆樣本；M̄ 特徵值（%）" + " ".join(f"{100 * float(x / ev.sum()):.3g}" for x in ev), flush=True)
+        del M, Mn
+        return Mb
 
     @torch.no_grad()
     def _sh_proj_basis(self, module):

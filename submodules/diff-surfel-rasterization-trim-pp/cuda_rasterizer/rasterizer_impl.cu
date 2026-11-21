@@ -290,6 +290,13 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 }
 bool CudaRasterizer::GeometryState::with_aih = true;
 
+// ★ 2026-11-21 晚 SH 可觀測子空間基底（紀錄/實驗分析/40）：forward／backward 各一份常數記憶體，一起設
+void CudaRasterizer::Rasterizer::setShBasis(const float* U, int K)
+{
+	FORWARD::setShBasis(U, K);
+	BACKWARD::setShBasis(U, K);
+}
+
 // ★ 2026-11-11 逐像素深度上限圖：forward／backward 兩個翻譯單元各有一份裝置端全域，一起設
 void CudaRasterizer::Rasterizer::setDepthCap(const float* cap_inv, int n)
 {
