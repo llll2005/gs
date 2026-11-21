@@ -43,6 +43,10 @@ namespace CudaRasterizer
 		ushort4* rects;   // 逐顆的 tile 盒（不對稱），preprocess 存、duplicateWithKeys 讀
 
 		static GeometryState fromChunk(char*& chunk, size_t P);
+		// ★ 2026-11-21 aih 放在緩衝最後面、只有 with_aih 時才算進大小（forward 依旗標設；backward 不動＝只算指標，
+		//   緩衝裡沒有它時那個指標不會被讀：backward 只在反單應／幾何配對遮罩旗標開時用，那時 forward 一定配置了）。
+		//   原本無條件配置 => 旗標全關也每顆多 36 B（全場景 20M 顆一次渲染 +0.54 GiB，紀錄/實驗分析/39 §4.7）。
+		static bool with_aih;
 	};
 
 	struct ImageState

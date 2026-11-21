@@ -471,8 +471,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"inv_homog": True} if (_lean and not _lean_dist and not record_transmittance and getattr(self, "inv_homog", False)
                                        and not kwargs.get("_audit", False)) else {}),
             # ★ 11-21 幾何配對遮罩：lean 與完整路徑（非 record、非 audit）都用；光柵器內 record pass 也不跳
+            # ★ 11-21 晚：只在有梯度的渲染（訓練步）開。評估／部署渲染（no_grad）關掉：渲染逐位元相同（tools/probe/aih_alloc_check_1121.py），
+            #   而且光柵器就不必配置每顆 36 B 的反單應緩衝（全場景 20M 顆一次渲染 +0.54 GiB，紀錄/實驗分析/39 §4.7）。
+            #   要在評估時也開（換一點渲染速度）：renderer.exact_strip_cull_eval = True。
             **({"exact_strip_cull": True} if (not record_transmittance and getattr(self, "exact_strip_cull", False)
-                                              and not kwargs.get("_audit", False)) else {}),
+                                              and not kwargs.get("_audit", False)
+                                              and (torch.is_grad_enabled() or getattr(self, "exact_strip_cull_eval", False))) else {}),
             **({"pix_skip": _pix} if (_lean and not record_transmittance and _pix is not None) else {}),
             **({"depth_cap": _cap} if _cap is not None else {}),
             # ★ 2026-11-13 規格 3 §4-3 只補前面（metric depth_cap_grad_mode；只在有上限圖的完整路徑、backward 作用）

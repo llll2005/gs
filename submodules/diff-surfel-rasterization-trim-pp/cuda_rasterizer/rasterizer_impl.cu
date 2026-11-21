@@ -278,7 +278,6 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
-	obtain(chunk, geom.aih, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
@@ -286,8 +285,10 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
 	obtain(chunk, geom.point_offsets, P, 128);
+	if (with_aih) obtain(chunk, geom.aih, P * 9, 128); else geom.aih = nullptr;   // ★ 11-21 放最後、需要才配置（見 .h）
 	return geom;
 }
+bool CudaRasterizer::GeometryState::with_aih = true;
 
 // ★ 2026-11-11 逐像素深度上限圖：forward／backward 兩個翻譯單元各有一份裝置端全域，一起設
 void CudaRasterizer::Rasterizer::setDepthCap(const float* cap_inv, int n)
@@ -371,9 +372,14 @@ int CudaRasterizer::Rasterizer::forward(
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
 
+	// ★ 2026-11-21 lean bit 16384 = 反單應交點、bit 32768 = 幾何配對遮罩：兩者都要每顆 9 個數，preprocess 順便寫（forward.cu aihFromGeom）
+	//   只有這時才配置 geomState.aih（11-21 之前無條件配置，旗標全關也每顆多 36 B）
+	const bool aih_f = ((lean & 16384) || (lean & 32768)) && !record_transmittance && transMat_precomp == nullptr;
+	GeometryState::with_aih = aih_f;
 	size_t chunk_size = required<GeometryState>(P);
 	char* chunkptr = geometryBuffer(chunk_size);
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
+	GeometryState::with_aih = true;   // backward 解析緩衝時只算指標（見 .h）
 
 	if (radii == nullptr)
 	{
@@ -393,8 +399,6 @@ int CudaRasterizer::Rasterizer::forward(
 		throw std::runtime_error("For non-RGB, provide precomputed Gaussian colors!");
 	}
 
-	// ★ 2026-11-21 lean bit 16384 = 反單應交點、bit 32768 = 幾何配對遮罩：兩者都要每顆 9 個數，preprocess 順便寫（forward.cu aihFromGeom）
-	const bool aih_f = ((lean & 16384) || (lean & 32768)) && !record_transmittance && transMat_precomp == nullptr;
 	// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
