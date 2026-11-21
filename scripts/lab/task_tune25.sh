@@ -450,7 +450,9 @@ for t in "${XT[@]:-}"; do
     # ★ 11-20 參數測試（使用者「看有沒有其他參數要測試 也排」）：shd<k>＝SH 階數（預設 3；2＝每顆參數 −36%）；di<k>＝MCMC 增生事件間隔（預設 150 步）
     shd[0-3]) XA+=(--model.gaussian.init_args.sh_degree ${t#shd}) ;;
     shp[0-9]*) XA+=(--model.renderer.init_args.sh_proj_k ${t#shp}) ;;
-    shb[0-9]*) XA+=(--model.renderer.init_args.sh_basis_k ${t#shb}) ;;   # ★ 11-21 晚 40 §1.6：SH 低維參數化   # ★ 11-21 40：SH 限制在可觀測子空間
+    shb[0-9]*) XA+=(--model.renderer.init_args.sh_basis_k ${t#shb})   # ★ 11-21 晚 40 §1.6：SH 低維參數化
+               # ★ 11-22 §1.7：MatrixCity（沒設 CITYGS_DATA）用全場景共用基底 => ckpt 直接存低維；其他資料集用各塊自己的基底（存檔還原 15 維）
+               [ -z "${CITYGS_DATA:-}" ] && [ -f configs/sh_basis_matrixcity_aerial.npz ] && XA+=(--model.renderer.init_args.sh_basis_file configs/sh_basis_matrixcity_aerial.npz) ;;   # ★ 11-21 40：SH 限制在可觀測子空間
     di[0-9]*) XA+=(--model.density.init_args.densification_interval ${t#di}) ;;
     cmflat[0-9]) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ $t 要和 tricap<W> 一起用"; exit 2; }
             _CM=$CDATA/cap_masks_flat_t0${t#cmflat}

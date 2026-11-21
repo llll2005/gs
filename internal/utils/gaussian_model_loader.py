@@ -104,6 +104,12 @@ class GaussianModelLoader:
             else:
                 model = VanillaGaussian(sh_degree=sh_degree).instantiate()
 
+        # ★ 2026-11-22 紀錄/實驗分析/40 §1.7：低維 SH 存檔（shs_rest [N,K,3]＋checkpoint["sh_basis"]["U"] [15,K]）=> 展開成 15 維再載入
+        _sb = checkpoint.get("sh_basis", None)
+        if _sb is not None and "gaussians.shs_rest" in model_state_dict:
+            _U = _sb["U"].to(model_state_dict["gaussians.shs_rest"].device, model_state_dict["gaussians.shs_rest"].dtype)
+            if model_state_dict["gaussians.shs_rest"].shape[1] == _U.shape[1]:
+                model_state_dict["gaussians.shs_rest"] = torch.einsum("lj,njc->nlc", _U, model_state_dict["gaussians.shs_rest"]).contiguous()
         model.setup_from_number(model_state_dict["gaussians.means"].shape[0])
         model.to(device)
         model.load_state_dict(model_state_dict)

@@ -79,6 +79,12 @@ del ckpt, dataparser_config
 
 for i in tqdm(checkpoint_files, desc="Loading checkpoints"):
     ckpt = torch.load(i, map_location="cpu")
+    # ★ 2026-11-22 紀錄/實驗分析/40 §1.7：低維 SH 存檔要各塊同一組基底才能直接串接（合併後沿用第一塊的 sh_basis）
+    _sbi = ckpt.get("sh_basis", None)
+    if "_SB0" not in globals():
+        globals()["_SB0"] = _sbi
+    elif (_SB0 is None) != (_sbi is None) or (_sbi is not None and not torch.equal(_SB0["U"], _sbi["U"])):
+        raise RuntimeError(f"{i}：各塊的 SH 低維基底不同（或有的有、有的沒有）=> 不能直接串接")
     dataparser_config = ckpt["datamodule_hyper_parameters"]["parser"]
     xyz_gs = ckpt['state_dict']['gaussian_model.gaussians.means'] @ partitions['extra_data']['rotation_transform'][:3, :3].T
 

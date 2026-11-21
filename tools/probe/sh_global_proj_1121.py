@@ -81,7 +81,7 @@ def dc_preserving(Mb, k):
 
 
 if a.mbar:
-    Mb_ = np.load(a.mbar)
+    Mb_ = np.load(a.mbar)["Mbar"] if a.mbar.endswith(".npz") else np.load(a.mbar)
     PROJS = {k: torch.einsum("jl,nlc->njc", dc_preserving(Mb_, k), shs0) for k in a.k}
     print("（保留 DC 版本）", flush=True)
 else:

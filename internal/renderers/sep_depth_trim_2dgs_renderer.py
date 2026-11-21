@@ -81,6 +81,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             aih_homog: bool = False,
             sh_proj_k: int = 0,
             sh_basis_k: int = 0,
+            sh_basis_file: str = "",
             bwd_zero_grad_skip: bool = False,
             skip_unscored_pixels: bool = False,
             trim_running_vc: bool = False,
@@ -181,6 +182,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   U＝該塊訓練相機幾何算出的高階 Schur 子空間（同 sh_proj_k 的保留 DC 版）。第一次訓練步把 shs_rest [N,15,3] 換成 [N,K,3]
         #   （參數、Adam 兩份、梯度都只有 K 維）；光柵器 forward 展開、backward 乘 U^T（set_sh_basis）。存 ckpt 時還原成 15 維（工具照舊能讀）。
         self.sh_basis_k = int(sh_basis_k)
+        # ★ 11-22 40 §1.7：sh_basis_file＝全場景共用的 M̄（tools/sh_basis_global.py）；給了就用它（各塊同一組基底 => ckpt 直接存低維、合併可直接串接），
+        #   沒給就用這塊自己的相機算（ckpt 存檔時還原成 15 維）。
+        self.sh_basis_file = str(sh_basis_file or "")
         # ★ 2026-11-05 不計分像素（塊外遮罩的 C 區，b3／b12 佔 12～14% 像素、11～13% tile；使用者 11-05「排一次測試」）：
         #   bwd_zero_grad_skip    backward 不處理上游梯度全 0 的像素（C 區在 metric 被 detach => 梯度恰為 0；dist 步除外）。
         #                         梯度只差浮點加總順序（與 bwd_reduce 同級）。需要 lean_train。
@@ -1183,7 +1187,13 @@ class SepDepthTrim2DGSRenderer(Renderer):
         import diff_trim_surfel_rasterization as _R
         if not hasattr(_R, "set_sh_basis"):
             raise RuntimeError("設了 sh_basis_k 但光柵器沒有 set_sh_basis —— 沒重編")
-        Mb = self._sh_mbar(module, tag=f"sh-basis k={self.sh_basis_k}")
+        _f = getattr(self, "sh_basis_file", "")
+        if _f:
+            import numpy as _np
+            Mb = torch.from_numpy(_np.load(_f)["Mbar"]).double()
+            print(f"[sh-basis] 全場景共用基底：{_f}", flush=True)
+        else:
+            Mb = self._sh_mbar(module, tag=f"sh-basis k={self.sh_basis_k}")
         m00, m0r, Mrr = Mb[0, 0], Mb[0, 1:], Mb[1:, 1:]
         Sc = Mrr - torch.outer(m0r, m0r) / m00
         es, Uf = torch.linalg.eigh(Sc); Uf = Uf.flip(1)
@@ -1199,6 +1209,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
                                                 module.gaussian_optimizers)
         pc.update_properties(new)
         pc._sh_U = U.float()
+        pc._sh_basis_meta = {"k": self.sh_basis_k, "file": _f, "global": bool(_f)}
         _R.set_sh_basis(pc._sh_U)
 
         def _get_shs_basis(self_):

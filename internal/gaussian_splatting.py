@@ -695,7 +695,11 @@ class GaussianSplatting(LightningModule):
         if _U is not None:
             _k = "gaussian_model.gaussians.shs_rest"
             _sd = checkpoint.get("state_dict", {})
-            if _k in _sd and _sd[_k].dim() == 3 and _sd[_k].shape[1] == _U.shape[1]:
+            _meta = getattr(self.gaussian_model, "_sh_basis_meta", {}) or {}
+            if _meta.get("global", False):
+                # ★ 11-22 40 §1.7：全場景共用基底 => 直接存低維（shs_rest [N,K,3]、Adam 也是 K 維）＋基底；讀檔（GaussianModelLoader）時展開成 15 維
+                checkpoint["sh_basis"] = {"U": _U.detach().float().cpu(), "k": int(_meta.get("k", _U.shape[1] + 1)), "file": _meta.get("file", "")}
+            elif _k in _sd and _sd[_k].dim() == 3 and _sd[_k].shape[1] == _U.shape[1]:
                 _sd[_k] = torch.einsum("lj,njc->nlc", _U.to(_sd[_k].device, _sd[_k].dtype), _sd[_k]).contiguous()
         # store some extra parameters
         # checkpoint["gaussian_model_extra_state_dict"] = {

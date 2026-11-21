@@ -43,6 +43,8 @@ def load_gaussians(ckpt_path: str) -> dict:
     means     = sd[prefix + "means"]           # [N, 3]
     shs_dc    = sd[prefix + "shs_dc"]          # [N, 1, 3]
     shs_rest  = sd[prefix + "shs_rest"]        # [N, K, 3]
+    if "sh_basis" in ckpt and shs_rest.shape[1] == ckpt["sh_basis"]["U"].shape[1]:   # ★ 2026-11-22 40 §1.7 低維 SH 存檔 => 展開成 15 個
+        shs_rest = torch.einsum("lj,njc->nlc", ckpt["sh_basis"]["U"].to(shs_rest.dtype), shs_rest).contiguous()
     opacities = sd[prefix + "opacities"]       # [N, 1]
     scales    = sd[prefix + "scales"]          # [N, 2] or [N, 3]
     rotations = sd[prefix + "rotations"]       # [N, 4]
