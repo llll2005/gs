@@ -85,3 +85,6 @@ submodules/diff-surfel-rasterization-trim-pp/_bak_*/
 labrun/
 # 切換到 repo 附帶 glm 時移開的 lab 舊 clone
 submodules/diff-surfel-rasterization-trim-pp/third_party/glm.labclone_*/
+
+# 2026-11-22 使用者的海報範本（不進版控）
+專題海報範本/

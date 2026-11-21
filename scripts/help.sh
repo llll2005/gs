@@ -29,7 +29,7 @@ fi
 cat <<'TXT'
 CityGaussian 指令速查（bash scripts/help.sh <名稱> 看單支；各腳本也都能直接加 --help）
 
-紀錄       紀錄/README.md（入口）→ 紀錄/現行方法.md（唯一的現行方法）→ 紀錄/進展_1030至今.md；新開的線 紀錄/實驗分析/39 起；教訓 紀錄/方法論.md
+紀錄       紀錄/README.md（入口）→ 紀錄/現行方法.md（唯一的現行方法）→ 紀錄/實驗分析/39、40；新開的線 紀錄/實驗分析/39 起；教訓 紀錄/方法論.md
 
 同步       git commit && git push，然後  JTOK=<token> bash scripts/setup/lab_pull.sh [--no-build]
            ⛔ token 只放在單一指令前面，不寫進任何檔案

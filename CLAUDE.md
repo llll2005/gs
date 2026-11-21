@@ -21,7 +21,7 @@ competitive with CityGaussianV2.
 
 **★ 2026-11-19 records reorganisation (user, supersedes the record-layout paragraphs below): the ONLY current-method document is
 `紀錄/現行方法.md` (pipeline, formulas, parameters, same-base ablation, CityGS comparison, provenance/papers, advantages, limits, how to run —
-the final-report reference); improvements adopted since 10-30 => `紀錄/進展_1030至今.md`; entry `紀錄/README.md`. Archived to `紀錄/new_archived/`
+the final-report reference); (`紀錄/進展_1030至今.md` was deleted 11-22 after the user reported it; `git show 4580780:紀錄/進展_1030至今.md`); new lines `紀錄/實驗分析/39`, `40`; entry `紀錄/README.md`. Archived to `紀錄/new_archived/`
 with a `_至<date>` suffix: 研究總覽 (now `研究總覽_v6_至2026-11-19.md`), 完整Pipeline數學詳解, 機制出處, 實驗分析 30/37/38, 規格 3–6, 指令手冊, 從零部署,
 理論_ADMM, 論文核對表, 現行方案與公式, 演算法與變數盤點, flow figures. New experiment lines start at `紀錄/實驗分析/39_*`. Current base = 新底 9
 (`task_tune25.sh <blk> s17g70+np16+tricap0p5+cmflat+trimask+lres3+geo8+log0+sea3dt+capfc+sbox+pbw+seabackt+seafl+seafl2+seafl3+seaflb+geo50+regvis+nodo`,
