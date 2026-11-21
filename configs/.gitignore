@@ -131,3 +131,5 @@
 !taming_3dgs/rasterizer-fused_ssim-sparse_adam-aa.yaml
 !taming_3dgs/fused_ssim.yaml
 !fused_ssim.yaml
+# ★ 2026-11-22 全場景共用的 SH 可觀測子空間基底（tools/sh_basis_global.py；紀錄/實驗分析/40 §1.7），訓練要讀
+!sh_basis_*.npz
