@@ -18,11 +18,11 @@ echo "[build_rast_alt] $(date +%T) 編 $(git log --oneline -1 | cut -c1-60) => $
 conda run -n gspl --no-capture-output env CUDA_HOME=$G CUDA_PATH=$G TORCH_CUDA_ARCH_LIST=8.6 \
   pip install --no-build-isolation --no-deps --target "$DST" "$RAST" 2>&1 | tail -3
 rm -rf "$RAST/build"
-git rev-parse HEAD > "$DST/.built_from"
-# 驗：用 PYTHONPATH 載到的是這一份、而且認得新欄位
+# 驗：用 PYTHONPATH 載到的是這一份、而且認得新欄位；過了才寫 .built_from（佇列裡用它當「編好了」的前提）
 PYTHONPATH=$DST conda run -n gspl --no-capture-output python -c "
 import diff_trim_surfel_rasterization as m, os
 from diff_trim_surfel_rasterization import GaussianRasterizationSettings as S
 p = os.path.dirname(m.__file__); ok = p.startswith('$DST')
 print('[build_rast_alt] 載入', p, '｜新欄位', all(f in S._fields for f in ('inv_homog', 'exact_strip_cull')))
-raise SystemExit(0 if ok and all(f in S._fields for f in ('inv_homog', 'exact_strip_cull')) else 1)"
+raise SystemExit(0 if ok and all(f in S._fields for f in ('inv_homog', 'exact_strip_cull')) else 1)" \
+  && git rev-parse HEAD > "$DST/.built_from" && echo "[build_rast_alt] ✅ 完成（$DST/.built_from）"
