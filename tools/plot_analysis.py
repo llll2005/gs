@@ -2375,6 +2375,35 @@ def n39_time(d):
     save(fig, d, "n39_time.png")
 
 
+N39_LAB = [  # ★ 11-21 lab 實訓練（b2、17k、[solo]）：(跑次, 純訓練 s, 換塊 PSNR, SSIM, LPIPS, 本塊區域 PSNR)
+    ("同配方舊 .so（11-20 跑次）", 348.9, 26.914, 0.8748, 0.1252, 26.123),
+    ("現行配方（新 .so、旗標全關）", 346.5, 26.914, 0.8747, 0.1252, 26.111),
+    ("＋純數學化簡五項（m39）", 310.4, 26.917, 0.8748, 0.1251, 26.123),
+]
+
+
+def n39_lab(d):
+    """lab 實訓練驗證：純訓練時間與換塊分數（底＝現行配方全場景合併模型）。"""
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(18, 3.6), gridspec_kw=dict(width_ratios=[1.25, 1]))
+    y = np.arange(len(N39_LAB)); ref = N39_LAB[1][1]
+    bars = a1.barh(y, [r[1] for r in N39_LAB], 0.55, color=[MUTED, C2, C1])
+    for i, r in enumerate(N39_LAB):
+        a1.text(r[1] + 3, i, f"{r[1]:.1f} s（{(r[1] - ref) / ref * 100:+.1f}%）", va="center", fontsize=8.5, color=INK2)
+    a1.set_yticks(y, [r[0] for r in N39_LAB], fontsize=8.6); a1.invert_yaxis(); a1.set_xlim(0, 420)
+    a1.set_xlabel("純訓練（run_summary 第一步 -> 最後一步，s）")
+    a1.set_title("五項全開：純訓練 −10.4%（重跑雜訊：新舊 .so 旗標關只差 0.7%）", fontsize=9.5)
+    x = np.arange(3); w = 0.26
+    base = N39_LAB[1]
+    dl = [(r[2] - base[2], (r[3] - base[3]) * 100, -(r[4] - base[4]) * 100) for r in N39_LAB]
+    for k, (r, c) in enumerate(zip(N39_LAB, [MUTED, C2, C1])):
+        a2.bar(x + (k - 1) * w, dl[k], w, color=c, label=r[0])
+    a2.axhline(0, color=INK2, lw=0.8)
+    a2.set_xticks(x, ["ΔPSNR（dB）", "ΔSSIM x100", "−ΔLPIPS x100"]); a2.set_ylim(-0.03, 0.03)
+    a2.legend(fontsize=7.5, loc="lower right"); a2.set_ylabel("對「現行配方新 .so」的差（正＝較好）")
+    a2.set_title("換塊評測 b2 228 幀：三個跑次差 ≤ 0.003 dB（雜訊內）", fontsize=9.5)
+    save(fig, d, "n39_lab.png")
+
+
 DOCS = {
     "01_訓練時間組成":["n01_steps", "n01_scaling", "n01_maxsplit", "n01_blocktime"],
     "02_VRAM與配置器": ["n02_segments", "n02_value", "n02_peak3"],
@@ -2409,7 +2438,7 @@ DOCS = {
     "37_SfM三角形校正深度": ["n37_d1"],
     "37_SfM三角形校正深度_至1113": ["n37_round2", "n37_trimask", "n37_d1"],
     "38_時間拆解與配方瘦身": ["n38_seg", "n38_slim", "n37_round2", "n38_overhead"],
-    "39_純數學化簡": ["n39_precision", "n39_cull", "n39_time"],
+    "39_純數學化簡": ["n39_lab", "n39_precision", "n39_cull", "n39_time"],
 }
 
 
@@ -2451,7 +2480,7 @@ def main():
               n01_blocktime, n02_peak3, n03_official, n04_load3, n05_main4x4, n06_prune3, n12_fail3, n09_blockf1, n15_time, n15_tradeoff, n16_steps, n16_sh, n16_official, n17_mask, n18_road, n19_fact, n19_road, n20_blocks, n20_swap, n21_full, n21_blocks, n21_single, n22_b12hist, n22_b0var, n22_orient, n22_road_roof,
               n23_dose, n23_arms, n23_tower, n24_swap, n24_geom, n24_mono, n24_full, n26_arms, n26_ground, n26_thick, n26_mono,
               n27_arms, n27_fate, n27_tower, n28_steps, n28_flags, n28_sync, n29_pred, n29_price, n29_holdout, n25_arms,
-              n37_round2, n37_trimask, n37_d1, n38_seg, n38_slim, n38_overhead, n39_precision, n39_cull, n39_time):
+              n37_round2, n37_trimask, n37_d1, n38_seg, n38_slim, n38_overhead, n39_precision, n39_cull, n39_time, n39_lab):
         f(tmp)
     for doc, panels in DOCS.items():
         paths = [os.path.join(tmp, p + ".png") for p in panels]
