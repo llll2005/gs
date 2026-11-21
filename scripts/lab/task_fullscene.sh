@@ -44,11 +44,12 @@ case "$MODE" in
   merge)
     R=${1:?跑次}; OUT=outputs/lab/$R
     st=; bad=
-    for b in $(seq 0 15); do
+    # ★ 11-21 FS_BLOCKS＝要合併的塊（預設 0..15；Mill-19 rubble 的 b15 沒有相機 => FS_BLOCKS="$(seq 0 14)"）
+    for b in ${FS_BLOCKS:-$(seq 0 15)}; do
       s=$(maxstep "$OUT/blocks/block_$b"); [ -n "$s" ] || { bad="$bad $b"; continue; }
       [ -z "$st" ] && st=$s; [ "$s" = "$st" ] || bad="$bad $b(step $s)"
     done
-    [ -z "$bad" ] || { echo "⛔ $R：16 塊沒有都跑到同一步數（缺／不符：$bad）"; exit 2; }
+    [ -z "$bad" ] || { echo "⛔ $R：$(echo ${FS_BLOCKS:-$(seq 0 15)} | wc -w) 塊沒有都跑到同一步數（缺／不符：$bad）"; exit 2; }
     mkdir -p "$OUT/aborted_blocks"
     for d in "$OUT"/blocks/*.aborted_*; do [ -e "$d" ] && mv "$d" "$OUT/aborted_blocks/"; done
     $PY utils/merge_citygs_ckpts.py "$OUT" 2>&1 | grep -vE 'pkg_resources|declare_namespace' | tail -5; rc=${PIPESTATUS[0]}

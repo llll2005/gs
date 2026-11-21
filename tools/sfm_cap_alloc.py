@@ -42,6 +42,9 @@ def main():
     cnt = {}
     for k in range(len(ids)):
         b = int(ids[k][0] + nx * ids[k][1])        # 與 task_cmp.sh 的分區檔名 <BLK % nx>_<BLK / nx> 同一個編號
+        # ★ 11-21 沒有分區檔＝沒有相機分到這塊（Mill-19 rubble 的 b15）=> 不訓練、不分配（平均 cap 只對要訓練的塊算 => Σcap＝塊數 x 平均）
+        if not os.path.exists(os.path.join(a.dataset, a.part, "%03d_%03d.txt" % (b % nx, b // nx))):
+            print(f"block {b:>2}：沒有分區檔（0 台相機）=> 不分配"); continue
         lo, hi = xys[k], xys[k] + size[k]
         cnt[b] = int(((q[:, 0] >= lo[0]) & (q[:, 0] < hi[0]) & (q[:, 1] >= lo[1]) & (q[:, 1] < hi[1])).sum())
     m = float(np.mean(list(cnt.values())))

@@ -4,7 +4,7 @@
 #   新底 9 去掉海面元件（Mill-19 沒有水）；起點用 dense（sfmfill_tri44_crop）；4x4 分塊（沿用 44 的檔名慣例）。
 # 用法（佇列）：[solo] bash scripts/lab/prep_mill19.sh <building|rubble>      PREP_FROM=<N>＝從第 N 步接著跑（前面的產出照用、計時表不清空）
 #   之後訓練：CITYGS_DATA=data/mill19/<場景>_ours CITYGS_DSF=4 CITYGS_CAP_ALLOC=configs/cap_alloc_sfm_g44_mill19_<場景>.json CITYGS_DEMO=1 \
-#             CITYGS_RUN_NAME=lab/mill19_<場景>_base9 bash scripts/lab/task_tune25.sh <塊> s17g70+np16+tricap0p5+cmflat+trimask+lres3+geo8+log0+dense+capfc+sbox+pbw+geo50+regvis
+#             CITYGS_RUN_NAME=lab/mill19_<場景>_base9 bash scripts/lab/task_tune25.sh <塊> s17g70+np16+tricap0p5+cmflat+trimask+lres3+geo8+log0+dense+capfc+sbox+pbw+geo50+regvis+c15+nogate+nohf+m39（11-21 預設）
 case "${1:-}" in -h|--help|"") sed -n 2,7p "$0"; exit 0 ;; esac
 set -u
 cd "$(dirname "$0")/../.." || exit 1
@@ -36,11 +36,14 @@ EOF
 ALLOC=configs/cap_alloc_sfm_g44_mill19_$SC.json
 s1 () { $PY utils/run_depth_anything_v2.py "$DS/input" --output "$DS/estimated_depths" -d 4 & local p1=$!
         $PY tools/make_resized_images.py "$DS" --factor 4 --nproc "$J" & local p2=$!; wait $p1 || return 1; wait $p2 || return 2; }
-s5 () { $PY tools/make_sfm_fill_init.py "$DS" --blocks $(seq 0 15) --block_dim 4 4 --dup 1 --out-dir "$DS/sfmfill_sweep44/dup1" || return 1
-        $PY tools/block_mask44.py --data "$DS" --blocks $(seq 0 15) --crop_ply sfmfill_sweep44 --skip_masks || return 2
-        [ "$(ls "$DS/sfmfill_sweep44_crop/dup1/"block_*.ply 2>/dev/null | wc -l)" = 16 ] || { echo "⛔ 裁盒起點不是 16 塊（11-19 路徑 bug 的自檢）"; return 3; }; }
-s6 () { seq 0 15 | xargs -P "$J" -I{} $PY tools/block_mask44.py --data "$DS" --blocks {} --depth_dir estimated_depths_tri --depth_raw --out "$DS/block_masks44_tri"; }
-s8 () { seq 0 15 | xargs -P "$J" -I{} $PY tools/make_tri_dense_init.py "$DS" --blocks {} --seed_per_block --alloc "$ALLOC"; }
+# ★ 11-21 有分區檔的塊才處理（rubble 的 4x4 右下角 b15 分到 0 台相機 => partition_from_colmap 只寫 15 個分區檔；檔名 <b%4>_<b/4>）
+blks () { local b; for b in $(seq 0 15); do [ -f "$DS/partition/partitions-dim_4_4_visibility_0.08/$(printf '%03d_%03d' $((b % 4)) $((b / 4))).txt" ] && echo $b; done; }
+s5 () { local B; B=$(blks); local n; n=$(echo $B | wc -w); echo "有分區檔的塊（$n）：$B"
+        $PY tools/make_sfm_fill_init.py "$DS" --blocks $B --block_dim 4 4 --dup 1 --out-dir "$DS/sfmfill_sweep44/dup1" || return 1
+        $PY tools/block_mask44.py --data "$DS" --blocks $B --crop_ply sfmfill_sweep44 --skip_masks || return 2
+        [ "$(ls "$DS/sfmfill_sweep44_crop/dup1/"block_*.ply 2>/dev/null | wc -l)" = "$n" ] || { echo "⛔ 裁盒起點不是 $n 塊（11-19 路徑 bug 的自檢）"; return 3; }; }
+s6 () { blks | xargs -P "$J" -I{} $PY tools/block_mask44.py --data "$DS" --blocks {} --depth_dir estimated_depths_tri --depth_raw --out "$DS/block_masks44_tri"; }
+s8 () { blks | xargs -P "$J" -I{} $PY tools/make_tri_dense_init.py "$DS" --blocks {} --seed_per_block --alloc "$ALLOC"; }
 stage "1 單目深度（存 1/4 解析度）‖ 預縮影像 4 倍" s1
 stage "2 單目深度尺度" $PY utils/get_depth_scales.py "$DS" --depth_dir "$DS/estimated_depths" --output "$DS/estimated_depth_scales.json"
 stage "3 校正深度（相機 / 8）" $PY tools/make_tri_depths.py "$DS" --nproc 16 --down 8
@@ -51,6 +54,7 @@ stage "5 SfM＋補點底＋裁盒" s5
 stage "6 塊外遮罩（校正深度版）" s6
 stage "7 顆數分配（SfM 點數）" $PY tools/sfm_cap_alloc.py "$DS" --out "$ALLOC"
 stage "8 稠密起點" s8
-stage "9 上限遮罩（躺平）" $PY tools/make_cap_masks.py --data "$DS" --kind flat --blocks $(seq 0 15)   # ★ 11-21 補 --blocks（必填；11-20 building 在這步失敗）
+stage "9 上限遮罩（躺平）" $PY tools/make_cap_masks.py --data "$DS" --kind flat --blocks $(blks)   # ★ 11-21 補 --blocks（必填；11-20 building 在這步失敗）
 echo "合計 $(awk -F'\t' '{s+=$2} END{print int(s/60)}' "$TL") 分（$TL）"
+echo "訓練的塊：$(blks | tr '\n' ' ')"
 echo "DONE prep_mill19 $SC"
