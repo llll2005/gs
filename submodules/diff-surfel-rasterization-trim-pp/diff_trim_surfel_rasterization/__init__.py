@@ -267,7 +267,9 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-11-21 bit10 = 反單應交點（只在 renderCUDA_opt 非 DST；必須與 forward 的 lean bit 16384 一起）
                 | (1024 if getattr(raster_settings, "inv_homog", False) else 0)
                 # ★ 2026-11-21 bit11 = 幾何配對遮罩（只在 GEOM renderCUDA；opt 路徑用配對位元）
-                | (2048 if getattr(raster_settings, "exact_strip_cull", False) else 0),
+                | (2048 if getattr(raster_settings, "exact_strip_cull", False) else 0)
+                # ★ 2026-11-21 晚 bit12 = 反單應的齊次性（#9）：不歸約 Σ g.z，每顆換算時由 Euler 定理補回（需 inv_homog）
+                | (4096 if (getattr(raster_settings, "aih_homog", False) and getattr(raster_settings, "inv_homog", False)) else 0),
                 sh_rest, a_m_dc, a_v_dc, a_m_rest, a_v_rest, a_acc, a_hp)
 
         _cap = _depth_cap_of(raster_settings) if geom_grad else None    # ★ 11-11 逐貢獻深度上限：backward 期間再把上限圖交給光柵器
@@ -384,6 +386,7 @@ class GaussianRasterizationSettings(NamedTuple):
     #   （每列一元二次、無除法、放寬 1%＋0.02 保守），warp 只查自己那一位。forward 的 lean／完整路徑（非 record）與 GEOM backward。
     #   離線量 skip_box 不跳的 warp 迭代再刪 41%；被跳的配對 alpha 必 < 1/255 => 渲染逐位元相同（V/C 同 skip_box：覆蓋數照算、V 少 < T/255 的項）。
     exact_strip_cull : bool = False
+    aih_homog : bool = False   # ★ 2026-11-21 晚：反單應 backward 少歸約一格（紀錄/實驗分析/39 #9）
 
 class GaussianRasterizer(nn.Module):
     def __init__(self, raster_settings):

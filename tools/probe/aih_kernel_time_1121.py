@@ -14,8 +14,10 @@ ap.add_argument("--ckpt", default="outputs/lab/view_block_2_nogate/checkpoints/v
 ap.add_argument("--ncam", type=int, default=6)
 ap.add_argument("--rounds", type=int, default=6)
 ap.add_argument("--dist", type=int, default=0, help="1＝dist 版 lean（目前反單應不作用，當對照）")
-ap.add_argument("--toggle", default="aih", choices=["aih", "xcull", "both"], help="aih＝切換反單應；xcull＝切換幾何配對遮罩（反單應照 --aih_fixed）")
+ap.add_argument("--toggle", default="aih", choices=["aih", "xcull", "both", "tcull", "nobox", "homog", "so"], help="aih＝切換反單應；xcull＝切換幾何配對遮罩（反單應照 --aih_fixed）；tcull＝切換 tile 精確剔除（反單應＋遮罩固定開）；nobox＝遮罩開時切換 skip_box")
 ap.add_argument("--aih_fixed", type=int, default=1, help="toggle=xcull 時反單應固定開（1）或關（0）")
+ap.add_argument("--so_a", default="", help="toggle=so：設定 0 用的光柵器套件目錄（…/diff_trim_surfel_rasterization）")
+ap.add_argument("--so_b", default="", help="toggle=so：設定 1 用的光柵器套件目錄；同一個 process 交替兩份 .so（跨 process 時脈飄移太大）")
 ap.add_argument("--lean", type=int, default=1, help="0＝完整路徑（MODE 0 forward＋GEOM backward；量每 8 步那種步）")
 a = ap.parse_args()
 
@@ -72,8 +74,30 @@ def _set(setting):
         renderer.inv_homog = bool(setting); renderer.exact_strip_cull = False
     elif a.toggle == "xcull":
         renderer.inv_homog = bool(a.aih_fixed); renderer.exact_strip_cull = bool(setting)
+    elif a.toggle == "tcull":   # ★ 11-21 晚：tile 精確剔除（10-03 的 tile_cull）在現行配方＋m39 上
+        renderer.inv_homog = True; renderer.exact_strip_cull = True; renderer.skip_box = True; renderer.tile_cull = bool(setting)
+    elif a.toggle == "so":   # ★ 11-21 晚：同一個 process 交替兩份光柵器（例：預設 vs RAST_F32_CONST=1）；渲染設定＝m39 的 lean
+        renderer.inv_homog = True; renderer.exact_strip_cull = True; renderer.skip_box = True
+        _R = _SO[setting]
+        _RMOD.GaussianRasterizationSettings = _R.GaussianRasterizationSettings; _RMOD.GaussianRasterizer = _R.GaussianRasterizer
+    elif a.toggle == "homog":   # ★ 11-21 晚 #9：反單應＋遮罩開，切換齊次性少歸約
+        renderer.inv_homog = True; renderer.exact_strip_cull = True; renderer.skip_box = True; renderer.aih_homog = bool(setting)
+    elif a.toggle == "nobox":   # ★ 11-21 晚：遮罩開時 skip_box 還有沒有用（1＝拿掉 skip_box）
+        renderer.inv_homog = True; renderer.exact_strip_cull = True; renderer.skip_box = not bool(setting)
     else:   # both：全關 vs 反單應＋幾何配對遮罩
         renderer.inv_homog = bool(setting); renderer.exact_strip_cull = bool(setting)
+
+
+_SO, _RMOD = {}, None
+if a.toggle == "so":
+    import importlib.util
+    import internal.renderers.sep_depth_trim_2dgs_renderer as _RMOD
+
+    def _load_pkg(name, path):
+        spec = importlib.util.spec_from_file_location(name, os.path.join(path, "__init__.py"), submodule_search_locations=[path])
+        m = importlib.util.module_from_spec(spec); sys.modules[name] = m; spec.loader.exec_module(m); return m
+    _SO = {0: _load_pkg("rast_so_a", a.so_a), 1: _load_pkg("rast_so_b", a.so_b)}
+    print("toggle so：0 =", _SO[0]._C.__file__, "｜1 =", _SO[1]._C.__file__)
 
 
 def timed(cam, tgt):

@@ -68,9 +68,12 @@ bg = torch.zeros(3, device=dev)
 tgts = [torch.rand((3, int(c.height), int(c.width)), device=dev, generator=torch.Generator(device=dev).manual_seed(1000 + i)) for i, c in enumerate(cams)]
 print(f"N = {params['means'].shape[0]:,}｜相機 {len(cams)} 台 {int(cams[0].width)}x{int(cams[0].height)}")
 
-SETS = {"off": dict(inv_homog=False, exact_strip_cull=False, skip_box=False),
-        "sbox": dict(inv_homog=False, exact_strip_cull=False, skip_box=True),
-        "m39r": dict(inv_homog=True, exact_strip_cull=True, skip_box=True)}
+SETS = {"off": dict(inv_homog=False, exact_strip_cull=False, skip_box=False, aih_homog=False),
+        "sbox": dict(inv_homog=False, exact_strip_cull=False, skip_box=True, aih_homog=False),
+        "m39r": dict(inv_homog=True, exact_strip_cull=True, skip_box=True, aih_homog=False),
+        "m39h": dict(inv_homog=True, exact_strip_cull=True, skip_box=True, aih_homog=True)}   # ★ 11-21 晚 #9
+if "aih_homog" not in R.GaussianRasterizationSettings._fields:
+    SETS.pop("m39h")
 res = {}
 for tag, kv in SETS.items():
     for k, v in kv.items():
@@ -106,5 +109,15 @@ for tag, kv in SETS.items():
         res[f"img_eval_{tag}_{ci}"] = dig(o["render"])
         del o
     print(tag, "訓練步峰值增量 %.1f MiB｜評估 %.1f MiB" % (res[f"peak_train_{tag}_0"] / 2**20, res[f"peak_eval_{tag}_0"] / 2**20))
+if "m39h" in SETS:
+    rr = []
+    for k in res:
+        if k.startswith("gstat_") and "_m39r_" in k:
+            x, y = res[k], res[k.replace("_m39r_", "_m39h_")]
+            rr.append((float(np.max(np.abs(x - y) / (np.abs(x) + 1e-30))), k))
+    rr.sort()
+    print(f"同一次跑 m39r vs m39h（#9）梯度摘要相對差：中位 {np.median([r for r, _ in rr]):.2e}、最大 {rr[-1][0]:.2e}（{rr[-1][1]}）")
+    for i in range(3):
+        print("  影像（訓練步）相同：", res[f"img_train_m39r_{i}"] == res[f"img_train_m39h_{i}"])
 np.savez(a.out, **res)
 print("=>", a.out)

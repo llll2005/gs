@@ -606,7 +606,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* transMat_ptr = (transMat_precomp != nullptr) ? transMat_precomp : geomState.transMat;
 	BACKWARD::setAlphaMax((geom_grad & 128) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 128 = alpha 上限 0.999（與 forward 相同）
 	// ★ 2026-11-16 backward 旗標 bit 256＝逐 warp 精確支撐盒跳過（opt 與 GEOM 兩條路徑）、bit 512＝逐 warp 配對位元（需 bit 16；同時把近平面判準改成跟 forward 一樣）
-	BACKWARD::setSkipFlags(((geom_grad & 256) ? 2 : 0) | ((geom_grad & 512) ? 4 : 0) | ((geom_grad & 2048) ? 16 : 0));
+	BACKWARD::setSkipFlags(((geom_grad & 256) ? 2 : 0) | ((geom_grad & 512) ? 4 : 0) | ((geom_grad & 2048) ? 16 : 0) | ((geom_grad & 4096) ? 32 : 0));
 	CHECK_CUDA(BACKWARD::render(
 		tile_grid,
 		block,

@@ -15,7 +15,9 @@ DST=$HOME/rast_alt/$TAG
 G=${CONDA_GSPL:-/root/miniconda3/envs/gspl}
 rm -rf "$RAST/build" "$DST"; mkdir -p "$DST"
 echo "[build_rast_alt] $(date +%T) 編 $(git log --oneline -1 | cut -c1-60) => $DST"
-conda run -n gspl --no-capture-output env CUDA_HOME=$G CUDA_PATH=$G TORCH_CUDA_ARCH_LIST=8.6 \
+# ★ 11-21 晚：RAST_F32_CONST=1 bash scripts/lab/build_rast_alt.sh <標籤> => 編 float 常數版（auxiliary.h；紀錄/實驗分析/39 #12）
+echo "[build_rast_alt] RAST_F32_CONST=${RAST_F32_CONST:-0}"
+conda run -n gspl --no-capture-output env CUDA_HOME=$G CUDA_PATH=$G TORCH_CUDA_ARCH_LIST=8.6 RAST_F32_CONST=${RAST_F32_CONST:-0} \
   pip install --no-build-isolation --no-deps --target "$DST" "$RAST" 2>&1 | tail -3
 rm -rf "$RAST/build"
 # 驗：用 PYTHONPATH 載到的是這一份、而且認得新欄位；過了才寫 .built_from（佇列裡用它當「編好了」的前提）
@@ -25,4 +27,4 @@ from diff_trim_surfel_rasterization import GaussianRasterizationSettings as S
 p = os.path.dirname(m.__file__); ok = p.startswith('$DST')
 print('[build_rast_alt] 載入', p, '｜新欄位', all(f in S._fields for f in ('inv_homog', 'exact_strip_cull')))
 raise SystemExit(0 if ok and all(f in S._fields for f in ('inv_homog', 'exact_strip_cull')) else 1)" \
-  && git rev-parse HEAD > "$DST/.built_from" && echo "[build_rast_alt] ✅ 完成（$DST/.built_from）"
+  && { git rev-parse HEAD; echo "RAST_F32_CONST=${RAST_F32_CONST:-0}"; } > "$DST/.built_from" && echo "[build_rast_alt] ✅ 完成（$DST/.built_from）"

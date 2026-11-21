@@ -452,7 +452,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 #else
 	float truncated_R = 3.f;
 #endif
-	float radius = ceil(truncated_R * max(max(extent.x, extent.y), FilterSize));
+	float radius = ceil(truncated_R * max(max(extent.x, extent.y), FILTER_SIZE_C));
 #if EXACT_SUPPORT
 	// The exact-support radius is a TIGHT bound, so float error in logf plus the ceil() can
 	// drop samples sitting exactly on the alpha = 1/255 boundary. Measured without this margin:
@@ -463,7 +463,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 #if !EXACT_SUPPORT_GROW
 	// GROW=0 的語意是「只縮不長」：margin 與浮點誤差都不得讓半徑超過原本的平坦 3-sigma 盒，
 	// 否則會在另一個方向上改變輸出（高不透明度顆粒的 truncated_R 已被 cap 在 3）。
-	radius = min(radius, ceil(3.f * max(max(extent.x, extent.y), FilterSize)));
+	radius = min(radius, ceil(3.f * max(max(extent.x, extent.y), FILTER_SIZE_C)));
 #endif
 #endif
 
@@ -481,7 +481,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float2 cc, ce;
 	if (!computeAABB_R(transMat, truncated_R, cc, ce))
 		return;
-	const float fs = FilterSize * truncated_R;      // 低通圓盤：||pix - center|| <= FilterSize * R
+	const float fs = FILTER_SIZE_C * truncated_R;      // 低通圓盤：||pix - center|| <= FilterSize * R
 	float bx0 = min(cc.x - ce.x, center.x - fs) - EXACT_SUPPORT_MARGIN_PX;
 	float bx1 = max(cc.x + ce.x, center.x + fs) + EXACT_SUPPORT_MARGIN_PX;
 	float by0 = min(cc.y - ce.y, center.y - fs) - EXACT_SUPPORT_MARGIN_PX;
@@ -491,7 +491,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		float2 c3, e3;
 		if (computeAABB_R(transMat, 3.f, c3, e3))
 		{
-			const float f3 = FilterSize * 3.f;
+			const float f3 = FILTER_SIZE_C * 3.f;
 			bx0 = max(bx0, min(c3.x - e3.x, center.x - f3));
 			bx1 = min(bx1, max(c3.x + e3.x, center.x + f3));
 			by0 = max(by0, min(c3.y - e3.y, center.y - f3));
@@ -686,7 +686,7 @@ renderCUDA(
 					const float RE = sqrtf(fmaxf(2.f * logf(255.f * op), 1e-12f));
 					float2 cc, ce;
 					if (computeAABB_R(transMats + 9 * coll_id, RE, cc, ce)) {
-						const float2 xy0 = points_xy_image[coll_id]; const float fs = FilterSize * RE;
+						const float2 xy0 = points_xy_image[coll_id]; const float fs = FILTER_SIZE_C * RE;
 						bx = make_float4(fminf(cc.x - ce.x, xy0.x - fs) - 1.f, fmaxf(cc.x + ce.x, xy0.x + fs) + 1.f,
 						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
 					}
@@ -750,7 +750,7 @@ renderCUDA(
 		#if BACKFACE_CULL
 					// May hanle this by replacing a low pass filter,
 					// but this case is extremely rare.
-					if (p.z == 0.0) break; // there is not intersection
+					if (p.z == PZ_ZERO) break; // there is not intersection
 		#endif
 					// 3d homogeneous point to 2d point on the splat
 					s = {p.x / p.z, p.y / p.z};
@@ -764,11 +764,11 @@ renderCUDA(
 					float2 xy = collected_xy[j];
 					float2 d = {xy.x - pixf.x, xy.y - pixf.y};
 					// 2d screen distance
-					float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+					float rho2d = FILTER_INV_SQ_C * (d.x * d.x + d.y * d.y);
 					float rho = min(rho3d, rho2d);
 
 					float depth = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z; // splat depth
-					if (near_i < NEAR_PLANE) break;
+					if (near_i < NEAR_C) break;
 					float4 nor_o = collected_normal_opacity[j];
 					float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
 					float power = -0.5f * rho;
@@ -801,7 +801,7 @@ renderCUDA(
 					// Render depth distortion map
 					// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 					float A = 1-T;
-					float mapped_depth = (FAR_PLANE * depth - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * depth);
+					float mapped_depth = NDC_MAP(depth);
 					float error = mapped_depth * mapped_depth * A + dist2 - 2 * mapped_depth * dist1;
 					distortion += error * alpha * T;
 
@@ -824,7 +824,7 @@ renderCUDA(
 					if (MODE == 5) {
 					// ★ 2026-10-19 與 MODE 0 的 distortion 算式逐字相同（只拿掉 median／法線／深度）
 					float A = 1-T;
-					float mapped_depth = (FAR_PLANE * depth - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * depth);
+					float mapped_depth = NDC_MAP(depth);
 					float error = mapped_depth * mapped_depth * A + dist2 - 2 * mapped_depth * dist1;
 					distortion += error * alpha * T;
 					dist1 += mapped_depth * alpha * T;
@@ -884,7 +884,7 @@ renderCUDA(
 #if BACKFACE_CULL
 			// May hanle this by replacing a low pass filter,
 			// but this case is extremely rare.
-			if (p.z == 0.0) continue; // there is not intersection
+			if (p.z == PZ_ZERO) continue; // there is not intersection
 #endif
 			// 3d homogeneous point to 2d point on the splat
 			s = {p.x / p.z, p.y / p.z};
@@ -898,11 +898,11 @@ renderCUDA(
 			float2 xy = collected_xy[j];
 			float2 d = {xy.x - pixf.x, xy.y - pixf.y};
 			// 2d screen distance
-			float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+			float rho2d = FILTER_INV_SQ_C * (d.x * d.x + d.y * d.y);
 			float rho = min(rho3d, rho2d);
 
 			float depth = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z; // splat depth
-			if (near_i < NEAR_PLANE) continue;
+			if (near_i < NEAR_C) continue;
 			float4 nor_o = collected_normal_opacity[j];
 			float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
 			float power = -0.5f * rho;
@@ -935,7 +935,7 @@ renderCUDA(
 			// Render depth distortion map
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
 			float A = 1-T;
-			float mapped_depth = (FAR_PLANE * depth - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * depth);
+			float mapped_depth = NDC_MAP(depth);
 			float error = mapped_depth * mapped_depth * A + dist2 - 2 * mapped_depth * dist1;
 			distortion += error * alpha * T;
 
@@ -958,7 +958,7 @@ renderCUDA(
 			if (MODE == 5) {
 			// ★ 2026-10-19 與 MODE 0 的 distortion 算式逐字相同（只拿掉 median／法線／深度）
 			float A = 1-T;
-			float mapped_depth = (FAR_PLANE * depth - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * depth);
+			float mapped_depth = NDC_MAP(depth);
 			float error = mapped_depth * mapped_depth * A + dist2 - 2 * mapped_depth * dist1;
 			distortion += error * alpha * T;
 			dist1 += mapped_depth * alpha * T;
@@ -1099,15 +1099,15 @@ auditCUDA(
 			float3 l = {-Tv.x + pixf.y * Tw.x, -Tv.y + pixf.y * Tw.y, -Tv.z + pixf.y * Tw.z};
 			float3 p = crossProduct(k, l);
 #if BACKFACE_CULL
-			if (p.z == 0.0) continue;
+			if (p.z == PZ_ZERO) continue;
 #endif
 			float2 s = {p.x / p.z, p.y / p.z};
 			float rho3d = (s.x * s.x + s.y * s.y);
 			float2 xy = collected_xy[j];
 			float2 d = {xy.x - pixf.x, xy.y - pixf.y};
-			float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+			float rho2d = FILTER_INV_SQ_C * (d.x * d.x + d.y * d.y);
 			float rho = min(rho3d, rho2d);
-			if ((s.x * Tw.x + s.y * Tw.y) + Tw.z < NEAR_PLANE) continue;
+			if ((s.x * Tw.x + s.y * Tw.y) + Tw.z < NEAR_C) continue;
 			float4 nor_o = collected_normal_opacity[j];
 			float power = -0.5f * rho;
 			if (power > 0.0f) continue;
@@ -1210,7 +1210,7 @@ recordReduceCUDA(
 				float3 p = crossProduct(k, l);
 				bool ok = true;
 #if BACKFACE_CULL
-				if (p.z == 0.0) ok = false;
+				if (p.z == PZ_ZERO) ok = false;
 #endif
 				if (ok)
 				{
@@ -1218,9 +1218,9 @@ recordReduceCUDA(
 					float rho3d = (s.x * s.x + s.y * s.y);
 					float2 xy = collected_xy[j];
 					float2 d = {xy.x - pixf.x, xy.y - pixf.y};
-					float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+					float rho2d = FILTER_INV_SQ_C * (d.x * d.x + d.y * d.y);
 					float rho = min(rho3d, rho2d);
-					if ((s.x * Tw.x + s.y * Tw.y) + Tw.z >= NEAR_PLANE)
+					if ((s.x * Tw.x + s.y * Tw.y) + Tw.z >= NEAR_C)
 					{
 						float power = -0.5f * rho;
 						if (power <= 0.0f)

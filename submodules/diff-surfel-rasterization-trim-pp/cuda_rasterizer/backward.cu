@@ -19,6 +19,7 @@ __device__ float g_alpha_max_b = 0.99f;
 __device__ int g_skipf_b = 0;
 // ★ 2026-11-21 反單應交點：BACKWARD::render 真的走了 renderCUDA_opt（非 DST）且用了 aih 時記下指標，
 //   BACKWARD::preprocess 開頭據此把 dL_dtransMat 的 9 格（Σ dx·g、Σ dy·g、Σ g）換算回 dL/dT，用完清掉。
+static bool s_aih_hom = false;               // ★ 2026-11-21 晚 #9：這次 backward 沒有歸約 Σ g.z（換算時補回）
 static const float* s_aih_conv = nullptr;   // ★ 2026-11-16 A-1／A-3（見 BACKWARD::setSkipFlags）
 // ★ 2026-11-16 A-1／A-3：與 forward.cu computeAABB_R 逐字相同（兩個編譯單元各一份）
 __device__ static bool computeAABB_R_b(const float *transMat, const float R, float2 & center, float2 & extent)
@@ -459,7 +460,7 @@ renderCUDA(
 					const float RE = sqrtf(fmaxf(2.f * logf(255.f * op), 1e-12f));
 					float2 cc, ce;
 					if (computeAABB_R_b(transMats + 9 * coll_id, RE, cc, ce)) {
-						const float2 xy0 = points_xy_image[coll_id]; const float fs = FilterSize * RE;
+						const float2 xy0 = points_xy_image[coll_id]; const float fs = FILTER_SIZE_C * RE;
 						bx = make_float4(fminf(cc.x - ce.x, xy0.x - fs) - 1.f, fmaxf(cc.x + ce.x, xy0.x + fs) + 1.f,
 						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
 					}
@@ -495,7 +496,7 @@ renderCUDA(
 #if BACKFACE_CULL
 			// May hanle this by replacing a low pass filter,
 			// but this case is extremely rare.
-			if (p.z == 0.0) continue; // there is not intersection
+			if (p.z == PZ_ZERO) continue; // there is not intersection
 #endif
 
 			float2 s = {p.x / p.z, p.y / p.z}; 
@@ -507,12 +508,12 @@ renderCUDA(
 			float2 xy = collected_xy[j];
 			// 2d screen distance
 			float2 d = {xy.x - pixf.x, xy.y - pixf.y};
-			float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y); // screen distance
+			float rho2d = FILTER_INV_SQ_C * (d.x * d.x + d.y * d.y); // screen distance
 			float rho = min(rho3d, rho2d);
 			
 			// Compute accurate depth when necessary
 			float c_d = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z;
-			if (c_d < NEAR_PLANE) continue;
+			if (c_d < NEAR_C) continue;
 
 			float4 nor_o = collected_normal_opacity[j];
 			float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
@@ -554,8 +555,8 @@ renderCUDA(
 			float cap_v = 0.f;
 #if RENDER_AXUTILITY
 			if (GEOM) {
-			float m_d = (FAR_PLANE * c_d - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d);
-			float dmd_dd = (FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d * c_d);
+			float m_d = NDC_MAP(c_d);
+			float dmd_dd = NDC_DMD(c_d);
 			if (contributor == median_contributor-1) {
 				dL_dz += dL_dmedian_depth;
 				dL_dweight += dL_dmax_dweight;
@@ -666,8 +667,8 @@ renderCUDA(
 				atomicAdd(&dL_dtransMat[global_id * 9 + 8],  dL_dTw.z);
 			} else {
 				// // Update gradients w.r.t. center of Gaussian 2D mean position
-				float dG_ddelx = -G * FilterInvSquare * d.x;
-				float dG_ddely = -G * FilterInvSquare * d.y;
+				float dG_ddelx = -G * FILTER_INV_SQ_C * d.x;
+				float dG_ddely = -G * FILTER_INV_SQ_C * d.y;
 				atomicAdd(&dL_dmean2D[global_id].x, dL_dG * dG_ddelx); // not scaled
 				atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely); // not scaled
 				if (GEOM) atomicAdd(&dL_dtransMat[global_id * 9 + 8],  dL_dz); // propagate depth loss
@@ -769,6 +770,9 @@ renderCUDA_opt(
 	const bool a1 = (g_skipf_b & 2) != 0;
 	const bool a3 = pb && (g_skipf_b & 4) != 0;
 	const bool aih_on = !DST && (aih != nullptr);   // ★ 11-21 反單應
+	// ★ 11-21 晚 #9 齊次性：lean 步深度不進 loss => 每個配對 p'·g = 0（gz 就是這樣定義的）=> Σ_pairs [dx q0·g + dy q1·g + iz gz] = 0
+	//   => Σ gz = -(q0·a0 + q1·a1)/iz（a0 = Σ dx g、a1 = Σ dy g）：g[11] 不歸約，aihToTransGradCUDA 補回
+	const bool aih_hom = aih_on && (g_skipf_b & 32);
 	__shared__ float4 collected_box[BLOCK_SIZE];
 	__shared__ unsigned char collected_m[BLOCK_SIZE];
 	const int wid = warp.meta_group_rank();
@@ -842,7 +846,7 @@ renderCUDA_opt(
 					const float RE = sqrtf(fmaxf(2.f * logf(255.f * op), 1e-12f));
 					float2 cc, ce;
 					if (computeAABB_R_b(transMats + 9 * coll_id, RE, cc, ce)) {
-						const float2 xy0 = points_xy_image[coll_id]; const float fs = FilterSize * RE;
+						const float2 xy0 = points_xy_image[coll_id]; const float fs = FILTER_SIZE_C * RE;
 						bx = make_float4(fminf(cc.x - ce.x, xy0.x - fs) - 1.f, fmaxf(cc.x + ce.x, xy0.x + fs) + 1.f,
 						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
 					}
@@ -880,7 +884,7 @@ renderCUDA_opt(
 				p = crossProduct(k3, l3);
 				}
 #if BACKFACE_CULL
-				if (p.z == 0.0) valid = false;
+				if (p.z == PZ_ZERO) valid = false;
 #endif
 				if (valid) {
 					const float wz = aih_on ? 1.0f / p.z : 0.f;   // ★ 11-21 交點深度（反單應時＝1/p'.z）
@@ -888,7 +892,7 @@ renderCUDA_opt(
 					const float rho3d = (s.x * s.x + s.y * s.y);
 					const float2 xy = collected_xy[j];
 					const float2 d = {xy.x - pixf.x, xy.y - pixf.y};
-					const float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+					const float rho2d = FILTER_INV_SQ_C * (d.x * d.x + d.y * d.y);
 					const float rho = min(rho3d, rho2d);
 					const float c_d = aih_on ? ((rho3d <= rho2d) ? wz : 1.0f / Tw.z)
 					                         : ((rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z);
@@ -904,7 +908,7 @@ renderCUDA_opt(
 					// ★ 11-16 A-3（逐 warp 配對位元）開著時近平面判準一律跟 forward 一樣：否則 forward 判掉、沒混合的側對面元，
 					//   backward 還會算它的梯度（現有配對 bit 的梯度差就是這個；BWD_NEAR_LIKE_FWD 1 時與雜訊同級）
 					const float near_d = (BWD_NEAR_LIKE_FWD || a3) ? (aih_on ? wz : ((s.x * Tw.x + s.y * Tw.y) + Tw.z)) : c_d;
-					if (near_d < NEAR_PLANE || power > 0.0f || alpha < 1.0f / 255.0f) valid = false;
+					if (near_d < NEAR_C || power > 0.0f || alpha < 1.0f / 255.0f) valid = false;
 					if (valid) {
 						T = T / (1.f - alpha);
 						const float dchannel_dcolor = alpha * T;
@@ -919,8 +923,8 @@ renderCUDA_opt(
 						float dL_dz = 0.0f;
 						if (DST) {
 							// 與 renderCUDA<GEOM=true> 的 distortion 部分逐字相同
-							float m_d = (FAR_PLANE * c_d - FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d);
-							float dmd_dd = (FAR_PLANE * NEAR_PLANE) / ((FAR_PLANE - NEAR_PLANE) * c_d * c_d);
+							float m_d = NDC_MAP(c_d);
+							float dmd_dd = NDC_DMD(c_d);
 							float dL_dweight = 0;
 #if DETACH_WEIGHT
 							dL_dweight += 0;
@@ -960,8 +964,8 @@ renderCUDA_opt(
 							if (DST) { g[9] += dL_dz * s.x; g[10] += dL_dz * s.y; g[11] += dL_dz * 1.0f; }
 							}
 						} else {
-							g[12] = dL_dG * (-G * FilterInvSquare * d.x);
-							g[13] = dL_dG * (-G * FilterInvSquare * d.y);
+							g[12] = dL_dG * (-G * FILTER_INV_SQ_C * d.x);
+							g[13] = dL_dG * (-G * FILTER_INV_SQ_C * d.y);
 							if (DST) g[11] = dL_dz;   // 次像素分支：深度梯度進 transMat[8]（同 GEOM 路徑）
 						}
 						g[15] = G * dL_dalpha;
@@ -984,13 +988,14 @@ renderCUDA_opt(
 				if (__popc(m) >= 3) {
 					for (int k = 0; k < OPT_NG; k++) {
 						if (!ABS && k == 14) continue;
+						if (aih_hom && k == 11) continue;   // ★ 11-21 晚 #9
 						const float v = cg::reduce(warp, g[k], cg::plus<float>());
 						if (warp.thread_rank() == 0 && v != 0.f) atomicAdd(&s_g[k][j], v);
 					}
 					if (warp.thread_rank() == 0) atomicAdd(&s_cnt[j], 1);
 				} else if (valid) {
 					for (int k = 0; k < OPT_NG; k++)
-						if (g[k] != 0.f) atomicAdd(&s_g[k][j], g[k]);
+						if (g[k] != 0.f && !(aih_hom && k == 11)) atomicAdd(&s_g[k][j], g[k]);
 					atomicAdd(&s_cnt[j], 1);
 				}
 			} else if (valid) {
@@ -1000,7 +1005,7 @@ renderCUDA_opt(
 					atomicAdd(&dL_dmean2D[gid].y, g[13]);
 					if (DST && g[11] != 0.f) atomicAdd(&dL_dtransMat[gid * 9 + 8], g[11]);
 				} else {
-					for (int k = 0; k < 9; k++) atomicAdd(&dL_dtransMat[gid * 9 + k], g[3 + k]);
+					for (int k = 0; k < 9; k++) if (!(aih_hom && k == 8)) atomicAdd(&dL_dtransMat[gid * 9 + k], g[3 + k]);
 #if ABSGRAD
 					if (ABS) atomicAdd(&dL_dmean2D[gid].z, g[14]);
 #endif
@@ -1285,7 +1290,7 @@ __global__ void __launch_bounds__(SHA_T) preprocessShAdamCUDA(
 //     dL/dQ 的三欄 = (a0 + x_mu a2, a1 + y_mu a2, a2)；q2 = (0, 0, 1/Z_c) - x_mu q0 - y_mu q1
 //     dL/dM = -Q^T (dL/dQ) Q^T（反矩陣的微分），M 的列＝Tu, Tv, Tw（transMat[3r + c] = M[r][c]）
 //   CPU 驗證（float64 對 autograd 相對誤差 1e-14）：tools/probe/invhomog_verify_1121.py
-__global__ void aihToTransGradCUDA(int P, const int* radii, const float* aih, float* dL_dtransMats)
+__global__ void aihToTransGradCUDA(int P, const int* radii, const float* aih, float* dL_dtransMats, const bool hom)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P || !(radii[idx] > 0)) return;
@@ -1293,7 +1298,9 @@ __global__ void aihToTransGradCUDA(int P, const int* radii, const float* aih, fl
 	float* Gp = dL_dtransMats + 9 * idx;
 	const glm::vec3 q0(A[0], A[1], A[2]), q1(A[3], A[4], A[5]);
 	const float xm = A[6], ym = A[7], iz = A[8];
-	const glm::vec3 a0(Gp[0], Gp[1], Gp[2]), a1(Gp[3], Gp[4], Gp[5]), a2(Gp[6], Gp[7], Gp[8]);
+	const glm::vec3 a0(Gp[0], Gp[1], Gp[2]), a1(Gp[3], Gp[4], Gp[5]);
+	// ★ 11-21 晚 #9：沒有歸約的 Σ gz 由齊次性補回
+	const glm::vec3 a2(Gp[6], Gp[7], hom ? -(glm::dot(q0, a0) + glm::dot(q1, a1)) / iz : Gp[8]);
 	// v2（錨定換算）：p' = Qt (dx, dy, 1)、Qt = [q0, q1, (0,0,1/Z_c)] = M̃^{-1}、M̃ = A^{-1} M（Tu - x_mu Tw、Tv - y_mu Tw、Tw）
 	//   dL/dM̃ = -Qt^T (a0 a1 a2) Qt^T；dL/dM = A^{-T} dL/dM̃ => 第 0、1 列不變，第 2 列（Tw）= D2 - x_mu D0 - y_mu D1。
 	//   v1（先還原未錨定的 Q、G 再相乘）會讓 x_mu≈800 的大項在乘積裡相消：CPU 量 dL/dT 誤差 p99 3.2e-4（原寫法 1.5e-4、v2 7.2e-5）
@@ -1396,7 +1403,7 @@ void BACKWARD::preprocess(
 
 	// ★ 2026-11-21 反單應交點：先把 render 存的 dL/dp' 累加量換回 dL/dT（必須在 computeAABB 之前：它會加上 mean2D 那條路並回寫 dL_dmean2D）
 	if (s_aih_conv != nullptr) {
-		aihToTransGradCUDA << <(P + 255) / 256, 256 >> > (P, radii, s_aih_conv, dL_dtransMats);
+		aihToTransGradCUDA << <(P + 255) / 256, 256 >> > (P, radii, s_aih_conv, dL_dtransMats, s_aih_hom);
 		s_aih_conv = nullptr;
 	}
 	// we do not use the center actually
@@ -1515,6 +1522,7 @@ void BACKWARD::render(
 	const bool zskip = (flags & 64) != 0;                            // ★ 2026-11-05 上游梯度全 0 的像素不處理（只在 renderCUDA_opt）
 	// ★ 2026-11-21 反單應交點只在 renderCUDA_opt 的非 DST 實例；其他路徑一律原寫法、也不換算
 	s_aih_conv = ((flags & 1024) && aih != nullptr && !geom && !dst && (sat || red || pbit || zskip)) ? aih : nullptr;
+	s_aih_hom = (s_aih_conv != nullptr) && (flags & 4096);   // ★ 11-21 晚 #9（kernel 內看 g_skipf_b & 32，兩者都由 geom_grad bit 4096 來）
 	const float* xc_ptr = (flags & 2048) ? aih : nullptr;   // ★ 11-21 幾何配對遮罩（只給 renderCUDA；opt 路徑有配對位元）
 	if (!geom && (sat || red || pbit || dst || zskip)) {
 #define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr), (dst ? dL_depths : nullptr), zskip, s_aih_conv

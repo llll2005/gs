@@ -78,6 +78,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             skip_box: bool = False,
             inv_homog: bool = False,
             exact_strip_cull: bool = False,
+            aih_homog: bool = False,
             bwd_zero_grad_skip: bool = False,
             skip_unscored_pixels: bool = False,
             trim_running_vc: bool = False,
@@ -165,6 +166,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         self.inv_homog = inv_homog
         # ★ 2026-11-21 純數學化簡 #2：幾何配對遮罩（每個 tile 面元一次算 8 個 warp 是否碰到精確支撐；lean／完整路徑 forward 與 GEOM backward）。渲染逐位元相同。
         self.exact_strip_cull = exact_strip_cull
+        # ★ 2026-11-21 晚 純數學化簡 #9（紀錄/實驗分析/39）：反單應的 lean backward 不歸約 Σ g.z，每顆換算 dL/dT 時用齊次性
+        #   Σ gz = -(q0·Σ dx g + q1·Σ dy g)/iz 補回（每個配對 p'·g = 0）。需要 inv_homog。預設關。
+        self.aih_homog = aih_homog
         # ★ 2026-11-05 不計分像素（塊外遮罩的 C 區，b3／b12 佔 12～14% 像素、11～13% tile；使用者 11-05「排一次測試」）：
         #   bwd_zero_grad_skip    backward 不處理上游梯度全 0 的像素（C 區在 metric 被 detach => 梯度恰為 0；dist 步除外）。
         #                         梯度只差浮點加總順序（與 bwd_reduce 同級）。需要 lean_train。
@@ -470,6 +474,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             **({"bwd_zero_skip": True} if (_lean and not record_transmittance and getattr(self, "bwd_zero_grad_skip", False)) else {}),
             **({"inv_homog": True} if (_lean and not _lean_dist and not record_transmittance and getattr(self, "inv_homog", False)
                                        and not kwargs.get("_audit", False)) else {}),
+            **({"aih_homog": True} if (_lean and not _lean_dist and not record_transmittance and getattr(self, "inv_homog", False)
+                                       and getattr(self, "aih_homog", False) and not kwargs.get("_audit", False)) else {}),
             # ★ 11-21 幾何配對遮罩：lean 與完整路徑（非 record、非 audit）都用；光柵器內 record pass 也不跳
             # ★ 11-21 晚：只在有梯度的渲染（訓練步）開。評估／部署渲染（no_grad）關掉：渲染逐位元相同（tools/probe/aih_alloc_check_1121.py），
             #   而且光柵器就不必配置每顆 36 B 的反單應緩衝（全場景 20M 顆一次渲染 +0.54 GiB，紀錄/實驗分析/39 §4.7）。
@@ -506,7 +512,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             raise RuntimeError("設了 trim_running_vc 但光柵器不認得 train_record 欄位 —— 沒重編")
         if getattr(self, "bwd_pair_bit_warp", False) and not getattr(self, "bwd_pair_bit", False):
             raise ValueError("bwd_pair_bit_warp 要和 bwd_pair_bit 一起開（逐 warp 位元存在配對位元的緩衝區裡）")
-        for _f, _fld in (("skip_box", "skip_box"), ("bwd_pair_bit_warp", "pair_bit_warp"), ("inv_homog", "inv_homog"), ("exact_strip_cull", "exact_strip_cull")):
+        for _f, _fld in (("skip_box", "skip_box"), ("bwd_pair_bit_warp", "pair_bit_warp"), ("inv_homog", "inv_homog"), ("exact_strip_cull", "exact_strip_cull"), ("aih_homog", "aih_homog")):
             if getattr(self, _f, False) and _fld not in GaussianRasterizationSettings._fields:
                 raise RuntimeError(f"設了 {_f} 但光柵器不認得 {_fld} 欄位 —— 沒重編")
         for _f in ("bwd_sat_skip", "bwd_reduce", "bwd_pair_bit"):
