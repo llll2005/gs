@@ -19,6 +19,7 @@ ap.add_argument("--k", type=int, nargs="+", default=[9, 10, 12]); ap.add_argumen
 ap.add_argument("--D", default="data/matrix_city/aerial/train/block_all")
 ap.add_argument("--part", default="partition/partitions-dim_4_4_visibility_0.08")
 ap.add_argument("--test_dir", default="data/matrix_city/aerial/test/block_all_test_official2")
+ap.add_argument("--mbar", default="", help="M̄（16x16 npy）：給了就用「保留 DC」的投影（Schur 補數選高階子空間＋DC 最小平方補償）")
 a = ap.parse_args()
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 import eval_official_test as eot
@@ -67,7 +68,24 @@ def rend(i):
 
 print(f"看向 b{a.block} 的 test 幀 {len(pick)} 張：{[tn[i] for i in pick]}", flush=True)
 shs0 = G["shs"].clone()
-PROJS = {k: torch.einsum("jl,nlc->njc", V[:, :k] @ V[:, :k].T, shs0) for k in a.k}   # 係數空間正交投影
+def dc_preserving(Mb, k):
+    """保留 DC：高階 15 維用 Schur 補數 S = M_rr − M_r0 M_00^-1 M_0r 的前 k−1 個特徵向量；DC 補 Δdc = (M_0r·Δrest)/M_00。回傳 16x16。"""
+    Mb = torch.as_tensor(Mb, dtype=torch.float64)
+    m00, m0r, Mrr = Mb[0, 0], Mb[0, 1:], Mb[1:, 1:]
+    Sc = Mrr - torch.outer(m0r, m0r) / m00
+    e, U = torch.linalg.eigh(Sc); U = U.flip(1)[:, : k - 1]
+    Pr = U @ U.T
+    A = torch.zeros(16, 16, dtype=torch.float64); A[0, 0] = 1.0; A[1:, 1:] = Pr
+    A[0, 1:] = (m0r / m00) @ (torch.eye(15, dtype=torch.float64) - Pr)
+    return A.float()
+
+
+if a.mbar:
+    Mb_ = np.load(a.mbar)
+    PROJS = {k: torch.einsum("jl,nlc->njc", dc_preserving(Mb_, k), shs0) for k in a.k}
+    print("（保留 DC 版本）", flush=True)
+else:
+    PROJS = {k: torch.einsum("jl,nlc->njc", V[:, :k] @ V[:, :k].T, shs0) for k in a.k}   # 係數空間正交投影
 base, d_gt, d_full = [], {k: [] for k in a.k}, {k: [] for k in a.k}
 for n_, i in enumerate(pick):
     gt = torch.from_numpy(np.array(Image.open(os.path.join(a.test_dir, "images_1.2", tn[i])).convert("RGB"))).float().permute(2, 0, 1).to(dev) / 255

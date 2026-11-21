@@ -79,6 +79,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             inv_homog: bool = False,
             exact_strip_cull: bool = False,
             aih_homog: bool = False,
+            sh_proj_k: int = 0,
             bwd_zero_grad_skip: bool = False,
             skip_unscored_pixels: bool = False,
             trim_running_vc: bool = False,
@@ -169,6 +170,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ★ 2026-11-21 晚 純數學化簡 #9（紀錄/實驗分析/39）：反單應的 lean backward 不歸約 Σ g.z，每顆換算 dL/dT 時用齊次性
         #   Σ gz = -(q0·Σ dx g + q1·Σ dy g)/iz 補回（每個配對 p'·g = 0）。需要 inv_homog。預設關。
         self.aih_homog = aih_homog
+        # ★ 2026-11-21 晚 紀錄/實驗分析/40：空拍相機只觀測得到 16 維 SH 裡的約 10 維（每色版），最弱 3 維完全看不到。
+        #   sh_proj_k > 0：SH 升到最高階後，每步 optimizer 更新完把 SH 係數投影到這塊訓練相機幾何算出的 k 維可觀測子空間（DC＋高階前 k−1 維，保留 DC 版）
+        #   （基底＝M̄＝mean_i M_i/tr(M_i) 的特徵向量，M_i＝Σ_可見相機 Y(d)Y(d)^T，只用相機視錐、不渲染；第一次觸發時算）。
+        #   只驗「訓練時限制在 k 維」的畫質；省記憶體要另做參數化。0＝關。
+        self.sh_proj_k = int(sh_proj_k)
+        self._sh_P = None
         # ★ 2026-11-05 不計分像素（塊外遮罩的 C 區，b3／b12 佔 12～14% 像素、11～13% tile；使用者 11-05「排一次測試」）：
         #   bwd_zero_grad_skip    backward 不處理上游梯度全 0 的像素（C 區在 metric 被 detach => 梯度恰為 0；dist 步除外）。
         #                         梯度只差浮點加總順序（與 bwd_reduce 同級）。需要 lean_train。
@@ -1157,11 +1164,67 @@ class SepDepthTrim2DGSRenderer(Renderer):
                   f"｜大小中位 {float(Sc.median()):.4f}" + (f"｜自檢：投回像素最大誤差 {chk:.3f} px {'✅' if chk < 0.05 else '⚠⚠ 慣例可能不對'}" if chk is not None and not getattr(self, '_reseed_chk_done', False) else ""), flush=True)
             self._reseed_chk_done = True
 
+    @torch.no_grad()
+    def _sh_proj_basis(self, module):
+        """★ 40：用這塊的訓練相機幾何算 SH 可觀測子空間（前 k 個特徵向量），回傳 16x16 投影矩陣。"""
+        from internal.utils.sh_utils import eval_sh_basis16
+        cams = module.trainer.datamodule.dataparser_outputs.train_set.cameras
+        pc = module.gaussian_model
+        X = pc.get_xyz.detach()
+        dev = X.device
+        g = torch.Generator(device="cpu").manual_seed(0)
+        sel = torch.randperm(X.shape[0], generator=g)[: min(200_000, X.shape[0])].to(dev)
+        Xs = X[sel].double()
+        M = torch.zeros(Xs.shape[0], 16, 16, dtype=torch.float64, device=dev); cnt = torch.zeros(Xs.shape[0], device=dev)
+        for i in range(len(cams)):
+            R = cams.R[i].to(dev).double(); T = cams.T[i].to(dev).double()
+            Xc = Xs @ R.T + T; z = Xc[:, 2]
+            u = float(cams.fx[i]) * Xc[:, 0] / z.clamp_min(1e-6) + float(cams.cx[i]); v = float(cams.fy[i]) * Xc[:, 1] / z.clamp_min(1e-6) + float(cams.cy[i])
+            m = (z > 0.2) & (u >= 0) & (u < float(cams.width[i])) & (v >= 0) & (v < float(cams.height[i]))
+            if not bool(m.any()):
+                continue
+            d = Xs[m] + (R.T @ T)[None]; d = d / d.norm(dim=1, keepdim=True)
+            Y = eval_sh_basis16(d)
+            M[m] += Y[:, :, None] * Y[:, None, :]; cnt[m] += 1
+        ok = cnt > 0
+        Mn = M[ok] / M[ok].diagonal(dim1=1, dim2=2).sum(1)[:, None, None]
+        Mb = Mn.mean(0)
+        Mb = Mb.cpu()
+        ev = torch.linalg.eigvalsh(Mb).flip(0)
+        # 保留 DC（40 §1.4）：高階 15 維用 Schur 補數 S = M_rr − M_r0 M_00^-1 M_0r 的前 k−1 個特徵向量；DC 補 Δdc = (M_0r·Δrest)/M_00。
+        #   直接在 16 維正交投影會把一部分 DC 搬到 Y10／Y20（觀測帶內 ≈ 常數）=> 帶內顏色不變但帶外偏、而且 DC 的學習率被分走。
+        m00, m0r, Mrr = Mb[0, 0], Mb[0, 1:], Mb[1:, 1:]
+        Sc = Mrr - torch.outer(m0r, m0r) / m00
+        es, U = torch.linalg.eigh(Sc); es, U = es.flip(0), U.flip(1)
+        Pr = U[:, : self.sh_proj_k - 1] @ U[:, : self.sh_proj_k - 1].T
+        A = torch.zeros(16, 16, dtype=torch.float64); A[0, 0] = 1.0; A[1:, 1:] = Pr
+        A[0, 1:] = (m0r / m00) @ (torch.eye(15, dtype=torch.float64) - Pr)
+        print(f"[sh-proj] ✅ k={self.sh_proj_k}（保留 DC）：{len(cams)} 台相機、{int(ok.sum()):,} 顆樣本；M̄ 特徵值（%）"
+              + " ".join(f"{100 * float(x / ev.sum()):.3g}" for x in ev) + "｜高階 Schur 特徵值（%）"
+              + " ".join(f"{100 * float(x / es.sum()):.3g}" for x in es) + f"；高階保留前 {self.sh_proj_k - 1} 維", flush=True)
+        return A.float().to(dev)
+
+    @torch.no_grad()
+    def _sh_project(self, module):
+        pc = module.gaussian_model
+        if pc.active_sh_degree < pc.max_sh_degree or "shs_rest" not in pc.gaussians:
+            return
+        if self._sh_P is None:
+            self._sh_P = self._sh_proj_basis(module)
+        dc, rest = pc.gaussians["shs_dc"], pc.gaussians["shs_rest"]          # [N,1,3]、[N,15,3]
+        CH = 262_144                                                           # 分批：不要一次多兩份 N x 16 x 3 的暫存（會拉高峰值）
+        for b0 in range(0, dc.shape[0], CH):
+            s = torch.cat([dc.data[b0:b0 + CH], rest.data[b0:b0 + CH]], dim=1)  # [n,16,3]
+            s = torch.einsum("jl,nlc->njc", self._sh_P, s)
+            dc.data[b0:b0 + CH] = s[:, :1]; rest.data[b0:b0 + CH] = s[:, 1:]
+
     def after_training_step(
             self,
             step: int,
             module,
     ):
+        if getattr(self, "sh_proj_k", 0) > 0:      # ★ 40
+            self._sh_project(module)
         cameras = module.trainer.datamodule.dataparser_outputs.train_set.cameras
         until = self.contribution_prune_until_iter
         if until < 0:

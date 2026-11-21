@@ -129,3 +129,13 @@ def RGB2SH(rgb):
 
 def SH2RGB(sh):
     return sh * C0 + 0.5
+
+
+def eval_sh_basis16(dirs):
+    """★ 2026-11-21 紀錄/實驗分析/40：3 階 SH 的 16 個基底值（順序與常數同 eval_sh／光柵器 computeColorFromSH）。dirs: [n,3] 單位向量 -> [n,16]。"""
+    x, y, z = dirs[..., 0], dirs[..., 1], dirs[..., 2]
+    xx, yy, zz = x * x, y * y, z * z
+    return torch.stack([torch.full_like(x, C0), -C1 * y, C1 * z, -C1 * x,
+                        C2[0] * x * y, C2[1] * y * z, C2[2] * (2 * zz - xx - yy), C2[3] * x * z, C2[4] * (xx - yy),
+                        C3[0] * y * (3 * xx - yy), C3[1] * x * y * z, C3[2] * y * (4 * zz - xx - yy), C3[3] * z * (2 * zz - 3 * xx - 3 * yy),
+                        C3[4] * x * (4 * zz - xx - yy), C3[5] * z * (xx - yy), C3[6] * x * (xx - 3 * yy)], dim=-1)
