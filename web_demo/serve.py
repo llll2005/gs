@@ -100,6 +100,34 @@ _lock       = threading.Lock()
 _converting = threading.Lock()   # only one conversion at a time
 
 
+def _cache_ok(ply_path):
+    """★ 11-22 快取 PLY 的高階 SH 個數要是合法的 3*((d+1)^2-1)（0／9／24／45）。
+    低維 SH 存檔（renderer sh_basis_k，ckpt 帶 sh_basis）若被舊版轉檔程式轉，會把 K 個低維係數直接寫成 f_rest（例 21 個）
+    => 瀏覽器照 45 個讀、整個畫面錯。這種快取視為壞的：刪掉、重轉。"""
+    if not os.path.exists(ply_path):
+        return False
+    try:
+        with open(ply_path, "rb") as f:
+            head = f.read(16384).split(b"end_header")[0].decode("ascii", "ignore")
+        n = sum(1 for l in head.splitlines() if l.startswith("property") and " f_rest_" in l)
+    except OSError:
+        return False
+    if n in (0, 9, 24, 45):
+        return True
+    print(f"[cache] ⚠ {os.path.basename(ply_path)} 有 {n} 個 f_rest（不是合法的 SH 階數）=> 刪掉重轉", flush=True)
+    for x in (ply_path, ply_path + ".bounds.json"):
+        if os.path.exists(x):
+            os.unlink(x)
+    return False
+
+
+def _export_mod():
+    """★ 11-22 每次轉檔都重新載入 utils.export_splat_ply：伺服器常開好幾天，改了轉檔程式（例：低維 SH 展開）不重開也吃得到。"""
+    import importlib
+    import utils.export_splat_ply as m
+    return importlib.reload(m)
+
+
 def _upload_name(handler, default):
     """X-Filename 由瀏覽器 encodeURIComponent（非 ASCII 檔名才送得出 header）；只取 basename，不讓它寫出 SERVE_DIR。"""
     from urllib.parse import unquote
@@ -189,7 +217,7 @@ class Handler(SimpleHTTPRequestHandler):
             filename = _upload_name(self, "upload.ply")
             ply_path = os.path.join(SERVE_DIR, filename)
             length = int(self.headers.get("Content-Length", 0))
-            if os.path.exists(ply_path):
+            if _cache_ok(ply_path):
                 _drain(self, length)
                 print(f"[cache] {filename}", flush=True)
                 self._json({"ok": True, "file": filename, "cached": True})
@@ -229,7 +257,7 @@ class Handler(SimpleHTTPRequestHandler):
             ply_name = f"{run}{('_' + blk) if blk else ''}_{tag}_{FORMAT_TAG}.ply"
             ply_path = os.path.join(SERVE_DIR, ply_name)
 
-            if os.path.exists(ply_path):
+            if _cache_ok(ply_path):
                 print(f"[cache] {ply_name}", flush=True)
                 self._json({"ok": True, "file": ply_name, "cached": True})
                 return
@@ -238,7 +266,7 @@ class Handler(SimpleHTTPRequestHandler):
                 with _converting:
                     if not os.path.exists(ply_path):
                         print(f"[convert-local] {rel} -> {ply_name}", flush=True)
-                        from utils.export_splat_ply import load_gaussians, save_3dgs_ply
+                        _m = _export_mod(); load_gaussians, save_3dgs_ply = _m.load_gaussians, _m.save_3dgs_ply
                         g = load_gaussians(full)
                         save_3dgs_ply(ply_path + ".part", g)
                         os.replace(ply_path + ".part", ply_path)
@@ -259,7 +287,7 @@ class Handler(SimpleHTTPRequestHandler):
             length   = int(self.headers.get("Content-Length", 0))
 
             # cache hit — already converted（body 照樣讀完，見 _drain）
-            if os.path.exists(ply_path):
+            if _cache_ok(ply_path):
                 _drain(self, length)
                 print(f"[cache] {ply_name}", flush=True)
                 self._json({"ok": True, "file": ply_name, "cached": True})
@@ -277,7 +305,7 @@ class Handler(SimpleHTTPRequestHandler):
                 with _converting:
                     if not os.path.exists(ply_path):
                         print(f"[convert] {filename} → {ply_name}", flush=True)
-                        from utils.export_splat_ply import load_gaussians, save_3dgs_ply
+                        _m = _export_mod(); load_gaussians, save_3dgs_ply = _m.load_gaussians, _m.save_3dgs_ply
                         g = load_gaussians(tmp_path)
                         save_3dgs_ply(ply_path + ".part", g)
                         os.replace(ply_path + ".part", ply_path)
