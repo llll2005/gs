@@ -59,3 +59,31 @@ hiz = mu[:, 2] > zhi + 0.02 * L; loz = mu[:, 2] < zlo - 0.02 * L
 print(f"  比 SfM 高度 p99.5 還高 > 0.02L：顆數 {hiz.sum():,}｜Σo·面積 {100 * w[hiz].sum() / W:.2f}%｜針狀 {needle[hiz].sum():,}")
 print(f"  比 SfM 高度 p0.5 還低 > 0.02L：顆數 {loz.sum():,}｜Σo·面積 {100 * w[loz].sum() / W:.2f}%")
 print(f"  針狀合計 {needle.sum():,}（{100 * needle.mean():.2f}%）：核心內 {needle[core].sum():,}、核心外 {needle[~core].sum():,}")
+
+# ── 細分：離 SfM > 0.05L 的顆粒在哪、被幾台訓練相機看到、長什麼樣（對照「核心內貼著 SfM」的一般顆粒）──
+from internal.utils.colmap import read_images_binary, read_cameras_binary
+ims = read_images_binary(os.path.join(a.data, "sparse/0/images.bin")); cams = read_cameras_binary(os.path.join(a.data, "sparse/0/cameras.bin"))
+Rs = np.stack([im.qvec2rotmat() for im in ims.values()]); ts = np.stack([im.tvec for im in ims.values()])
+Cc = -np.einsum("nji,nj->ni", Rs, ts) @ Rp.T                        # 相機中心（分區座標）
+Rs_p = Rs @ Rp.T                                                      # 分區座標 -> 相機
+cam_list = [cams[im.camera_id] for im in ims.values()]
+zc = float(np.median(Cc[:, 2])); zg = float(np.percentile(X[:, 2], 10))
+far = idx[d > 0.05 * L]; near = idx[(d < 0.005 * L) & core[idx]][: len(far) * 4 + 1000]
+ctree = cKDTree(Cc)
+def describe(name, sel):
+    if len(sel) == 0:
+        print(f"  {name}：0 顆"); return
+    m = mu[sel]; dc, _ = ctree.query(m, k=1)
+    h = (m[:, 2] - zg) / max(zc - zg, 1e-9)                          # 0＝地面、1＝相機高度
+    vis = np.zeros(len(sel), np.int32)
+    for k in range(len(Rs_p)):
+        c = cam_list[k]; W, H = c.width, c.height; f = c.params[0]; cx, cy = (c.params[1], c.params[2]) if c.model.startswith("SIMPLE") or c.model in ("RADIAL", "FOV") else (c.params[2], c.params[3])
+        pc = (m - Cc[k]) @ Rs_p[k].T; z = pc[:, 2]
+        u = f * pc[:, 0] / np.maximum(z, 1e-9) + cx; v = f * pc[:, 1] / np.maximum(z, 1e-9) + cy
+        vis += ((z > 0) & (u >= 0) & (u < W) & (v >= 0) & (v < H)).astype(np.int32)
+    ss = s[sel]; ar = ss.max(1) / np.maximum(ss.min(1), 1e-12)
+    q = lambda x: "／".join(f"{np.percentile(x, p):.3g}" for p in (10, 50, 90))
+    print(f"  {name}：{len(sel):,} 顆（抽樣）｜高度（0 地面、1 相機）p10/50/90 {q(h)}｜離最近相機 {q(dc / L)} L｜看得到的訓練相機數 {q(vis)}"
+          f"｜o {q(o[sel])}｜長軸 {q(ss.max(1) / L)} L｜長短軸比 {q(ar)}｜在相機與地面之間 {100 * np.mean((h > 0.1) & (h < 0.9)):.0f}%｜高過相機 {100 * np.mean(h >= 0.9):.0f}%")
+print(f"相機 {len(Cc):,} 台｜相機高度中位 {zc:.3f}、地面（SfM z p10）{zg:.3f}")
+describe("離 SfM > 0.05L", far); describe("對照：核心內、離 SfM < 0.005L", near)
