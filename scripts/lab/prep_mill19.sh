@@ -16,11 +16,21 @@ TL="$DS/prep_timing.tsv"; mkdir -p "$DS" "$TS"; FROM=${PREP_FROM:-1}; [ "$FROM" 
 stage () { local n=$1; shift; [ "${n%% *}" -ge "$FROM" ] || { echo "（跳過 $n：PREP_FROM=$FROM）"; return 0; }
   local t0; t0=$(date +%s); echo "▶ $(date '+%H:%M:%S') $n"; "$@"; local rc=$?
   printf '%s\t%d\t%d\n' "$n" "$(( $(date +%s) - t0 ))" "$rc" >> "$TL"; echo "✔ $n：$(( $(date +%s) - t0 )) s（rc=$rc）"; [ "$rc" = 0 ] || { echo "⛔ $n 失敗"; exit 3; }; }
+# ★ 11-22 Mill-19（CityGS 的 colmap_results）上方是世界 −y，我們的分區／塊外遮罩／只罰躺平／顆數分配都假設 +z 朝上
+#   => 11-21 第一版的 4x4 是按「x × 高度」切的（building 17.24、rubble 21.73，作廢）。現在第 0 步先把訓練與 test 的 COLMAP 轉成 +z 朝上
+#   （tools/colmap_align_up.py；相機座標不變 => 單目深度、尺度、校正深度（第 1～3 步）不用重跑，可以 PREP_FROM=4）。
+#   舊的沒轉版本（sparse/0 沒有 ALIGNED_UP.json）=> sparse 與依賴世界座標的產物搬到 _unaligned_1121/ 重做。
+realign () { local d=$1 x; [ -d "$d/sparse/0" ] && [ ! -f "$d/sparse/0/ALIGNED_UP.json" ] || return 0
+  mkdir -p "$d/_unaligned_1121"; echo "⚠ $d/sparse/0 沒轉過上方 => 舊產物搬到 $d/_unaligned_1121/"
+  for x in sparse partition sfmfill_sweep44 sfmfill_sweep44_crop sfmfill_tri44_crop block_masks44_tri cap_masks_flat; do
+    [ -e "$d/$x" ] && mv "$d/$x" "$d/_unaligned_1121/"; done; return 0; }
+realign "$DS"; realign "$TS"
 # 0 目錄：input -> rgbs、sparse 複製（我們的工具會在 sparse 旁寫快取，不動 colmap_results）
 [ -e "$DS/input" ] || ln -s "$(realpath $SRC/train/rgbs)" "$DS/input"
 [ -e "$TS/input" ] || ln -s "$(realpath $SRC/val/rgbs)" "$TS/input"
 [ -d "$DS/sparse/0" ] || { mkdir -p "$DS/sparse" && cp -r "data/colmap_results/$SC/train/sparse/0" "$DS/sparse/"; }
 [ -d "$TS/sparse/0" ] || { mkdir -p "$TS/sparse" && cp -r "data/colmap_results/$SC/val/sparse/0" "$TS/sparse/"; }
+$PY tools/colmap_align_up.py --ref "$DS/sparse/0" "$DS/sparse/0" "$TS/sparse/0" || { echo "⛔ 轉上方失敗"; exit 4; }
 $PY - "$DS" "$TS" <<'EOF'
 import sys, os
 sys.path.insert(0, ".")
@@ -47,8 +57,8 @@ s8 () { blks | xargs -P "$J" -I{} $PY tools/make_tri_dense_init.py "$DS" --block
 stage "1 單目深度（存 1/4 解析度）‖ 預縮影像 4 倍" s1
 stage "2 單目深度尺度" $PY utils/get_depth_scales.py "$DS" --depth_dir "$DS/estimated_depths" --output "$DS/estimated_depth_scales.json"
 stage "3 校正深度（相機 / 8）" $PY tools/make_tri_depths.py "$DS" --nproc 16 --down 8
-# ★ 11-21 rubble 的 SfM 範圍不含原點（x 最小 −953.6、y 最小 6.0）=> 分區原點要 auto（點雲外接盒中心）；building 用預設原點 (0,0) 已分好，不改
-PART_ORIGIN=(); [ "$SC" = rubble ] && PART_ORIGIN=(--origin auto)
+# ★ 11-21 rubble 的 SfM 範圍不含原點 => 分區原點要 auto（點雲外接盒中心）；★ 11-22 轉成 +z 朝上後兩個場景都重分，一律 auto
+PART_ORIGIN=(--origin auto)
 stage "4 分區 4x4" $PY utils/partition_from_colmap.py "$DS" --block_dim 4 4 --content_threshold 0.08 "${PART_ORIGIN[@]}"
 stage "5 SfM＋補點底＋裁盒" s5
 stage "6 塊外遮罩（校正深度版）" s6
