@@ -371,8 +371,9 @@ for t in "${XT[@]:-}"; do
     vcb)    XA+=(--model.renderer.init_args.trim_behind_price 1) ;;
     sbp)    XA+=(--model.density.init_args.sample_behind_price 1) ;;
     bpf)    XA+=(--model.renderer.init_args.behind_price_flat 0.8 --model.density.init_args.behind_price_flat 0.8) ;;
-    dense)  [ -f "$CDATA/sfmfill_tri44_crop/dup1/block_$B.ply" ] || { echo "⛔ 缺稠密初始化（tools/make_tri_dense_init.py --blocks $B）"; exit 2; }
-            ENVX+=(CITYGS_CROP_INIT=sfmfill_tri44_crop); CITYGS_DUP44=1 ;;
+    dense)  _DD=${CITYGS_DENSE_DIR:-sfmfill_tri44_crop}   # ★ 11-23 CITYGS_DENSE_DIR＝換一份稠密起點（例：照較小的 cap 產生；task_mill19.sh MILL19_INIT_CAPAVG）
+            [ -f "$CDATA/$_DD/dup1/block_$B.ply" ] || { echo "⛔ 缺稠密初始化 $CDATA/$_DD（tools/make_tri_dense_init.py --blocks $B）"; exit 2; }
+            ENVX+=(CITYGS_CROP_INIT=$_DD); CITYGS_DUP44=1 ;;
     sni)    XA+=(--model.density.init_args.sfm_normal_init true) ;;
     trimask) [ -f "$CDATA/block_masks44_tri/block_$B/stats.json" ] || { echo "⛔ 缺校正深度遮罩 block_masks44_tri/block_$B"; exit 2; }
             ENVX+=(CITYGS_MASK_DIR=block_masks44_tri) ;;
