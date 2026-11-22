@@ -77,9 +77,10 @@
 //   render／backward 的逐配對迴圈裡 rho2d、近平面比較、dist 的 NDC 深度、低通分支梯度都被提升成 FP64（消費級卡 FP64 只有 FP32 的 1/64）。
 //   RAST_F32_CONST=1 改用 float 常數（數學相同）：近平面比較與 0.2f 比完全等價（0.2f 是大於 0.2 的最小 float）；rho2d 乘 2.0f 與乘
 //   2.0000000000000004 再捨入成 float 相同；NDC 深度改寫成 a - b/d（對逆深度仿射）、dm/dd = b/d^2；低通分支梯度差 1～3 ulp。
-//   預設 0＝與原本逐位元相同（setup.py 讀環境變數 RAST_F32_CONST）。
+//   ★ 11-22 使用者採用（全場景確認：畫質打平、純訓練 −5.2%；紀錄/實驗分析/39 §7.5''）=> 預設 1。
+//   RAST_F32_CONST=0（setup.py 讀環境變數）＝舊的 double 常數，與 11-21 以前逐位元相同。
 #ifndef RAST_F32_CONST
-#define RAST_F32_CONST 0
+#define RAST_F32_CONST 1
 #endif
 #define NDC_A_F ((float)(FAR_PLANE / (FAR_PLANE - NEAR_PLANE)))
 #define NDC_B_F ((float)(FAR_PLANE * NEAR_PLANE / (FAR_PLANE - NEAR_PLANE)))

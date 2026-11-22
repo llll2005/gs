@@ -28,7 +28,7 @@ setup(
             "rasterize_points.cu",
             "ext.cpp"],
             extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]
-                                + (["-DRAST_F32_CONST=1"] if os.environ.get("RAST_F32_CONST") == "1" else [])})   # ★ 11-21 晚（auxiliary.h）
+                                + (["-DRAST_F32_CONST=0"] if os.environ.get("RAST_F32_CONST") == "0" else [])})   # ★ 11-22 預設 float 常數；RAST_F32_CONST=0 退回 double   # ★ 11-21 晚（auxiliary.h）
         ],
     cmdclass={
         'build_ext': BuildExtension

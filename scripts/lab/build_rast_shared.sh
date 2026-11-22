@@ -11,6 +11,7 @@ RAST=submodules/diff-surfel-rasterization-trim-pp
 G=${CONDA_GSPL:-/root/miniconda3/envs/gspl}
 NEW=$(git rev-parse HEAD)
 echo "[build_rast_shared] $(date +%T) 編 $(git log --oneline -1 | cut -c1-60)（上次重編 $(cut -c1-9 .lab_rast_built 2>/dev/null)）"
+echo "[build_rast_shared] RAST_F32_CONST=${RAST_F32_CONST:-1}（★ 11-22 起預設 float 常數；=0 退回 double）"
 rm -rf "$RAST/build"
 conda run -n gspl --no-capture-output env CUDA_HOME=$G CUDA_PATH=$G TORCH_CUDA_ARCH_LIST=8.6 \
   pip install --no-build-isolation --no-deps --force-reinstall "$RAST" 2>&1 | tail -2
