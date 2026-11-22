@@ -9,7 +9,11 @@
 每個模型：X' = R X；R_cw' = R_cw Rᵀ、t' = t。=> 相機中心 C' = R C；任一點在相機座標下的值不變
 => 深度、單目尺度、SfM 三角形校正深度都不受影響（資料準備第 1～3 步不用重跑）。
 寫 <sparse>/ALIGNED_UP.json（R、原 up、ref）；已經有就跳過（不會轉兩次）。ref 已轉過時，R 從 ref 的 ALIGNED_UP.json 讀（訓練與 test 一定用同一個 R）。
-用法：python tools/colmap_align_up.py --ref <train>/sparse/0 <train>/sparse/0 <test>/sparse/0
+★ 11-22 --target_alt T（> 0）：轉正之後再整體縮放 f，讓「相機離地高度中位」＝ T（離地＝相機 z 中位 − 可靠 SfM（track>=3、誤差<1.5）z 的第 10 百分位）。
+  為什麼：配方有幾個參數用世界絕對單位（MCMC 位置雜訊 ∝ lr（∝ 相機範圍）x 尺度²、scale_reg ∝ 尺度、dist 的 NDC 近遠平面 0.2／100），
+  是在 MatrixCity（相機離地 2.49）上調的；Mill-19 的單位大 13～20 倍 => 雜訊相對強數百倍、顆粒被踢出所有視錐漂在相機上方（紀錄/現行方法.md §9.5）。
+  縮放：X' = f R X、t' = f t（相機座標整體乘 f => 深度乘 f；單目深度是相對量不受影響，但尺度、校正深度要重做）。
+用法：python tools/colmap_align_up.py --ref <train>/sparse/0 [--target_alt 2.49] <train>/sparse/0 <test>/sparse/0
 """
 import argparse, dataclasses, json, os, sys
 
@@ -43,17 +47,31 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ref", required=True, help="決定上方的模型（訓練集的 sparse/0）")
     ap.add_argument("models", nargs="+")
+    ap.add_argument("--target_alt", type=float, default=0.0, help="> 0：整體縮放到相機離地高度中位＝此值（MatrixCity 2.49）")
     a = ap.parse_args()
     ref_mark = os.path.join(a.ref, MARK)
     if os.path.exists(ref_mark):
-        R = np.array(json.load(open(ref_mark))["R"]); print(f"[align-up] ref 已轉過，R 讀自 {ref_mark}")
+        m0 = json.load(open(ref_mark)); R = np.array(m0["R"]); f = float(m0.get("scale", 1.0))
+        if abs(float(m0.get("target_alt", 0.0)) - a.target_alt) > 1e-9:
+            raise SystemExit(f"⛔ {a.ref} 已用 target_alt={m0.get('target_alt', 0.0)} 轉過，這次要 {a.target_alt}（先換回 colmap_results 的原檔）")
+        print(f"[align-up] ref 已轉過，R 與縮放 f={f:.6g} 讀自 {ref_mark}")
     else:
-        up = cam_up(read_images_binary(os.path.join(a.ref, "images.bin")))
+        ims_r = read_images_binary(os.path.join(a.ref, "images.bin"))
+        up = cam_up(ims_r)
         R = rot_a_to_b(up, np.array([0.0, 0.0, 1.0]))
         print(f"[align-up] ref 相機平均上方 {np.round(up, 4)}（與 +z 夾 {np.degrees(np.arccos(np.clip(up[2], -1, 1))):.1f}°）")
+        f = 1.0
+        if a.target_alt > 0:
+            pr = read_points3D_binary(os.path.join(a.ref, "points3D.bin"))
+            Z = np.array([(R @ p.xyz)[2] for p in pr.values() if float(p.error) < 1.5 and len(p.image_ids) >= 3])
+            Cz = np.array([(R @ (-qvec2rotmat(im.qvec).T @ im.tvec))[2] for im in ims_r.values()])
+            alt = float(np.median(Cz) - np.percentile(Z, 10)); f = a.target_alt / alt
+            print(f"[align-up] 相機離地高度中位 {alt:.4f}（可靠 SfM {len(Z):,} 點）=> 縮放 f = {a.target_alt:g} / {alt:.4f} = {f:.6g}")
     for d in a.models:
         mk = os.path.join(d, MARK)
         if os.path.exists(mk):
+            if abs(float(json.load(open(mk)).get("target_alt", 0.0)) - a.target_alt) > 1e-9:
+                raise SystemExit(f"⛔ {d} 已用別的 target_alt 轉過（先換回 colmap_results 的原檔）")
             print(f"[align-up] {d}：已有 {MARK}，跳過"); continue
         ims = read_images_binary(os.path.join(d, "images.bin")); pts = read_points3D_binary(os.path.join(d, "points3D.bin"))
         up0 = cam_up(ims)
@@ -63,10 +81,10 @@ def main():
             X = np.stack([pts_[p].xyz for p in pid])
             return np.stack([X @ qvec2rotmat(ims_[i].qvec).T + ims_[i].tvec for i in iid])
         before = camxyz(ims, pts)
-        ims2 = {k: im._replace(qvec=rotmat2qvec(qvec2rotmat(im.qvec) @ R.T)) for k, im in ims.items()}
-        pts2 = {k: dataclasses.replace(p, xyz=R @ p.xyz) for k, p in pts.items()}   # Point3D 是 dataclass
+        ims2 = {k: im._replace(qvec=rotmat2qvec(qvec2rotmat(im.qvec) @ R.T), tvec=f * np.asarray(im.tvec)) for k, im in ims.items()}
+        pts2 = {k: dataclasses.replace(p, xyz=f * (R @ p.xyz)) for k, p in pts.items()}   # Point3D 是 dataclass
         after = camxyz(ims2, pts2)
-        err = float(np.abs(after - before).max() / max(1e-9, np.abs(before).max()))
+        err = float(np.abs(after - f * before).max() / max(1e-9, np.abs(f * before).max()))   # 相機座標整體乘 f
         up1 = cam_up(ims2)
         if err > 1e-6 or not np.allclose(up1, R @ up0, atol=1e-9):
             raise SystemExit(f"⛔ {d}：自檢失敗（相機座標相對差 {err:.2e}、轉後上方 {np.round(up1, 4)}）")
@@ -76,9 +94,9 @@ def main():
         for c in ("points3D.bin.cache.npz",):     # colmap_fast 的快取（以大小＋mtime 判斷，保險起見直接刪）
             if os.path.exists(os.path.join(d, c)):
                 os.remove(os.path.join(d, c))
-        json.dump({"R": R.tolist(), "up_before": up0.tolist(), "up_after": up1.tolist(), "ref": os.path.abspath(a.ref)},
+        json.dump({"R": R.tolist(), "scale": f, "target_alt": a.target_alt, "up_before": up0.tolist(), "up_after": up1.tolist(), "ref": os.path.abspath(a.ref)},
                   open(mk, "w"), indent=1)
-        print(f"[align-up] ✅ {d}：{len(ims):,} 台相機、{len(pts):,} 點｜上方 {np.round(up0, 4)} -> {np.round(up1, 4)}｜相機座標相對差 {err:.1e}")
+        print(f"[align-up] ✅ {d}：{len(ims):,} 台相機、{len(pts):,} 點｜上方 {np.round(up0, 4)} -> {np.round(up1, 4)}｜縮放 {f:.6g}｜相機座標相對差 {err:.1e}")
 
 
 if __name__ == "__main__":

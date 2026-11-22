@@ -18,19 +18,27 @@ stage () { local n=$1; shift; [ "${n%% *}" -ge "$FROM" ] || { echo "（跳過 $n
   printf '%s\t%d\t%d\n' "$n" "$(( $(date +%s) - t0 ))" "$rc" >> "$TL"; echo "✔ $n：$(( $(date +%s) - t0 )) s（rc=$rc）"; [ "$rc" = 0 ] || { echo "⛔ $n 失敗"; exit 3; }; }
 # ★ 11-22 Mill-19（CityGS 的 colmap_results）上方是世界 −y，我們的分區／塊外遮罩／只罰躺平／顆數分配都假設 +z 朝上
 #   => 11-21 第一版的 4x4 是按「x × 高度」切的（building 17.24、rubble 21.73，作廢）。現在第 0 步先把訓練與 test 的 COLMAP 轉成 +z 朝上
-#   （tools/colmap_align_up.py；相機座標不變 => 單目深度、尺度、校正深度（第 1～3 步）不用重跑，可以 PREP_FROM=4）。
+#   （tools/colmap_align_up.py；只轉正時相機座標不變 => 第 1～3 步不用重跑；★ 11-22 晚加了縮放後深度會變 => 從第 2 步重做）。
 #   舊的沒轉版本（sparse/0 沒有 ALIGNED_UP.json）=> sparse 與依賴世界座標的產物搬到 _unaligned_1121/ 重做。
-realign () { local d=$1 x; [ -d "$d/sparse/0" ] && [ ! -f "$d/sparse/0/ALIGNED_UP.json" ] || return 0
-  mkdir -p "$d/_unaligned_1121"; echo "⚠ $d/sparse/0 沒轉過上方 => 舊產物搬到 $d/_unaligned_1121/"
-  for x in sparse partition sfmfill_sweep44 sfmfill_sweep44_crop sfmfill_tri44_crop block_masks44_tri cap_masks_flat; do
-    [ -e "$d/$x" ] && mv "$d/$x" "$d/_unaligned_1121/"; done; return 0; }
+# ★ 11-22 晚 再加「世界單位縮放」：MILL19_TARGET_ALT（預設 2.49＝MatrixCity 的相機離地高度中位；0＝不縮放）。
+#   配方的 MCMC 位置雜訊（相對 ∝ 單位²）、scale_reg（∝ 單位）、dist 的 NDC 近遠平面是在 MatrixCity 的單位上調的；Mill-19 單位大 13～20 倍
+#   => 顆粒被雜訊踢出所有視錐、漂在相機上方（使用者 viewer；紀錄/現行方法.md §9.5）。縮放後深度跟著乘 f => 尺度、校正深度（第 2～3 步）也要重做：PREP_FROM 必須 <= 2。
+TALT=${MILL19_TARGET_ALT:-2.49}
+realign () { local d=$1 x bk; [ -d "$d/sparse/0" ] || return 0
+  if [ -f "$d/sparse/0/ALIGNED_UP.json" ] && python3 -c "import json,sys; m=json.load(open(sys.argv[1])); sys.exit(0 if abs(float(m.get('target_alt', 0)) - float(sys.argv[2])) < 1e-9 else 1)" "$d/sparse/0/ALIGNED_UP.json" "$TALT"; then return 0; fi
+  [ "$FROM" -le 2 ] || { echo "⛔ $d 的世界單位要變（target_alt=$TALT），尺度與校正深度要重做 => 用 PREP_FROM=2（或更小）；什麼都沒動"; exit 2; }
+  bk="$d/_old_$(date +%m%d%H%M%S)"; mkdir -p "$bk"; echo "⚠ $d/sparse/0 不是 target_alt=$TALT 的版本 => 舊產物（含世界單位的深度）搬到 $bk/"
+  for x in sparse partition sfmfill_sweep44 sfmfill_sweep44_crop sfmfill_tri44_crop block_masks44_tri cap_masks_flat \
+           estimated_depth_scales.json estimated_depth_scales_tri.json estimated_depths_tri estimated_depths_tri_rel; do
+    [ -e "$d/$x" ] && mv "$d/$x" "$bk/"; done
+  return 0; }
 realign "$DS"; realign "$TS"
 # 0 目錄：input -> rgbs、sparse 複製（我們的工具會在 sparse 旁寫快取，不動 colmap_results）
 [ -e "$DS/input" ] || ln -s "$(realpath $SRC/train/rgbs)" "$DS/input"
 [ -e "$TS/input" ] || ln -s "$(realpath $SRC/val/rgbs)" "$TS/input"
 [ -d "$DS/sparse/0" ] || { mkdir -p "$DS/sparse" && cp -r "data/colmap_results/$SC/train/sparse/0" "$DS/sparse/"; }
 [ -d "$TS/sparse/0" ] || { mkdir -p "$TS/sparse" && cp -r "data/colmap_results/$SC/val/sparse/0" "$TS/sparse/"; }
-$PY tools/colmap_align_up.py --ref "$DS/sparse/0" "$DS/sparse/0" "$TS/sparse/0" || { echo "⛔ 轉上方失敗"; exit 4; }
+$PY tools/colmap_align_up.py --ref "$DS/sparse/0" --target_alt "$TALT" "$DS/sparse/0" "$TS/sparse/0" || { echo "⛔ 轉上方／縮放失敗"; exit 4; }
 $PY - "$DS" "$TS" <<'EOF'
 import sys, os
 sys.path.insert(0, ".")
