@@ -4,8 +4,9 @@
 #   重新分區後有相機的塊可能和之前不同 => 塊清單從分區檔讀，不寫死。各塊 [solo] 由佇列行本身保證（整條一行）。
 # 用法（佇列）：[solo] bash scripts/lab/task_mill19.sh <building|rubble> <跑次名，例 mill19_building_z1122> [臂]
 #   MILL19_ONLY=train|merge|eval 只跑其中一段；已有 run_summary.json 的塊跳過（中斷後可接續）。
+#   ★ 11-23 臂裡有 shb<k> => 自動產生／使用 <資料集>/sh_basis_global.npz（全場景共用 SH 基底，ckpt 直接存低維；同新底 10）。
 #   ★ 11-23 MILL19_INIT_CAPAVG=<n>＝稠密起點照平均 cap n 重新產生到 sfmfill_tri44ia<n>_crop（沒有才產生），訓練改用它（起點跟著上限縮；預設起點是照 1M 產生的）。
-case "${1:-}" in -h|--help|"") sed -n 2,6p "$0"; exit 0 ;; esac
+case "${1:-}" in -h|--help|"") sed -n 2,8p "$0"; exit 0 ;; esac
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 SC=$1; RUN=$2
@@ -24,6 +25,15 @@ if [ -n "${MILL19_INIT_CAPAVG:-}" ]; then
     for b in $B; do echo $b; done | xargs -P 8 -I{} conda run -n gspl --no-capture-output python -u tools/make_tri_dense_init.py "$DS" --blocks {} --seed_per_block --alloc "$ALLOC" --cap_avg "$MILL19_INIT_CAPAVG" --out "$DD" \
       || { echo "⛔ 稠密起點產生失敗"; exit 6; }
     touch "$DS/$DD/.complete"
+  fi
+fi
+# ★ 11-23 臂裡有 shb<k>（新底 10 的 SH 低維參數化）=> 用這個場景自己的全場景共用基底（tools/sh_basis_global.py，不訓練；沒有才產生）
+if [[ "+$ARM+" =~ \+shb[0-9]+\+ ]]; then
+  SHB=$DS/sh_basis_global.npz; export CITYGS_SH_BASIS=$SHB
+  if [ ! -f "$SHB" ] && [ "$ONLY" != eval ]; then
+    echo "[mill19] 產生全場景 SH 基底 $SHB"
+    conda run -n gspl --no-capture-output python -u tools/sh_basis_global.py "$DS" --down 4 --out "$SHB.tmp.npz" && mv "$SHB.tmp.npz" "$SHB" \
+      || { echo "⛔ SH 基底產生失敗"; exit 7; }
   fi
 fi
 if [ "$ONLY" = all ] || [ "$ONLY" = train ]; then

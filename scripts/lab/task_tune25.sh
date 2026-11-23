@@ -453,7 +453,13 @@ for t in "${XT[@]:-}"; do
     shp[0-9]*) XA+=(--model.renderer.init_args.sh_proj_k ${t#shp}) ;;
     shb[0-9]*) XA+=(--model.renderer.init_args.sh_basis_k ${t#shb})   # ★ 11-21 晚 40 §1.6：SH 低維參數化
                # ★ 11-22 §1.7：MatrixCity（沒設 CITYGS_DATA）用全場景共用基底 => ckpt 直接存低維；其他資料集用各塊自己的基底（存檔還原 15 維）
-               [ -z "${CITYGS_DATA:-}" ] && [ -f configs/sh_basis_matrixcity_aerial.npz ] && XA+=(--model.renderer.init_args.sh_basis_file configs/sh_basis_matrixcity_aerial.npz) ;;   # ★ 11-21 40：SH 限制在可觀測子空間
+               # ★ 11-23 CITYGS_SH_BASIS＝其他資料集自己的全場景基底（task_mill19.sh 會產生並設定）；有設就用它
+               if [ -n "${CITYGS_SH_BASIS:-}" ]; then
+                 [ -f "$CITYGS_SH_BASIS" ] || [ "${CITYGS_DRY:-0}" = 1 ] || { echo "⛔ 缺 CITYGS_SH_BASIS=$CITYGS_SH_BASIS"; exit 2; }
+                 XA+=(--model.renderer.init_args.sh_basis_file "$CITYGS_SH_BASIS")
+               elif [ -z "${CITYGS_DATA:-}" ] && [ -f configs/sh_basis_matrixcity_aerial.npz ]; then
+                 XA+=(--model.renderer.init_args.sh_basis_file configs/sh_basis_matrixcity_aerial.npz)
+               fi ;;   # ★ 11-21 40：SH 限制在可觀測子空間
     di[0-9]*) XA+=(--model.density.init_args.densification_interval ${t#di}) ;;
     cmflat[0-9]) [[ " ${XT[*]} " =~ \ tricap[0-9] ]] || { echo "⛔ $t 要和 tricap<W> 一起用"; exit 2; }
             _CM=$CDATA/cap_masks_flat_t0${t#cmflat}
