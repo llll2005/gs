@@ -342,14 +342,41 @@ def draw():
     text(730, 238, "校正", size=17, fill=SUB)
     aerial(760, 145, 220, 135, seed=4, mode="depthc")
     text(870, 306, "校正後的深度", size=20, fill=SUB)
-    # 誤差長條
-    text(1130, 168, "深度誤差（中位數）", size=20, weight=700)
-    text(1012, 205, "校正前", size=18, fill=SUB, anchor="start")
-    rect(1072, 190, 128, 20, fill="#B9C3CD", rx=3)
-    text(1206, 206, "2.15%", size=18, fill=TXT, anchor="start", weight=700)
-    text(1012, 250, "校正後", size=18, fill=SUB, anchor="start")
-    rect(1072, 235, 128 * 0.15 / 2.15, 20, fill=ORG, rx=3)
-    text(1086, 251, "0.15%", size=18, fill=ORG_D, anchor="start", weight=700)
+    # 校正示意（沿一條掃描線）：單目深度形狀對、尺度歪 → 用 SfM 點拉回
+    text(1130, 166, "沿一條掃描線看", size=18, weight=700)
+    fx0, fx1, fy0, fy1 = 1022, 1250, 180, 276          # 圖框（上＝近、下＝遠）
+    line(fx0, fy0 - 4, fx0, fy1, stroke=SUB, sw=1.6, cap="butt")
+    line(fx0, fy1, fx1, fy1, stroke=SUB, sw=1.6, cap="butt")
+    text(fx0 - 6, fy0 + 6, "近", size=13, fill=SUB, anchor="end")
+    text(fx0 - 6, fy1, "遠", size=13, fill=SUB, anchor="end")
+    u = np.linspace(0, 1, 241)
+    near = np.full_like(u, 0.12)                          # 地面
+    near[(u > 0.22) & (u < 0.48)] = 0.78                  # 高樓
+    near[(u > 0.62) & (u < 0.8)] = 0.45                   # 矮樓
+    k = np.exp(-0.5 * (np.arange(-12, 13) / 4.0) ** 2); k /= k.sum()
+    mono = np.convolve(np.pad(near, 12, mode="edge"), k, mode="valid")
+    mono = 0.5 * mono + 0.30 + 0.20 * (u - 0.5)           # 單目：邊緣模糊＋整體縮放、偏移、傾斜
+    X = fx0 + 6 + u * (fx1 - fx0 - 10)
+    Y = lambda v: fy1 - 6 - v * (fy1 - fy0 - 14)
+    polyline(list(zip(X, Y(mono))), stroke="#9AA6B2", sw=2.4, dash="6 4")
+    polyline(list(zip(X, Y(near))), stroke=NAVY2, sw=3)
+    for uu in (0.08, 0.33, 0.70, 0.92):
+        i = int(round(uu * (len(u) - 1)))
+        y1, y2 = Y(mono[i]), Y(near[i])
+        d = 1 if y2 > y1 else -1                         # 往下 d=1、往上 d=-1
+        tip = y2 - d * 6                                 # 停在點的外緣
+        line(X[i], y1, X[i], tip - d * 6, stroke=ORG, sw=2, cap="butt")
+        poly([(X[i] - 4.5, tip - d * 7), (X[i] + 4.5, tip - d * 7), (X[i], tip)], fill=ORG)
+    for uu in (0.08, 0.15, 0.30, 0.40, 0.70, 0.75, 0.92):
+        i = int(round(uu * (len(u) - 1)))
+        add(f'<circle cx="{X[i]:.1f}" cy="{Y(near[i]):.1f}" r="4.2" fill="{ORG}" stroke="#ffffff" stroke-width="1.2"/>')
+    lx, ly = 1012, 302
+    line(lx, ly - 5, lx + 26, ly - 5, stroke="#9AA6B2", sw=2.4, dash="6 4")
+    text(lx + 31, ly, "單目", size=14, fill=SUB, anchor="start")
+    add(f'<circle cx="{lx + 84}" cy="{ly - 5}" r="4.2" fill="{ORG}" stroke="#ffffff" stroke-width="1.2"/>')
+    text(lx + 93, ly, "SfM 點", size=14, fill=SUB, anchor="start")
+    line(lx + 152, ly - 5, lx + 178, ly - 5, stroke=NAVY2, sw=3)
+    text(lx + 183, ly, "校正後", size=14, fill=SUB, anchor="start")
     # 分岔到三個用途
     polyline([(870, 318), (870, 336)], stroke=NAVY, sw=3.5)
     polyline([(600, 336), (1140, 336)], stroke=NAVY, sw=3.5)
