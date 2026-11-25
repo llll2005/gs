@@ -476,7 +476,8 @@ def draw():
     hx0, hy0 = gx + gs / 4, gy0 + gs / 4
     rect(hx0, hy0, gs / 4, gs / 4, stroke=ORG, sw=4, fill=ORG, op=1.0, extra='fill-opacity="0.25"')
     text(gx + gs / 2, 282, "切成 4×4＝16 塊", size=20, weight=700)
-    text(gx + gs / 2, 306, "高斯數量上限依 SfM 點數分配", size=15, fill=SUB)
+    text(gx + gs / 2, 306, "高斯數量上限依 SfM 點數分配", size=15, fill=ORG_D, weight=700)
+    text(gx + gs / 2, 328, "不先訓練全場景粗模型", size=15, fill=ORG_D, weight=700)
     # 放大：一塊的 2D 高斯
     bx0, by0, bw, bh = 1565, 88, 430, 232
     line(hx0 + gs / 4, hy0, bx0, by0, stroke=ORG, sw=1.8, dash="6 5")
@@ -550,7 +551,7 @@ def draw():
     node(1572, R1, 220, R1H, None)
     add(f'<circle cx="1596" cy="{R1 + 23}" r="14" fill="{ORG}"/>')
     text(1596, R1 + 29, "4", size=17, fill="#ffffff", weight=700)
-    text(1690, R1 + 30, "渲染器", size=20, weight=700)
+    text(1690, R1 + 30, "算繪器", size=20, weight=700)
     for i, sc in enumerate([0.35, 0.5, 0.75, 1.0]):
         hgt = 40 * sc
         rect(1590 + i * 22, 436 - hgt, 18, hgt, fill=NAVY2, op=0.35 + 0.65 * sc, rx=2)
@@ -571,7 +572,7 @@ def draw():
     line(1584, 484, 1780, 484, stroke=EDGE, sw=1.2, cap="butt")
     text(1682, 499, "幾何項降頻・數學化簡・單精度", size=13, fill="#7F93A8")
     # 渲染結果
-    node(1832, R1, 163, R1H, "渲染結果")
+    node(1832, R1, 163, R1H, "算繪結果")
     aerial(1843, 388, 68, 52, seed=8, rx=3)
     aerial(1917, 388, 68, 52, seed=8, mode="depthc", rx=3)
     text(1877, 462, "影像", size=14, fill=SUB)
@@ -581,18 +582,18 @@ def draw():
 
     R2, R2H = 555, 163
     # 密度控制（MCMC）
-    node(1345, R2, 290, R2H, "密度控制（MCMC）")
-    text(1362, R2 + 59, "往誤差大的地方增生・搬家・刪除", size=15, fill=SUB, anchor="start")
-    text(1362, R2 + 87, "依貢獻剪枝・合併相近的高斯", size=15, fill=SUB, anchor="start")
+    node(1345, R2, 290, R2H, '密度控制（<tspan fill="#C2611F" font-weight="700">MCMC</tspan>）')
+    text(1362, R2 + 59, '<tspan fill="#C2611F" font-weight="700">往誤差大的地方增生</tspan>・搬家・刪除', size=15, fill=SUB, anchor="start")
+    text(1362, R2 + 87, '<tspan fill="#C2611F" font-weight="700">依貢獻剪枝</tspan>・<tspan fill="#C2611F" font-weight="700">合併相近的高斯</tspan>', size=15, fill=SUB, anchor="start")
     text(1362, R2 + 115, "收回海面漂浮的高斯", size=15, fill=SUB, anchor="start")
     tag(1505, R2 + 111, 2)
     # 損失
     node(1660, R2, 335, R2H, "損失（與照片比較）")
-    text(1678, R2 + 59, "顏色：L1＋L2＋SSIM", size=15, fill=SUB, anchor="start")
+    text(1678, R2 + 59, '顏色：L1＋<tspan fill="#C2611F" font-weight="700">L2</tspan>＋SSIM', size=15, fill=SUB, anchor="start")
     text(1678, R2 + 87, "幾何：深度上限", size=15, fill=SUB, anchor="start")
     tag(1788, R2 + 83, 1)
-    text(1723, R2 + 113, "法向・深度失真・鄰域平面", size=15, fill=SUB, anchor="start")
-    text(1678, R2 + 141, "正則：不透明度二值化・尺度", size=15, fill=SUB, anchor="start")
+    text(1723, R2 + 113, '法向・<tspan fill="#C2611F" font-weight="700">深度失真</tspan>・<tspan fill="#C2611F" font-weight="700">鄰域平面</tspan>', size=15, fill=SUB, anchor="start")
+    text(1678, R2 + 141, '正則：<tspan fill="#C2611F" font-weight="700">不透明度二值化</tspan>・<tspan fill="#C2611F" font-weight="700">尺度</tspan>', size=15, fill=SUB, anchor="start")
 
     arrow(1913, R1 + R1H, 1913, R2 - 2, sw=3.5)                       # 渲染結果 → 損失
     lane = 530
@@ -600,6 +601,7 @@ def draw():
     text(1560, lane - 8, "梯度", size=15, fill=ORG_D, weight=700)
     arrow(1480, R2 - 2, 1480, R1 + R1H + 4, sw=3.5)                   # 密度控制 → 2D 高斯
     # 圖例
+    text(1345, 744, '<tspan fill="#C2611F" font-weight="700">橘字</tspan>：與 CityGaussianV2 不同的設計（改動或新增）', size=14, fill=SUB, anchor="start")
     line(1810, 738, 1845, 738, stroke=NAVY, sw=3)
     text(1851, 744, "運算", size=14, fill=SUB, anchor="start")
     line(1900, 738, 1935, 738, stroke=ORG, sw=3, dash="8 6")
@@ -647,7 +649,7 @@ def draw():
         for j in range(4):
             rect(t0x + i * (tg + off), t0y + j * (tg + off), tg, tg, fill="#B9CCE0" if (i, j) != (1, 1) else ORG_L,
                  stroke=NAVY2 if (i, j) != (1, 1) else ORG, sw=1.6, rx=3)
-    text(2220, 268, "16 塊合併", size=20, fill=SUB)
+    text(2220, 268, "分塊合併", size=20, fill=SUB)
     arrow(2220, 282, 2220, 318, sw=4)
     s2 = 13
     Pc = iso(2220, 470, s2)
