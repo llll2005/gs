@@ -3,7 +3,6 @@ import os
 import sys
 import yaml
 import torch
-import torch_scatter
 import imageio
 import numpy as np
 from tqdm import tqdm
@@ -15,6 +14,7 @@ from internal.utils.render_utils import generate_path, record_path
 from internal.utils.gaussian_model_loader import GaussianModelLoader
 
 def voxel_filtering_no_gt(voxel_size, xy_range, target_xyz, std_ratio=2.0):
+    import torch_scatter   # ★ 11-25 只有 --filter 用到；lab 的 gspl 沒裝，改成用到才 import
     assert len(xy_range) == 4, "Unrecognized xy_range format"
     with torch.no_grad():
 
