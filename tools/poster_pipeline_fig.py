@@ -1,0 +1,645 @@
+"""海報流程圖（論文總覽圖風格）：輸入 → 幾何先驗（改良 1、2）→ 分塊訓練（改良 3、4）→ 合併輸出。
+
+產出 SVG（可編輯）與 PNG（貼到 Canva 用）：
+  python tools/poster_pipeline_fig.py [--out 紀錄/海報圖/流程圖] [--scale 2]
+圖上數字的出處同 `紀錄/海報文字稿.md` 附錄（數字出處表）。
+"""
+import argparse
+import math
+import subprocess
+
+import numpy as np
+from scipy.spatial import Delaunay
+
+W, H = 2400, 900
+FONT = "Noto Sans CJK TC"
+NAVY = "#1F4E79"
+NAVY2 = "#2E6A9E"
+TXT = "#1F3B57"
+SUB = "#4A6178"
+PANEL = "#F4F8FC"
+EDGE = "#C5D6E6"
+ORG = "#E8833A"
+ORG_D = "#C2611F"
+ORG_L = "#FCE9DA"
+SEA = "#5BA4D6"
+SEA_L = "#CFE6F5"
+GREEN = "#3A9E5C"
+RED = "#D64545"
+ROOFS = ["#A9B4C0", "#C4B49F", "#B9A58C", "#97A5B5", "#D1C3B0", "#8F9DAE"]
+GCOL = ["#E8833A", "#4A90C2", "#7FB069", "#D4A373", "#9C89B8", "#E9C46A", "#5BA4D6", "#C97B63"]
+
+out = []
+defs = []
+_uid = [0]
+
+
+def uid(p="u"):
+    _uid[0] += 1
+    return f"{p}{_uid[0]}"
+
+
+def add(s):
+    out.append(s)
+
+
+def rect(x, y, w, h, fill="none", stroke="none", sw=1.0, rx=0, op=1.0, dash=None, extra=""):
+    d = f' stroke-dasharray="{dash}"' if dash else ""
+    add(f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="{rx}" fill="{fill}" '
+        f'stroke="{stroke}" stroke-width="{sw}" opacity="{op}"{d} {extra}/>')
+
+
+def text(x, y, s, size=22, fill=TXT, weight=400, anchor="middle", op=1.0, style=""):
+    add(f'<text x="{x:.1f}" y="{y:.1f}" font-family="{FONT}" font-size="{size}" font-weight="{weight}" '
+        f'fill="{fill}" text-anchor="{anchor}" opacity="{op}" {style}>{s}</text>')
+
+
+def line(x1, y1, x2, y2, stroke=NAVY, sw=3, dash=None, op=1.0, cap="round", marker=None):
+    d = f' stroke-dasharray="{dash}"' if dash else ""
+    m = f' marker-end="url(#{marker})"' if marker else ""
+    add(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="{stroke}" stroke-width="{sw}" '
+        f'stroke-linecap="{cap}" opacity="{op}"{d}{m}/>')
+
+
+def poly(pts, fill="none", stroke="none", sw=1.0, op=1.0, extra=""):
+    p = " ".join(f"{a:.1f},{b:.1f}" for a, b in pts)
+    add(f'<polygon points="{p}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}" opacity="{op}" '
+        f'stroke-linejoin="round" {extra}/>')
+
+
+def polyline(pts, stroke=NAVY, sw=3, op=1.0, dash=None, marker=None):
+    p = " ".join(f"{a:.1f},{b:.1f}" for a, b in pts)
+    d = f' stroke-dasharray="{dash}"' if dash else ""
+    m = f' marker-end="url(#{marker})"' if marker else ""
+    add(f'<polyline points="{p}" fill="none" stroke="{stroke}" stroke-width="{sw}" opacity="{op}" '
+        f'stroke-linejoin="round" stroke-linecap="round"{d}{m}/>')
+
+
+def arrow(x1, y1, x2, y2, color=NAVY, sw=3.5, dash=None):
+    mk = "ah_navy" if color == NAVY else ("ah_org" if color == ORG else ("ah_sea" if color == SEA else "ah_grey"))
+    # 縮短讓箭頭尖端落在終點
+    L = math.hypot(x2 - x1, y2 - y1)
+    k = max(L - 9, 0) / L if L > 0 else 0
+    line(x1, y1, x1 + (x2 - x1) * k, y1 + (y2 - y1) * k, stroke=color, sw=sw, dash=dash, marker=mk)
+
+
+GRAD_IDS = {}
+
+
+def grad(color):
+    if color not in GRAD_IDS:
+        gid = uid("g")
+        GRAD_IDS[color] = gid
+        defs.append(f'<radialGradient id="{gid}" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse">'
+                    f'<stop offset="0" stop-color="{color}" stop-opacity="0.95"/>'
+                    f'<stop offset="0.55" stop-color="{color}" stop-opacity="0.75"/>'
+                    f'<stop offset="1" stop-color="{color}" stop-opacity="0"/></radialGradient>')
+    return GRAD_IDS[color]
+
+
+def surfel(cx, cy, u, v, color, r=1.0, op=1.0, outline=False):
+    """平面上的 2D 高斯：單位圓經 [u v] 仿射映射到螢幕（u、v＝平面兩個切向量的螢幕向量，長度＝半徑）。"""
+    a, b = u
+    c, d = v
+    g = grad(color)
+    ol = f' stroke="{color}" stroke-width="{0.06 / max(math.hypot(a, b), 1e-6) * 18:.3f}" stroke-opacity="0.5"' if outline else ""
+    add(f'<circle cx="0" cy="0" r="{r}" fill="url(#{g})" opacity="{op}"{ol} '
+        f'transform="matrix({a:.3f} {b:.3f} {c:.3f} {d:.3f} {cx:.2f} {cy:.2f})"/>')
+
+
+C30, S30 = math.cos(math.radians(30)), math.sin(math.radians(30))
+
+
+def iso(ox, oy, s):
+    def f(X, Y, Z):
+        return ox + (X - Y) * C30 * s, oy + (X + Y) * S30 * s - Z * s
+    return f
+
+
+def iso_vecs(s):
+    ux = (C30 * s, S30 * s)
+    uy = (-C30 * s, S30 * s)
+    uz = (0.0, -s)
+    return ux, uy, uz
+
+
+def box(P, X0, Y0, X1, Y1, h, col, shade=True):
+    top = [P(X0, Y0, h), P(X1, Y0, h), P(X1, Y1, h), P(X0, Y1, h)]
+    fx = [P(X1, Y0, 0), P(X1, Y1, 0), P(X1, Y1, h), P(X1, Y0, h)]   # X=X1 面（右前）
+    fy = [P(X0, Y1, 0), P(X1, Y1, 0), P(X1, Y1, h), P(X0, Y1, h)]   # Y=Y1 面（左前）
+    poly(fy, fill=shade_col(col, 0.80), stroke="#ffffff", sw=0.8)
+    poly(fx, fill=shade_col(col, 0.66), stroke="#ffffff", sw=0.8)
+    poly(top, fill=col, stroke="#ffffff", sw=0.8)
+
+
+def shade_col(hexc, k):
+    h = hexc.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return "#%02x%02x%02x" % (int(r * k), int(g * k), int(b * k))
+
+
+def mix(hexc, other, t):
+    h1, h2 = hexc.lstrip("#"), other.lstrip("#")
+    c1 = [int(h1[i:i + 2], 16) for i in (0, 2, 4)]
+    c2 = [int(h2[i:i + 2], 16) for i in (0, 2, 4)]
+    return "#%02x%02x%02x" % tuple(int(a * (1 - t) + b * t) for a, b in zip(c1, c2))
+
+
+def clip_rect(x, y, w, h, rx=6):
+    cid = uid("c")
+    defs.append(f'<clipPath id="{cid}"><rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{rx}"/></clipPath>')
+    return cid
+
+
+def city_layout(seed, sea=False):
+    """俯視城市（正規化座標 0..1）：道路、建物矩形、海。"""
+    rng = np.random.default_rng(seed)
+    xs = [0.0, 0.3, 0.62, 1.0]
+    ys = [0.0, 0.36, 0.7, 1.0]
+    blds = []
+    for i in range(3):
+        for j in range(3):
+            if sea and i == 2 and j >= 1:
+                continue
+            x0, x1 = xs[i] + 0.04, xs[i + 1] - 0.04
+            y0, y1 = ys[j] + 0.05, ys[j + 1] - 0.05
+            n = rng.integers(1, 4)
+            for k in range(n):
+                bw = (x1 - x0) * rng.uniform(0.35, 0.8)
+                bh = (y1 - y0) * rng.uniform(0.35, 0.8)
+                bx = rng.uniform(x0, x1 - bw)
+                by = rng.uniform(y0, y1 - bh)
+                blds.append((bx, by, bw, bh, ROOFS[rng.integers(len(ROOFS))], rng.uniform(0.3, 1.0)))
+    sea_poly = [(0.66, 0.40), (1.0, 0.30), (1.0, 1.0), (0.60, 1.0)] if sea else None
+    return xs, ys, blds, sea_poly
+
+
+def aerial(x, y, w, h, seed, sea=False, mode="rgb", blur=False, rx=6, border=True):
+    """mode: rgb（空拍）、depth（單目深度，灰階、近亮遠暗）、depthc（校正後）。"""
+    cid = clip_rect(x, y, w, h, rx)
+    xs, ys, blds, sp = city_layout(seed, sea)
+    add(f'<g clip-path="url(#{cid})">')
+    if mode == "rgb":
+        rect(x, y, w, h, fill="#C9D2C3")
+        for xx in xs[1:-1]:
+            rect(x + xx * w - 4, y, 8, h, fill="#ECEDEA")
+        for yy in ys[1:-1]:
+            rect(x, y + yy * h - 4, w, 8, fill="#ECEDEA")
+        if sp:
+            poly([(x + a * w, y + b * h) for a, b in sp], fill="#7FB3D9")
+        for bx, by, bw, bh, col, ht in blds:
+            rect(x + bx * w + 3, y + by * h + 3, bw * w, bh * h, fill="#7d8a7a", op=0.45)
+            rect(x + bx * w, y + by * h, bw * w, bh * h, fill=col, stroke="#ffffff", sw=0.6)
+    else:
+        gid = uid("lg")
+        defs.append(f'<linearGradient id="{gid}" x1="0" y1="0" x2="0" y2="1">'
+                    f'<stop offset="0" stop-color="#2b2f36"/><stop offset="1" stop-color="#8a909a"/></linearGradient>')
+        rect(x, y, w, h, fill=f"url(#{gid})")
+        flt = ""
+        if blur:
+            fid = uid("f")
+            defs.append(f'<filter id="{fid}" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="3.2"/></filter>')
+            flt = f' filter="url(#{fid})"'
+        add(f'<g{flt}>')
+        if sp:
+            poly([(x + a * w, y + b * h) for a, b in sp], fill="#1d2024" if not blur else "#3a3f46")
+        for bx, by, bw, bh, col, ht in blds:
+            g = int(150 + 100 * ht * (0.55 + 0.45 * (by + bh)))
+            if blur:
+                g = int(g * 0.85 + 20)
+            g = min(g, 250)
+            rect(x + bx * w, y + by * h, bw * w, bh * h, fill="#%02x%02x%02x" % (g, g, g))
+        add('</g>')
+        if blur:
+            # 單目深度的低頻偏差：整片色偏
+            gid2 = uid("lg")
+            defs.append(f'<linearGradient id="{gid2}" x1="0" y1="0" x2="1" y2="1">'
+                        f'<stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/><stop offset="1" stop-color="#000000" stop-opacity="0.25"/></linearGradient>')
+            rect(x, y, w, h, fill=f"url(#{gid2})")
+    add('</g>')
+    if border:
+        rect(x, y, w, h, stroke="#8FA6BC", sw=1.5, rx=rx)
+    return blds, sp
+
+
+def sfm_overlay(x, y, w, h, seed):
+    """SfM 點（橘點）＋三角形（Delaunay）疊在深度圖上。"""
+    rng = np.random.default_rng(seed + 7)
+    xs, ys, blds, sp = city_layout(seed, False)
+    pts = []
+    for bx, by, bw, bh, col, ht in blds:
+        for _ in range(3):
+            pts.append((bx + rng.uniform(0.1, 0.9) * bw, by + rng.uniform(0.1, 0.9) * bh))
+    for _ in range(10):
+        pts.append((rng.uniform(0.03, 0.97), rng.uniform(0.03, 0.97)))
+    pts += [(0.02, 0.02), (0.98, 0.02), (0.02, 0.98), (0.98, 0.98)]
+    P = np.array(pts)
+    tri = Delaunay(P)
+    for s in tri.simplices:
+        q = [(x + P[i, 0] * w, y + P[i, 1] * h) for i in s]
+        poly(q, stroke=ORG, sw=1.1, op=0.75)
+    for px, py in P[:-4]:
+        add(f'<circle cx="{x + px * w:.1f}" cy="{y + py * h:.1f}" r="3.2" fill="{ORG}" stroke="#ffffff" stroke-width="1"/>')
+
+
+def badge(x, y, n, title, size=26):
+    add(f'<circle cx="{x}" cy="{y}" r="18" fill="{ORG}"/>')
+    text(x, y + 8, str(n), size=22, fill="#ffffff", weight=700)
+    text(x + 30, y + 9, title, size=size, fill=ORG_D, weight=700, anchor="start")
+
+
+def panel(x, y, w, h, title):
+    rect(x, y, w, h, fill=PANEL, stroke=EDGE, sw=2, rx=14)
+    cid = clip_rect(x, y, w, 60, 14)
+    add(f'<g clip-path="url(#{cid})">')
+    rect(x, y, w, 74, fill=NAVY, rx=14)
+    add('</g>')
+    text(x + w / 2, y + 40, title, size=28, fill="#ffffff", weight=700)
+
+
+def camera(cx, cy, s=1.0, ang=0.0, col=NAVY, frustum=True):
+    """相機圖示：機身（含鏡頭）朝下；frustum＝畫半透明視錐（ang＝相對垂直向下的角度，度）。"""
+    add(f'<g transform="translate({cx:.1f},{cy:.1f}) rotate({ang:.1f}) scale({s:.2f})">')
+    if frustum:
+        poly([(-6, 6), (6, 6), (20, 34), (-20, 34)], fill=NAVY2, op=0.22)
+    rect(-14, -14, 28, 16, fill=col, rx=4)
+    rect(-6, 1, 12, 6, fill=col, rx=1.5)
+    add(f'<circle cx="0" cy="-6" r="4.5" fill="#ffffff" opacity="0.9"/>')
+    add('</g>')
+
+
+def chevron(x, y):
+    poly([(x, y - 34), (x + 22, y), (x, y + 34), (x + 12, y)], fill=NAVY, op=0.85)
+
+
+# ─────────────────────────── 繪圖 ───────────────────────────
+def draw():
+    rng = np.random.default_rng(11)
+    rect(0, 0, W, H, fill="#ffffff")
+
+    # ════ 面板 1：輸入 ════
+    panel(20, 20, 390, 860, "輸入")
+    for i, (cx, ang) in enumerate([(130, -14), (215, 0), (300, 14)]):
+        camera(cx, 104, 1.1, ang)
+    for k in range(3):
+        aerial(55 + 16 * k, 150 + 16 * k, 250, 155, seed=3 + k, sea=(k == 2))
+    text(215, 362, "空拍影像＋相機位置", size=24, weight=700)
+    # 分岔到 SfM 與單目深度
+    polyline([(60, 375), (60, 475)], stroke=NAVY, sw=3.5)
+    polyline([(60, 475), (60, 700)], stroke=NAVY, sw=3.5)
+    arrow(60, 475, 92, 475)
+    arrow(60, 700, 92, 700)
+    # SfM 點雲（等角投影的點）
+    rect(95, 400, 290, 150, fill="#ffffff", stroke="#8FA6BC", sw=1.5, rx=6)
+    _c = clip_rect(95, 400, 290, 150, 6)
+    add(f'<g clip-path="url(#{_c})">')
+    P = iso(232, 528, 21)
+    pr = np.random.default_rng(5)
+    for (X0, Y0, X1, Y1, hgt, col) in [(-2.4, -1.2, -1.2, 0.0, 2.6, "#6f8299"), (-0.8, -2.6, 0.6, -1.4, 3.6, "#9a8467"),
+                                        (0.4, 0.0, 1.7, 1.1, 1.6, "#7f93ab"), (-1.9, 0.8, -0.8, 1.9, 1.2, "#a08f74")]:
+        # 可見的 9 條稜邊（取點較密）＋三個可見面（較疏）
+        E = [((X0, Y0, hgt), (X1, Y0, hgt)), ((X1, Y0, hgt), (X1, Y1, hgt)), ((X1, Y1, hgt), (X0, Y1, hgt)), ((X0, Y1, hgt), (X0, Y0, hgt)),
+             ((X1, Y0, 0), (X1, Y0, hgt)), ((X1, Y1, 0), (X1, Y1, hgt)), ((X0, Y1, 0), (X0, Y1, hgt)),
+             ((X1, Y0, 0), (X1, Y1, 0)), ((X1, Y1, 0), (X0, Y1, 0))]
+        for (pa, pb) in E:
+            L = math.dist(pa, pb)
+            for _ in range(int(9 * L) + 2):
+                t = pr.uniform()
+                q = [pa[k] + (pb[k] - pa[k]) * t + pr.normal(0, 0.04) for k in range(3)]
+                sx, sy = P(*q)
+                add(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="1.9" fill="{col}"/>')
+        for _ in range(28):
+            face = pr.integers(3)
+            if face == 0:
+                X, Y, Z = pr.uniform(X0, X1), pr.uniform(Y0, Y1), hgt
+            elif face == 1:
+                X, Y, Z = X1, pr.uniform(Y0, Y1), pr.uniform(0, hgt)
+            else:
+                X, Y, Z = pr.uniform(X0, X1), Y1, pr.uniform(0, hgt)
+            sx, sy = P(X, Y, Z)
+            add(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="1.7" fill="{col}" opacity="0.7"/>')
+    for _ in range(110):
+        sx, sy = P(pr.uniform(-3.0, 2.6), pr.uniform(-3.0, 2.6), 0)
+        add(f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="1.6" fill="#9aa99a"/>')
+    add('</g>')
+    text(240, 582, "SfM 稀疏點", size=23, weight=700)
+    # 單目深度
+    aerial(95, 625, 290, 150, seed=4, mode="depth", blur=True)
+    text(240, 806, "單目深度", size=23, weight=700)
+    text(240, 836, "（Depth Anything V2）", size=19, fill=SUB)
+
+    chevron(420, 450)
+
+    # ════ 面板 2：幾何先驗 ════
+    panel(450, 20, 830, 860, "幾何先驗：讓高斯長在真實表面上")
+    # ── 改良 1 ──
+    badge(490, 116, 1, "SfM 校正深度")
+    aerial(480, 145, 220, 135, seed=4, mode="depth", blur=True)
+    sfm_overlay(480, 145, 220, 135, seed=4)
+    text(590, 306, "SfM 點連成三角形", size=20, fill=SUB)
+    arrow(708, 212, 752, 212, sw=4)
+    text(730, 196, "逐張", size=17, fill=SUB)
+    text(730, 238, "校正", size=17, fill=SUB)
+    aerial(760, 145, 220, 135, seed=4, mode="depthc")
+    text(870, 306, "校正後的深度", size=20, fill=SUB)
+    # 誤差長條
+    text(1130, 168, "深度誤差（中位數）", size=20, weight=700)
+    text(1012, 205, "校正前", size=18, fill=SUB, anchor="start")
+    rect(1072, 190, 128, 20, fill="#B9C3CD", rx=3)
+    text(1206, 206, "2.15%", size=18, fill=TXT, anchor="start", weight=700)
+    text(1012, 250, "校正後", size=18, fill=SUB, anchor="start")
+    rect(1072, 235, 128 * 0.15 / 2.15, 20, fill=ORG, rx=3)
+    text(1086, 251, "0.15%", size=18, fill=ORG_D, anchor="start", weight=700)
+    # 分岔到三個用途
+    polyline([(870, 318), (870, 336)], stroke=NAVY, sw=3.5)
+    polyline([(600, 336), (1140, 336)], stroke=NAVY, sw=3.5)
+    for cx in (600, 870, 1140):
+        arrow(cx, 336, cx, 362)
+    # a 塊外遮罩
+    aerial(510, 366, 180, 96, seed=8, rx=5, border=False)
+    hid = uid("h")
+    defs.append(f'<pattern id="{hid}" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+                f'<rect width="8" height="8" fill="#ffffff" fill-opacity="0.55"/><line x1="0" y1="0" x2="0" y2="8" stroke="#7a8796" stroke-width="2"/></pattern>')
+    poly([(510, 366), (690, 366), (690, 462), (510, 462), (510, 366), (548, 384), (548, 444), (652, 444), (652, 384), (548, 384)],
+         fill=f"url(#{hid})", extra='fill-rule="evenodd"')
+    rect(548, 384, 104, 60, stroke=ORG, sw=3.5, rx=3)
+    rect(510, 366, 180, 96, stroke="#8FA6BC", sw=1.5, rx=5)
+    text(600, 494, "塊外遮罩", size=22, weight=700)
+    text(600, 520, "分出屬於這一塊的像素", size=18, fill=SUB)
+    # b 深度上限（剖面）
+    gx0, gy = 780, 438
+    rect(gx0, gy, 180, 26, fill="#D8CDBE", rx=3)
+    rect(845, 382, 52, 56, fill="#C9D3DE", stroke="#8FA6BC", sw=1.2)
+    for (x1, y1, x2, y2) in [(786, 433, 810, 433), (818, 433, 840, 433), (902, 433, 926, 433), (932, 433, 954, 433),
+                             (850, 377, 872, 377), (875, 377, 894, 377), (901, 390, 901, 412), (840, 395, 840, 418)]:
+        line(x1, y1, x2, y2, stroke=NAVY2, sw=5)
+    for (x1, y1, x2, y2) in [(796, 455, 818, 455), (920, 452, 944, 452)]:
+        line(x1, y1, x2, y2, stroke=RED, sw=5)
+    for cxr in (807, 932):
+        line(cxr - 6, 447, cxr + 6, 461, stroke=RED, sw=2.5)
+        line(cxr + 6, 447, cxr - 6, 461, stroke=RED, sw=2.5)
+    text(870, 494, "深度上限", size=22, weight=700)
+    text(870, 520, "不准長到地面與屋頂下", size=18, fill=SUB)
+    # c 表面起點
+    prof = [(1050, 440), (1105, 440), (1105, 384), (1160, 384), (1160, 412), (1195, 412), (1195, 440), (1230, 440)]
+    rect(1050, 440, 180, 24, fill="#D8CDBE", rx=3)
+    polyline(prof, stroke="#8FA6BC", sw=2.5)
+    seg = np.array(prof, dtype=float)
+    for i in range(len(seg) - 1):
+        a, b = seg[i], seg[i + 1]
+        n = max(int(np.linalg.norm(b - a) / 11), 1)
+        for t in np.linspace(0, 1, n, endpoint=False):
+            p = a + (b - a) * t
+            add(f'<circle cx="{p[0]:.1f}" cy="{p[1]:.1f}" r="4" fill="{GCOL[int(rng.integers(len(GCOL)))]}" opacity="0.9"/>')
+    text(1140, 494, "表面起點", size=22, weight=700)
+    text(1140, 520, "高斯從表面開始長", size=18, fill=SUB)
+
+    line(475, 548, 1255, 548, stroke=EDGE, sw=2, dash="8 6")
+
+    # ── 改良 2 ──
+    badge(490, 590, 2, "海面當成一個平面")
+    blds, sp = aerial(480, 620, 220, 135, seed=21, sea=True)
+    poly([(480 + a * 220, 620 + b * 135) for a, b in sp], fill=SEA, op=0.45, stroke="#1f78c1", sw=3)
+    text(480 + 0.84 * 220, 620 + 0.80 * 135, "水體", size=19, fill="#ffffff", weight=700)
+    text(590, 782, "偵測水體", size=20, fill=SUB)
+    arrow(708, 687, 752, 687, sw=4)
+    # 多視角共識平面
+    Pp = iso(880, 700, 34)
+    plane = [Pp(-2.2, -0.4, 0), Pp(1.2, -0.4, 0), Pp(1.2, 2.2, 0), Pp(-2.2, 2.2, 0)]
+    poly(plane, fill=SEA_L, stroke=SEA, sw=2)
+    for t in np.linspace(-2.2, 1.2, 6)[1:-1]:
+        a, b = Pp(t, -0.4, 0), Pp(t, 2.2, 0)
+        line(*a, *b, stroke=SEA, sw=1, op=0.7, cap="butt")
+    for t in np.linspace(-0.4, 2.2, 5)[1:-1]:
+        a, b = Pp(-2.2, t, 0), Pp(1.2, t, 0)
+        line(*a, *b, stroke=SEA, sw=1, op=0.7, cap="butt")
+    hits = [Pp(-0.6, 0.5, 0), Pp(0.1, 1.2, 0), Pp(-1.0, 1.4, 0)]
+    cams = [(800, 615, -18), (885, 600, 0), (965, 612, 18)]
+    for (cx, cy, ang) in cams:
+        for hx, hy in hits:
+            line(cx, cy + 14, hx, hy, stroke=NAVY2, sw=1.4, dash="5 4", op=0.75)
+        camera(cx, cy, 0.85, ang, frustum=False)
+    for hx, hy in hits:
+        add(f'<circle cx="{hx:.1f}" cy="{hy:.1f}" r="5" fill="{ORG}" stroke="#ffffff" stroke-width="1.5"/>')
+    text(880, 782, "多視角共識決定海平面", size=20, fill=SUB)
+    arrow(1008, 687, 1048, 687, sw=4)
+    # 收回漂浮的高斯
+    Pq = iso(1150, 712, 30)
+    plane2 = [Pq(-2.0, -0.5, 0), Pq(1.3, -0.5, 0), Pq(1.3, 2.0, 0), Pq(-2.0, 2.0, 0)]
+    poly(plane2, fill=SEA_L, stroke=SEA, sw=2)
+    ux, uy, uz = iso_vecs(30)
+    for (X, Y, Z) in [(-1.0, 0.2, 1.9), (0.3, 0.9, 1.5), (-0.6, 1.4, 2.4)]:
+        sx, sy = Pq(X, Y, Z)
+        tx, ty = Pq(X, Y, 0)
+        surfel(sx, sy, (ux[0] * 0.55, ux[1] * 0.55), (uy[0] * 0.55, uy[1] * 0.55), "#9BB7CF", op=0.8)
+        arrow(sx, sy + 10, tx, ty - 6, color=SEA, sw=2.5, dash="5 4")
+        surfel(tx, ty, (ux[0] * 0.55, ux[1] * 0.55), (uy[0] * 0.55, uy[1] * 0.55), "#2F7FBF", op=0.95)
+    text(1150, 782, "收回漂浮的高斯", size=20, fill=SUB)
+
+    chevron(1290, 450)
+
+    # ════ 面板 3：分塊訓練 ════
+    panel(1320, 20, 700, 860, "分塊訓練（每塊 17,000 步）")
+    # 4x4 分區
+    gx, gy0, gs = 1350, 110, 200
+    aerial(gx, gy0, gs, gs, seed=31, sea=True, rx=4)
+    for i in range(1, 4):
+        line(gx + i * gs / 4, gy0, gx + i * gs / 4, gy0 + gs, stroke="#ffffff", sw=2.5, cap="butt")
+        line(gx, gy0 + i * gs / 4, gx + gs, gy0 + i * gs / 4, stroke="#ffffff", sw=2.5, cap="butt")
+    hx0, hy0 = gx + gs / 4, gy0 + gs / 4
+    rect(hx0, hy0, gs / 4, gs / 4, stroke=ORG, sw=4, fill=ORG, op=1.0, extra='fill-opacity="0.25"')
+    text(1450, 342, "切成 4×4＝16 塊", size=21, weight=700)
+    text(1450, 370, "每塊高斯數量上限", size=18, fill=SUB)
+    text(1450, 394, "依 SfM 點數分配", size=18, fill=SUB)
+    # 放大線
+    bx0, by0, bw, bh = 1580, 100, 420, 370
+    line(hx0 + gs / 4, hy0, bx0, by0, stroke=ORG, sw=1.8, dash="6 5")
+    line(hx0 + gs / 4, hy0 + gs / 4, bx0, by0 + bh, stroke=ORG, sw=1.8, dash="6 5")
+    rect(bx0, by0, bw, bh, fill="#ffffff", stroke=ORG, sw=2.5, rx=10)
+    # 2D 高斯建物
+    s = 30
+    Pb = iso(1790, 250, s)
+    ux, uy, uz = iso_vecs(s)
+    gr = np.random.default_rng(17)
+    ground = [Pb(-3.4, -2.6, 0), Pb(3.0, -2.6, 0), Pb(3.0, 3.4, 0), Pb(-3.4, 3.4, 0)]
+    poly(ground, fill="#EEF1EC", stroke="#D5DBD0", sw=1)
+    # 地面高斯（建物後方的先畫）
+    gpts = [(gr.uniform(-3.2, 2.8), gr.uniform(-2.4, 3.2)) for _ in range(70)]
+    B = (-1.2, -1.2, 1.0, 0.8, 3.2)
+
+    def in_b(X, Y):
+        return B[0] - 0.3 < X < B[2] + 0.3 and B[1] - 0.3 < Y < B[3] + 0.3
+
+    gcols = ["#A7B59B", "#BFC7B3", "#9FB0A0", "#C9C2B0", "#B5BFC9"]
+    behind = [(X, Y) for X, Y in gpts if not in_b(X, Y) and (X + Y) < (B[2] + B[3])]
+    front = [(X, Y) for X, Y in gpts if not in_b(X, Y) and (X + Y) >= (B[2] + B[3])]
+    for X, Y in behind:
+        sx, sy = Pb(X, Y, 0)
+        r = gr.uniform(0.28, 0.5)
+        surfel(sx, sy, (ux[0] * r, ux[1] * r), (uy[0] * r, uy[1] * r), gcols[gr.integers(len(gcols))])
+    box(Pb, *B, "#C3CCD6")
+    # 建物表面的高斯
+    X0, Y0, X1, Y1, hh = B
+    bcols = ["#9FB1C6", "#B7C4D2", "#8EA3BA", "#C7B9A3", "#A9BACB", "#E0C9A6"]
+    for _ in range(26):   # 屋頂
+        X, Y = gr.uniform(X0 + 0.25, X1 - 0.25), gr.uniform(Y0 + 0.25, Y1 - 0.25)
+        sx, sy = Pb(X, Y, hh)
+        r = gr.uniform(0.22, 0.38)
+        surfel(sx, sy, (ux[0] * r, ux[1] * r), (uy[0] * r, uy[1] * r), bcols[gr.integers(len(bcols))])
+    for _ in range(36):   # X=X1 面
+        Y, Z = gr.uniform(Y0 + 0.2, Y1 - 0.2), gr.uniform(0.25, hh - 0.25)
+        sx, sy = Pb(X1, Y, Z)
+        r = gr.uniform(0.2, 0.34)
+        surfel(sx, sy, (uy[0] * r, uy[1] * r), (uz[0] * r * 0.9, uz[1] * r * 0.9), bcols[gr.integers(len(bcols))])
+    for _ in range(40):   # Y=Y1 面
+        X, Z = gr.uniform(X0 + 0.2, X1 - 0.2), gr.uniform(0.25, hh - 0.25)
+        sx, sy = Pb(X, Y1, Z)
+        r = gr.uniform(0.2, 0.34)
+        surfel(sx, sy, (ux[0] * r, ux[1] * r), (uz[0] * r * 0.9, uz[1] * r * 0.9), bcols[gr.integers(len(bcols))])
+    for X, Y in front:
+        sx, sy = Pb(X, Y, 0)
+        r = gr.uniform(0.28, 0.5)
+        surfel(sx, sy, (ux[0] * r, ux[1] * r), (uy[0] * r, uy[1] * r), gcols[gr.integers(len(gcols))])
+    # 單顆放大說明
+    zx, zy = 1655, 160
+    surfel(zx, zy, (34, 0), (0, 20), ORG)
+    add(f'<ellipse cx="{zx}" cy="{zy}" rx="34" ry="20" fill="none" stroke="{ORG_D}" stroke-width="1.2" stroke-dasharray="3 3"/>')
+    text(zx, zy + 44, "一個 2D 高斯", size=16, fill=ORG_D, weight=700)
+    text(1790, 420, "2D 高斯：帶顏色的半透明小圓片", size=20, weight=700)
+    text(1790, 450, "渲染 → 與照片比較 → 更新（MCMC 控制數量）", size=17, fill=SUB)
+
+    # ── 改良 3 ──
+    rect(1340, 490, 325, 375, fill="#ffffff", stroke=EDGE, sw=1.8, rx=10)
+    badge(1362, 526, 3, "只學看得到的顏色", size=23)
+    scx, scy, sr = 1502, 668, 58
+    sg = uid("sg")
+    defs.append(f'<radialGradient id="{sg}" cx="0.38" cy="0.35" r="0.75"><stop offset="0" stop-color="#ffffff"/>'
+                f'<stop offset="1" stop-color="#9FB3C8"/></radialGradient>')
+    add(f'<path d="M {scx - sr} {scy} A {sr} {sr} 0 0 0 {scx + sr} {scy} A {sr} {sr * 0.3} 0 0 1 {scx - sr} {scy} Z" fill="#D7DDE3"/>')
+    add(f'<path d="M {scx - sr} {scy} A {sr} {sr} 0 0 1 {scx + sr} {scy} A {sr} {sr * 0.3} 0 0 1 {scx - sr} {scy} Z" fill="url(#{sg})"/>')
+    add(f'<ellipse cx="{scx}" cy="{scy}" rx="{sr}" ry="{sr * 0.3}" fill="none" stroke="#7F93A8" stroke-width="1.5" stroke-dasharray="4 3"/>')
+    add(f'<circle cx="{scx}" cy="{scy}" r="{sr}" fill="none" stroke="#7F93A8" stroke-width="1.8"/>')
+    for ang in (-55, -28, 0, 28, 55):
+        a = math.radians(ang)
+        cx, cy = scx + 104 * math.sin(a), scy - 104 * math.cos(a)
+        ex, ey = scx + (sr + 6) * math.sin(a), scy - (sr + 6) * math.cos(a)
+        arrow(cx - 14 * math.sin(a), cy + 14 * math.cos(a), ex, ey, color=ORG, sw=2.5)
+        camera(cx, cy, 0.62, ang, frustum=False)
+    text(scx, scy + sr + 22, "沒有相機從下方看", size=15, fill="#7F93A8")
+    # 16 維方塊
+    text(1502, 772, "每個色版的顏色係數：16 維", size=17, fill=SUB)
+    sq, gap = 15, 4
+    x0 = 1502 - (16 * sq + 15 * gap) / 2
+    for i in range(16):
+        col = ORG if i < 8 else ("#F6C9A4" if i < 10 else "#D3D8DE")
+        rect(x0 + i * (sq + gap), 782, sq, sq, fill=col, rx=2)
+    lx = 1352
+    for col, lab, w_ in [(ORG, "學 8", 62), ("#F6C9A4", "看得到 10", 104), ("#D3D8DE", "看不到 6", 92)]:
+        rect(lx, 812, 13, 13, fill=col, rx=2)
+        text(lx + 18, 824, lab, size=15, fill=SUB, anchor="start")
+        lx += w_
+    text(1502, 852, "參數 58→34　訓練顯存 −30%", size=18, weight=700, fill=ORG_D)
+
+    # ── 改良 4 ──
+    rect(1680, 490, 325, 375, fill="#ffffff", stroke=EDGE, sw=1.8, rx=10)
+    badge(1702, 526, 4, "每一步更便宜", size=23)
+    text(1842, 566, "低解析度排程", size=18, weight=700)
+    cx0, base, cw = 1712, 690, 64
+    for i, sc in enumerate([0.35, 0.5, 0.75, 1.0]):
+        hgt = 100 * sc
+        rect(cx0 + i * (cw + 4), base - hgt, cw, hgt, fill=NAVY2, op=0.35 + 0.65 * sc, rx=3)
+        text(cx0 + i * (cw + 4) + cw / 2, base - hgt - 6, f"{sc:g}×", size=15, fill=TXT, weight=700)
+    line(cx0 - 4, base, cx0 + 4 * (cw + 4), base, stroke=SUB, sw=2, cap="butt")
+    text(cx0, base + 20, "0", size=14, fill=SUB)
+    text(cx0 + 4 * (cw + 4) - 4, base + 20, "17k 步", size=14, fill=SUB, anchor="end")
+    text(cx0 + 2 * (cw + 4), base + 20, "前 75% 用低解析度", size=14, fill=SUB)
+    # tile 跳過
+    tx0, ty0, ts = 1712, 728, 19
+    ell = (1712 + 1.9 * ts, 728 + 1.3 * ts, 1.45 * ts, 0.8 * ts)
+    for i in range(6):
+        for j in range(3):
+            x, y = tx0 + i * ts, ty0 + j * ts
+            cxp = min(max(ell[0], x), x + ts)
+            cyp = min(max(ell[1], y), y + ts)
+            hit = ((cxp - ell[0]) / (0.85 * ell[2])) ** 2 + ((cyp - ell[1]) / (0.85 * ell[3])) ** 2 <= 1   # 看得到的範圍（漸層 0.85 半徑）
+            rect(x, y, ts, ts, fill="#ffffff" if hit else "#D3D8DE", stroke="#8FA6BC", sw=1)
+            if not hit:
+                line(x + 4, y + 4, x + ts - 4, y + ts - 4, stroke="#9AA6B2", sw=1.4)
+    surfel(ell[0], ell[1], (ell[2], 0), (0, ell[3]), ORG, op=0.9)
+    text(1846, 748, "精確跳過不影響", size=16, fill=SUB, anchor="start")
+    text(1846, 770, "畫面的計算", size=16, fill=SUB, anchor="start")
+    text(1846, 792, "（灰色＝跳過）", size=14, fill="#7F93A8", anchor="start")
+    text(1842, 852, "每塊平均 4.5 分鐘", size=19, weight=700, fill=ORG_D)
+
+    chevron(2030, 450)
+
+    # ════ 面板 4：合併輸出 ════
+    panel(2060, 20, 320, 860, "合併輸出")
+    t0x, t0y, tg = 2144.5, 100, 34
+    for i in range(4):
+        for j in range(4):
+            off = 5
+            rect(t0x + i * (tg + off), t0y + j * (tg + off), tg, tg, fill="#B9CCE0" if (i, j) != (1, 1) else ORG_L,
+                 stroke=NAVY2 if (i, j) != (1, 1) else ORG, sw=1.6, rx=3)
+    text(2220, 282, "16 塊合併", size=20, fill=SUB)
+    arrow(2220, 294, 2220, 332, sw=4)
+    # 城市模型（等角）
+    s2 = 14
+    Pc = iso(2220, 505, s2)
+    ux2, uy2, uz2 = iso_vecs(s2)
+    gnd = [Pc(-6, -5, 0), Pc(6, -5, 0), Pc(6, 6, 0), Pc(-6, 6, 0)]
+    poly(gnd, fill="#E3E8DF", stroke="#C9D1C3", sw=1)
+    sea_q = [Pc(3.0, 2.0, 0), Pc(6, 2.0, 0), Pc(6, 6, 0), Pc(1.5, 6, 0)]
+    poly(sea_q, fill=SEA_L, stroke=SEA, sw=1.2)
+    cr = np.random.default_rng(23)
+    for _ in range(40):
+        X, Y = cr.uniform(2.6, 5.8), cr.uniform(2.4, 5.8)
+        if X < 3.0 and Y < 3.0:
+            continue
+        sx, sy = Pc(X, Y, 0)
+        r = cr.uniform(0.5, 0.9)
+        surfel(sx, sy, (ux2[0] * r, ux2[1] * r), (uy2[0] * r, uy2[1] * r), "#7FB3D9", op=0.8)
+    blist = []
+    for i, X in enumerate(np.arange(-5.2, 2.6, 1.9)):
+        for j, Y in enumerate(np.arange(-4.4, 3.0, 1.9)):
+            if X > 1.2 and Y > 0.8:
+                continue
+            h = float(cr.choice([1.0, 1.5, 2.2, 3.0, 4.2, 5.5]))
+            blist.append((X, Y, X + 1.3, Y + 1.3, h, ROOFS[int(cr.integers(len(ROOFS)))]))
+    blist.sort(key=lambda b: b[0] + b[1])
+    for (X0, Y0, X1, Y1, h, col) in blist:
+        box(Pc, X0, Y0, X1, Y1, h, col)
+        for _ in range(3):
+            sx, sy = Pc(cr.uniform(X0 + 0.3, X1 - 0.3), cr.uniform(Y0 + 0.3, Y1 - 0.3), h)
+            r = 0.35
+            surfel(sx, sy, (ux2[0] * r, ux2[1] * r), (uy2[0] * r, uy2[1] * r), shade_col(col, 0.9), op=0.8)
+    text(2220, 640, "整座城市", size=24, weight=700)
+    text(2220, 670, "1,600 萬個 2D 高斯", size=19, fill=SUB)
+    text(2220, 696, "瀏覽器即時觀看", size=19, fill=SUB)
+    rect(2085, 726, 270, 134, fill=ORG_L, stroke=ORG, sw=2, rx=10)
+    text(2220, 760, "1 張 RTX 3090", size=20, weight=700, fill=ORG_D)
+    text(2220, 792, "訓練 1.33 小時", size=19, fill=TXT)
+    text(2220, 820, "顯存峰值 2.7 GB", size=19, fill=TXT)
+    text(2220, 848, "PSNR 27.95 dB", size=19, fill=TXT)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="紀錄/海報圖/流程圖")
+    ap.add_argument("--scale", type=float, default=2.0)
+    a = ap.parse_args()
+    draw()
+    mk = []
+    for name, col in [("ah_navy", NAVY), ("ah_org", ORG), ("ah_sea", SEA), ("ah_grey", SUB)]:
+        mk.append(f'<marker id="{name}" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto-start-reverse">'
+                  f'<path d="M 0 0 L 10 5 L 0 10 z" fill="{col}"/></marker>')
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">'
+           f'<defs>{"".join(mk)}{"".join(defs)}</defs>{"".join(out)}</svg>')
+    with open(a.out + ".svg", "w") as f:
+        f.write(svg)
+    subprocess.run(["rsvg-convert", "-z", str(a.scale), "-o", a.out + ".png", a.out + ".svg"], check=True)
+    print("wrote", a.out + ".svg", a.out + ".png")
+
+
+if __name__ == "__main__":
+    main()
