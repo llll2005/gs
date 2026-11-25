@@ -11,7 +11,7 @@ import subprocess
 import numpy as np
 from scipy.spatial import Delaunay
 
-W, H = 2400, 900
+W, H = 2990, 760
 FONT = "Noto Sans CJK TC"
 NAVY = "#1F4E79"
 NAVY2 = "#2E6A9E"
@@ -268,6 +268,15 @@ def camera(cx, cy, s=1.0, ang=0.0, col=NAVY, frustum=True):
     add('</g>')
 
 
+def grp(tx, ty, k=1.0):
+    """把一段原座標的內容整體縮放＋平移：新座標＝k×原座標＋(tx, ty)。"""
+    add(f'<g transform="matrix({k} 0 0 {k} {tx:.2f} {ty:.2f})">')
+
+
+def end():
+    add('</g>')
+
+
 def chevron(x, y):
     poly([(x, y - 34), (x + 22, y), (x, y + 34), (x + 12, y)], fill=NAVY, op=0.85)
 
@@ -278,7 +287,8 @@ def draw():
     rect(0, 0, W, H, fill="#ffffff")
 
     # ════ 面板 1：輸入 ════
-    panel(20, 20, 390, 860, "輸入")
+    panel(20, 20, 330, 720, "輸入")
+    grp(2.25, 11.2, 0.85)
     for i, (cx, ang) in enumerate([(130, -14), (215, 0), (300, 14)]):
         camera(cx, 104, 1.1, ang)
     for k in range(3):
@@ -328,10 +338,12 @@ def draw():
     text(240, 806, "單目深度", size=23, weight=700)
     text(240, 836, "（Depth Anything V2）", size=19, fill=SUB)
 
-    chevron(420, 450)
+    end()
+    chevron(359, 380)
 
     # ════ 面板 2：幾何先驗 ════
-    panel(450, 20, 830, 860, "幾何先驗：讓高斯長在真實表面上")
+    panel(390, 20, 800, 720, "幾何先驗：讓高斯長在真實表面上")
+    grp(-6.7, 0.6, 0.92)
     # ── 改良 1 ──
     badge(490, 116, 1, "SfM 校正深度")
     aerial(480, 145, 220, 135, seed=4, mode="depth", blur=True)
@@ -463,11 +475,13 @@ def draw():
         surfel(tx, ty, (ux[0] * 0.55, ux[1] * 0.55), (uy[0] * 0.55, uy[1] * 0.55), "#2F7FBF", op=0.95)
     text(1150, 782, "收回漂浮的高斯", size=20, fill=SUB)
 
-    chevron(1290, 450)
+    end()
+    chevron(1199, 380)
 
     # ════ 面板 3：分塊訓練（機制流程，不放數字）════
-    panel(1320, 20, 700, 860, "分塊訓練")
-    # 4x4 分區
+    panel(1230, 20, 1400, 720, "分塊訓練")
+    # 分區（左欄上）
+    grp(-15, 0)
     gx, gy0, gs = 1355, 96, 160
     aerial(gx, gy0, gs, gs, seed=31, sea=True, rx=4)
     for i in range(1, 4):
@@ -478,10 +492,14 @@ def draw():
     text(gx + gs / 2, 282, "將場景分塊", size=20, weight=700)
     text(gx + gs / 2, 306, "高斯數量上限依 SfM 點數分配", size=15, fill=ORG_D, weight=700)
     text(gx + gs / 2, 328, "不先訓練全場景粗模型", size=15, fill=ORG_D, weight=700)
+    end()
     # 放大：一塊的 2D 高斯
     bx0, by0, bw, bh = 1565, 88, 430, 232
-    line(hx0 + gs / 4, hy0, bx0, by0, stroke=ORG, sw=1.8, dash="6 5")
-    line(hx0 + gs / 4, hy0 + gs / 4, bx0, by0 + bh, stroke=ORG, sw=1.8, dash="6 5")
+    # 放大線（新座標：格子底邊兩角 → 放大框頂邊兩角）
+    _cx0, _cy1 = hx0 - 15, hy0 + gs / 4
+    line(_cx0, _cy1, 1252, 370, stroke=ORG, sw=1.8, dash="6 5")
+    line(_cx0 + gs / 4, _cy1, 1587, 370, stroke=ORG, sw=1.8, dash="6 5")
+    grp(31.3, 301.4, 0.78)                          # 放大框（左欄下）：原 (1565,88) 430x232 → (1252,370) 335x181
     rect(bx0, by0, bw, bh, fill="#ffffff", stroke=ORG, sw=2.5, rx=10)
     s = 21
     Pb = iso(1800, 188, s)
@@ -527,10 +545,13 @@ def draw():
     zx, zy = 1630, 134
     surfel(zx, zy, (30, 0), (0, 18), ORG)
     add(f'<ellipse cx="{zx}" cy="{zy}" rx="30" ry="18" fill="none" stroke="{ORG_D}" stroke-width="1.2" stroke-dasharray="3 3"/>')
-    text(zx, zy + 38, "一個 2D 高斯", size=15, fill=ORG_D, weight=700)
-    text(1780, 308, "一塊的 2D 高斯（帶顏色的半透明小圓片）", size=17, weight=700)
+    text(zx, zy + 42, "一個 2D 高斯", size=19, fill=ORG_D, weight=700)
+    end()
+    text(1420, 580, "一塊的 2D 高斯", size=19, weight=700)
+    text(1420, 604, "（帶顏色的半透明小圓片）", size=15, fill=SUB)
 
-    # ── 訓練迴圈（機制）──
+    # ── 訓練迴圈（機制）：中欄 ──
+    grp(108.6, -175.8, 1.12)                       # 原 (1345,340) → (1615,205)，放大 1.12
     def node(x, y, w, h, title, tsize=20):
         rect(x, y, w, h, fill="#ffffff", stroke=NAVY2, sw=2.2, rx=10)
         if title:
@@ -607,42 +628,48 @@ def draw():
     line(1900, 738, 1935, 738, stroke=ORG, sw=3, dash="8 6")
     text(1941, 744, "梯度", size=14, fill=SUB, anchor="start")
 
-    # 改良 3：顏色只學看得到的子空間（作用在 2D 高斯的顏色）
-    rect(1345, 752, 650, 116, fill="#ffffff", stroke=EDGE, sw=1.8, rx=10)
-    badge(1367, 780, 3, "顏色只學看得到的方向", size=20)
-    sq, gap = 14, 4
-    x0 = 1367
-    for i in range(16):
-        col = ORG if i < 8 else ("#F6C9A4" if i < 10 else "#D3D8DE")
-        rect(x0 + i * (sq + gap), 803, sq, sq, fill=col, rx=2)
-    text(x0 + 16 * (sq + gap) + 6, 815, "每個色版的顏色係數", size=14, fill=SUB, anchor="start")
-    lx = 1367
-    for col, lab, w_ in [(ORG, "學習", 62), ("#F6C9A4", "看得到", 80), ("#D3D8DE", "看不到", 80)]:
-        rect(lx, 832, 12, 12, fill=col, rx=2)
-        text(lx + 17, 843, lab, size=14, fill=SUB, anchor="start")
-        lx += w_
-    text(1367, 862, "空拍相機只從上方看，所以只學看得到的方向", size=14, fill=SUB, anchor="start")
-    scx, scy, sr = 1915, 832, 28
+    end()
+    # 改良 3：右欄（直式），連到 2D 高斯的「顏色」
+    c3x, c3y, c3w, c3h = 2370, 175, 240, 480
+    rect(c3x, c3y, c3w, c3h, fill="#ffffff", stroke=EDGE, sw=1.8, rx=10)
+    badge(c3x + 22, c3y + 32, 3, "顏色只學看得到的方向", size=18)
+    scx, scy, sr = c3x + c3w / 2, c3y + 180, 48
     sg = uid("sg")
     defs.append(f'<radialGradient id="{sg}" cx="0.38" cy="0.35" r="0.75"><stop offset="0" stop-color="#ffffff"/>'
                 f'<stop offset="1" stop-color="#9FB3C8"/></radialGradient>')
     add(f'<path d="M {scx - sr} {scy} A {sr} {sr} 0 0 0 {scx + sr} {scy} A {sr} {sr * 0.3} 0 0 1 {scx - sr} {scy} Z" fill="#D7DDE3"/>')
     add(f'<path d="M {scx - sr} {scy} A {sr} {sr} 0 0 1 {scx + sr} {scy} A {sr} {sr * 0.3} 0 0 1 {scx - sr} {scy} Z" fill="url(#{sg})"/>')
-    add(f'<ellipse cx="{scx}" cy="{scy}" rx="{sr}" ry="{sr * 0.3}" fill="none" stroke="#7F93A8" stroke-width="1.2" stroke-dasharray="3 3"/>')
-    add(f'<circle cx="{scx}" cy="{scy}" r="{sr}" fill="none" stroke="#7F93A8" stroke-width="1.5"/>')
+    add(f'<ellipse cx="{scx}" cy="{scy}" rx="{sr}" ry="{sr * 0.3}" fill="none" stroke="#7F93A8" stroke-width="1.3" stroke-dasharray="3 3"/>')
+    add(f'<circle cx="{scx}" cy="{scy}" r="{sr}" fill="none" stroke="#7F93A8" stroke-width="1.6"/>')
     for ang in (-60, -30, 0, 30, 60):
-        a = math.radians(ang)
-        cx, cy = scx + 58 * math.sin(a), scy - 58 * math.cos(a)
-        ex, ey = scx + (sr + 4) * math.sin(a), scy - (sr + 4) * math.cos(a)
-        arrow(cx - 9 * math.sin(a), cy + 9 * math.cos(a), ex, ey, color=ORG, sw=2)
-        camera(cx, cy, 0.42, ang, frustum=False)
-    # 改良 3 連到 2D 高斯的「顏色」
-    polyline([(1355, 480), (1335, 480), (1335, 792), (1345, 792)], stroke=ORG, sw=2, dash="4 4")
+        a_ = math.radians(ang)
+        cx, cy = scx + 92 * math.sin(a_), scy - 92 * math.cos(a_)
+        ex, ey = scx + (sr + 5) * math.sin(a_), scy - (sr + 5) * math.cos(a_)
+        arrow(cx - 12 * math.sin(a_), cy + 12 * math.cos(a_), ex, ey, color=ORG, sw=2.2)
+        camera(cx, cy, 0.55, ang, frustum=False)
+    text(scx, scy + sr + 22, "沒有相機從下方看", size=14, fill="#7F93A8")
+    text(scx, c3y + 300, "每個色版的顏色係數", size=15, fill=SUB)
+    sq, gap = 16, 4
+    x0 = scx - (8 * sq + 7 * gap) / 2
+    for i in range(16):
+        col = ORG if i < 8 else ("#F6C9A4" if i < 10 else "#D3D8DE")
+        rect(x0 + (i % 8) * (sq + gap), c3y + 314 + (i // 8) * (sq + gap), sq, sq, fill=col, rx=2)
+    lx = c3x + 18
+    for col, lab, w_ in [(ORG, "學習", 64), ("#F6C9A4", "看得到", 80), ("#D3D8DE", "看不到", 80)]:
+        rect(lx, c3y + 376, 12, 12, fill=col, rx=2)
+        text(lx + 17, c3y + 387, lab, size=14, fill=SUB, anchor="start")
+        lx += w_
+    text(scx, c3y + 428, "空拍相機只從上方看，", size=15, fill=SUB)
+    text(scx, c3y + 451, "所以只學看得到的方向", size=15, fill=SUB)
+    # 連線：2D 高斯（中欄左上）→ 改良 3
+    polyline([(1718, 205), (1718, 150), (c3x + c3w / 2, 150), (c3x + c3w / 2, c3y - 4)], stroke=ORG, sw=2.2, dash="5 4", marker="ah_org")
+    text(2060, 142, "作用在高斯的顏色", size=15, fill=ORG_D, weight=700)
 
-    chevron(2030, 450)
+    chevron(2639, 380)
 
     # ════ 面板 4：合併輸出 ════
-    panel(2060, 20, 320, 860, "合併輸出")
+    panel(2670, 20, 300, 720, "合併輸出")
+    grp(711, -45.6, 0.95)
     add('<g transform="translate(0,38)">')
     t0x, t0y, tg, off = 2220 - (4 * 30 + 3 * 4) / 2, 110, 30, 4
     for i in range(4):
@@ -696,6 +723,7 @@ def draw():
     text(2148, 778, "新視角影像", size=18, weight=700)
     text(2292, 778, "表面幾何", size=18, weight=700)
     add('</g>')
+    end()
 
 
 def main():
