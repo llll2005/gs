@@ -438,32 +438,29 @@ def draw():
 
     chevron(1290, 450)
 
-    # ════ 面板 3：分塊訓練 ════
-    panel(1320, 20, 700, 860, "分塊訓練（每塊 17,000 步）")
+    # ════ 面板 3：分塊訓練（機制流程，不放數字）════
+    panel(1320, 20, 700, 860, "分塊訓練")
     # 4x4 分區
-    gx, gy0, gs = 1350, 110, 200
+    gx, gy0, gs = 1345, 100, 176
     aerial(gx, gy0, gs, gs, seed=31, sea=True, rx=4)
     for i in range(1, 4):
         line(gx + i * gs / 4, gy0, gx + i * gs / 4, gy0 + gs, stroke="#ffffff", sw=2.5, cap="butt")
         line(gx, gy0 + i * gs / 4, gx + gs, gy0 + i * gs / 4, stroke="#ffffff", sw=2.5, cap="butt")
     hx0, hy0 = gx + gs / 4, gy0 + gs / 4
     rect(hx0, hy0, gs / 4, gs / 4, stroke=ORG, sw=4, fill=ORG, op=1.0, extra='fill-opacity="0.25"')
-    text(1450, 342, "切成 4×4＝16 塊", size=21, weight=700)
-    text(1450, 370, "每塊高斯數量上限", size=18, fill=SUB)
-    text(1450, 394, "依 SfM 點數分配", size=18, fill=SUB)
-    # 放大線
-    bx0, by0, bw, bh = 1580, 100, 420, 370
+    text(gx + gs / 2, 304, "切成 4×4＝16 塊", size=20, weight=700)
+    text(gx + gs / 2, 328, "高斯數量上限依 SfM 點數分配", size=15, fill=SUB)
+    # 放大：一塊的 2D 高斯
+    bx0, by0, bw, bh = 1565, 92, 430, 248
     line(hx0 + gs / 4, hy0, bx0, by0, stroke=ORG, sw=1.8, dash="6 5")
     line(hx0 + gs / 4, hy0 + gs / 4, bx0, by0 + bh, stroke=ORG, sw=1.8, dash="6 5")
     rect(bx0, by0, bw, bh, fill="#ffffff", stroke=ORG, sw=2.5, rx=10)
-    # 2D 高斯建物
-    s = 30
-    Pb = iso(1790, 250, s)
+    s = 22
+    Pb = iso(1800, 200, s)
     ux, uy, uz = iso_vecs(s)
     gr = np.random.default_rng(17)
     ground = [Pb(-3.4, -2.6, 0), Pb(3.0, -2.6, 0), Pb(3.0, 3.4, 0), Pb(-3.4, 3.4, 0)]
     poly(ground, fill="#EEF1EC", stroke="#D5DBD0", sw=1)
-    # 地面高斯（建物後方的先畫）
     gpts = [(gr.uniform(-3.2, 2.8), gr.uniform(-2.4, 3.2)) for _ in range(70)]
     B = (-1.2, -1.2, 1.0, 0.8, 3.2)
 
@@ -478,20 +475,19 @@ def draw():
         r = gr.uniform(0.28, 0.5)
         surfel(sx, sy, (ux[0] * r, ux[1] * r), (uy[0] * r, uy[1] * r), gcols[gr.integers(len(gcols))])
     box(Pb, *B, "#C3CCD6")
-    # 建物表面的高斯
     X0, Y0, X1, Y1, hh = B
     bcols = ["#9FB1C6", "#B7C4D2", "#8EA3BA", "#C7B9A3", "#A9BACB", "#E0C9A6"]
-    for _ in range(26):   # 屋頂
+    for _ in range(26):
         X, Y = gr.uniform(X0 + 0.25, X1 - 0.25), gr.uniform(Y0 + 0.25, Y1 - 0.25)
         sx, sy = Pb(X, Y, hh)
         r = gr.uniform(0.22, 0.38)
         surfel(sx, sy, (ux[0] * r, ux[1] * r), (uy[0] * r, uy[1] * r), bcols[gr.integers(len(bcols))])
-    for _ in range(36):   # X=X1 面
+    for _ in range(36):
         Y, Z = gr.uniform(Y0 + 0.2, Y1 - 0.2), gr.uniform(0.25, hh - 0.25)
         sx, sy = Pb(X1, Y, Z)
         r = gr.uniform(0.2, 0.34)
         surfel(sx, sy, (uy[0] * r, uy[1] * r), (uz[0] * r * 0.9, uz[1] * r * 0.9), bcols[gr.integers(len(bcols))])
-    for _ in range(40):   # Y=Y1 面
+    for _ in range(40):
         X, Z = gr.uniform(X0 + 0.2, X1 - 0.2), gr.uniform(0.25, hh - 0.25)
         sx, sy = Pb(X, Y1, Z)
         r = gr.uniform(0.2, 0.34)
@@ -500,92 +496,131 @@ def draw():
         sx, sy = Pb(X, Y, 0)
         r = gr.uniform(0.28, 0.5)
         surfel(sx, sy, (ux[0] * r, ux[1] * r), (uy[0] * r, uy[1] * r), gcols[gr.integers(len(gcols))])
-    # 單顆放大說明
-    zx, zy = 1655, 160
-    surfel(zx, zy, (34, 0), (0, 20), ORG)
-    add(f'<ellipse cx="{zx}" cy="{zy}" rx="34" ry="20" fill="none" stroke="{ORG_D}" stroke-width="1.2" stroke-dasharray="3 3"/>')
-    text(zx, zy + 44, "一個 2D 高斯", size=16, fill=ORG_D, weight=700)
-    text(1790, 420, "2D 高斯：帶顏色的半透明小圓片", size=20, weight=700)
-    text(1790, 450, "渲染 → 與照片比較 → 更新（MCMC 控制數量）", size=17, fill=SUB)
+    zx, zy = 1630, 140
+    surfel(zx, zy, (30, 0), (0, 18), ORG)
+    add(f'<ellipse cx="{zx}" cy="{zy}" rx="30" ry="18" fill="none" stroke="{ORG_D}" stroke-width="1.2" stroke-dasharray="3 3"/>')
+    text(zx, zy + 38, "一個 2D 高斯", size=15, fill=ORG_D, weight=700)
+    text(1780, 328, "一塊的 2D 高斯（帶顏色的半透明小圓片）", size=17, weight=700)
 
-    # ── 改良 3 ──
-    rect(1340, 490, 325, 375, fill="#ffffff", stroke=EDGE, sw=1.8, rx=10)
-    badge(1362, 526, 3, "只學看得到的顏色", size=23)
-    scx, scy, sr = 1502, 668, 58
+    # ── 訓練迴圈（機制）──
+    def node(x, y, w, h, title, tsize=20):
+        rect(x, y, w, h, fill="#ffffff", stroke=NAVY2, sw=2.2, rx=10)
+        if title:
+            text(x + w / 2, y + 28, title, size=tsize, weight=700)
+
+    def tag(x, y, n):
+        rect(x, y - 15, 58, 21, fill=ORG, rx=10)
+        text(x + 29, y + 1, f"改良 {n}", size=14, fill="#ffffff", weight=700)
+
+    # 第一列：2D 高斯 → 渲染器 → 渲染結果
+    node(1345, 365, 185, 140, "2D 高斯")
+    for k, (dx, dy, c) in enumerate([(-38, 0, "#4A90C2"), (0, -6, "#E8833A"), (38, 2, "#7FB069")]):
+        surfel(1437 + dx, 425 + dy, (22, 0), (6, 13), c)
+    text(1437, 470, "位置・形狀", size=15, fill=SUB)
+    text(1437, 490, "不透明度・顏色", size=15, fill=SUB)
+
+    node(1572, 365, 220, 140, None)
+    add(f'<circle cx="1596" cy="388" r="14" fill="{ORG}"/>')
+    text(1596, 394, "4", size=17, fill="#ffffff", weight=700)
+    text(1690, 395, "渲染器", size=20, weight=700)
+    # 低→高解析度
+    for i, sc in enumerate([0.35, 0.5, 0.75, 1.0]):
+        hgt = 40 * sc
+        rect(1590 + i * 22, 458 - hgt, 18, hgt, fill=NAVY2, op=0.35 + 0.65 * sc, rx=2)
+    text(1634, 486, "先低後高", size=14, fill=SUB)
+    text(1634, 502, "解析度", size=14, fill=SUB)
+    # 精確跳過
+    ts = 12
+    ell = (1700 + 1.6 * ts, 418 + 1.5 * ts, 1.3 * ts, 0.75 * ts)
+    for i in range(6):
+        for j in range(3):
+            x, y = 1700 + i * ts, 418 + j * ts
+            cxp = min(max(ell[0], x), x + ts)
+            cyp = min(max(ell[1], y), y + ts)
+            hit = ((cxp - ell[0]) / (0.85 * ell[2])) ** 2 + ((cyp - ell[1]) / (0.85 * ell[3])) ** 2 <= 1
+            rect(x, y, ts, ts, fill="#ffffff" if hit else "#D3D8DE", stroke="#8FA6BC", sw=0.8)
+    surfel(ell[0], ell[1], (ell[2], 0), (0, ell[3]), ORG, op=0.9)
+    text(1736, 486, "跳過不影響", size=14, fill=SUB)
+    text(1736, 502, "畫面的計算", size=14, fill=SUB)
+
+    node(1832, 365, 163, 140, "渲染結果")
+    aerial(1843, 405, 68, 52, seed=8, rx=3)
+    aerial(1917, 405, 68, 52, seed=8, mode="depthc", rx=3)
+    text(1877, 478, "影像", size=14, fill=SUB)
+    text(1951, 478, "深度", size=14, fill=SUB)
+
+    arrow(1530, 435, 1570, 435, sw=3.5)
+    arrow(1792, 435, 1830, 435, sw=3.5)
+
+    # 第二列：密度控制（MCMC）  ← 梯度 ←  損失
+    node(1345, 575, 275, 130, "密度控制（MCMC）")
+    text(1482, 640, "在上限內增生・搬家・刪除", size=15, fill=SUB)
+    text(1368, 676, "收回海面漂浮的高斯", size=15, fill=SUB, anchor="start")
+    tag(1530, 671, 2)
+
+    node(1665, 575, 330, 130, "損失（與照片比較）")
+    text(1690, 636, "顏色：L1＋SSIM", size=15, fill=SUB, anchor="start")
+    text(1690, 664, "幾何：深度上限", size=15, fill=SUB, anchor="start")
+    tag(1800, 660, 1)
+    text(1735, 692, "法向・深度失真", size=15, fill=SUB, anchor="start")
+
+    arrow(1913, 505, 1913, 573, sw=3.5)                       # 渲染結果 → 損失
+    # 梯度回傳（橘色虛線）：損失 → 2D 高斯
+    polyline([(1700, 575), (1700, 540), (1400, 540), (1400, 513)], stroke=ORG, sw=3, dash="8 6", marker="ah_org")
+    text(1560, 532, "梯度", size=15, fill=ORG_D, weight=700)
+    arrow(1480, 573, 1480, 509, sw=3.5)                       # 密度控制 → 2D 高斯
+    # 圖例
+    line(1655, 728, 1690, 728, stroke=NAVY, sw=3)
+    text(1696, 734, "運算", size=14, fill=SUB, anchor="start")
+    line(1745, 728, 1780, 728, stroke=ORG, sw=3, dash="8 6")
+    text(1786, 734, "梯度", size=14, fill=SUB, anchor="start")
+
+    # 改良 3：顏色只學看得到的子空間（作用在 2D 高斯的顏色）
+    rect(1345, 750, 650, 118, fill="#ffffff", stroke=EDGE, sw=1.8, rx=10)
+    badge(1367, 778, 3, "顏色只學看得到的方向", size=20)
+    sq, gap = 14, 4
+    x0 = 1367
+    for i in range(16):
+        col = ORG if i < 8 else ("#F6C9A4" if i < 10 else "#D3D8DE")
+        rect(x0 + i * (sq + gap), 802, sq, sq, fill=col, rx=2)
+    text(x0 + 16 * (sq + gap) + 6, 814, "每個色版的顏色係數", size=14, fill=SUB, anchor="start")
+    lx = 1367
+    for col, lab, w_ in [(ORG, "學習", 62), ("#F6C9A4", "看得到", 80), ("#D3D8DE", "看不到", 80)]:
+        rect(lx, 832, 12, 12, fill=col, rx=2)
+        text(lx + 17, 843, lab, size=14, fill=SUB, anchor="start")
+        lx += w_
+    text(1367, 862, "空拍相機只從上方看，所以只學看得到的方向", size=14, fill=SUB, anchor="start")
+    scx, scy, sr = 1915, 830, 28
     sg = uid("sg")
     defs.append(f'<radialGradient id="{sg}" cx="0.38" cy="0.35" r="0.75"><stop offset="0" stop-color="#ffffff"/>'
                 f'<stop offset="1" stop-color="#9FB3C8"/></radialGradient>')
     add(f'<path d="M {scx - sr} {scy} A {sr} {sr} 0 0 0 {scx + sr} {scy} A {sr} {sr * 0.3} 0 0 1 {scx - sr} {scy} Z" fill="#D7DDE3"/>')
     add(f'<path d="M {scx - sr} {scy} A {sr} {sr} 0 0 1 {scx + sr} {scy} A {sr} {sr * 0.3} 0 0 1 {scx - sr} {scy} Z" fill="url(#{sg})"/>')
-    add(f'<ellipse cx="{scx}" cy="{scy}" rx="{sr}" ry="{sr * 0.3}" fill="none" stroke="#7F93A8" stroke-width="1.5" stroke-dasharray="4 3"/>')
-    add(f'<circle cx="{scx}" cy="{scy}" r="{sr}" fill="none" stroke="#7F93A8" stroke-width="1.8"/>')
-    for ang in (-55, -28, 0, 28, 55):
+    add(f'<ellipse cx="{scx}" cy="{scy}" rx="{sr}" ry="{sr * 0.3}" fill="none" stroke="#7F93A8" stroke-width="1.2" stroke-dasharray="3 3"/>')
+    add(f'<circle cx="{scx}" cy="{scy}" r="{sr}" fill="none" stroke="#7F93A8" stroke-width="1.5"/>')
+    for ang in (-60, -30, 0, 30, 60):
         a = math.radians(ang)
-        cx, cy = scx + 104 * math.sin(a), scy - 104 * math.cos(a)
-        ex, ey = scx + (sr + 6) * math.sin(a), scy - (sr + 6) * math.cos(a)
-        arrow(cx - 14 * math.sin(a), cy + 14 * math.cos(a), ex, ey, color=ORG, sw=2.5)
-        camera(cx, cy, 0.62, ang, frustum=False)
-    text(scx, scy + sr + 22, "沒有相機從下方看", size=15, fill="#7F93A8")
-    # 16 維方塊
-    text(1502, 772, "每個色版的顏色係數：16 維", size=17, fill=SUB)
-    sq, gap = 15, 4
-    x0 = 1502 - (16 * sq + 15 * gap) / 2
-    for i in range(16):
-        col = ORG if i < 8 else ("#F6C9A4" if i < 10 else "#D3D8DE")
-        rect(x0 + i * (sq + gap), 782, sq, sq, fill=col, rx=2)
-    lx = 1352
-    for col, lab, w_ in [(ORG, "學 8", 62), ("#F6C9A4", "看得到 10", 104), ("#D3D8DE", "看不到 6", 92)]:
-        rect(lx, 812, 13, 13, fill=col, rx=2)
-        text(lx + 18, 824, lab, size=15, fill=SUB, anchor="start")
-        lx += w_
-    text(1502, 852, "參數 58→34　訓練顯存 −30%", size=18, weight=700, fill=ORG_D)
-
-    # ── 改良 4 ──
-    rect(1680, 490, 325, 375, fill="#ffffff", stroke=EDGE, sw=1.8, rx=10)
-    badge(1702, 526, 4, "每一步更便宜", size=23)
-    text(1842, 566, "低解析度排程", size=18, weight=700)
-    cx0, base, cw = 1712, 690, 64
-    for i, sc in enumerate([0.35, 0.5, 0.75, 1.0]):
-        hgt = 100 * sc
-        rect(cx0 + i * (cw + 4), base - hgt, cw, hgt, fill=NAVY2, op=0.35 + 0.65 * sc, rx=3)
-        text(cx0 + i * (cw + 4) + cw / 2, base - hgt - 6, f"{sc:g}×", size=15, fill=TXT, weight=700)
-    line(cx0 - 4, base, cx0 + 4 * (cw + 4), base, stroke=SUB, sw=2, cap="butt")
-    text(cx0, base + 20, "0", size=14, fill=SUB)
-    text(cx0 + 4 * (cw + 4) - 4, base + 20, "17k 步", size=14, fill=SUB, anchor="end")
-    text(cx0 + 2 * (cw + 4), base + 20, "前 75% 用低解析度", size=14, fill=SUB)
-    # tile 跳過
-    tx0, ty0, ts = 1712, 728, 19
-    ell = (1712 + 1.9 * ts, 728 + 1.3 * ts, 1.45 * ts, 0.8 * ts)
-    for i in range(6):
-        for j in range(3):
-            x, y = tx0 + i * ts, ty0 + j * ts
-            cxp = min(max(ell[0], x), x + ts)
-            cyp = min(max(ell[1], y), y + ts)
-            hit = ((cxp - ell[0]) / (0.85 * ell[2])) ** 2 + ((cyp - ell[1]) / (0.85 * ell[3])) ** 2 <= 1   # 看得到的範圍（漸層 0.85 半徑）
-            rect(x, y, ts, ts, fill="#ffffff" if hit else "#D3D8DE", stroke="#8FA6BC", sw=1)
-            if not hit:
-                line(x + 4, y + 4, x + ts - 4, y + ts - 4, stroke="#9AA6B2", sw=1.4)
-    surfel(ell[0], ell[1], (ell[2], 0), (0, ell[3]), ORG, op=0.9)
-    text(1846, 748, "精確跳過不影響", size=16, fill=SUB, anchor="start")
-    text(1846, 770, "畫面的計算", size=16, fill=SUB, anchor="start")
-    text(1846, 792, "（灰色＝跳過）", size=14, fill="#7F93A8", anchor="start")
-    text(1842, 852, "每塊平均 4.5 分鐘", size=19, weight=700, fill=ORG_D)
+        cx, cy = scx + 58 * math.sin(a), scy - 58 * math.cos(a)
+        ex, ey = scx + (sr + 4) * math.sin(a), scy - (sr + 4) * math.cos(a)
+        arrow(cx - 9 * math.sin(a), cy + 9 * math.cos(a), ex, ey, color=ORG, sw=2)
+        camera(cx, cy, 0.42, ang, frustum=False)
+    # 改良 3 連到 2D 高斯的「顏色」
+    polyline([(1355, 492), (1335, 492), (1335, 790), (1345, 790)], stroke=ORG, sw=2, dash="4 4")
 
     chevron(2030, 450)
 
     # ════ 面板 4：合併輸出 ════
     panel(2060, 20, 320, 860, "合併輸出")
-    t0x, t0y, tg = 2144.5, 100, 34
+    add('<g transform="translate(0,38)">')
+    t0x, t0y, tg, off = 2220 - (4 * 30 + 3 * 4) / 2, 110, 30, 4
     for i in range(4):
         for j in range(4):
-            off = 5
             rect(t0x + i * (tg + off), t0y + j * (tg + off), tg, tg, fill="#B9CCE0" if (i, j) != (1, 1) else ORG_L,
                  stroke=NAVY2 if (i, j) != (1, 1) else ORG, sw=1.6, rx=3)
-    text(2220, 282, "16 塊合併", size=20, fill=SUB)
-    arrow(2220, 294, 2220, 332, sw=4)
-    # 城市模型（等角）
-    s2 = 14
-    Pc = iso(2220, 505, s2)
+    text(2220, 268, "16 塊合併", size=20, fill=SUB)
+    arrow(2220, 282, 2220, 318, sw=4)
+    s2 = 13
+    Pc = iso(2220, 470, s2)
     ux2, uy2, uz2 = iso_vecs(s2)
     gnd = [Pc(-6, -5, 0), Pc(6, -5, 0), Pc(6, 6, 0), Pc(-6, 6, 0)]
     poly(gnd, fill="#E3E8DF", stroke="#C9D1C3", sw=1)
@@ -594,14 +629,12 @@ def draw():
     cr = np.random.default_rng(23)
     for _ in range(40):
         X, Y = cr.uniform(2.6, 5.8), cr.uniform(2.4, 5.8)
-        if X < 3.0 and Y < 3.0:
-            continue
         sx, sy = Pc(X, Y, 0)
         r = cr.uniform(0.5, 0.9)
         surfel(sx, sy, (ux2[0] * r, ux2[1] * r), (uy2[0] * r, uy2[1] * r), "#7FB3D9", op=0.8)
     blist = []
-    for i, X in enumerate(np.arange(-5.2, 2.6, 1.9)):
-        for j, Y in enumerate(np.arange(-4.4, 3.0, 1.9)):
+    for X in np.arange(-5.2, 2.6, 1.9):
+        for Y in np.arange(-4.4, 3.0, 1.9):
             if X > 1.2 and Y > 0.8:
                 continue
             h = float(cr.choice([1.0, 1.5, 2.2, 3.0, 4.2, 5.5]))
@@ -611,16 +644,26 @@ def draw():
         box(Pc, X0, Y0, X1, Y1, h, col)
         for _ in range(3):
             sx, sy = Pc(cr.uniform(X0 + 0.3, X1 - 0.3), cr.uniform(Y0 + 0.3, Y1 - 0.3), h)
-            r = 0.35
-            surfel(sx, sy, (ux2[0] * r, ux2[1] * r), (uy2[0] * r, uy2[1] * r), shade_col(col, 0.9), op=0.8)
-    text(2220, 640, "整座城市", size=24, weight=700)
-    text(2220, 670, "1,600 萬個 2D 高斯", size=19, fill=SUB)
-    text(2220, 696, "瀏覽器即時觀看", size=19, fill=SUB)
-    rect(2085, 726, 270, 134, fill=ORG_L, stroke=ORG, sw=2, rx=10)
-    text(2220, 760, "1 張 RTX 3090", size=20, weight=700, fill=ORG_D)
-    text(2220, 792, "訓練 1.33 小時", size=19, fill=TXT)
-    text(2220, 820, "顯存峰值 2.7 GB", size=19, fill=TXT)
-    text(2220, 848, "PSNR 27.95 dB", size=19, fill=TXT)
+            surfel(sx, sy, (ux2[0] * 0.35, ux2[1] * 0.35), (uy2[0] * 0.35, uy2[1] * 0.35), shade_col(col, 0.9), op=0.8)
+    text(2220, 585, "城市級 2D 高斯場景", size=21, weight=700)
+    # 兩個輸出：新視角影像、表面幾何
+    polyline([(2220, 600), (2220, 618)], stroke=NAVY, sw=3.5)
+    polyline([(2148, 618), (2292, 618)], stroke=NAVY, sw=3.5)
+    arrow(2148, 618, 2148, 645)
+    arrow(2292, 618, 2292, 645)
+    aerial(2080, 650, 136, 100, seed=41, sea=True, rx=5)
+    # 表面幾何：灰色著色的等角網格
+    rect(2224, 650, 136, 100, fill="#ffffff", stroke="#8FA6BC", sw=1.5, rx=5)
+    gc = clip_rect(2224, 650, 136, 100, 5)
+    add(f'<g clip-path="url(#{gc})">')
+    Pm = iso(2292, 712, 6.2)
+    poly([Pm(-6, -5, 0), Pm(6, -5, 0), Pm(6, 6, 0), Pm(-6, 6, 0)], fill="#E6E8EB", stroke="#C9CED4", sw=0.8)
+    for (X0, Y0, X1, Y1, h, col) in blist:
+        box(Pm, X0, Y0, X1, Y1, h, "#C7CDD4")
+    add('</g>')
+    text(2148, 778, "新視角影像", size=18, weight=700)
+    text(2292, 778, "表面幾何", size=18, weight=700)
+    add('</g>')
 
 
 def main():
