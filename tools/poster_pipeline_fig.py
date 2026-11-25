@@ -475,7 +475,7 @@ def draw():
         line(gx, gy0 + i * gs / 4, gx + gs, gy0 + i * gs / 4, stroke="#ffffff", sw=2.5, cap="butt")
     hx0, hy0 = gx + gs / 4, gy0 + gs / 4
     rect(hx0, hy0, gs / 4, gs / 4, stroke=ORG, sw=4, fill=ORG, op=1.0, extra='fill-opacity="0.25"')
-    text(gx + gs / 2, 282, "切成 4×4＝16 塊", size=20, weight=700)
+    text(gx + gs / 2, 282, "將場景分塊", size=20, weight=700)
     text(gx + gs / 2, 306, "高斯數量上限依 SfM 點數分配", size=15, fill=ORG_D, weight=700)
     text(gx + gs / 2, 328, "不先訓練全場景粗模型", size=15, fill=ORG_D, weight=700)
     # 放大：一塊的 2D 高斯
