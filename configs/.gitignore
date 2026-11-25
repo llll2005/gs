@@ -133,3 +133,5 @@
 !fused_ssim.yaml
 # ★ 2026-11-22 全場景共用的 SH 可觀測子空間基底（tools/sh_basis_global.py；紀錄/實驗分析/40 §1.7），訓練要讀
 !sh_basis_*.npz
+# ★ 2026-11-25 影片相機路徑（tools/video_paths.py 產生、tools/render_paths.py 讀）
+!video_paths_*.npz
