@@ -1,3 +1,4 @@
+import gc
 import os
 import sys
 import yaml
@@ -44,15 +45,29 @@ if __name__ == "__main__":
     parser.add_argument("--vox_grid", type=int, help="number of voxelization grid", default=25)
     parser.add_argument("--std_ratio", type=float, help="used to control filtering threshold", default=2.0)
     parser.add_argument("--save_filtered_gs", action="store_true", help="whether to save filtered gaussian")
+    # ★ 11-25 對照影片：--traj_from＝用另一個跑次（資料夾或 ckpt）的相機產生軌跡 => 兩個模型走同一條路線；
+    #   --video_name／--out_dir＝輸出 <out_dir>/<video_name>_video.mp4（預設同上游：./videos/<output_path 最後一段>）
+    parser.add_argument("--traj_from", type=str, default=None, help="take cameras (=> trajectory) from this run/ckpt instead of --output_path")
+    parser.add_argument("--video_name", type=str, default=None)
+    parser.add_argument("--out_dir", type=str, default="./videos")
     args = parser.parse_args(sys.argv[1:])
 
     loadable_file = GaussianModelLoader.search_load_file(args.output_path)
-    ckpt = torch.load(loadable_file, map_location="cpu")
-    dataparser_config = ckpt["datamodule_hyper_parameters"]["parser"]
+    src_file = GaussianModelLoader.search_load_file(args.traj_from) if args.traj_from else loadable_file
+    src = torch.load(src_file, map_location="cpu")
+    dataparser_config = src["datamodule_hyper_parameters"]["parser"]
+    traj_root = src["datamodule_hyper_parameters"]["path"]
     if args.data_path is not None:
         data_path = args.data_path
     else:
-        data_path = ckpt["datamodule_hyper_parameters"]["path"]
+        data_path = traj_root
+    if args.traj_from:
+        print(f"trajectory cameras from {src_file}")
+        del src
+        gc.collect()
+        ckpt = torch.load(loadable_file, map_location="cpu")
+    else:
+        ckpt = src
     dataparser_outputs = dataparser_config.instantiate(
         path=data_path,
         output_path=os.getcwd(),
@@ -80,7 +95,7 @@ if __name__ == "__main__":
     )
     print("Gaussian count: {}".format(model.get_xyz.shape[0]))
 
-    traj_dir = os.path.join(ckpt["datamodule_hyper_parameters"]["path"], 'traj')
+    traj_dir = os.path.join(traj_root, 'traj')
     os.makedirs(traj_dir, exist_ok=True)
 
     if not args.filter:
@@ -104,8 +119,9 @@ if __name__ == "__main__":
     
     print(f"Camera trajectory saved to {traj_dir}. Start rendering...")
 
-    os.makedirs('./videos', exist_ok=True)
-    video_path = os.path.join('./videos', f"{args.output_path.split('/')[-1]}_video.mp4")
+    os.makedirs(args.out_dir, exist_ok=True)
+    vname = args.video_name or args.output_path.rstrip('/').split('/')[-1]
+    video_path = os.path.join(args.out_dir, f"{vname}_video.mp4")
     video = imageio.get_writer(video_path, fps=30)
     for t in tqdm(range(len(cam_traj))):
         cam = cam_traj[t]
