@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#3410c8">
+<meta name="description" content="一張 RTX 3090、1.33 小時重建整座 MatrixCity 空拍城市：飛行影片與測試視角對照（CityGaussianV2 對我們）。">
+<meta property="og:type" content="website">
+<meta property="og:title" content="單卡重建一座城市">
+<meta property="og:description" content="一張 RTX 3090、1.33 小時重建整座 MatrixCity 空拍城市：飛行影片與測試視角對照（CityGaussianV2 對我們）。">
+<meta property="og:url" content="https://llll2005.github.io/gs/">
+<meta property="og:image" content="https://llll2005.github.io/gs/img/og.jpg">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%233410c8'/%3E%3Ccircle cx='38' cy='26' r='14' fill='%235fdcff'/%3E%3C/svg%3E">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}img{max-width:100%}</style>
+<title>單卡重建一座城市</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Serif+TC:wght@700;900&display=swap">
+<style>
+/* Layout: 搭配海報的展示頁。細條標題（題目＋三個數字）→ 飛行影片（同步雙影片滑桿，手機第一個畫面就看得到）
+   → 測試視角對照（三層拖拉）→ 收合的數字表 → 頁尾。敘述交給海報，這裡只留看懂畫面需要的一句話。
+   使用者指定的單一深紫視覺（參考圖：電光紫底、玻璃水滴、青色細框膠囊），所以只有一套配色。 */
+:root {
+  color-scheme: dark;
+  --bg: #3410c8;          /* 電光紫底 */
+  --bg-deep: #1d0790;     /* 底部漸層 */
+  --ink: #ffffff;         /* 主文字 */
+  --ink-soft: #d8cffd;    /* 次要文字 */
+  --ink-faint: #a99ae8;   /* 註腳 */
+  --accent: #5fdcff;      /* 青色：小標、細框按鈕、滑桿 */
+  --accent-ink: #1a0870;  /* 青色底上的字 */
+  --lilac: #b49bff;
+  --violet: #6a3cf5;
+  --rose: #ff9fc6;
+  --frost: #e6f8ff;
+  --screen: #0d0440;      /* 影片／圖片底 */
+  --glass: rgba(255, 255, 255, 0.07);
+  --glass-strong: rgba(255, 255, 255, 0.12);
+  --line: rgba(255, 255, 255, 0.18);
+  --shadow: rgba(14, 0, 80, 0.55);
+  --ours: #5fdcff;
+  --theirs: #ffb36b;
+  --gt: #ffffff;
+  --font-title: "Noto Serif TC", "Songti TC", "PMingLiU", serif;   /* 標題用明體 */
+  --font-display: "Outfit", "Noto Sans TC", system-ui, sans-serif;
+  --font-body: "Noto Sans TC", "Outfit", system-ui, sans-serif;
+  --step--1: 0.8125rem;
+  --step-0: 1rem;
+  --step-1: 1.2rem;
+  --step-2: 1.6rem;
+  --step-3: clamp(2.6rem, 8.2vw, 5.6rem);
+  --radius: 20px;
+}
+html { overflow-x: clip; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(60rem 40rem at 85% -10%, rgba(255, 159, 198, 0.18), transparent 60%),
+    radial-gradient(50rem 40rem at -10% 40%, rgba(95, 220, 255, 0.10), transparent 60%),
+    linear-gradient(180deg, var(--bg) 0%, #2a0bb0 45%, var(--bg-deep) 100%);
+  background-color: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: 1.7;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  overflow-x: clip;
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+.wrap { max-width: 1120px; margin: 0 auto; }
+a { color: inherit; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+/* ⚠ 11-27：.loading 的 display:grid 會蓋過瀏覽器預設的 [hidden] => 「載入中」設成隱藏了還一直顯示。自己補上這條。 */
+[hidden] { display: none !important; }
+.wrap { position: relative; z-index: 1; }
+
+/* ── 頂列＋細條標題 ── */
+.top { position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-block: 16px 4px; }
+.eyebrow { font-family: var(--font-display); font-weight: 600; color: var(--accent); letter-spacing: 0.24em; font-size: 0.72rem; text-transform: uppercase; margin: 0; }
+.nav { display: flex; gap: clamp(14px, 3vw, 28px); font-family: var(--font-display); font-weight: 600; font-size: 0.8rem; letter-spacing: 0.12em; }
+.nav a { text-decoration: none; opacity: 0.9; }
+.nav a:hover { opacity: 1; color: var(--accent); }
+
+.hero { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px 32px; align-items: end; padding-block: 14px 22px; }
+.hero .copy { position: relative; z-index: 1; min-width: 0; }
+h1 { font-family: var(--font-title); font-weight: 900; font-size: var(--step-3); line-height: 1.08; margin: 0 0 10px; letter-spacing: 0.04em; text-wrap: balance; }
+.sub { color: var(--ink-soft); margin: 0; font-size: clamp(1rem, 2.2vw, 1.3rem); letter-spacing: 0.04em; }
+.stats { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(2, auto); gap: 6px 30px; text-shadow: 0 2px 14px rgba(20, 0, 90, 0.7); }
+h1, .sub { text-shadow: 0 2px 14px rgba(20, 0, 90, 0.5); }
+.stat b { display: block; font-family: var(--font-display); font-weight: 800; font-size: clamp(2.3rem, 6vw, 3.6rem); line-height: 1; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stat span { display: block; color: var(--ink-soft); font-size: 0.85rem; line-height: 1.45; margin-top: 6px; }
+
+/* 滿版背景水滴：固定在視窗後面，內容捲過去。只動 transform（交給合成器），形狀各自固定。 */
+.bg-art { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; opacity: 0.9; }
+.ring { position: absolute; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 50%; }
+.blob {
+  position: absolute; border-radius: 42% 58% 63% 37% / 41% 44% 56% 59%;
+  background:
+    radial-gradient(110% 80% at 28% 18%, rgba(255, 255, 255, 0.55), transparent 42%),
+    linear-gradient(168deg, var(--rose) 0%, var(--lilac) 20%, var(--violet) 58%, #9fc3ff 88%, var(--frost) 100%);
+  box-shadow: inset -20px -26px 44px rgba(40, 0, 150, 0.45), inset 12px 16px 30px rgba(255, 255, 255, 0.22), 0 30px 60px var(--shadow);
+  animation: drift 24s ease-in-out infinite alternate; will-change: transform;
+}
+.blob.b2 { border-radius: 58% 42% 38% 62% / 55% 38% 62% 45%; animation-duration: 29s; animation-delay: -8s; }
+.blob.b3 { border-radius: 36% 64% 52% 48% / 62% 51% 49% 38%; animation-duration: 21s; animation-delay: -4s; }
+.blob.b4 { border-radius: 50% 50% 44% 56% / 60% 40% 60% 40%; animation-duration: 33s; filter: blur(10px); opacity: 0.55; }
+.blob.b5 { border-radius: 63% 37% 54% 46% / 45% 55% 45% 55%; animation-duration: 27s; animation-delay: -12s; filter: blur(3px); opacity: 0.8; }
+@keyframes drift {
+  0%   { transform: translate(0, 0) rotate(0deg) scale(1); }
+  50%  { transform: translate(2vmax, -2.5vmax) rotate(8deg) scale(1.04); }
+  100% { transform: translate(-2vmax, 1.5vmax) rotate(-6deg) scale(0.97); }
+}
+@media (prefers-reduced-motion: reduce) { .blob { animation: none; } }
+
+/* ── 區塊 ── */
+section { padding-block: 22px; scroll-margin-top: 12px; }
+.sec-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 12px; }
+h2 { font-family: var(--font-title); font-weight: 900; font-size: var(--step-2); line-height: 1.25; margin: 0; letter-spacing: 0.04em; }
+.sec-head p { color: var(--ink-soft); margin: 0; font-size: 0.92rem; }
+.panel {
+  background: rgba(36, 10, 150, 0.55); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: clamp(10px, 2.2vw, 20px); box-shadow: 0 24px 60px rgba(14, 0, 80, 0.35);
+}
+/* 毛玻璃只給電腦：背景水滴在動，手機每幀重算模糊太吃效能 */
+@media (hover: hover) and (pointer: fine) {
+  .panel { background: rgba(52, 16, 200, 0.28); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+}
+
+/* 膠囊選項 */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--glass);
+  border-radius: 999px; padding: 6px 14px; font-size: 0.9rem; cursor: pointer; line-height: 1.4;
+}
+.chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+.chip[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 700; }
+.seg { position: relative; isolation: isolate; display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; background: rgba(0, 0, 0, 0.15); flex-wrap: wrap; }
+.seg button { border: 0; background: transparent; border-radius: 999px; padding: 5px 12px; font-size: 0.85rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: color 0.2s; }
+.seg button[aria-pressed="true"] { color: var(--accent); }
+/* 選取的底色是一顆會滑過去的膠囊 */
+.seg-thumb { position: absolute; z-index: -1; border-radius: 999px; background: var(--glass-strong); box-shadow: inset 0 0 0 1px rgba(95, 220, 255, 0.45), 0 4px 14px rgba(14, 0, 80, 0.35); }
+.seg.anim .seg-thumb { transition: left 0.32s cubic-bezier(0.3, 1.35, 0.5, 1), width 0.32s cubic-bezier(0.3, 1.35, 0.5, 1), top 0.32s, height 0.32s; }
+@media (prefers-reduced-motion: reduce) { .seg.anim .seg-thumb { transition: none; } }
+/* 換速度時影片中間跳出倍率 */
+.rate-pop {
+  position: absolute; left: 50%; top: 50%; z-index: 6; pointer-events: none; opacity: 0;
+  transform: translate(-50%, -50%) scale(0.6); display: flex; align-items: center; gap: 0.25em;
+  font-family: var(--font-display); font-weight: 800; font-size: clamp(1.8rem, 6vw, 3.6rem); line-height: 1;
+  padding: 0.25em 0.6em; border-radius: 999px; background: rgba(13, 4, 64, 0.62); color: var(--accent);
+}
+.rate-pop svg { width: 0.8em; height: 0.8em; }
+.rate-pop.show { animation: pop 0.95s ease-out; }
+@keyframes pop {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
+  22%  { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
+  38%  { transform: translate(-50%, -50%) scale(1); }
+  72%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.04); }
+}
+@media (prefers-reduced-motion: reduce) { .rate-pop.show { animation-duration: 0.6s; } }
+.toolbar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.toolbar .grp { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lbl { font-size: var(--step--1); color: var(--ink-faint); letter-spacing: 0.06em; }
+.hint { font-size: var(--step--1); color: var(--ink-faint); margin: 0; }
+
+/* ── 影片播放器 ── */
+.vstage { position: relative; border-radius: 14px; overflow: hidden; background: var(--screen); }
+.vstage.slider { aspect-ratio: 1280 / 730; max-width: 100%; touch-action: pan-y; cursor: ew-resize; user-select: none; -webkit-user-select: none; }
+.vstage.slider .cell { position: absolute; inset: 0; }
+.vstage.side { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; background: transparent; }
+.vstage.side .cell { position: relative; aspect-ratio: 1280 / 730; border-radius: 10px; overflow: hidden; background: var(--screen); }
+.vstage.single .cell { position: relative; aspect-ratio: 1280 / 730; }
+.cell video { width: 100%; height: 100%; display: block; object-fit: cover; }
+.tag {
+  position: absolute; top: 10px; z-index: 3; font-family: var(--font-display); font-weight: 600; font-size: 0.75rem; letter-spacing: 0.06em;
+  background: rgba(13, 4, 64, 0.72); padding: 3px 10px; border-radius: 999px; pointer-events: none; white-space: nowrap;
+  max-width: calc(100% - 20px); overflow: hidden; text-overflow: ellipsis;
+}
+.tag::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: currentColor; }
+.tag.t-ours { color: var(--ours); }
+.tag.t-theirs { color: var(--theirs); }
+.tag.t-gt { color: var(--gt); }
+.vstage .tag { left: 10px; }
+.vstage.slider .cellB .tag { left: auto; right: 10px; }
+.divider { position: absolute; top: 0; bottom: 0; width: 34px; margin-left: -17px; z-index: 4; cursor: ew-resize; touch-action: none; }
+.divider::before { content: ""; position: absolute; top: 0; bottom: 0; left: 16px; width: 2px; background: var(--frost); box-shadow: 0 0 8px rgba(0, 0, 0, 0.6); }
+.knob {
+  position: absolute; top: 50%; left: 50%; width: 34px; height: 34px; transform: translate(-50%, -50%); border-radius: 50%;
+  background: var(--frost); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); display: grid; place-items: center;
+}
+.knob svg { width: 18px; height: 18px; color: var(--accent-ink); }
+.loading { pointer-events: none; position: absolute; inset: 0; display: grid; place-items: center; z-index: 5; background: rgba(13, 4, 64, 0.45); font-size: 0.9rem; color: var(--ink-soft); text-align: center; padding: 12px; }
+.controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-block: 10px 14px; }
+.icon-btn { width: 42px; height: 42px; border-radius: 50%; border: 1.5px solid var(--accent); background: transparent; display: grid; place-items: center; cursor: pointer; flex: none; }
+.icon-btn svg { width: 18px; height: 18px; }
+.icon-btn:hover { background: rgba(95, 220, 255, 0.12); }
+input[type="range"] { flex: 1 1 160px; min-width: 0; accent-color: var(--accent); height: 28px; }
+.time { font-family: var(--font-display); font-variant-numeric: tabular-nums; font-size: 0.85rem; color: var(--ink-soft); min-width: 7.5em; }
+.route-info { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; margin-top: 12px; align-items: start; }
+.route-info h3 { margin: 0 0 2px; font-size: var(--step-1); font-weight: 700; display: flex; align-items: center; gap: 10px; }
+.route-info h3 i { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.route-info p { margin: 0; color: var(--ink-soft); }
+.map { margin: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); cursor: zoom-in; background: var(--screen); }
+.map img { display: block; width: 100%; height: auto; }
+.map figcaption { font-size: var(--step--1); color: var(--ink-faint); padding: 6px 10px; }
+.map.big { position: fixed; inset: 0; z-index: 50; border-radius: 0; cursor: zoom-out; display: grid; place-items: center; background: rgba(13, 4, 64, 0.94); padding: max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); }
+.map.big img { max-height: 92vh; width: auto; max-width: 100%; }
+
+/* ── 對照圖 ── */
+.cview { position: relative; border-radius: 14px; overflow: hidden; background: var(--screen); }
+.cview.zoomed { overflow: auto; -webkit-overflow-scrolling: touch; }
+.cstage { position: relative; aspect-ratio: 16 / 9; width: 100%; user-select: none; -webkit-user-select: none; }
+.cview:not(.zoomed) .cstage { touch-action: pan-y; cursor: ew-resize; max-width: 100%; }
+.cstage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.cstage .tag { left: 8px; }
+.caption { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; margin-top: 10px; font-size: 0.92rem; }
+.caption b { font-family: var(--font-display); font-variant-numeric: tabular-nums; }
+.caption .kind { color: var(--ink-faint); font-size: var(--step--1); }
+.thumbs { display: flex; gap: 10px; overflow-x: auto; padding: 10px 2px 4px; scroll-snap-type: x proximity; }
+.thumb { flex: 0 0 auto; width: 132px; border: 2px solid transparent; border-radius: 10px; padding: 0; background: none; cursor: pointer; scroll-snap-align: start; overflow: hidden; position: relative; }
+.thumb img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+.thumb span { position: absolute; left: 6px; bottom: 4px; font-family: var(--font-display); font-size: 0.72rem; background: rgba(13, 4, 64, 0.75); padding: 0 6px; border-radius: 6px; font-variant-numeric: tabular-nums; }
+.thumb[aria-pressed="true"] { border-color: var(--accent); }
+.rotate-hint { display: none; margin-top: 4px; }
+@media (max-width: 560px) and (orientation: portrait) { .rotate-hint { display: block; } }
+
+/* ── 收合的數字 ── */
+details.more { border: 1px solid var(--line); border-radius: var(--radius); background: var(--glass); }
+details.more > summary {
+  list-style: none; cursor: pointer; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  font-weight: 700; font-size: 1.05rem;
+}
+details.more > summary::-webkit-details-marker { display: none; }
+details.more > summary > span { font-family: var(--font-title); font-weight: 900; font-size: var(--step-1); letter-spacing: 0.04em; }
+details.more > summary small { font-family: var(--font-body); font-weight: 400; color: var(--ink-faint); font-size: var(--step--1); letter-spacing: 0; margin-left: 6px; }
+details.more > summary::after { content: "+"; font-family: var(--font-display); font-weight: 600; font-size: 1.4rem; color: var(--accent); line-height: 1; }
+details.more[open] > summary::after { content: "−"; }
+.more-body { padding: 0 18px 18px; }
+.table-scroll { overflow-x: auto; border-radius: 12px; border: 1px solid var(--line); }
+table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 0.9rem; }
+th, td { padding: 10px 12px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+thead th { font-family: var(--font-display); font-weight: 600; font-size: 0.76rem; letter-spacing: 0.06em; color: var(--ink-soft); }
+tbody tr:last-child td { border-bottom: 0; }
+tr.ours td { color: var(--ours); font-weight: 700; }
+td small { color: var(--ink-faint); font-weight: 400; }
+.more-body ul { margin: 12px 0 0; padding-left: 1.2em; color: var(--ink-soft); }
+.foot { color: var(--ink-faint); font-size: var(--step--1); margin: 10px 0 0; }
+
+footer { padding-block: 26px 40px; color: var(--ink-faint); font-size: var(--step--1); display: grid; gap: 4px; }
+
+@media (max-width: 760px) {
+  .hero { grid-template-columns: minmax(0, 1fr); }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+  .bg-art { opacity: 0.65; }
+  .route-info { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .vstage.side { grid-template-columns: minmax(0, 1fr); }
+  .nav { font-size: 0.74rem; letter-spacing: 0.08em; }
+}
+</style>
+</head>
+<body>
+
+
+<div class="bg-art" aria-hidden="true">
+  <div class="ring" style="width:84vmax;height:84vmax;left:46vw;top:-38vmax"></div>
+  <div class="ring" style="width:56vmax;height:56vmax;left:-22vmax;top:46vh"></div>
+  <div class="blob" style="width:44vmax;height:40vmax;left:62vw;top:-12vmax"></div>
+  <div class="blob b4" style="width:36vmax;height:32vmax;left:-12vmax;top:-8vmax"></div>
+  <div class="blob b2" style="width:30vmax;height:30vmax;left:-10vmax;top:42vh"></div>
+  <div class="blob b3" style="width:16vmax;height:15vmax;left:44vw;top:10vh"></div>
+  <div class="blob b5" style="width:34vmax;height:30vmax;left:72vw;top:58vh"></div>
+  <div class="blob b4" style="width:26vmax;height:22vmax;left:30vw;top:84vh"></div>
+</div>
+
+<div class="wrap">
+  <header class="top">
+    <p class="eyebrow">MatrixCity · 2D Gaussian Splatting</p>
+    <nav class="nav" aria-label="頁內導覽"><a href="#videos">影片</a><a href="#compare">對照</a><a href="#numbers">數字</a></nav>
+  </header>
+
+  <div class="hero">
+    <div class="copy">
+      <h1>單卡重建一座城市</h1>
+      <p class="sub">輕量、快速的大規模 2D 高斯場景重建</p>
+    </div>
+    <div class="stats">
+      <div class="stat"><b>54×</b><span>訓練更快<br>同一張 RTX 3090</span></div>
+      <div class="stat"><b>2.7 GB</b><span>訓練顯存峰值<br>整座城市</span></div>
+    </div>
+  </div>
+
+  <section id="videos">
+    <div class="panel">
+      <div class="toolbar">
+        <div class="sec-head" style="margin:0"><h2>飛行影片</h2><p>拖分隔線：左 CityGaussianV2、右 我們</p></div>
+        <div class="seg" id="vmode" role="group" aria-label="顯示方式">
+          <button type="button" data-mode="slider" aria-pressed="true">滑桿</button>
+          <button type="button" data-mode="side" aria-pressed="false">並排</button>
+          <button type="button" data-mode="single" aria-pressed="false">只看我們</button>
+        </div>
+      </div>
+      <div class="vstage slider" id="vstage">
+        <div class="cell cellA"><video id="vA" muted playsinline loop preload="auto"></video><span class="tag t-theirs">CityGaussianV2</span></div>
+        <div class="cell cellB"><video id="vB" muted playsinline loop preload="auto"></video><span class="tag t-ours">我們</span></div>
+        <div class="divider" id="vdiv"><span class="knob"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l-5 6 5 6M15 6l5 6-5 6"/></svg></span></div>
+        <div class="loading" id="vload">載入影片中…</div>
+        <div class="rate-pop" id="ratePop" aria-hidden="true"></div>
+      </div>
+      <div class="controls">
+        <button class="icon-btn" id="playBtn" type="button" aria-label="播放"><svg id="playIcon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+        <input type="range" id="scrub" min="0" max="1000" value="0" step="1" aria-label="播放進度">
+        <span class="time" id="vtime">0:00 / 0:00</span>
+        <div class="seg" id="vspeed" role="group" aria-label="播放速度">
+          <button type="button" data-rate="0.5" aria-pressed="false">0.5×</button>
+          <button type="button" data-rate="1" aria-pressed="true">1×</button>
+          <button type="button" data-rate="2" aria-pressed="false">2×</button>
+        </div>
+        <button class="icon-btn" id="vfull" type="button" aria-label="全螢幕"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+      </div>
+      <div class="chips" id="routeChips" role="group" aria-label="選擇路線"></div>
+      <div class="route-info">
+        <div>
+          <h3><i id="rDot"></i><span id="rName"></span></h3>
+          <p id="rDesc"></p>
+        </div>
+        <figure class="map" id="map" tabindex="0" role="button" aria-label="放大路線圖">
+          <img src="img/routes.webp" alt="五條飛行路線畫在城市俯視圖上" loading="lazy">
+          <figcaption>路線圖（點一下放大）</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section id="compare">
+    <div class="panel">
+      <div class="toolbar">
+        <div class="sec-head" style="margin:0"><h2>測試視角對照</h2><p>沒有參與訓練的視角，拖分隔線比較</p></div>
+        <div class="seg" id="cmode" role="group" aria-label="比較哪幾層">
+          <button type="button" data-mode="three" aria-pressed="true">三層</button>
+          <button type="button" data-mode="cg" aria-pressed="false">CityGaussianV2 對 我們</button>
+          <button type="button" data-mode="gt" aria-pressed="false">真實 對 我們</button>
+        </div>
+      </div>
+      <div class="cview" id="cview"><div class="cstage" id="cstage"></div></div>
+      <div class="toolbar" style="margin:10px 0 0">
+        <div class="caption" id="ccap" style="margin:0"></div>
+        <div class="grp">
+          <span class="lbl">放大</span>
+          <div class="seg" id="czoom" role="group" aria-label="放大倍率">
+            <button type="button" data-z="1" aria-pressed="true">1×</button>
+            <button type="button" data-z="2" aria-pressed="false">2×</button>
+            <button type="button" data-z="3" aria-pressed="false">3×</button>
+          </div>
+          <button class="icon-btn" id="cprev" type="button" aria-label="上一個視角"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+          <button class="icon-btn" id="cnext" type="button" aria-label="下一個視角"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>
+        </div>
+      </div>
+      <p class="hint rotate-hint">手機橫放看得更清楚。</p>
+      <div class="thumbs" id="thumbs" role="group" aria-label="選擇視角"></div>
+    </div>
+  </section>
+
+  <section id="numbers">
+    <details class="more">
+      <summary><span>數字 <small>MatrixCity 空拍測試集 741 張</small></span></summary>
+      <div class="more-body">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th>方法</th><th>硬體</th><th>訓練時間 ↓</th><th>訓練顯存 ↓</th><th>PSNR ↑</th><th>SSIM ↑</th><th>LPIPS ↓</th><th>F1 ↑</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>CityGaussianV2 <small>（論文）</small></td><td>8 × A100</td><td>3.0 小時</td><td>14.8 GB</td><td>27.23</td><td>0.857</td><td>0.169</td><td>—</td></tr>
+              <tr><td>CityGaussianV2 <small>（同卡重跑）</small></td><td>1 × RTX 3090</td><td>71.2 小時</td><td>12～21 GB</td><td>27.26</td><td>0.867</td><td>0.154</td><td>0.597</td></tr>
+              <tr><td>HUG <small>（ICCV 2025）</small></td><td>8 × A6000</td><td>—</td><td>—</td><td>28.02</td><td>0.883</td><td>0.142</td><td>—</td></tr>
+              <tr class="ours"><td>我們</td><td>1 × RTX 3090</td><td>1.33 小時</td><td>2.7 GB</td><td>27.95</td><td>0.872</td><td>0.143</td><td>0.711</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <ul><li>同樣硬體訓練快約 54 倍，訓練顯存只要 2.7 GB。</li></ul>
+        <p class="foot">我們與 CityGaussianV2（同卡重跑）用同一支評測程式計算；標「論文」的列與 HUG 取自各自論文的表格。訓練時間是整個訓練任務的牆鐘時間，F1 是幾何準確度。</p>
+      </div>
+    </details>
+  </section>
+
+  <footer>
+    <span>作者：黃則綸 112703013　·　指導教授：紀明德 教授</span>
+    <span>搭配海報觀看 · 程式碼：<a href="https://github.com/llll2005/gs">github.com/llll2005/gs</a></span>
+    <span>資料集：MatrixCity（ICCV 2023）· 對照方法：CityGaussianV2（ICLR 2025）</span>
+  </footer>
+</div>
+
+<script>
+/* ═══ 內容設定：之後換檔案只要改這兩個陣列 ═══ */
+const ROUTES = [
+  { id: "capture", name: "沿拍攝航線", color: "#ff5a5a", desc: "沿著訓練影像的拍攝航線飛，視角最接近訓練資料。", ours: "v/ours_capture.mp4", theirs: "v/citygs_capture.mp4" },
+  { id: "street",  name: "沿街道飛行", color: "#ffc21a", desc: "沿主要街道轉彎前進，高度比拍攝航線低。", ours: "v/ours_street.mp4", theirs: "v/citygs_street.mp4" },
+  { id: "low",     name: "低空沿街",   color: "#33d6ff", desc: "貼近街面平視。訓練影像裡沒有這種角度，兩個模型都會變糊。", ours: "v/ours_low.mp4", theirs: "v/citygs_low.mp4" },
+  { id: "towers",  name: "高樓區環繞", color: "#ff5cf0", desc: "繞著市中心的高樓群轉一圈。", ours: "v/ours_towers.mp4", theirs: "v/citygs_towers.mp4" },
+  { id: "coast",   name: "沿海岸",     color: "#5cff7a", desc: "沿海岸線飛，看海面、碼頭與岸邊的高樓。", ours: "v/ours_coast.mp4", theirs: "v/citygs_coast.mp4" },
+  { id: "orbit",   name: "全城環繞",   color: "#ffffff", desc: "在城市上空繞一大圈，看整座城市。", ours: "v/ours_orbit.mp4", theirs: "v/citygs_orbit.mp4" },
+];
+// theirs／ours：該視角的 PSNR（dB）；kind：挑選方式
+const VIEWS = [
+  { id: "0108", theirs: 25.14, ours: 28.77, kind: "我們領先較多" },
+  { id: "0179", theirs: 26.84, ours: 28.21, kind: "我們領先較多" },
+  { id: "0017", theirs: 26.32, ours: 27.63, kind: "我們領先較多" },
+  { id: "0711", theirs: 30.43, ours: 31.67, kind: "我們領先較多" },
+  { id: "0412", theirs: 28.26, ours: 28.84, kind: "接近中位數" },
+  { id: "0466", theirs: 27.12, ours: 27.70, kind: "接近中位數" },
+  { id: "0302", theirs: 24.07, ours: 24.65, kind: "接近中位數" },
+  { id: "0257", theirs: 26.04, ours: 25.17, kind: "CityGaussianV2 較好" },
+];
+const IMG = (id, k) => `img/${id}_${k}.webp`;
+
+const $ = (s) => document.querySelector(s);
+const fmt = (t) => { t = Math.max(0, t || 0); const m = Math.floor(t / 60), s = Math.floor(t % 60); return `${m}:${String(s).padStart(2, "0")}`; };
+
+/* 拖拉分隔線：stage 上按下就移最近的那條（放大時只抓把手，其他地方留給捲動） */
+function makeDraggable(stage, getCuts, setCuts, opts = {}) {
+  let active = -1;
+  const pct = (e) => { const r = stage.getBoundingClientRect(); return ((e.clientX - r.left) / r.width) * 100; };
+  const clamp = (k, p, cuts) => { const lo = k > 0 ? cuts[k - 1] + 3 : 2, hi = k < cuts.length - 1 ? cuts[k + 1] - 3 : 98; return Math.min(hi, Math.max(lo, p)); };
+  function start(e, k) {
+    const cuts = getCuts().slice();
+    if (k < 0) { const p = pct(e); k = 0; cuts.forEach((c, i) => { if (Math.abs(c - p) < Math.abs(cuts[k] - p)) k = i; }); cuts[k] = clamp(k, p, cuts); setCuts(cuts); }
+    active = k;
+    try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+  }
+  stage.addEventListener("pointerdown", (e) => {
+    const d = e.target.closest(".divider");
+    if (d) { e.preventDefault(); start(e, +d.dataset.k); return; }
+    if (opts.stageGrab && opts.stageGrab()) start(e, -1);
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (active < 0) return;
+    const cuts = getCuts().slice(); cuts[active] = clamp(active, pct(e), cuts); setCuts(cuts);
+  });
+  const end = () => { active = -1; };
+  stage.addEventListener("pointerup", end);
+  stage.addEventListener("pointercancel", end);
+}
+
+/* ═══ 影片 ═══ */
+const vA = $("#vA"), vB = $("#vB"), vstage = $("#vstage"), vdiv = $("#vdiv");
+let vcut = [50], vmode = "slider", rate = 1, ready = 0, playing = false, wantPlay = false, route = ROUTES[0];
+vdiv.dataset.k = 0;
+function layoutV() {
+  $(".cellB").style.clipPath = vmode === "slider" ? `inset(0 0 0 ${vcut[0]}%)` : "";
+  if (vmode === "slider") vdiv.style.left = `${vcut[0]}%`;
+}
+makeDraggable(vstage, () => vcut, (c) => { vcut = c; layoutV(); }, { stageGrab: () => vmode === "slider" });
+
+function setMode(m) {
+  vmode = m;
+  vstage.className = `vstage ${m}`;
+  vdiv.hidden = m !== "slider";
+  $(".cellA").hidden = m === "single";
+  document.querySelectorAll("#vmode button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
+  if (m === "single") vA.pause(); else if (playing) { vA.currentTime = vB.currentTime; vA.play().catch(() => {}); }
+  layoutV(); updateLoading();
+}
+document.querySelectorAll("#vmode button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+
+function setPlayIcon() {
+  $("#playIcon").innerHTML = playing ? '<path d="M7 5h4v14H7zM13 5h4v14h-4z"/>' : '<path d="M8 5v14l11-7z"/>';
+  $("#playBtn").setAttribute("aria-label", playing ? "暫停" : "播放");
+}
+async function play() {
+  wantPlay = true;
+  try { await Promise.all([vB.play(), vmode === "single" ? Promise.resolve() : vA.play()]); playing = true; }
+  catch (_) { playing = false; if (!$("#vload").hidden && !errored) $("#vload").textContent = "按播放鍵開始"; }
+  setPlayIcon(); updateLoading(); startLoop();
+}
+let looping = false;
+function startLoop() { if (looping) return; looping = true; requestAnimationFrame(loop); }
+function loop() { tick(); if (playing) requestAnimationFrame(loop); else looping = false; }
+function pause() {
+  wantPlay = false; vA.pause(); vB.pause(); playing = false; setPlayIcon();
+  if (vmode !== "single" && Math.abs(vA.currentTime - vB.currentTime) > 0.02) vA.currentTime = vB.currentTime;
+}
+$("#playBtn").addEventListener("click", () => (playing ? pause() : play()));
+
+/* 同步：小偏差微調 A 的播放速度追上 B；大偏差（含循環回到開頭）才跳轉，而且等上一次跳轉完成、
+   至少隔 0.8 秒，免得網路慢的手機一直重新跳轉而卡住。 */
+let lastSeek = 0;
+function sync() {
+  if (vmode === "single" || !playing) return;
+  const d = vB.currentTime - vA.currentTime, now = performance.now();
+  if (Math.abs(d) > 0.25) {
+    vA.playbackRate = rate;
+    if (!vA.seeking && now - lastSeek > 800) { vA.currentTime = vB.currentTime + 0.1 * rate; lastSeek = now; }
+  } else if (Math.abs(d) > 0.04) vA.playbackRate = rate * (d > 0 ? 1.15 : 0.87);
+  else vA.playbackRate = rate;
+}
+let scrubbing = false;
+function tick() {
+  sync(); updateLoading();
+  const d = vB.duration || 0;
+  if (d && !scrubbing) $("#scrub").value = Math.round((vB.currentTime / d) * 1000);
+  $("#vtime").textContent = `${fmt(vB.currentTime)} / ${fmt(d)}`;
+}
+$("#scrub").addEventListener("input", (e) => {
+  scrubbing = true;
+  const t = ((+e.target.value) / 1000) * (vB.duration || 0);
+  vB.currentTime = t; vA.currentTime = t; tick();
+});
+$("#scrub").addEventListener("change", () => { scrubbing = false; });
+
+/* 換速度：倍率在 0.45 秒內平滑加速／減速（不是瞬間跳），畫面中間跳出倍率 */
+let rampId = 0;
+function rampRate(to) {
+  const from = rate, t0 = performance.now(), dur = matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 450, id = ++rampId;
+  const step = (now) => {
+    if (id !== rampId) return;
+    const k = dur ? Math.min(1, (now - t0) / dur) : 1, e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    rate = from + (to - from) * e;
+    vB.playbackRate = rate; if (!playing) vA.playbackRate = rate;     // 播放中 A 的速度由 sync() 跟著 rate 調
+    if (k < 1) requestAnimationFrame(step); else rate = to;
+  };
+  requestAnimationFrame(step);
+}
+const pop = $("#ratePop");
+const ICON_FAST = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 6l8 6-8 6zM12 6l8 6-8 6z"/></svg>';
+const ICON_SLOW = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6l-8 6 8 6zM12 6l-8 6 8 6z"/></svg>';
+document.querySelectorAll("#vspeed button").forEach((b) => b.addEventListener("click", () => {
+  const to = +b.dataset.rate;
+  pop.innerHTML = (to >= rate ? ICON_FAST : ICON_SLOW) + `${to}×`;
+  pop.classList.remove("show"); void pop.offsetWidth; pop.classList.add("show");
+  rampRate(to);
+  document.querySelectorAll("#vspeed button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+}));
+
+/* 分段按鈕的滑動底色：aria-pressed 一變就把膠囊移過去 */
+function placeThumb(seg) {
+  let t = seg.querySelector(".seg-thumb");
+  if (!t) { t = document.createElement("span"); t.className = "seg-thumb"; seg.prepend(t); }
+  const b = seg.querySelector('button[aria-pressed="true"]');
+  if (!b) { t.hidden = true; return; }
+  t.hidden = false;
+  Object.assign(t.style, { left: `${b.offsetLeft}px`, top: `${b.offsetTop}px`, width: `${b.offsetWidth}px`, height: `${b.offsetHeight}px` });
+}
+const SEGS = [...document.querySelectorAll(".seg")];
+SEGS.forEach((s) => new MutationObserver(() => placeThumb(s)).observe(s, { subtree: true, attributes: true, attributeFilter: ["aria-pressed"] }));
+const placeAll = () => SEGS.forEach(placeThumb);
+addEventListener("resize", placeAll);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(placeAll);
+
+if (!(document.fullscreenEnabled || document.webkitFullscreenEnabled)) $("#vfull").hidden = true;
+$("#vfull").addEventListener("click", () => {
+  const req = vstage.requestFullscreen || vstage.webkitRequestFullscreen;
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (req) Promise.resolve(req.call(vstage)).catch(() => {});
+});
+
+/* 載入提示：直接看兩支影片的 readyState，任何一個進度事件都重新判斷。
+   ⚠ 不能只等 canplay：手機瀏覽器（尤其 iOS）在按播放前不預先載入，canplay 的時機不一定 => 提示一直蓋著（11-27 使用者回報）。 */
+let errored = false;
+function updateLoading() {
+  if (errored) return;
+  const ok = vB.readyState >= 2 && (vmode === "single" || vA.readyState >= 2);
+  if (ok) $("#vload").hidden = true;
+}
+["loadeddata", "canplay", "playing", "timeupdate", "seeked"].forEach((ev) => [vA, vB].forEach((v) => v.addEventListener(ev, updateLoading)));
+vB.addEventListener("loadedmetadata", tick);
+[vA, vB].forEach((v) => v.addEventListener("error", () => {
+  if (!v.error) return;
+  errored = true; $("#vload").hidden = false; $("#vload").textContent = "影片載入失敗：檔案不存在或格式不支援";
+}));
+
+function setRoute(r) {
+  route = r; errored = false; pause();
+  $("#vload").hidden = false; $("#vload").textContent = "載入影片中…";
+  vA.src = r.theirs; vB.src = r.ours;
+  vA.playbackRate = rate; vB.playbackRate = rate;
+  $("#rName").textContent = r.name;
+  $("#rDot").style.background = r.color;
+  $("#rDesc").textContent = r.desc;
+  document.querySelectorAll("#routeChips .chip").forEach((c) => c.setAttribute("aria-pressed", String(c.dataset.id === r.id)));
+}
+ROUTES.forEach((r) => {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "chip"; b.dataset.id = r.id; b.setAttribute("aria-pressed", "false");
+  b.innerHTML = `<i style="background:${r.color}"></i>${r.name}`;
+  b.addEventListener("click", () => { setRoute(r); play(); });
+  $("#routeChips").appendChild(b);
+});
+
+// 播放器捲進畫面才開始播、捲出去就暫停（手機省流量）
+let seen = false;
+if ("IntersectionObserver" in window) {
+  new IntersectionObserver((es) => es.forEach((e) => {
+    if (e.isIntersecting) { if (!seen) { seen = true; play(); } }
+    else if (playing) pause();
+  }), { threshold: 0.35 }).observe(vstage);
+}
+
+const map = $("#map");
+const toggleMap = () => map.classList.toggle("big");
+map.addEventListener("click", toggleMap);
+map.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleMap(); } if (e.key === "Escape") map.classList.remove("big"); });
+
+setRoute(ROUTES[0]);
+setMode("slider");
+
+/* ═══ 對照圖 ═══ */
+const MODES = {
+  three: [["gt", "真實影像", "t-gt"], ["citygs", "CityGaussianV2", "t-theirs"], ["ours", "我們", "t-ours"]],
+  cg:    [["citygs", "CityGaussianV2", "t-theirs"], ["ours", "我們", "t-ours"]],
+  gt:    [["gt", "真實影像", "t-gt"], ["ours", "我們", "t-ours"]],
+};
+let cmode = "three", cidx = 0, zoom = 1, ccuts = [100 / 3, 200 / 3];
+const cstage = $("#cstage"), cview = $("#cview");
+let layers = [], tags = [], dividers = [];
+
+function buildCompare() {
+  cstage.innerHTML = ""; layers = []; tags = []; dividers = [];
+  const L = MODES[cmode], v = VIEWS[cidx];
+  L.forEach(([key, label, cls]) => {
+    const im = new Image(); im.alt = `${label}（視角 ${v.id}）`; im.decoding = "async";
+    im.src = IMG(v.id, key);
+    im.onerror = () => { im.onerror = null; im.src = "data:image/svg+xml;utf8," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900"><rect width="100%" height="100%" fill="#2a0bb0"/><text x="50%" y="50%" font-size="44" fill="#d8cffd" text-anchor="middle" font-family="sans-serif">找不到 ${IMG(v.id, key)}</text></svg>`); };
+    cstage.appendChild(im); layers.push(im);
+    const t = document.createElement("span"); t.className = `tag ${cls}`; t.textContent = label;
+    cstage.appendChild(t); tags.push(t);
+  });
+  for (let k = 0; k < L.length - 1; k++) {
+    const d = document.createElement("div"); d.className = "divider"; d.dataset.k = k;
+    d.innerHTML = vdiv.querySelector(".knob").outerHTML;
+    cstage.appendChild(d); dividers.push(d);
+  }
+  if (ccuts.length !== L.length - 1) ccuts = L.length === 3 ? [100 / 3, 200 / 3] : [50];
+  layoutC();
+  const dd = v.ours - v.theirs;
+  $("#ccap").innerHTML = `<span>視角 <b>#${v.id}</b></span>
+    <span>PSNR：CityGaussianV2 <b>${v.theirs.toFixed(2)}</b> · 我們 <b>${v.ours.toFixed(2)}</b> dB（${dd >= 0 ? "+" : ""}${dd.toFixed(2)}）</span>
+    <span class="kind">${v.kind}</span>`;
+  document.querySelectorAll("#thumbs .thumb").forEach((b, i) => b.setAttribute("aria-pressed", String(i === cidx)));
+  const nx = VIEWS[(cidx + 1) % VIEWS.length];            // 預先載入下一張
+  L.forEach(([key]) => { const p = new Image(); p.src = IMG(nx.id, key); });
+}
+function layoutC() {
+  const all = [0, ...ccuts, 100];
+  layers.forEach((im, i) => { im.style.clipPath = i === 0 ? "" : `inset(0 ${100 - all[i + 1]}% 0 ${all[i]}%)`; });
+  tags.forEach((t, i) => { t.style.left = `calc(${all[i]}% + 8px)`; t.style.maxWidth = `calc(${all[i + 1] - all[i]}% - 16px)`; });
+  dividers.forEach((d, k) => { d.style.left = `${ccuts[k]}%`; });
+}
+makeDraggable(cstage, () => ccuts, (c) => { ccuts = c; layoutC(); }, { stageGrab: () => zoom === 1 });
+
+function setZoom(z) {
+  const cx = cview.scrollLeft + cview.clientWidth / 2, ratio = z / zoom;
+  zoom = z;
+  cview.classList.toggle("zoomed", z > 1);
+  cstage.style.width = `${z * 100}%`;
+  cview.style.aspectRatio = z > 1 ? "16 / 9" : "";
+  requestAnimationFrame(() => {
+    cview.scrollLeft = cx * ratio - cview.clientWidth / 2;
+    cview.scrollTop = (cstage.clientHeight - cview.clientHeight) / 2;
+  });
+  document.querySelectorAll("#czoom button").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.z === z)));
+}
+document.querySelectorAll("#czoom button").forEach((b) => b.addEventListener("click", () => setZoom(+b.dataset.z)));
+document.querySelectorAll("#cmode button").forEach((b) => b.addEventListener("click", () => {
+  cmode = b.dataset.mode;
+  document.querySelectorAll("#cmode button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  buildCompare();
+}));
+const go = (d) => { cidx = (cidx + d + VIEWS.length) % VIEWS.length; buildCompare(); };
+$("#cprev").addEventListener("click", () => go(-1));
+$("#cnext").addEventListener("click", () => go(1));
+document.addEventListener("keydown", (e) => {
+  if (e.target.closest("input, textarea")) return;
+  const r = $("#compare").getBoundingClientRect();
+  if (r.top < innerHeight && r.bottom > 0) { if (e.key === "ArrowLeft") go(-1); if (e.key === "ArrowRight") go(1); }
+});
+VIEWS.forEach((v, i) => {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "thumb"; b.setAttribute("aria-pressed", "false"); b.setAttribute("aria-label", `視角 ${v.id}`);
+  b.innerHTML = `<img src="${IMG(v.id, "thumb")}" alt="" loading="lazy"><span>#${v.id}</span>`;
+  b.addEventListener("click", () => { cidx = i; buildCompare(); });
+  $("#thumbs").appendChild(b);
+});
+buildCompare();
+
+// 第一次放好膠囊後才開啟滑動動畫（不然載入時會從左上角滑進來）
+placeAll();
+requestAnimationFrame(() => SEGS.forEach((s) => s.classList.add("anim")));
+
+// 點「數字」導覽時順便展開
+document.querySelector('.nav a[href="#numbers"]').addEventListener("click", () => { $("#numbers details").open = true; });
+</script>
+
+</body>
+</html>
