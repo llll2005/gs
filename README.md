@@ -1,139 +1,50 @@
-<br>
-<p align="center">
-<h1 align="center"><strong>CityGaussian Series for High-quality Large-Scale Scene Reconstruction with Gaussians</strong></h1>
-  <p align="center">
-    <em>Institute of Automation, Chinese Academy of Sciences; University of Chinese Academy of Sciences</em>
-  </p>
-</p>
+<h1 align="center">單卡重建一座城市：輕量、快速的大規模 2D 高斯場景重建</h1>
 
-<div id="top" align="center">
+<p align="center">作者：黃則綸　·　指導教授：紀明德 教授</p>
 
-[![](https://img.shields.io/badge/%F0%9F%9A%80%20Project-V1-green)](https://dekuliutesla.github.io/citygs/)
-[![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-Hugging%20Face-green)](https://huggingface.co/TeslaYang123/CityGaussian)
-[![](https://img.shields.io/badge/%F0%9F%9A%80%20Project-V2-blue)](https://dekuliutesla.github.io/CityGaussianV2/)
-[![HuggingFace](https://img.shields.io/badge/%F0%9F%A4%97-Hugging%20Face-blue)](https://huggingface.co/TeslaYang123/CityGaussianV2)
-[![](https://img.shields.io/badge/📄-中文解读-red)](https://zhuanlan.zhihu.com/p/26862925999)
-[![Discord](https://img.shields.io/badge/Discord-7289DA.svg?logo=discord&logoColor=white)](https://discord.gg/SMkPUPuGww)
-![GitHub Repo stars](https://img.shields.io/github/stars/Linketic/CityGaussian)
-![GitHub forks](https://img.shields.io/github/forks/Linketic/CityGaussian)
-[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+<p align="center"><a href="https://llll2005.github.io/gs/"><b>展示網站：飛行影片與測試視角對照</b></a></p>
 
+在一張消費級顯卡上重建整座城市：訓練顯存控制在 6 GB 以內、畫質不輸 CityGaussianV2，並大幅縮短訓練時間。
 
-</div>
-<p align="center">
-  <img width="460" height="300" src="assets/demo.gif">
-</p>
+CityGaussianV2 用 8 張 A100 訓練 3 小時，每張用掉 14.8 GB 顯存；在一張 RTX 3090 上跑它的流程要約 71 小時。
+本研究在同一張 RTX 3090 上用 1.33 小時訓練完整座 MatrixCity 空拍城市，訓練顯存峰值 2.7 GB。
 
-This repo contains official implementations of our series of work in large-scale scene reconstruction with Gaussian Splatting, Star ⭐ us if you like it!
-- [CityGaussianV2: Efficient and Geometrically Accurate Reconstruction for Large-Scale Scenes](https://arxiv.org/pdf/2411.00771) (ICLR 2025)
-- [CityGaussian: Real-time High-quality Large-Scale Scene Rendering with Gaussians](https://arxiv.org/pdf/2404.01133) (ECCV 2024)
+## 結果
 
-The links above point to the papers. The main branch now has been rebased to [Gaussian Lightning v0.10.1](https://github.com/yzslab/gaussian-splatting-lightning). If you need to visit the original V1 code, please turn to the `V1-Original` branch. If you need support for [VGGT-X](https://github.com/Linketic/VGGT-X), please visit guidance [here](doc/vggt_x.md). Feel free to explore the repository!
+MatrixCity 空拍測試集 741 張影像。
 
-## 👏 Features
-* CityGaussian-style multi-gpu reconstruction with controllable memory cost and no limit on GPU amount
-* Analysis of model partition and data assignment
-* 2DGS-style mesh extraction & Large-scale scene geometric performance evaluation
-* Trajectory aligned rendering & mesh video generation with floater removement
-* Joint pose and 3DGS optimization for imperfect COLMAP results like from 3D foundation models.
-* Features of [Gaussian Lightning](https://github.com/yzslab/gaussian-splatting-lightning), including web viewer, MipSplatting, AbsGS, StopThePop, etc.
+| 方法 | 硬體 | 訓練時間 ↓ | 訓練顯存 ↓ | PSNR ↑ | SSIM ↑ | LPIPS ↓ | F1 ↑ |
+|---|---|---:|---:|---:|---:|---:|---:|
+| CityGaussianV2（論文） | 8 × A100 | 3.0 小時 | 14.8 GB | 27.23 | 0.857 | 0.169 | — |
+| CityGaussianV2（同卡重跑） | 1 × RTX 3090 | 71.2 小時 | 12～21 GB | 27.26 | 0.867 | 0.154 | 0.597 |
+| HUG（ICCV 2025） | 8 × A6000 | — | — | 28.02 | 0.883 | 0.142 | — |
+| **我們** | **1 × RTX 3090** | **1.33 小時** | **2.7 GB** | **27.95** | **0.872** | **0.143** | **0.711** |
 
-<details>
-<summary><span style="font-weight: bold;">Table Results & Checkpoints </span></summary>
+- 同樣硬體訓練快約 54 倍，訓練顯存只要 2.7 GB。
+- 我們與 CityGaussianV2（同卡重跑）用同一支評測程式計算；標「論文」的列與 HUG 取自各自論文的表格。
+- 訓練時間是整個訓練任務的牆鐘時間；F1 是幾何準確度。
 
-| Scene | SSIM↑ | PSNR↑ | LPIPS↓ | Precision↑ | Recall↑ | F1-Score↑ | #GS(M) |
-| :---: | :---: | :---: | :---: | :---:|:---:| :---: | :---: |
-| LFLS | 0.744 | 23.44 | 0.246 | 0.556 | 0.400 | 0.466 | 8.19 |
-| SMBU | 0.794 | 24.00 | 0.185 | 0.559 | 0.523 | 0.541 | 5.33 |
-| Upper Campus | 0.779 | 25.78 | 0.186 | 0.654 | 0.394 | 0.491 | 7.87 |
-| MatrixCity Aerial | 0.859 | 27.26 | 0.175 | 0.432 | 0.790 | 0.559 | 8.57 |
-| MatrixCity Street | 0.791 | 22.32 | 0.344 | 0.325 | 0.797 | 0.461 | 7.40 |
+## 方法
 
-Note for street view, the F1-Score is lower than that reported in paper, since we sacrifice precision for a better recall and more complete road surface. If unbroken road is prefered, you can adjust `depth_ratio` to 0.0, but surface reconstruction performance will be worse. The checkpoints of CityGSV2 can be found here:
+以 CityGaussianV2 的分塊 2D 高斯流程為基礎，拿掉先訓練整個場景的粗模型，場景切成 4×4 共 16 塊各自訓練再合併，並做了四項改良：
 
-- Baidu Netdisk: https://pan.baidu.com/s/1tRKiJzMLk2-zoyvoa9bkqA?pwd=1b4r
-- Hugging Face: https://huggingface.co/TeslaYang123/CityGaussianV2
+1. **用校正後的深度當幾何骨架**：以 SfM 稀疏點逐張校正單目深度（誤差中位數 2.15% → 0.15%），用來決定哪些像素屬於哪一塊、限制高斯不長到地面和屋頂下方、決定高斯的起始位置。
+2. **把海面當成一個平面**：偵測水體，用多視角共識決定海平面，把漂浮在海上的高斯收回。
+3. **只學看得到的顏色資訊**：空拍相機只看得到球諧顏色的 10 個方向，訓練時只學 8 個，每個高斯的參數從 58 個減到 34 個，訓練顯存峰值降 30%，畫質不變。
+4. **讓每一步都更便宜**：精確跳過不影響畫面的計算、前 75% 的步數用低解析度、常數改用單精度。每塊平均 4.5 分鐘訓練完，16 塊合計 1.2 小時。
 
-</details>
+完整流程、公式、參數、消融與怎麼跑：[`紀錄/現行方法.md`](紀錄/現行方法.md)（§13 怎麼跑）。指令查詢：`bash scripts/help.sh`。
 
-## 📰 News
-**[2025.10.18]** Adds support and guidance for joint pose and 3DGS optimization of [VGGT-X](https://github.com/Linketic/VGGT-X)!
+## 參考論文
 
-**[2025.04.04]** A [Discord](https://discord.gg/Hu7ezBp4) is now available. Come for a deeper and more instant communication about city reconstruction!
+- CityGaussianV2: Efficient and Geometrically Accurate Reconstruction for Large-Scale Scenes（ICLR 2025）
+- CityGaussian: Real-time High-quality Large-Scale Scene Rendering with Gaussians（ECCV 2024）
+- 2D Gaussian Splatting for Geometrically Accurate Radiance Fields（SIGGRAPH 2024）
+- 3D Gaussian Splatting as Markov Chain Monte Carlo（NeurIPS 2024）
+- Depth Anything V2（NeurIPS 2024）
+- MatrixCity: A Large-scale City Dataset for City-scale Neural Rendering and Beyond（ICCV 2023）
 
-**[2025.03.26]** The repo now belongs to the research organization [Linketic](https://github.com/Linketic).
+## 致謝與授權
 
-**[2025.01.31]** Checkpoints of CityGaussian V2 has been released!
-
-**[2025.01.22]** CityGaussian V2 has been accepted by ICLR 2025!
-
-**[2025.01.22]** Code of CityGaussian V2 is now released. Welcome to try it out!
-
-**[2024.11.04]** Announcement of our [CityGaussianV2](https://dekuliutesla.github.io/CityGaussianV2/)!
-
-**[2024.10.12]** Checkpoints of V1 on main datasets have been released! 
-
-**[2024.08.05]** Code of CityGaussian V1 is available!
-
-## 🛠 Getting Started
-- [Installation](doc/installation.md)
-- [Data Preparation](doc/data_preparation.md)
-- [Run and Eval](doc/run&eval.md)
-- [Video Rendering on GS and Mesh](doc/render_video.md)
-- [VGGT-X](doc/vggt_x.md)
-
-
-## 📝 TODO List
-
-- \[ \] Official Implementation of Appearance Embedding.
-- \[ \] Support of V1 style LoD.
-- \[x\] Support of VGGT-X.
-- \[x\] Release the checkpoint of CityGaussian V2.
-- \[x\] Release the V2 of CityGaussian.
-- \[x\] Release code and checkpoints of CityGaussian.
-- \[x\] Release ColMap results of main datasets.
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=Linketic/CityGaussian&type=Date)](https://www.star-history.com/#Linketic/CityGaussian&Date)
-
-## 📄 License
-
-<a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by-nc-sa/4.0/80x15.png" /></a>
-<br />
-This work is under the <a rel="license" href="http://creativecommons.org/licenses/by-nc-sa/4.0/">Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License</a>.
-
-## 🤗 Citation
-If you find this repository useful, please use the following BibTeX entry for citation.
-```latex
-@inproceedings{
-    liu2024citygaussianv2,
-    title={CityGaussianV2: Efficient and Geometrically Accurate Reconstruction for Large-Scale Scenes},
-    author={Yang Liu and Chuanchen Luo and Zhongkai Mao and Junran Peng and Zhaoxiang Zhang},
-    booktitle={The Thirteenth International Conference on Learning Representations},
-    year={2025},
-    url={https://openreview.net/forum?id=a3ptUbuzbW}
-}
-```
-
-```latex
-@inproceedings{liu2025citygaussian,
-  title={Citygaussian: Real-time high-quality large-scale scene rendering with gaussians},
-  author={Liu, Yang and Luo, Chuanchen and Fan, Lue and Wang, Naiyan and Peng, Junran and Zhang, Zhaoxiang},
-  booktitle={European Conference on Computer Vision},
-  pages={265--282},
-  year={2025},
-  organization={Springer}
-}
-```
-
-## 👏 Acknowledgements
-
-This repo benefits from [3DGS](https://github.com/graphdeco-inria/gaussian-splatting), [2DGS](), [TrimGS](https://github.com/YuxueYang1204/TrimGS), [LightGaussian](https://github.com/VITA-Group/LightGaussian), [Gaussian Lightning](https://github.com/yzslab/gaussian-splatting-lightning). Thanks for their great work!
-
-## ❓ FAQ
-- _Out of memory occurs in training._ To finish training with limited VRAM, downsampling images or adjusting max_cache_num (we used a rather large 1024) in train_large.py can be a useful practice. Besides, you can increase `prune_ratio` in parallel tuning to further reduce memory cost.
-
-- _Generation of COLMAP results._ We use the ground-truth poses offered by datasets and separately match the train and test sets. And this will be faster and more robust than match from scratch. But indeed it still costs a lot of time.
-
-- _Most blocks are not trained._ The main reason here is the data assigned to most blocks are too few (<50), and to prevent overfitting these blocks won't get trained. This can be attributed to unreasonable aabb setting, please try to adjust it and see if things work.
+本專案修改自 [CityGaussian](https://github.com/Linketic/CityGaussian)（建立在 [Gaussian Lightning](https://github.com/yzslab/gaussian-splatting-lightning) 之上），原本的說明保留在 [`README_CityGaussian.md`](README_CityGaussian.md)。
+授權沿用上游的 CC BY-NC-SA 4.0，見 [`LICENSE.md`](LICENSE.md)。
