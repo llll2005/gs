@@ -7,6 +7,13 @@ from internal.renderers import RendererConfig
 from internal.renderers.vanilla_renderer import VanillaRenderer
 
 
+def _get_shs_lowdim(self_):
+    """★ 2026-11-26 低維 SH（CITYGS_SH_KEEP_LOWDIM=1）：需要完整 16 個係數時現場展開（渲染器不走這裡，光柵器自己展開）。"""
+    rest = self_.gaussians["shs_rest"]
+    r = torch.einsum("lj,njc->nlc", self_._sh_U.to(rest.device, rest.dtype), rest)
+    return torch.cat((self_.gaussians["shs_dc"], r), dim=1)
+
+
 class GaussianModelLoader:
     previous_name_to_new = {
         "_xyz": "means",
@@ -105,14 +112,33 @@ class GaussianModelLoader:
                 model = VanillaGaussian(sh_degree=sh_degree).instantiate()
 
         # ★ 2026-11-22 紀錄/實驗分析/40 §1.7：低維 SH 存檔（shs_rest [N,K,3]＋checkpoint["sh_basis"]["U"] [15,K]）=> 展開成 15 維再載入
+        # ★ 2026-11-26 CITYGS_SH_KEEP_LOWDIM=1（使用者「試試看不展開」）：不展開，顯卡上只放 K 維係數，渲染時由光柵器用基底展開
+        #   （＝訓練時每一步走的同一條 kernel 路徑；2DGS 每顆 58 -> 34 個 float、232 -> 136 B）。預設關＝照舊展開。
+        #   有塊外池的 ckpt 不支援（池只走 SH 串接路徑）=> 照舊展開。
         _sb = checkpoint.get("sh_basis", None)
+        _keep_lowdim = False
         if _sb is not None and "gaussians.shs_rest" in model_state_dict:
             _U = _sb["U"].to(model_state_dict["gaussians.shs_rest"].device, model_state_dict["gaussians.shs_rest"].dtype)
             if model_state_dict["gaussians.shs_rest"].shape[1] == _U.shape[1]:
-                model_state_dict["gaussians.shs_rest"] = torch.einsum("lj,njc->nlc", _U, model_state_dict["gaussians.shs_rest"]).contiguous()
+                _keep_lowdim = (os.environ.get("CITYGS_SH_KEEP_LOWDIM", "0") == "1" and _U.shape[1] < 15
+                                and "outside_pool" not in checkpoint)
+                if not _keep_lowdim:
+                    model_state_dict["gaussians.shs_rest"] = torch.einsum("lj,njc->nlc", _U, model_state_dict["gaussians.shs_rest"]).contiguous()
         model.setup_from_number(model_state_dict["gaussians.means"].shape[0])
+        if _keep_lowdim:
+            model.gaussians["shs_rest"] = torch.nn.Parameter(torch.zeros(tuple(model_state_dict["gaussians.shs_rest"].shape)))
         model.to(device)
         model.load_state_dict(model_state_dict)
+        if _keep_lowdim:
+            import types
+            model._sh_U = _U.float().contiguous()
+            model.get_shs = types.MethodType(_get_shs_lowdim, model)      # 需要 16 個係數的工具（匯出等）照樣拿到展開版
+            if torch.device(device).type == "cuda":
+                import diff_trim_surfel_rasterization as _R
+                if not hasattr(_R, "set_sh_basis"):
+                    raise RuntimeError("CITYGS_SH_KEEP_LOWDIM=1 但光柵器沒有 set_sh_basis —— 沒重編")
+                _R.set_sh_basis(model._sh_U)                              # 程式全域狀態：同一個 process 只能有一組基底
+            print(f"[sh-lowdim] ✅ 不展開：shs_rest {tuple(model.gaussians['shs_rest'].shape)}，渲染時光柵器用基底 U {tuple(_U.shape)} 展開", flush=True)
 
         return model
 

@@ -356,21 +356,24 @@ class VanillaGaussianModel(
         self.rotations = self.get_rotations()
         self.opacities = self.get_opacities()
 
-        # concat `shs_dc` and `shs_rest` and store it to dict, then remove `shs_dc` and `shs_rest`
-        names = list(self._names)
-        ## concat
-        self.gaussians["shs"] = self.get_shs()
-        names.append("shs")
-        ## remove `shs_dc`
-        del self.gaussians["shs_dc"]
-        names.remove("shs_dc")
-        ## remove `shs_rest`
-        del self.gaussians["shs_rest"]
-        names.remove("shs_rest")
-        ## replace `get_shs` interface
-        self.get_shs = self._get_shs_from_dict
-        ## replace `names`
-        self._names = tuple(names)
+        # ★ 2026-11-26 低維 SH（loader 的 CITYGS_SH_KEEP_LOWDIM=1）：shs_rest 是 K 維基底係數、渲染器分開交給光柵器展開
+        #   => 不串接（串接成 [N,1+K,3] 會被當成錯的 SH 階數，也就是又把顯存花回去）；get_shs 維持 loader 給的展開版
+        if getattr(self, "_sh_U", None) is None:
+            # concat `shs_dc` and `shs_rest` and store it to dict, then remove `shs_dc` and `shs_rest`
+            names = list(self._names)
+            ## concat
+            self.gaussians["shs"] = self.get_shs()
+            names.append("shs")
+            ## remove `shs_dc`
+            del self.gaussians["shs_dc"]
+            names.remove("shs_dc")
+            ## remove `shs_rest`
+            del self.gaussians["shs_rest"]
+            names.remove("shs_rest")
+            ## replace `get_shs` interface
+            self.get_shs = self._get_shs_from_dict
+            ## replace `names`
+            self._names = tuple(names)
 
         self.scale_activation = self._return_as_is
         self.scale_inverse_activation = self._return_as_is
@@ -388,9 +391,13 @@ class VanillaGaussianModel(
             keys.remove("scales")
             non_pre_activated_properties["opacities"] = inverse_sigmoid(activated_properties["opacities"])
             keys.remove("opacities")
-            non_pre_activated_properties["shs_dc"] = activated_properties["shs"][:, :1, :]
-            non_pre_activated_properties["shs_rest"] = activated_properties["shs"][:, 1:, :]
-            keys.remove("shs")
+            if "shs" in activated_properties:
+                non_pre_activated_properties["shs_dc"] = activated_properties["shs"][:, :1, :]
+                non_pre_activated_properties["shs_rest"] = activated_properties["shs"][:, 1:, :]
+                keys.remove("shs")
+            elif getattr(self, "_sh_U", None) is not None:      # ★ 2026-11-26 低維 SH：交出去的是展開後的 15 維
+                non_pre_activated_properties["shs_rest"] = self.get_shs()[:, 1:, :]
+                keys.remove("shs_rest")
 
             for key in keys:
                 non_pre_activated_properties[key] = activated_properties[key]
