@@ -410,6 +410,9 @@ for t in "${XT[@]:-}"; do
     fp16)   XA+=(--model.metric.init_args.lambda_normal_interval 16 --model.metric.init_args.depth_support_interval 16
                  --model.metric.init_args.depth_cap_interval 16 --model.metric.init_args.depth_see_through_interval 16) ;;
     cskip)  XA+=(--model.renderer.init_args.skip_unscored_pixels true) ;;
+    # ★ 11-27 V/C 剪枝消融（使用者「作一下消融」）：剪枝整個關掉，連訓練中累加 V/C 也不做（不付累加的時間）；
+    #   其餘全同（MCMC 收割期刪死顆粒、合併照舊）。對照 fs1122_base10_f32。
+    notrim) XA+=(--model.renderer.init_args.diable_trimming true --model.renderer.init_args.trim_running_vc false) ;;
     # ★ 11-14 點精靈刪除／吸收（使用者「撐大嗎，為啥不刪掉或用合併機制併起來」）：取代 px_floor 的「撐大」；每 500 步處理一次
     pxdel)  XA+=(--model.density.init_args.px_floor_mode delete) ;;
     pxabs)  XA+=(--model.density.init_args.px_floor_mode absorb) ;;
