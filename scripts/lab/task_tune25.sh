@@ -422,7 +422,7 @@ for t in "${XT[@]:-}"; do
     #   cadr  舊「依成本往便宜處增生」改讀最新累加 C（w 2.278 照 09-07 校準）
     vccx)   XA+=(--model.renderer.init_args.vc_cost_exact true) ;;
     vcvm)   XA+=(--model.renderer.init_args.vc_value_mask true) ;;
-    vpcr*)  XA+=(--model.density.init_args.vpc_prune_frac "0.0${t#vpcr}" --model.density.init_args.vpc_running true) ;;
+    vpcr*)  XA+=(--model.density.init_args.vpc_prune_frac "$(awk -v k="${t#vpcr}" 'BEGIN{print k/100}')" --model.density.init_args.vpc_running true) ;;
     cadr)   XA+=(--model.density.init_args.cost_add_densify 2.278 --model.density.init_args.cost_add_running true) ;;
     # ★ 11-14 點精靈刪除／吸收（使用者「撐大嗎，為啥不刪掉或用合併機制併起來」）：取代 px_floor 的「撐大」；每 500 步處理一次
     pxdel)  XA+=(--model.density.init_args.px_floor_mode delete) ;;
