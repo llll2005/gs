@@ -285,8 +285,22 @@ class _FusedAdam(torch.optim.Adam):
                         if self._n_mismatch == 1:
                             print(f"[fused-adam] ⚠ 稀疏遮罩 {self.visibility.shape[0]:,} 列 ≠ 參數 {p.shape[0]:,} 列"
                                   f"（{group.get('name')}；densify 剛改了顆數）=> 這步走稠密（之後不再印）", flush=True)
-                if p.grad.dtype != torch.float32 or not p.grad.is_contiguous():
-                    raise RuntimeError(f"FusedAdam：{group.get('name')} 的梯度不是 contiguous float32")
+                # ★ 2026-11-27：參數／梯度不連續時先轉成連續（不再直接報錯）。
+                #   起因：notrim（剪枝整個關掉）跳過第 1 步的起始剪枝，而那一步本來會順手把參數重建成連續；
+                #   從 PLY 初始化的 means 是不連續的 => 第 1 步就在這裡當掉（lab vc1127_notrim b1）。
+                #   正常跑次參數本來就連續 => 這段不觸發、逐位元不變。
+                if not p.is_contiguous():
+                    p.data = p.data.contiguous()
+                    for _k in ("exp_avg", "exp_avg_sq"):
+                        if not st[_k].is_contiguous():
+                            st[_k] = st[_k].contiguous()
+                    if not getattr(self, "_contig_announced", False):
+                        self._contig_announced = True
+                        print(f"[fused-adam] ⚠ {group.get('name')} 參數不是連續記憶體 => 轉成連續（只做一次；通常是沒經過起始剪枝的初始化參數）", flush=True)
+                if not p.grad.is_contiguous():
+                    p.grad = p.grad.contiguous()
+                if p.grad.dtype != torch.float32:
+                    raise RuntimeError(f"FusedAdam：{group.get('name')} 的梯度不是 float32")
                 self._fused(p, p.grad, st["exp_avg"], st["exp_avg_sq"], mask, b1, b2, eps, step_size, bc2_sqrt, self.variant)
                 if not self._announced:
                     self._announced = True
