@@ -429,6 +429,16 @@ class MCMC2DGSDensityController(MCMCDensityController):
     """how often (steps) to refresh the multi-view contribution estimate — it costs one
     transmittance-only render pass over the training cameras, so keep it infrequent"""
 
+    vpc_running: bool = False
+    """★ 2026-11-27（使用者「都做看看」）：`vpc_prune_frac` 改讀**最新的 V/C**＝renderer 訓練中累加的
+    `V_i = Σ T·α`、`C_i = 覆蓋數`（`trim_running_vc`；與累加式剪枝同一份、同一個窗口），不再另掃相機、
+    不再除第二次螢幕面積（舊式＝每像素平均貢獻 ÷ 半徑²，等於面積除兩次）。
+    只在窗口裡有被看到（C > 0）的顆粒中排名；被搬走的顆粒清掉累加值（下一次剪枝不拿舊位置的 V/C 判它）。
+    舊式的 −2.34 dB 是 09-13 年代分界之前量的（分數作廢）。需要 renderer.trim_running_vc。"""
+
+    vpc_min_views: int = 100
+    """`vpc_running`／`cost_add_running`：V/C 窗口至少累加這麼多個訓練視角才用（剛剪完、窗口剛歸零時訊號太少 => 這次不動）"""
+
     screen_prune_emergency_px: int = -1
     """>0 enables per-STEP emergency monster recycling (decoupled from the
     densify event). After each step, if the largest screen radius seen exceeds
@@ -853,6 +863,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
       （`tools/cost_proxy_quality.py` 實測 ceiling(1/ĉ) = 10.89x）。
     ⚠ 需要 trim 開著（精確 c 從那裡來）且 `densify_from_iter` 晚於第一次 trim。
       拿不到訊號時會**大聲印警告**，不會靜默 no-op（§11.101 的教訓）。"""
+
+    cost_add_running: bool = False
+    """★ 2026-11-27：`cost_add_densify` 的成本改讀 renderer 訓練中累加的 C（窗口內的覆蓋數總和）。
+    原本讀週期剪枝那趟算好的 `_exact_cost`，但 10-16 起剪枝改成訓練中累加、那趟已經不存在 => 開了也拿不到訊號。
+    窗口內沒被看到（C = 0）的顆粒給 ŝ = 1（中性）。需要 renderer.trim_running_vc。"""
 
     cost_aware_densify: float = 0.0
 
@@ -3890,6 +3905,38 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
         if cfg.vpc_prune_frac <= 0:
             return None
         n = gaussian_model.n_gaussians
+        if getattr(cfg, "vpc_running", False):
+            # ★ 2026-11-27 最新 V/C（訓練中累加；與剪枝同一份）
+            st = getattr(gaussian_model, "_trim_state", None) or {}
+            V, C = st.get("V"), st.get("C")
+            nv = int(st.get("views", 0))
+            if V is None or C is None or V.shape[0] > n or C.shape[0] > n:
+                if not getattr(self, "_vpcr_warned", False):
+                    self._vpcr_warned = True
+                    print("⚠⚠ [vpc-running] 拿不到 renderer 的 V/C 累加（trim_running_vc 沒開？）=> 不會生效", flush=True)
+                return None
+            if nv < int(getattr(cfg, "vpc_min_views", 100)):
+                return None
+            Vf, Cf = V.float(), C.float()
+            if Vf.shape[0] < n:
+                Vf = torch.cat([Vf, Vf.new_zeros(n - Vf.shape[0])]); Cf = torch.cat([Cf, Cf.new_zeros(n - Cf.shape[0])])
+            seen = Cf > 0
+            ns = int(seen.sum())
+            k = min(int(n * cfg.vpc_prune_frac), ns)
+            if k <= 0:
+                return None
+            vc = Vf[seen] / Cf[seen]
+            thresh = torch.kthvalue(vc, k).values
+            mask = torch.zeros(n, dtype=torch.bool, device=Vf.device)
+            mask[seen] = vc <= thresh
+            if V.shape[0] == n:          # 搬走的顆粒換了位置 => 清掉累加值（C = 0 => 這一輪剪枝不判它）
+                V[mask] = 0
+                C[mask] = 0
+            if not getattr(self, "_vpcr_announced", False) or global_step % 3000 == 0:
+                print(f"[vpc-running] {'✅ 首次觸發 ' if not getattr(self, '_vpcr_announced', False) else ''}step {global_step}："
+                      f"窗口 {nv} 視角、有被看到 {ns:,}／{n:,}，搬走 V/C 最低 {int(mask.sum()):,} 顆（門檻 {float(thresh):.3g}）", flush=True)
+                self._vpcr_announced = True
+            return mask
         # CHEAP GUARD FIRST: cost comes from the live radii window (this runs before
         # screen_size_prune clears it). No snapshot — a snapshot goes stale the moment
         # add_new_gs appends points.

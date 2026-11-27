@@ -454,6 +454,35 @@ class MCMCDensityControllerImpl(DensityControllerImpl):
         #   => 1/c 訊號 ceiling 10.89x => **w = 2.278**（見 tools/cost_proxy_quality.py）
         # 符號：w > 0 偏好**便宜**（我方命題）／w < 0 偏好**貴**（Taming）
         _caw = getattr(self.config, "cost_add_densify", 0.0)
+        if _caw != 0 and getattr(self.config, "cost_add_running", False):
+            # ★ 2026-11-27 成本改讀訓練中累加的 C（見 config `cost_add_running`）；舊的 `_exact_cost` 路徑在累加式剪枝下拿不到訊號
+            _st = getattr(gaussian_model, "_trim_state", None) or {}
+            _C = _st.get("C")
+            _ok = _C is not None and _C.shape[0] <= _n and int(_st.get("views", 0)) >= int(getattr(self.config, "vpc_min_views", 100))
+            if _ok:
+                _C = _C.float()
+                if _C.shape[0] < _n:
+                    _C = torch.cat([_C, _C.new_zeros(_n - _C.shape[0])])
+                _seen = _C > 0
+                _ok = bool(_seen.any())
+            if _ok:
+                _raw = (1.0 / _C[_seen]) if _caw > 0 else _C[_seen]
+                _raw = _raw / _raw.mean().clamp_min(1e-30)
+                _k = max(1, int(0.05 * _raw.numel()))
+                _raw = _raw.clamp(max=float(torch.topk(_raw, _k).values.mean()))   # 夾在 ceiling（同舊路徑的理由）
+                _sig = torch.ones(_n, device=probs.device, dtype=probs.dtype)
+                _sig[_seen] = _raw.to(probs.dtype)
+                probs = probs * (1.0 + abs(_caw) * _sig)
+                if not getattr(self, "_caddr_fired", False):
+                    self._caddr_fired = True
+                    _wt = 1.0 + abs(_caw) * _sig
+                    print(f"[cost-add-running] ✅ 首次觸發：w={_caw}（{'偏好便宜' if _caw > 0 else '偏好貴'}）、"
+                          f"窗口 {int(_st.get('views', 0))} 視角、有被看到 {int(_seen.sum()):,}／{_n:,}、"
+                          f"權重範圍 {float(_wt.min()):.3f}～{float(_wt.max()):.1f}x", flush=True)
+            elif not getattr(self, "_caddr_warned", False) and _C is None:
+                self._caddr_warned = True
+                print("⚠⚠ [cost-add-running] 拿不到 renderer 的 C 累加（trim_running_vc 沒開？）=> 不會生效", flush=True)
+            _caw = 0.0   # 不再走舊路徑
         if _caw != 0:
             _ec = getattr(self, "_exact_cost", None)
             if _ec is not None and _ec.shape[0] <= _n and _ec.numel() > 0 and float(_ec.max()) > 0:

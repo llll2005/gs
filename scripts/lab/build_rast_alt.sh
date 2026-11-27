@@ -25,6 +25,6 @@ PYTHONPATH=$DST conda run -n gspl --no-capture-output python -c "
 import diff_trim_surfel_rasterization as m, os
 from diff_trim_surfel_rasterization import GaussianRasterizationSettings as S
 p = os.path.dirname(m.__file__); ok = p.startswith('$DST')
-print('[build_rast_alt] 載入', p, '｜新欄位', all(f in S._fields for f in ('inv_homog', 'exact_strip_cull')))
-raise SystemExit(0 if ok and all(f in S._fields for f in ('inv_homog', 'exact_strip_cull')) else 1)" \
+print('[build_rast_alt] 載入', p, '｜新欄位', all(f in S._fields for f in ('inv_homog', 'exact_strip_cull', 'vc_cost_exact', 'vc_value_mask')))
+raise SystemExit(0 if ok and all(f in S._fields for f in ('inv_homog', 'exact_strip_cull', 'vc_cost_exact', 'vc_value_mask')) else 1)" \
   && { git rev-parse HEAD; echo "RAST_F32_CONST=${RAST_F32_CONST:-1}"; } > "$DST/.built_from" && echo "[build_rast_alt] ✅ 完成（$DST/.built_from）"

@@ -118,7 +118,10 @@ class _RasterizeGaussians(torch.autograd.Function):
                 # ★ 2026-11-21 bit14 = 反單應交點（forward MODE 1；backward 同步 bit10）
                 | (16384 if getattr(raster_settings, "inv_homog", False) else 0)
                 # ★ 2026-11-21 bit15 = 精確支撐 vs 像素條（需 skip_box 與 inv_homog；forward MODE 1；渲染逐位元相同）
-                | (32768 if getattr(raster_settings, "exact_strip_cull", False) else 0)),
+                | (32768 if getattr(raster_settings, "exact_strip_cull", False) else 0)
+                # ★ 2026-11-27 bit16 = V/C 成本只算實際評估的配對（精確盒／幾何遮罩跳過的不算）；bit17 = V/C 價值只算計分像素（pix_skip 當價值遮罩、不略過渲染）
+                | (65536 if getattr(raster_settings, "vc_cost_exact", False) else 0)
+                | (131072 if getattr(raster_settings, "vc_value_mask", False) else 0)),
             sh_rest,
             # ★ 2026-11-05 逐像素不計分遮罩（uint8 H*W，1＝略過；只在 lean 訓練 forward 生效）；None＝空張量＝不略過
             (getattr(raster_settings, "pix_skip", None) if getattr(raster_settings, "pix_skip", None) is not None
@@ -375,6 +378,8 @@ class GaussianRasterizationSettings(NamedTuple):
     #   跟像素條有沒有交集，沒有就整個 warp 跳過那個配對。盒外本來就是 alpha < 1/255、走到 continue => 渲染逐位元相同、梯度只差加總順序。
     #   例外：訓練中累加 V/C 時跳過的配對覆蓋數照算、V 少掉 alpha < 1/255 的項；record pass（trim）不跳。
     skip_box : bool = False
+    vc_cost_exact : bool = False   # ★ 2026-11-27 V/C 成本只算實際評估的配對（需 train_record；見 forward.cu g_skipf 32）
+    vc_value_mask : bool = False   # ★ 2026-11-27 V/C 價值只算計分像素（pix_skip 改當價值遮罩，不略過渲染；g_skipf 64）
     # ★ 2026-11-16 A-3（Fable）：配對位元（bwd_pair_bit）從「整個 tile 有沒有人混合」改成「8 個 warp 各自有沒有人混合」，backward 每個 warp
     #   只走自己位元為 1 的配對；同時 backward 的近平面判準改成跟 forward 一樣（否則 forward 判掉的側對面元 backward 還會算梯度）。需 bwd_pair_bit。
     pair_bit_warp : bool = False

@@ -86,6 +86,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             skip_unscored_pixels: bool = False,
             trim_running_vc: bool = False,
             trim_running_warp: bool = False,
+            vc_cost_exact: bool = False,
+            vc_value_mask: bool = False,
             trim_protect_vc: float = -1.0,
             trim_merge_first: bool = False,
             trim_merge_color_tol: float = 0.1,
@@ -206,6 +208,14 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   原本 32 條執行緒同時對同一個 shared 位址做 atomic（10-24 量：增生期 forward 13.0 ms 裡 3.7 ms）。
         #   渲染不變、覆蓋數逐位元相同、V 只差浮點加總順序。需要 trim_running_vc。
         self.trim_running_warp = trim_running_warp
+        # ★ 2026-11-27 V/C 融進後來採用的機制（使用者「vpc 是不是也能融一些我們的採用算法，例如考慮 warp、遮罩」）：
+        #   vc_cost_exact  C 只算實際評估的配對：精確支撐盒（skip_box）／幾何配對遮罩判定沒碰到、整個 warp 跳過的配對不算成本
+        #                  （原本為了和沒開 skip_box 時逐位元相同而照算，但那些配對幾乎不花時間 => 高估「外接盒大、實際支撐小」的顆粒）。
+        #   vc_value_mask  V 只累加計分像素（塊外遮罩的 C 區不算價值；C 照算，因為那些像素照常渲染、成本照付）。
+        #                  需要 metric block_mask_dir；和 skip_unscored_pixels 同開時以這個為準（C 區照常渲染）。
+        #   都只在訓練中累加 V/C（trim_running_vc）時作用；都關＝原行為（光柵器逐位元相同）。
+        self.vc_cost_exact = vc_cost_exact
+        self.vc_value_mask = vc_value_mask
         # ★ 2026-10-31 最大貢獻保護（使用者：少數視角才有的資訊被「所有視角加總」的 V/C 稀釋 => b2 超高塔頂被剪）：
         #   累加期間記錄逐顆「單一視角的平均貢獻 ta/cn」的最大值 M；M >= trim_protect_vc 的顆粒這輪不剪（-1＝關）。
         self.trim_protect_vc = trim_protect_vc
@@ -418,7 +428,21 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if getattr(self, "t_sat_1e3", False) and getattr(self, "t_sat_1e5", False):
             raise ValueError("t_sat_1e3 與 t_sat_1e5 只能開一個")
         # ★ 2026-11-05 不計分像素：training_forward 從 module._pix_skip 帶進來（uint8 H*W；None＝這張沒有遮罩）
-        _pix = kwargs.get("_pix_skip") if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "_vrs_pix", False)) else None
+        _pix = kwargs.get("_pix_skip") if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "_vrs_pix", False)
+                                            or getattr(self, "vc_value_mask", False)) else None
+        _vcx = bool(_lean and not record_transmittance and getattr(self, "trim_running_vc", False) and getattr(self, "vc_cost_exact", False))
+        _vvm = bool(_lean and not record_transmittance and getattr(self, "trim_running_vc", False) and getattr(self, "vc_value_mask", False)
+                    and _pix is not None)
+        if _pix is not None and not _vvm and not (getattr(self, "skip_unscored_pixels", False) or getattr(self, "_vrs_pix", False)):
+            _pix = None   # 這張遮罩只為了 V 的計分；這一步沒用到就不交給光柵器（不然沒帶價值遮罩位元時會被當成「略過渲染」）
+        if (_vcx or _vvm) and not getattr(self, "_vc_flags_announced", False):
+            self._vc_flags_announced = True
+            print(f"[vc-flags] ✅ 首次觸發：V/C 成本只算實際評估的配對={_vcx}、價值只算計分像素={_vvm}"
+                  + (f"（這張不計分像素 {float(_pix.float().mean()):.3f}）" if _pix is not None else ""), flush=True)
+        if getattr(self, "vc_value_mask", False) and _lean and not record_transmittance and _pix is None \
+                and not getattr(self, "_vvm_warned", False):
+            self._vvm_warned = True
+            print("⚠⚠ [vc-value-mask] 開了但這一步拿不到塊外遮罩（metric 沒設 block_mask_dir？）=> V 照舊算全部像素", flush=True)
         if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "bwd_zero_grad_skip", False)) \
                 and "pix_skip" not in GaussianRasterizationSettings._fields:
             raise RuntimeError("設了 skip_unscored_pixels／bwd_zero_grad_skip 但光柵器不認得 pix_skip 欄位 —— 沒重編")
@@ -509,6 +533,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
                                           and not getattr(self, "_acc_stop", False)) else {}),
             **({"train_record_warp": True} if (_lean and not record_transmittance and getattr(self, "trim_running_vc", False)
                                                and getattr(self, "trim_running_warp", False)) else {}),
+            **({"vc_cost_exact": True} if _vcx else {}),
+            **({"vc_value_mask": True} if _vvm else {}),
             **({"absgrad": bool(kwargs.get("_absgrad", True))}
                if (getattr(self, "absgrad_gate", False) and "absgrad" in GaussianRasterizationSettings._fields) else {}),
             # 純量測（tools/tile_budget_audit.py）：每個 (tile, 顆粒) 配對的幾何有效／遮擋可達／逐像素工作量
@@ -526,6 +552,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
             raise RuntimeError("設了 trim_running_warp 但光柵器不認得 train_record_warp 欄位 —— 沒重編")
         if getattr(self, "trim_running_vc", False) and "train_record" not in GaussianRasterizationSettings._fields:
             raise RuntimeError("設了 trim_running_vc 但光柵器不認得 train_record 欄位 —— 沒重編")
+        if (getattr(self, "vc_cost_exact", False) or getattr(self, "vc_value_mask", False)) \
+                and "vc_cost_exact" not in GaussianRasterizationSettings._fields:
+            raise RuntimeError("設了 vc_cost_exact／vc_value_mask 但光柵器不認得這兩個欄位 —— 沒重編（2026-11-27）")
         if getattr(self, "bwd_pair_bit_warp", False) and not getattr(self, "bwd_pair_bit", False):
             raise ValueError("bwd_pair_bit_warp 要和 bwd_pair_bit 一起開（逐 warp 位元存在配對位元的緩衝區裡）")
         for _f, _fld in (("skip_box", "skip_box"), ("bwd_pair_bit_warp", "pair_bit_warp"), ("inv_homog", "inv_homog"), ("exact_strip_cull", "exact_strip_cull"), ("aih_homog", "aih_homog")):
@@ -752,7 +781,8 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if not self._absgrad_announced and not need:
                 self._absgrad_announced = True
                 print(f"[absgrad-gate] ✅ 首次關閉 absgrad 累加：step {step}（absgrad_densify={w}、densify_until={until}）")
-        if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "_vrs_pix", False)) and "_pix_skip" not in kwargs:
+        if (getattr(self, "skip_unscored_pixels", False) or getattr(self, "_vrs_pix", False) or getattr(self, "vc_value_mask", False)) \
+                and "_pix_skip" not in kwargs:
             kwargs["_pix_skip"] = getattr(module, "_pix_skip", None)   # ★ 2026-11-05 GaussianSplatting.training_step 在渲染前取好
         if "_lean_dist" not in kwargs:
             # ★ 2026-10-19：深度失真正則有作用的步 => dist 版 lean（其他幾何 loss 若 > 0，光柵器 backward 會當場報錯）

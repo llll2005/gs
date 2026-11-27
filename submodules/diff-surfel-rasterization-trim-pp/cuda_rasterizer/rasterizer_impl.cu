@@ -516,7 +516,9 @@ int CudaRasterizer::Rasterizer::forward(
 	// ★ 2026-11-16 A-1／A-3（Fable；使用者「要改 cuda 的都同意」）：bit 4096＝逐 warp 精確支撐盒跳過（lean 與非 record 的完整路徑）、
 	//   bit 8192＝配對位元改存 8 個 warp 的遮罩（需 bit 16）。預設都關＝原行為。
 	// ★ 2026-11-21 bit 32768＝精確支撐 vs 像素條（需 bit 4096 skip_box 與 bit 16384 反單應；forward MODE 1）
-	FORWARD::setSkipFlags(((lean & 4096) ? 1 : 0) | ((lean & 8192) ? 4 : 0) | ((lean & 16384) ? 8 : 0) | ((lean & 32768) ? 16 : 0));
+	// ★ 2026-11-27 bit 65536＝V/C 成本只算實際評估的配對（forward g_skipf 32）、bit 131072＝V/C 價值只算計分像素（g_skipf 64；pix_skip 改當價值遮罩）
+	FORWARD::setSkipFlags(((lean & 4096) ? 1 : 0) | ((lean & 8192) ? 4 : 0) | ((lean & 16384) ? 8 : 0) | ((lean & 32768) ? 16 : 0)
+	                      | ((lean & 65536) ? 32 : 0) | ((lean & 131072) ? 64 : 0));
 	FORWARD::setRecordT((lean & 256) != 0);   // ★ 2026-11-07 bit 256 = record 模式累加 Σ T（逐顆可見度）
 	FORWARD::setTSat((lean & 1024) ? 0.001f : ((lean & 2048) ? 0.00001f : 0.0001f));   // ★ 2026-11-08 bit 1024 = 飽和門檻 1e-3、bit 2048 = 1e-5（原 1e-4）
 	FORWARD::setAlphaMax((lean & 512) ? 0.999f : 0.99f);   // ★ 2026-11-07 bit 512 = alpha 上限 0.999

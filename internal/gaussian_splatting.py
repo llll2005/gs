@@ -1078,7 +1078,9 @@ class GaussianSplatting(LightningModule):
 
         # ★ 2026-11-05 renderer.skip_unscored_pixels：渲染前先取本影像的 C 區（metric 的同一張遮罩），lean 訓練 forward 略過
         self._pix_skip = None
-        if getattr(self.renderer, "skip_unscored_pixels", False) and hasattr(self.metric, "block_mask_skip"):
+        # ★ 2026-11-27 renderer.vc_value_mask 也要這張遮罩（拿來當 V 的計分遮罩、不略過渲染）
+        if (getattr(self.renderer, "skip_unscored_pixels", False) or getattr(self.renderer, "vc_value_mask", False)) \
+                and hasattr(self.metric, "block_mask_skip"):
             _gt = batch[1][1]
             self._pix_skip = self.metric.block_mask_skip(batch[1][0], tuple(_gt.shape[-2:]), _gt.device)
         # ★ 2026-11-08 誤差低的 tile 少算（metric vrs_mode）：本步要略過的 tile 併進同一張 pix_skip

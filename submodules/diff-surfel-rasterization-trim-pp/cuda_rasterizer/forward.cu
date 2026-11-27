@@ -661,7 +661,13 @@ renderCUDA(
 	constexpr bool LEANLIKE = (MODE == 1 || MODE == 5);   // 訓練用的 lean forward（MODE 5 多算 distortion）
 	const bool aih_on = (MODE == 1) && (aih != nullptr) && (g_skipf & 8);   // ★ 11-21 反單應交點（MODE 1 不用深度，只用近平面判準）
 	// Done threads can help with fetching, but don't rasterize
-	bool done = !inside || (LEANLIKE && pix_skip != nullptr && pix_skip[pix_id] != 0);
+	// ★ 2026-11-27 g_skipf 64＝V/C 的「價值只算計分像素」：pix_skip 不再略過像素（照常渲染），只讓這個像素的 T·α 不進 V（C 照算）。
+	//   g_skipf 32＝V/C 的「成本只算實際評估的配對」：精確盒（skip_box）與幾何配對遮罩判定沒碰到、整個 warp 跳過的配對不進 C。
+	//   兩個位元都不設＝原行為（逐位元相同）。見 renderer `vc_value_mask`／`vc_cost_exact`。
+	const bool vc_vm = LEANLIKE && pix_skip != nullptr && (g_skipf & 64);
+	const bool vc_cx = (g_skipf & 32) != 0;
+	const bool vmask0 = vc_vm && inside && pix_skip[pix_id] != 0;
+	bool done = !inside || (LEANLIKE && pix_skip != nullptr && !vc_vm && pix_skip[pix_id] != 0);
 
 	// Load start/end range of IDs to process in bit sorted list.
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
@@ -789,8 +795,8 @@ renderCUDA(
 					// Keep track of current position in range
 					contributor++;
 					if (a1) { const float4 b = s_box[j];
-						if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) { acc_hit = true; acc_ta = 0.f; break; } }   // 覆蓋數照算（C 逐位元相同）、V 少掉 < T/255 的項
-					if (xc && !((s_xm[j] >> wid) & 1u)) { acc_hit = true; acc_ta = 0.f; break; }   // ★ 11-21 幾何配對遮罩（同上的處理）
+						if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) { acc_hit = !vc_cx; acc_ta = 0.f; break; } }   // 覆蓋數照算（C 逐位元相同）、V 少掉 < T/255 的項
+					if (xc && !((s_xm[j] >> wid) & 1u)) { acc_hit = !vc_cx; acc_ta = 0.f; break; }   // ★ 11-21 幾何配對遮罩（同上的處理）
 
 					// Fisrt compute two homogeneous planes, See Eq. (8)
 					float3 Tu = collected_Tu[j];
@@ -852,7 +858,7 @@ renderCUDA(
 						atomicAdd(&transmittance[collected_id[j]], g_record_T ? T : T * alpha);
 						atomicAdd(&num_covered_pixels[collected_id[j]], 1);
 					}
-					acc_ta = T * alpha; acc_hit = true;   // 原本：兩個 shared atomic（整個 warp 打同一個位址）
+					acc_ta = vmask0 ? 0.f : T * alpha; acc_hit = true;   // 原本：兩個 shared atomic（整個 warp 打同一個位址）
 					if (alpha < 1.0f / 255.0f)
 						break;
 					float test_T = T * (1 - alpha);
@@ -923,8 +929,8 @@ renderCUDA(
 			// Keep track of current position in range
 			contributor++;
 			if (a1) { const float4 b = s_box[j];
-				if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) { if (rec_acc) atomicAdd(&s_cn1[j], 1); continue; } }
-			if (xc && !((s_xm[j] >> wid) & 1u)) { if (rec_acc) atomicAdd(&s_cn1[j], 1); continue; }   // ★ 11-21 幾何配對遮罩
+				if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) { if (rec_acc && !vc_cx) atomicAdd(&s_cn1[j], 1); continue; } }
+			if (xc && !((s_xm[j] >> wid) & 1u)) { if (rec_acc && !vc_cx) atomicAdd(&s_cn1[j], 1); continue; }   // ★ 11-21 幾何配對遮罩
 
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			float3 Tu = collected_Tu[j];
@@ -986,7 +992,7 @@ renderCUDA(
 				atomicAdd(&transmittance[collected_id[j]], g_record_T ? T : T * alpha);
 				atomicAdd(&num_covered_pixels[collected_id[j]], 1);
 			}
-			if (rec_acc) { atomicAdd(&s_ta1[j], T * alpha); atomicAdd(&s_cn1[j], 1); }
+			if (rec_acc) { if (!vmask0) atomicAdd(&s_ta1[j], T * alpha); atomicAdd(&s_cn1[j], 1); }
 			if (alpha < 1.0f / 255.0f)
 				continue;
 			float test_T = T * (1 - alpha);
