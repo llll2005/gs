@@ -21,7 +21,8 @@ GT=data/geometry_gt/MC_Aerial
 OUT=outputs/lab/geom_f1
 OURS=outputs/lab/full44_best/checkpoints/merged.ckpt
 # ★ 11-20 full44_best 已刪（收尾清 lab）=> 抽網格的相機清單改取現行 1.5M 的合併檔（同一組訓練相機，結果不變）；可用 GEOM_CAMS 覆寫
-CAMS=${GEOM_CAMS:-outputs/lab/g44tn_s17g70np16tricap0p5cmflattrimasklres3geo8log0sea3dtcapfcsboxpbwseabacktseaflseafl2seafl3seaflbgeo50regvisnodoc15_best1maskdistrfed10b4/checkpoints/merged.ckpt}
+# ★ 11-28 那份 1.5M 合併檔在 11-26 清硬碟時刪了（fs1128_vwa／vwava 的 F1 因此失敗）=> 改取最終版 fs1122_base10_f32 的合併檔（同一組訓練相機）
+CAMS=${GEOM_CAMS:-outputs/lab/fs1122_base10_f32/checkpoints/merged.ckpt}
 OFF=../cityGS_origin/outputs/citygsv2_mc_aerial_sh2_trim/checkpoints/epoch=6-step=30000.ckpt
 # ★ 11-13 使用者「CityGS full blk merge 的 F1 跟各項數據，沒有就補量」：ours_a＝A＋dist4 全場景合併模型（相機照舊取 full44 那份，與 CityGS 同一組）
 OURS_A=outputs/lab/g44s30ksfm10fssh16di4_best1maskdistrfed10b4/checkpoints/merged.ckpt
