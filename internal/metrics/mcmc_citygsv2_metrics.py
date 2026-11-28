@@ -496,6 +496,15 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             return None
         return (m == 0).to(torch.uint8).contiguous().view(-1)
 
+    def block_mask_non_a(self, name, hw, device):
+        """★ 2026-11-28 renderer `vc_value_a_only`：本影像「不是 A 區」的像素（B＋C）=> uint8 [H*W]，1＝這個像素的 T·α 不算價值。"""
+        if not getattr(self.config, "block_mask_dir", ""):
+            return None
+        m = self._block_mask_get(name, hw, device)
+        if m is None:
+            return None
+        return (m != 1).to(torch.uint8).contiguous().view(-1)
+
     def _block_mask_apply(self, pl_module, step, batch, outputs):
         name, gt = batch[1][0], batch[1][1]
         m = self._block_mask_get(name, tuple(gt.shape[-2:]), gt.device)

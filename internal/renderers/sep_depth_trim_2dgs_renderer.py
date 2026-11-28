@@ -88,6 +88,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             trim_running_warp: bool = False,
             vc_cost_exact: bool = False,
             vc_value_mask: bool = False,
+            vc_value_a_only: bool = False,
             trim_protect_vc: float = -1.0,
             trim_merge_first: bool = False,
             trim_merge_color_tol: float = 0.1,
@@ -216,6 +217,9 @@ class SepDepthTrim2DGSRenderer(Renderer):
         #   都只在訓練中累加 V/C（trim_running_vc）時作用；都關＝原行為（光柵器逐位元相同）。
         self.vc_cost_exact = vc_cost_exact
         self.vc_value_mask = vc_value_mask
+        # ★ 2026-11-28 vc_value_a_only（使用者「可以試試」）：價值只算 A 區（塊內計分）；B 區（塊外要透明）的 T·α 也不算價值
+        #   （B 的目標是背景色，顆粒在那裡貢獻顏色正是 loss 在罰的）。C 照算 => 只出現在 B 的顆粒 V/C≈0、最先被剪。需要 vc_value_mask。
+        self.vc_value_a_only = vc_value_a_only
         # ★ 2026-10-31 最大貢獻保護（使用者：少數視角才有的資訊被「所有視角加總」的 V/C 稀釋 => b2 超高塔頂被剪）：
         #   累加期間記錄逐顆「單一視角的平均貢獻 ta/cn」的最大值 M；M >= trim_protect_vc 的顆粒這輪不剪（-1＝關）。
         self.trim_protect_vc = trim_protect_vc
@@ -438,6 +442,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
         if (_vcx or _vvm) and not getattr(self, "_vc_flags_announced", False):
             self._vc_flags_announced = True
             print(f"[vc-flags] ✅ 首次觸發：V/C 成本只算實際評估的配對={_vcx}、價值只算計分像素={_vvm}"
+                  + ("（只算 A 區：B、C 都不算價值）" if (_vvm and getattr(self, "vc_value_a_only", False)) else "")
                   + (f"（這張不計分像素 {float(_pix.float().mean()):.3f}）" if _pix is not None else ""), flush=True)
         if getattr(self, "vc_value_mask", False) and _lean and not record_transmittance and _pix is None \
                 and not getattr(self, "_vvm_warned", False):

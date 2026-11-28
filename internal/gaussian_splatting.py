@@ -1082,7 +1082,12 @@ class GaussianSplatting(LightningModule):
         if (getattr(self.renderer, "skip_unscored_pixels", False) or getattr(self.renderer, "vc_value_mask", False)) \
                 and hasattr(self.metric, "block_mask_skip"):
             _gt = batch[1][1]
-            self._pix_skip = self.metric.block_mask_skip(batch[1][0], tuple(_gt.shape[-2:]), _gt.device)
+            if (getattr(self.renderer, "vc_value_a_only", False) and getattr(self.renderer, "vc_value_mask", False)
+                    and not getattr(self.renderer, "skip_unscored_pixels", False) and hasattr(self.metric, "block_mask_non_a")):
+                # ★ 2026-11-28 價值只算 A 區：這張遮罩只當價值遮罩（vc_value_mask 不略過渲染），B＋C 的 T·α 都不算
+                self._pix_skip = self.metric.block_mask_non_a(batch[1][0], tuple(_gt.shape[-2:]), _gt.device)
+            else:
+                self._pix_skip = self.metric.block_mask_skip(batch[1][0], tuple(_gt.shape[-2:]), _gt.device)
         # ★ 2026-11-08 誤差低的 tile 少算（metric vrs_mode）：本步要略過的 tile 併進同一張 pix_skip
         self.renderer._vrs_pix = False
         if hasattr(self.metric, "vrs_skip"):
