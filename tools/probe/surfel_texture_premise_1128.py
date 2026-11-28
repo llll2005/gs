@@ -130,4 +130,16 @@ for tol in (0.1, 0.2, 1.0):
     with torch.no_grad():
         I, J, info = merge_step(gmb, k=12, max_frac=1.0, color_tol=tol, chunk=1 << 16, as_trim=True)
     print(f"  顏色門檻 {tol:g}：互為最佳配對 {info.get('mutual', 0):,}（佔 N {100 * info.get('mutual', 0) / nb:.1f}%）", flush=True)
+    if tol >= 1.0 and I.numel():
+        # ★ 「主要顏色＋漸變」能不能只記亮度：配對兩顆的 DC 顏色差，有多少落在「亮度方向」（Δc 平行於兩顆平均色）
+        C0 = 0.28209479177387814
+        ci = gmb.gaussians["shs_dc"][I, 0, :].float() * C0 + 0.5; cj = gmb.gaussians["shs_dc"][J, 0, :].float() * C0 + 0.5
+        dc_ = cj - ci; mc = 0.5 * (ci + cj); u_ = mc / mc.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        par = (dc_ * u_).sum(-1, keepdim=True) * u_
+        l1 = dc_.abs().mean(-1)
+        big = l1 >= 0.1
+        if int(big.sum()):
+            fr = (par[big].norm(dim=-1) ** 2 / (dc_[big].norm(dim=-1) ** 2).clamp_min(1e-12))
+            print(f"  色差 >= 0.1 的配對 {int(big.sum()):,}：色差能量落在亮度方向的比例 中位 {float(fr.median()):.2f}（p25 {float(fr.quantile(0.25)):.2f}）"
+                  f"｜>= 0.9 的佔 {100 * float((fr >= 0.9).float().mean()):.1f}%", flush=True)
 print("  => 門檻 1.0 減 0.1 的差＝只因顏色不同而沒併的配對（現行合併用 0.1）")

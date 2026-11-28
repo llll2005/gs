@@ -105,7 +105,9 @@ REL = {}
 def rel_of(name):
     st = os.path.splitext(os.path.basename(str(name)))[0]
     if st not in REL:
-        f = f"{D}/estimated_depths_tri_rel/{st}.npy"
+        f = f"{D}/estimated_depths_tri_rel/{os.path.basename(str(name))}.npy"     # 檔名＝影像名含副檔名（0000.png.npy）
+        if not os.path.exists(f):
+            f = f"{D}/estimated_depths_tri_rel/{st}.npy"
         REL[st] = np.load(f) if os.path.exists(f) else None
     return REL[st]
 
