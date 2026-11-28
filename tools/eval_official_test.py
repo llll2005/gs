@@ -170,7 +170,13 @@ def main():
     ap.add_argument("--opacity_keep", type=float, nargs="+", default=None,
                     help="2026-10-10（09g）：依 opacity 由高到低只留這些比例（如 1.0 0.9 0.75 0.5 0.25），載入一次、逐一評分；"
                          "並列依索引（穩定排序），與 tools/official_prune_ckpt.py 同規則，但評分用本工具 => 我方與官方同一把尺")
+    ap.add_argument("--vc_keep", type=float, nargs="+", default=None,
+                    help="★ 2026-11-27 部署端 V/C 剪枝：先用訓練相機掃一遍，逐顆累加 V＝Σ T·α、C＝覆蓋像素數（同訓練中的累加式剪枝），"
+                         "依 V/C 由高到低只留這些比例（訓練相機都沒看到的排最後），載入一次、逐一評分。與 --opacity_keep 擇一")
+    ap.add_argument("--vc_train_dir", default=None, help="--vc_keep 用的訓練相機（COLMAP sparse/0）；預設＝--train_dir")
     a = ap.parse_args()
+    if a.vc_keep and a.opacity_keep:
+        raise SystemExit("--vc_keep 與 --opacity_keep 擇一")
 
     dev = "cuda"
     if not a.skip_marker and not os.path.exists(os.path.join(a.test_dir, ".built_by_official_steps")):
@@ -224,7 +230,28 @@ def main():
     N0 = model.get_xyz.shape[0]
     op_order = None
     curve = []
-    for keep in (a.opacity_keep or [1.0]):
+    if a.vc_keep:
+        # ★ 2026-11-27 部署端 V/C：訓練相機（不是測試相機）上逐顆累加 V、C；排序只用訓練視角 => 不偷看測試集
+        import time as _t
+        tdir = a.vc_train_dir or a.train_dir
+        tnames, tcams = load_test_cameras(tdir, a.down_sample)
+        Vs = torch.zeros(N0, device=dev); Cs = torch.zeros(N0, device=dev)
+        _t0 = _t.time()
+        with torch.no_grad():
+            for i in range(len(tnames)):
+                tm, cn = renderer(tcams[i].to_device(dev), model, bg_color=bg, record_transmittance=True, record_coverage=True)
+                cn = cn.float()
+                Vs += tm.float() * cn
+                Cs += cn
+        seen = Cs > 0
+        score = torch.where(seen, Vs / Cs.clamp_min(1.0), torch.full_like(Vs, -1.0))   # 沒被任何訓練相機算到 => 排最後（最先剪）
+        op_order = torch.argsort(score, descending=True, stable=True)
+        print(f"[vc-keep] 訓練相機 {len(tnames)} 台（{tdir}）掃描 {(_t.time() - _t0):.0f} s：被看到 {int(seen.sum()):,}／{N0:,} 顆、"
+              f"沒被看到 {N0 - int(seen.sum()):,} 顆（{100 * (1 - float(seen.float().mean())):.2f}%，最先剪）", flush=True)
+        del Vs, Cs, score
+        torch.cuda.empty_cache()
+    _keeps = a.vc_keep or a.opacity_keep or [1.0]
+    for keep in _keeps:
         if keep < 1.0:
             if op_order is None:
                 op = model.get_opacity.detach().reshape(-1)
@@ -234,8 +261,8 @@ def main():
             model.properties = {k: v[m] for k, v in orig_props.items()}
         else:
             model.properties = orig_props
-        if a.opacity_keep:
-            print(f"\n════ opacity 保留 {100 * keep:.0f}%：N={model.get_xyz.shape[0]:,} ════")
+        if a.opacity_keep or a.vc_keep:
+            print(f"\n════ {'V/C' if a.vc_keep else 'opacity'} 保留 {100 * keep:.0f}%：N={model.get_xyz.shape[0]:,} ════")
         ps, ss, ls, tr, tg, ms, br = [], [], [], [], [], [], []
         fs = [0, 0, 0]   # 全部 tile／過對比門檻／失敗
         fpi = []         # 逐幀 (全部, 過門檻, 失敗)
@@ -293,12 +320,13 @@ def main():
             print(f"[逐張] {a.per_image_csv}")
         if a.save_dir:
             print(f"[圖] {a.save_dir}（左=GT 右=渲染）")
-        if a.opacity_keep:
-            curve.append((keep, model.get_xyz.shape[0], np.mean(ps), np.mean(ss), np.mean(ls)))
+        if a.opacity_keep or a.vc_keep:
+            curve.append((keep, model.get_xyz.shape[0], np.mean(ps), np.mean(ss), np.mean(ls),
+                          1000.0 / float(np.median(ms)), torch.cuda.max_memory_allocated() / 2 ** 30))
     if curve:
-        print("\n[剪枝曲線] keep\tN\tpsnr\tssim\tlpips")
-        for k_, n_, p_, s_, l_ in curve:
-            print(f"[剪枝曲線] {k_:.2f}\t{n_}\t{p_:.3f}\t{s_:.4f}\t{l_:.4f}")
+        print(f"\n[剪枝曲線]（依 {'V/C' if a.vc_keep else 'opacity'}）keep\tN\tpsnr\tssim\tlpips\tFPS(中位)\t峰值GiB")
+        for k_, n_, p_, s_, l_, f_, g_ in curve:
+            print(f"[剪枝曲線] {k_:.2f}\t{n_}\t{p_:.3f}\t{s_:.4f}\t{l_:.4f}\t{f_:.1f}\t{g_:.2f}")
 
 
 if __name__ == "__main__":

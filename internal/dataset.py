@@ -388,6 +388,8 @@ class DataModule(LightningDataModule):
             view_balance: float = -1.0,
             view_balance_clip: Tuple[float, float] = (0.25, 4.0),
             view_balance_points: int = 60000,
+            view_weight_mask_dir: str = "",
+            view_weight_mask_clip: Tuple[float, float] = (0.25, 4.0),
     ) -> None:
         r"""Load dataset
 
@@ -399,6 +401,9 @@ class DataModule(LightningDataModule):
                 view_balance: ★ 2026-11-08 依覆蓋度加權抽訓練視角（`internal/utils/view_balance.py`）。>= 0 開啟、值＝γ；
                     -1＝關（原本每個 epoch randperm，行為完全不變）。權重用 dataparser 的點雲（best1 系列＝本塊裁切的 init PLY）
                     與訓練相機算；w_v＝Σ_{p 在 v 畫面內} c(p)^-γ，除以平均後夾到 view_balance_clip。epoch 長度不變（有放回抽）。
+                view_weight_mask_dir: ★ 2026-11-27 依「塊內計分像素比例」加權抽訓練視角（成本公式用在視角上：每一步不論視角都要
+                    渲染整張，價值＝塊外遮罩 A 區（值 1）佔畫面的比例）。w_v＝A_v／平均，夾到 view_weight_mask_clip；與 view_balance 同開時相乘。
+                    空字串＝關（原行為）。遮罩檔＝<dir>/<影像名>（同 metric block_mask_dir；0＝C 不計分、1＝A 塊內、2＝B 要透明）。
         """
 
         super().__init__()
@@ -580,7 +585,46 @@ class DataModule(LightningDataModule):
         )
 
     def _view_balance_weights(self):
-        """view_balance >= 0 => 訓練視角的抽樣權重（說明見 __init__）；否則 None（原行為）。"""
+        """view_balance >= 0 及／或 view_weight_mask_dir => 訓練視角的抽樣權重（說明見 __init__）；都關 => None（原行為）。"""
+        w_cov = self._view_balance_weights_cov()
+        w_msk = self._view_weight_mask()
+        if w_cov is None:
+            return w_msk
+        return w_cov if w_msk is None else w_cov * w_msk
+
+    def _view_weight_mask(self):
+        """★ 2026-11-27 見 __init__ 的 view_weight_mask_dir。"""
+        d = str(self.hparams.get("view_weight_mask_dir", "") or "")
+        if not d:
+            return None
+        if self.hparams["distributed"]:
+            print("⚠⚠ [view-weight-mask] 分散式訓練沒實作 => 不生效", flush=True)
+            return None
+        import os
+        from PIL import Image
+        names = self.dataparser_outputs.train_set.image_names
+        fr, miss = [], 0
+        for n in names:
+            p = os.path.join(d, os.path.basename(str(n)))
+            if not os.path.exists(p):
+                miss += 1; fr.append(float("nan")); continue
+            m = np.asarray(Image.open(p))
+            fr.append(float((m == 1).mean()))
+        fr = torch.tensor(fr, dtype=torch.float32)
+        ok = torch.isfinite(fr)
+        if not bool(ok.any()):
+            print(f"⚠⚠ [view-weight-mask] {d} 一張遮罩都找不到 => 照原本均勻抽", flush=True)
+            return None
+        fr = torch.where(ok, fr, fr[ok].mean())                       # 沒遮罩的視角給平均（中性）
+        lo, hi = tuple(self.hparams.get("view_weight_mask_clip", (0.25, 4.0)))
+        w = (fr / fr.mean().clamp_min(1e-6)).clamp(lo, hi)
+        q = torch.quantile(fr, torch.tensor([0.1, 0.5, 0.9])).tolist()
+        print(f"[view-weight-mask] ✅ {len(names)} 台訓練相機（缺遮罩 {miss}）：塊內計分比例 p10/p50/p90 {q[0]:.3f}/{q[1]:.3f}/{q[2]:.3f}｜"
+              f"權重 {float(w.min()):.2f}～{float(w.max()):.2f}（夾 {lo}～{hi}；夾到下限 {int((w <= lo).sum())} 台）｜"
+              f"有效視角數 {float(w.sum() ** 2 / (w ** 2).sum()):.0f}／{len(w)}", flush=True)
+        return w
+
+    def _view_balance_weights_cov(self):
         gam = float(self.hparams.get("view_balance", -1.0))
         if gam < 0:
             return None

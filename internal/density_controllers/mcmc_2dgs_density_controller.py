@@ -437,7 +437,13 @@ class MCMC2DGSDensityController(MCMCDensityController):
     舊式的 −2.34 dB 是 09-13 年代分界之前量的（分數作廢）。需要 renderer.trim_running_vc。"""
 
     vpc_min_views: int = 100
-    """`vpc_running`／`cost_add_running`：V/C 窗口至少累加這麼多個訓練視角才用（剛剪完、窗口剛歸零時訊號太少 => 這次不動）"""
+    """`vpc_running`／`cost_add_running`／`merge_prio_vc`：V/C 窗口至少累加這麼多個訓練視角才用"""
+
+    merge_prio_vc: bool = False
+    """★ 2026-11-27（使用者「其他部分可以套成本公式嗎」→「都排」）：合併額度（每次 merge_max_frac）不夠時，優先合併 V/C 低的配對。
+    配對排序鍵＝原本的配對代價 × min(prio_i, prio_j)，prio＝V/C／中位數夾到 [0.25, 4]（V/C 越低越先併）；窗口裡沒被看到的 prio＝1。
+    V/C＝renderer 訓練中累加（trim_running_vc）；當前窗口不足 vpc_min_views 個視角時改用上一個窗口（renderer 在剪枝歸零前另存）。
+    lab 量到額度確實會滿（互為最佳 6～8 萬對、每次只併 2.2～2.4 萬對）=> 排序會換掉被併的那一批。關＝原行為。"""
 
     screen_prune_emergency_px: int = -1
     """>0 enables per-STEP emergency monster recycling (decoupled from the
@@ -2939,6 +2945,35 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             self._hpd_announced = True
         return n_d
 
+    def _merge_vc_prio(self, gaussian_model, n0: int, global_step: int):
+        """★ 2026-11-27 merge_prio_vc：逐顆 prio＝(V/C)／中位數夾到 [0.25, 4]（越低越先併）；拿不到 V/C => None（照原本排序）。"""
+        st = getattr(gaussian_model, "_trim_state", None) or {}
+        mv = int(getattr(self.config, "vpc_min_views", 100))
+        for kv, kc, kn, tag in (("V", "C", "views", "當前窗口"), ("Vprev", "Cprev", "views_prev", "上一個窗口")):
+            V, C, nv = st.get(kv), st.get(kc), int(st.get(kn, 0) or 0)
+            if V is None or C is None or nv < mv or V.shape[0] > n0 or C.shape[0] > n0:
+                continue
+            V, C = V.float(), C.float()
+            if V.shape[0] < n0:                                    # 之後才生的顆粒：C＝0 => 中性
+                V = torch.cat([V, V.new_zeros(n0 - V.shape[0])]); C = torch.cat([C, C.new_zeros(n0 - C.shape[0])])
+            seen = C > 0
+            if not bool(seen.any()):
+                continue
+            vc = V[seen] / C[seen]
+            med = vc.median().clamp_min(1e-12)
+            prio = torch.ones(n0, device=V.device)
+            prio[seen] = (vc / med).clamp(0.25, 4.0)
+            if not getattr(self, "_mvc_announced", False) or global_step % 4500 == 0:
+                q = torch.quantile(prio[seen][:1_000_000], torch.tensor([0.1, 0.5, 0.9], device=prio.device)).tolist()
+                print(f"[merge-prio-vc] {'✅ 首次觸發 ' if not getattr(self, '_mvc_announced', False) else '　'}step {global_step}：用{tag}（{nv} 視角）、"
+                      f"有被看到 {int(seen.sum()):,}／{n0:,}；prio p10/p50/p90 {q[0]:.2f}/{q[1]:.2f}/{q[2]:.2f}（低＝先併）", flush=True)
+                self._mvc_announced = True
+            return prio
+        if not getattr(self, "_mvc_warned", False):
+            self._mvc_warned = True
+            print("⚠⚠ [merge-prio-vc] 拿不到夠長的 V/C 窗口（trim_running_vc 沒開，或兩個窗口都不足 vpc_min_views）=> 這次照原本排序", flush=True)
+        return None
+
     def _merge_exclude(self, gaussian_model, n0: int):
         """合併排除：錨點（sfm_lock）＋ trim_hidden 判為被擋的（這個窗口在畫面內、覆蓋 0 => 該剪不該併；11-07 使用者「合併加相關判定」）。"""
         ex = self._anchor_mask(n0)
@@ -3312,6 +3347,10 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             print(f"[merge-ramp] {'✅ 首次觸發 ' if not getattr(self, '_mramp_announced', False) else '　'}step {global_step}：額度 {_mf:.3f}"
                   f"（{self.config.merge_max_frac:g} → {_rt:g}，事件 {_f0}～{_last}、之後精修到結束）", flush=True)
             self._mramp_announced = True
+        if bool(getattr(self.config, "merge_prio_vc", False)):
+            _pv = self._merge_vc_prio(gaussian_model, n0, global_step)
+            if _pv is not None:
+                _prio = _pv if _prio is None else _prio * _pv
         _mI, _mJ, _minfo = merge_step(gaussian_model, k=int(self.config.merge_k), max_frac=_mf,
                                       color_tol=float(self.config.merge_color_tol),
                                       chunk=int(getattr(self.config, "merge_chunk", 1 << 19)),

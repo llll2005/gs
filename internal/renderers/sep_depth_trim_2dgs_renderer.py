@@ -1100,6 +1100,12 @@ class SepDepthTrim2DGSRenderer(Renderer):
               f"門檻（{_rs}）{float(thr) if thr is not None else float('nan'):.3e}｜{msg}{_prot_msg}{_hid_msg}{_bp_msg}", flush=True)
         if int(getattr(getattr(module.density_controller, "config", None), "round2_from", 0) or 0) > 0 and "V" in pc._trim_state:
             pc._trim_state["Vlast"] = pc._trim_state["V"].detach().clone()   # ★ 11-12 兩輪流程：S1 的表面顆粒＝不透明且最後一個 V/C 窗口有出力（剪枝後的 V）
+        # ★ 2026-11-27 合併優先權（density merge_prio_vc）：歸零前把這個窗口（剪枝後、已與新 N 對齊）的 V／C 另存一份，
+        #   合併事件若剛好落在歸零之後、當前窗口還沒累積夠，就用這份（搬家／剪枝／重排會照一般規則同步這兩個張量）
+        if bool(getattr(getattr(module.density_controller, "config", None), "merge_prio_vc", False)):
+            pc._trim_state["Vprev"] = pc._trim_state["V"].detach().clone()
+            pc._trim_state["Cprev"] = pc._trim_state["C"].detach().clone()
+            pc._trim_state["views_prev"] = n_views
         # 重設累加器（剪枝後 N 變了 => 以新 N 重建）
         pc._trim_state["V"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
         pc._trim_state["C"] = torch.zeros(pc.get_xyz.shape[0], device=pc.get_xyz.device)
