@@ -272,7 +272,8 @@ case "$MODE" in
     # ★ 11-21 SWAP_MERGED＝換塊的底（合併模型的跑次目錄）；full44_best 在 11-19 清空間時已刪 => 不設就照舊（會失敗），
     #   設了就不帶 --sanity（--sanity 找底的 60k 塊 ckpt，17k 家族沒有）。例：SWAP_MERGED=outputs/lab/g44tn_..._nogate_best1maskdistrfed10b4
     if [ -n "${SWAP_MERGED:-}" ]; then
-      run_mem_retry "$L" conda run -n gspl --no-capture-output python tools/swap_block_eval.py --merged_run "$SWAP_MERGED" --block "$B" "${XA[@]}"
+      # ★ 11-28 SWAP_EXTRA＝另外傳給 swap_block_eval.py 的參數（例 "--cat --delta_ref vc1128_ref --perframe_json logs/swapcat_b1.json"）
+      run_mem_retry "$L" conda run -n gspl --no-capture-output python tools/swap_block_eval.py --merged_run "$SWAP_MERGED" --block "$B" "${XA[@]}" ${SWAP_EXTRA:-}
       exit $?
     fi
     run_mem_retry "$L" conda run -n gspl --no-capture-output python tools/swap_block_eval.py --merged_run "$OUT" --block "$B" --sanity "${XA[@]}"

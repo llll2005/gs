@@ -56,6 +56,9 @@ def main():
     ap.add_argument("--max_views", type=int, default=100000)
     ap.add_argument("--save_frames", nargs="*", default=[], help="★ 11-18 存這幾幀（test 影像名去副檔名，例 0226 0269）的「GT｜各變體」橫排 PNG 到 --save_dir（看圖確認用）")
     ap.add_argument("--save_dir", default="logs/swap_frames")
+    ap.add_argument("--cat", action="store_true", help="★ 11-28 幾何區域再依物件類別（地面／海面／屋頂／立面／其他，用基準合併模型的渲染法線＋世界高度分）與高度帶分開算 PSNR")
+    ap.add_argument("--delta_ref", default=None, help="★ 11-28 類別表的 Δ 對哪個變體（名稱；預設＝基準原樣）")
+    ap.add_argument("--perframe_json", default="", help="★ 11-28 存逐幀（整張 PSNR、幾何區域 PSNR、各類別 se/像素數）到這個 JSON")
     ap.add_argument("--load_cpu", action="store_true", help="★ 11-15 合併模型與候選先在 CPU 載入（本機 6 GB 卡＋viewer：整個合併模型一次搬上 GPU 會 OOM）；每個變體組好才上 GPU，結果相同")
     a = ap.parse_args()
     from internal.utils.gaussian_model_loader import GaussianModelLoader
@@ -144,6 +147,11 @@ def main():
     tdist = {}
     regeo = {}
     rbin = {}
+    rcat = {}    # ★ 11-28 --cat：每幀每像素的類別與高度帶（基準合併模型決定，各變體共用）
+    racc = {}    # 變體 -> (類別 5＋高度帶 5, [se 總和, 像素數])
+    rfr = {}     # 變體 -> {幀名: {...}}（--perframe_json）
+    CATS = ["海面", "地面", "屋頂", "立面", "其他"]
+    HB = ["<3m", "3~50m", "50~150m", "150~250m", ">250m"]
     rms = {}     # ★ 2026-10-23 使用者（「維持高速的情況下維持分數」）：換塊後合併模型在第 B 塊視角的渲染時間，與品質同表 => 修法要同時看兩欄
     need = sorted(set(i for _, s in sets for i in s))
     # 「本塊負責區域」：基準第 B 塊的顆粒單獨渲染時 alpha > 0.5 的像素（合併後這些像素主要由第 B 塊決定）；
@@ -193,6 +201,20 @@ def main():
                     xw2 = (pc2 - cams.T[i].to(dev).float()) @ cams.R[i].to(dev).float()
                     regeo[i] = (block_mask(xw2, pc0)[B].reshape(H_, W_).to(dev) & (zz > 0)
                                 & (oo["rend_alpha"].reshape(H_, W_) > 0.5)).cpu()
+                    if a.cat:
+                        # 世界 +z 朝上（單位＝100 m）；海平面約 z −0.034、地面約 0（tools/probe/monodepth_sea_1102.py）
+                        #   水平（|n_z|>0.8）：z<=−0.02 海面、−0.02~0.03 地面、>=0.03 屋頂；|n_z|<0.3 立面；其餘＝其他（斜面、樹、車…）
+                        nr = oo["rend_normal"].reshape(3, H_, W_)
+                        nz = (nr[2] / nr.norm(dim=0).clamp_min(1e-6)).abs()
+                        zw = xw2[:, 2].reshape(H_, W_)
+                        hor = nz > 0.8
+                        cc = torch.full((H_, W_), 4, dtype=torch.uint8, device=dev)
+                        cc[nz < 0.3] = 3
+                        cc[hor & (zw >= 0.03)] = 2
+                        cc[hor & (zw < 0.03) & (zw > -0.02)] = 1
+                        cc[hor & (zw <= -0.02)] = 0
+                        hb = torch.bucketize(zw, torch.tensor([0.03, 0.5, 1.5, 2.5], device=dev)).to(torch.uint8)
+                        rcat[i] = (cc.cpu(), hb.cpu())
                 pil = Image.open(gt_path(i)).convert("RGB")
                 if pil.size != (out.shape[2], out.shape[1]):
                     pil = pil.resize((out.shape[2], out.shape[1]), Image.LANCZOS)
@@ -208,6 +230,19 @@ def main():
                 per[i] = (float(-10 * torch.log10(se.mean().clamp_min(1e-12))), float(ssim_fn(out, gt)),
                           float(lp(out.unsqueeze(0), gt.unsqueeze(0))), ft, float(se[m].sum()), int(m.sum()),
                           float(se[mg].sum()), int(mg.sum()))
+                if a.cat and i in selB:
+                    cc, hb = rcat[i][0].to(dev), rcat[i][1].to(dev)
+                    acc2 = racc.setdefault(vn, np.zeros((len(CATS) + len(HB), 2)))
+                    fr = {"psnr": per[i][0], "geo_se": per[i][6], "geo_n": per[i][7]}
+                    for k in range(len(CATS)):
+                        mk = mg & (cc == k); v_ = [float(se[mk].sum()), int(mk.sum())]
+                        acc2[k] += v_; fr[CATS[k]] = v_
+                    for k in range(len(HB)):
+                        mk = mg & (hb == k); v_ = [float(se[mk].sum()), int(mk.sum())]
+                        acc2[len(CATS) + k] += v_; fr[HB[k]] = v_
+                    rfr.setdefault(vn, {})[str(names_t[i])] = fr
+                elif a.perframe_json and i in selB:
+                    rfr.setdefault(vn, {})[str(names_t[i])] = {"psnr": per[i][0], "geo_se": per[i][6], "geo_n": per[i][7]}
                 if i in selB:
                     tse = (se * m)[:ny * T, :nx * T].reshape(ny, T, nx, T).sum((1, 3)).reshape(-1)
                     tcn = m[:ny * T, :nx * T].reshape(ny, T, nx, T).sum((1, 3)).reshape(-1).float()
@@ -252,6 +287,22 @@ def main():
             ps = -10 * np.log10(max(r[b, 0] / max(r[b, 1], 1), 1e-12)); p0 = -10 * np.log10(max(b0[b, 0] / max(b0[b, 1], 1), 1e-12))
             cells.append(f"{ps:>6.2f}({ps - p0:+.2f})" if r[b, 1] > 0 else f"{'—':>11}")
         print(f"{vn:<26} " + " ".join(cells))
+    if a.cat and racc:
+        ref = a.delta_ref if a.delta_ref in racc else "基準（原樣）"
+        r0 = racc[ref]
+        ps_ = lambda r, k: -10 * np.log10(max(r[k, 0] / max(r[k, 1], 1), 1e-12))
+        cols = CATS + HB
+        print(f"\n=== 幾何區域依物件類別／高度帶的 PSNR（第 {B} 塊視角；分類用基準合併模型的渲染法線＋世界高度；Δ 對「{ref}」）===")
+        print(f"{'':<26} " + " ".join(f"{c:>13}" for c in cols))
+        print(f"{'（像素佔比）':<26} " + " ".join(f"{100 * r0[k, 1] / max(r0[:len(CATS), 1].sum(), 1):>12.1f}%" for k in range(len(cols))))
+        for vn, _ in variants:
+            r = racc[vn]
+            print(f"{vn:<26} " + " ".join((f"{ps_(r, k):>6.2f}({ps_(r, k) - ps_(r0, k):+.3f})" if r[k, 1] > 0 else f"{'—':>13}") for k in range(len(cols))))
+    if a.perframe_json:
+        import json
+        os.makedirs(os.path.dirname(a.perframe_json) or ".", exist_ok=True)
+        json.dump(rfr, open(a.perframe_json, "w"), ensure_ascii=False)
+        print(f"[逐幀] {a.perframe_json}", flush=True)
     print(f"\n=== 渲染時間（換塊後合併模型，第 {B} 塊視角；⚠ 獨佔整卡才可比）===")
     print(f"{'':<26} {'N':>12} {'ms/幀':>8} {'中位':>8} {'FPS':>7} {'相對基準':>9}")
     m0 = np.mean(rms["基準（原樣）"][0])
