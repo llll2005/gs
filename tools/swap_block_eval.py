@@ -101,7 +101,7 @@ def main():
         if mmask is None:
             mmask = block_mask(base["means"], pc)[B]
             print(f"[基準] 第 {B} 塊盒內 {int(mmask.sum()):,} 顆（換掉這批）")
-        cm, _, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(c, device=ldev, eval_mode=True)
+        cm, crend, _ = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(c, device=ldev, eval_mode=True)
         cp = {k: v for k, v in cm.properties.items()}
         # SH 階數較低的候選（best0sh2／1／0）：shs_rest 補 0 到基準的長度 —— 高階係數為 0 與低階渲染完全等價（10-11）
         # ⚠ 2026-10-17：eval_mode=True 載入時 SH 合併成單一 `shs`（DC 在第 0 個）=> 原本只看 `shs_rest` 的補 0 從沒生效、SH 換塊三次失敗
@@ -119,6 +119,18 @@ def main():
             print(f"[{nm}] 有面內亮度漸變（tex）：基準與其他變體補 0", flush=True)
         if "tex" in base and "tex" not in cp:
             cp["tex"] = torch.zeros((cp["means"].shape[0], 2), dtype=cp["means"].dtype, device=cp["means"].device)
+        # ★ 11-29 固定厚度：厚度是候選的 renderer 設定（surf_thick_ratio）=> 換成逐顆 property `thick`（候選塊＝比例、基準與其他變體＝0，
+        #   renderer 讀到 property 就逐顆用；0＝沒有厚度、逐位元同原寫法）
+        _thr = float(getattr(crend, "surf_thick_ratio", 0.0) or 0.0)
+        if _thr > 0 and "thick" not in base:
+            base["thick"] = torch.zeros((base["means"].shape[0], 1), dtype=base["means"].dtype)
+            model._names = tuple(model._names) + ("thick",)
+            for _vn, _vc in variants:
+                if _vc is not None and "thick" not in _vc:
+                    _vc["thick"] = torch.zeros((_vc["means"].shape[0], 1), dtype=_vc["means"].dtype)
+            print(f"[{nm}] 有固定厚度（比例 {_thr:g}）：基準與其他變體的顆粒厚度 0", flush=True)
+        if "thick" in base:
+            cp["thick"] = torch.full((cp["means"].shape[0], 1), _thr, dtype=cp["means"].dtype, device=cp["means"].device)
         assert set(cp) == set(base) and all(cp[k].shape[1:] == base[k].shape[1:] for k in base), f"{nm}：屬性與基準不同（SH 階數？）"
         cmask = block_mask(cp["means"], pc)[B].to(cp["means"].device)
         variants.append((nm, {k: cp[k][cmask].detach().cpu().clone() for k in base}))

@@ -55,6 +55,12 @@ __device__ int g_cap_grad_mode_b = 0;
 __device__ const float2* g_tex_b = nullptr;
 __device__ float2* g_dtex_b = nullptr;
 static bool s_tex_on_b = false;
+// ★ 2026-11-29 固定厚度（forward.cu g_thk 的 backward 版；auxiliary.h thickRho／thickRhoGrad）：g_thk_b＝每顆 (Cu, Cv, Cw, s_w)、
+//   g_dthk_b＝dL/d(Cu, Cv, Cw)（.w 不寫；呼叫端歸零）、g_thk_ext_b＝forward preprocess 寫的螢幕外擴。nullptr＝原寫法。
+__device__ const float4* g_thk_b = nullptr;
+__device__ float4* g_dthk_b = nullptr;
+__device__ const float2* g_thk_ext_b = nullptr;
+static bool s_thk_on_b = false;
 namespace cg = cooperative_groups;
 
 // Backward pass for conversion of spherical harmonics to RGB for
@@ -512,10 +518,12 @@ renderCUDA(
 						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
 					}
 				}
+				if (g_thk_b != nullptr) { const float2 e = g_thk_ext_b[coll_id]; bx.x -= e.x; bx.y += e.x; bx.z -= e.y; bx.w += e.y; }   // ★ 11-29 固定厚度
 				collected_boxg[block.thread_rank()] = bx;
 			}
 			if (xcg)
-				s_xmg[block.thread_rank()] = (unsigned char)aihTileMask(aih + 9 * coll_id, aihTauLoose(normal_opacity[coll_id].w), points_xy_image[coll_id], pix_min);
+				s_xmg[block.thread_rank()] = (g_thk_b != nullptr && g_thk_b[coll_id].w > 0.f) ? (unsigned char)0xFFu   // ★ 11-29 固定厚度：遮罩沒算厚度 => 不跳
+					: (unsigned char)aihTileMask(aih + 9 * coll_id, aihTauLoose(normal_opacity[coll_id].w), points_xy_image[coll_id], pix_min);
 				// collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
@@ -549,6 +557,8 @@ renderCUDA(
 			float2 s = {p.x / p.z, p.y / p.z}; 
 			// Compute Mahalanobis distance in the canonical splat' space
 			float rho3d = (s.x * s.x + s.y * s.y); // splat distance
+			float4 thk = make_float4(0.f, 0.f, 0.f, 0.f);   // ★ 11-29 固定厚度
+			if (g_thk_b != nullptr) { thk = g_thk_b[collected_id[j]]; rho3d = thickRho(s, rho3d, thk); }
 			
 			// Add low pass filter according to Botsch et al. [2005],
 			// see Eq. (11) from 2DGS paper. 
@@ -692,6 +702,14 @@ renderCUDA(
 					dL_dG * -G * s.x + dL_dz * Tw.x,
 					dL_dG * -G * s.y + dL_dz * Tw.y
 				};
+				if (thk.w > 0.f) {   // ★ 11-29 固定厚度：rho' 對交點 s 與 C 的導數（取代 |s|^2 的 2s）
+					float2 drs; float3 drc; thickRhoGrad(s, rho3d, thk, drs, drc);
+					const float dL_drho = -0.5f * dL_dG * G;
+					dL_ds = { dL_drho * drs.x + dL_dz * Tw.x, dL_drho * drs.y + dL_dz * Tw.y };
+					atomicAdd(&g_dthk_b[global_id].x, dL_drho * drc.x);
+					atomicAdd(&g_dthk_b[global_id].y, dL_drho * drc.y);
+					atomicAdd(&g_dthk_b[global_id].z, dL_drho * drc.z);
+				}
 				// [ABSGRAD 2026-08-25] AbsGS (arXiv 2404.10484 §3.2) 的 2DGS 對應物。
 				// 原文證明：3DGS 的 screen-space 位置梯度 sum_p dL/dmu 會因為 splat 中心兩側
 				// 的像素推向相反方向而互相抵消（梯度碰撞），所以過度重建的大高斯永遠達不到
@@ -764,7 +782,7 @@ renderCUDA(
 //        （dL_dweight／last_dL_dT 回傳到 alpha、dL_dmd -> dL_dz 經交點深度到 transMat；次像素分支加到 transMat[8]）；
 //        法線／深度／alpha 累積／中位深度的梯度照樣不算（呼叫端保證那些通道沒進 loss）。DST=false 時程式路徑與舊版相同。
 #define OPT_NG 16
-template <uint32_t C, bool ABS, bool SAT, bool RED, bool DST, bool TEX = false>
+template <uint32_t C, bool ABS, bool SAT, bool RED, bool DST, bool TEX = false, bool THK = false>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA_opt(
 	const uint2* __restrict__ ranges,
@@ -798,7 +816,8 @@ renderCUDA_opt(
 	// ★ 2026-10-16 PB（pair_used != nullptr）：配對貢獻 bit。forward 記下「這個 (tile,顆粒) 配對有沒有被任一像素混合」；
 	//   沒被混合的配對對每個像素都是 valid=false（條件逐條相同：contributor<last、NEAR_PLANE、power、alpha>=1/255）=> 梯度恆 0。
 	//   每批載入時用 warp ballot＋前綴和把 bit=1 的依原順序擠到 shared 前段，只迭代這些 => 處理的有效配對與順序完全相同。
-	constexpr int NG = TEX ? OPT_NG + 2 : OPT_NG;   // ★ 11-28 面內亮度漸變：g[16]、g[17]＝dL/dg
+	static_assert(!(TEX && THK), "面內亮度漸變與固定厚度不能同時開");
+	constexpr int NG = TEX ? OPT_NG + 2 : (THK ? OPT_NG + 3 : OPT_NG);   // ★ 11-28 面內亮度漸變：g[16]、g[17]＝dL/dg；★ 11-29 固定厚度：g[16..18]＝dL/dC
 	auto block = cg::this_thread_block();
 	auto warp = cg::tiled_partition<32>(block);
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -926,6 +945,7 @@ renderCUDA_opt(
 						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
 					}
 				}
+				if (THK) { const float2 e = g_thk_ext_b[coll_id]; bx.x -= e.x; bx.y += e.x; bx.z -= e.y; bx.w += e.y; }   // ★ 11-29 固定厚度
 				collected_box[slot] = bx;
 			}
 		}
@@ -964,7 +984,9 @@ renderCUDA_opt(
 				if (valid) {
 					const float wz = aih_on ? 1.0f / p.z : 0.f;   // ★ 11-21 交點深度（反單應時＝1/p'.z）
 					const float2 s = aih_on ? make_float2(p.x * wz, p.y * wz) : float2{p.x / p.z, p.y / p.z};
-					const float rho3d = (s.x * s.x + s.y * s.y);
+					float rho3d = (s.x * s.x + s.y * s.y);
+					float4 thk = make_float4(0.f, 0.f, 0.f, 0.f);   // ★ 11-29 固定厚度（THK＝false 時整段不存在）
+					if (THK) { thk = g_thk_b[collected_id[j]]; rho3d = thickRho(s, rho3d, thk); }
 					const float2 xy = collected_xy[j];
 					const float2 d = {xy.x - pixf.x, xy.y - pixf.y};
 					const float rho2d = FILTER_INV_SQ_C * (d.x * d.x + d.y * d.y);
@@ -1038,6 +1060,12 @@ renderCUDA_opt(
 						if (rho3d <= rho2d) {
 							float2 dL_ds = DST ? float2{ dL_dG * -G * s.x + dL_dz * Tw.x, dL_dG * -G * s.y + dL_dz * Tw.y }
 							                   : float2{ dL_dG * -G * s.x, dL_dG * -G * s.y };
+							if (THK && thk.w > 0.f) {   // ★ 11-29 固定厚度：rho' 對 s 與 C 的導數（取代 |s|^2 的 2s）
+								float2 drs; float3 drc; thickRhoGrad(s, rho3d, thk, drs, drc);
+								const float dL_drho = -0.5f * dL_dG * G;
+								dL_ds = DST ? float2{ dL_drho * drs.x + dL_dz * Tw.x, dL_drho * drs.y + dL_dz * Tw.y } : float2{ dL_drho * drs.x, dL_drho * drs.y };
+								g[OPT_NG] = dL_drho * drc.x; g[OPT_NG + 1] = dL_drho * drc.y; g[OPT_NG + 2] = dL_drho * drc.z;
+							}
 							if (ABS) g[14] = fabsf(dL_ds.x) + fabsf(dL_ds.y);
 							if (TEX && tex_grad) {   // ★ 11-28 顏色斜率推交點（|g| 照舊不含這項）
 								dL_ds.x += dL_dtf * tg.x; dL_ds.y += dL_dtf * tg.y;
@@ -1111,6 +1139,8 @@ renderCUDA_opt(
 				}
 				atomicAdd(&dL_dopacity[gid], g[15]);
 				if (TEX && (g[NG - 2] != 0.f || g[NG - 1] != 0.f)) { atomicAdd(&g_dtex_b[gid].x, g[NG - 2]); atomicAdd(&g_dtex_b[gid].y, g[NG - 1]); }
+				if (THK && (g[OPT_NG] != 0.f || g[OPT_NG + 1] != 0.f || g[OPT_NG + 2] != 0.f)) {   // ★ 11-29 固定厚度
+					atomicAdd(&g_dthk_b[gid].x, g[OPT_NG]); atomicAdd(&g_dthk_b[gid].y, g[OPT_NG + 1]); atomicAdd(&g_dthk_b[gid].z, g[OPT_NG + 2]); }
 			}
 		}
 		if (RED) {
@@ -1129,6 +1159,11 @@ renderCUDA_opt(
 				if (TEX) {
 					if (s_g[NG - 2][t] != 0.f) atomicAdd(&g_dtex_b[gid].x, s_g[NG - 2][t]);
 					if (s_g[NG - 1][t] != 0.f) atomicAdd(&g_dtex_b[gid].y, s_g[NG - 1][t]);
+				}
+				if (THK) {   // ★ 11-29 固定厚度
+					if (s_g[OPT_NG][t] != 0.f) atomicAdd(&g_dthk_b[gid].x, s_g[OPT_NG][t]);
+					if (s_g[OPT_NG + 1][t] != 0.f) atomicAdd(&g_dthk_b[gid].y, s_g[OPT_NG + 1][t]);
+					if (s_g[OPT_NG + 2][t] != 0.f) atomicAdd(&g_dthk_b[gid].z, s_g[OPT_NG + 2][t]);
 				}
 			}
 		}
@@ -1604,6 +1639,17 @@ void BACKWARD::setDepthCap(const float* cap_inv, int n)
 }
 
 // ★ 2026-11-13 規格 3 §4-3：B 的梯度模式（0＝現狀、3＝只補前面）
+void BACKWARD::setSurfThick(const float* thk, float* dthk, const float* ext)
+{
+	const float4* t = reinterpret_cast<const float4*>(thk);
+	float4* d = reinterpret_cast<float4*>(dthk);
+	const float2* e = reinterpret_cast<const float2*>(ext);
+	cudaMemcpyToSymbol(g_thk_b, &t, sizeof(const float4*));
+	cudaMemcpyToSymbol(g_dthk_b, &d, sizeof(float4*));
+	cudaMemcpyToSymbol(g_thk_ext_b, &e, sizeof(const float2*));
+	s_thk_on_b = (thk != nullptr);
+}
+
 void BACKWARD::setSurfTex(const float* tex, float* dtex)
 {
 	const float2* t = reinterpret_cast<const float2*>(tex);
@@ -1669,8 +1715,9 @@ void BACKWARD::render(
 	const float* xc_ptr = (flags & 2048) ? aih : nullptr;   // ★ 11-21 幾何配對遮罩（只給 renderCUDA；opt 路徑有配對位元）
 	if (!geom && (sat || red || pbit || dst || zskip)) {
 #define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr), (dst ? dL_depths : nullptr), zskip, s_aih_conv
-#define OPT_L(A, S, R, D) do { if (s_tex_on_b) renderCUDA_opt<NUM_CHANNELS, A, S, R, D, true> << <grid, block >> >(OPT_ARGS); \
-                              else renderCUDA_opt<NUM_CHANNELS, A, S, R, D, false> << <grid, block >> >(OPT_ARGS); } while (0)
+#define OPT_L(A, S, R, D) do { if (s_tex_on_b) renderCUDA_opt<NUM_CHANNELS, A, S, R, D, true, false> << <grid, block >> >(OPT_ARGS); \
+                              else if (s_thk_on_b) renderCUDA_opt<NUM_CHANNELS, A, S, R, D, false, true> << <grid, block >> >(OPT_ARGS); \
+                              else renderCUDA_opt<NUM_CHANNELS, A, S, R, D, false, false> << <grid, block >> >(OPT_ARGS); } while (0)
 #define OPT_SR(A, D) { if (sat && red) OPT_L(A, true, true, D); else if (sat) OPT_L(A, true, false, D); else if (red) OPT_L(A, false, true, D); else OPT_L(A, false, false, D); }
 		if (dst) { if (absg) OPT_SR(true, true) else OPT_SR(false, true) }
 		else     { if (absg) OPT_SR(true, false) else OPT_SR(false, false) }

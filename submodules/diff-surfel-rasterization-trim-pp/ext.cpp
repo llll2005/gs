@@ -20,6 +20,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("set_sh_basis", &SetShBasis);   // ★ 2026-11-21 晚 SH 可觀測子空間基底
   m.def("set_depth_cap_grad_mode", &SetDepthCapGradMode);   // ★ 2026-11-13 規格 3 §4-3 只補前面   // ★ 2026-11-11 逐貢獻深度上限
   m.def("set_depth_cap_acc", &SetDepthCapAcc);
+  m.def("set_surf_thick", &SetSurfThick);   // ★ 2026-11-29 固定厚度
   m.def("set_surf_tex", &SetSurfTex);   // ★ 2026-11-28 面內亮度漸變   // ★ 2026-11-11 逐顆落在上限後面的 T·α
   m.def("fused_adam", &FusedAdamCUDA);   // ★ 2026-10-19 融合／稀疏 Adam
 }

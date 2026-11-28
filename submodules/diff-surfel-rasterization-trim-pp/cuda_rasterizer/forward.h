@@ -65,6 +65,7 @@ namespace FORWARD
 	void setDepthCap(const float* cap_inv, int n);
 	void setShBasis(const float* U, int K);   // ★ 2026-11-21 晚 SH 可觀測子空間基底（U 225 個 float、列距 15；K＝0 關）
 	void setDepthCapAcc(float* bh, float* tot);
+	void setSurfThick(const float* thk, float* ext);   // ★ 2026-11-29 固定厚度（float4 x P、ext float2 x P；nullptr＝關）
 	void setSurfTex(const float* tex);   // ★ 2026-11-28 面內亮度漸變（float2 x P；nullptr＝關）   // ★ 2026-11-11 逐顆落在上限後面的 T·α
 
 	void render(

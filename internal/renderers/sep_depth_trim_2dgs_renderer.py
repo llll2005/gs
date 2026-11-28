@@ -115,6 +115,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             reseed_by_error: bool = True,
             reseed_opacity: float = 0.5,
             reseed_scale_px: float = 1.5,
+            surf_thick_ratio: float = 0.0,
     ):
         """`skip_surf_normal`（2026-08-26）：True 時不計算 `surf_normal`。
 
@@ -175,6 +176,10 @@ class SepDepthTrim2DGSRenderer(Renderer):
         # ★ 2026-11-21 晚 純數學化簡 #9（紀錄/實驗分析/39）：反單應的 lean backward 不歸約 Σ g.z，每顆換算 dL/dT 時用齊次性
         #   Σ gz = -(q0·Σ dx g + q1·Σ dy g)/iz 補回（每個配對 p'·g = 0）。需要 inv_homog。預設關。
         self.aih_homog = aih_homog
+        # ★ 2026-11-29 固定厚度（使用者 11-03 構想、11-29「低角度露縫直接做」）：面元沿法向多一個厚度 s_w = 比例 x min(s_u, s_v)
+        #   （相對尺度，不用場景公尺），渲染取沿射線的 3D 高斯最大響應（cuda_rasterizer/auxiliary.h thickRho）。訓練與評估都開；0＝關。
+        #   模型若有 property `thick`（換塊評測時由工具放進來：候選塊＝比例、其他塊＝0）就逐顆用它，否則全部用這個比例。
+        self.surf_thick_ratio = float(surf_thick_ratio)
         # ★ 2026-11-21 晚 紀錄/實驗分析/40：空拍相機只觀測得到 16 維 SH 裡的約 10 維（每色版），最弱 3 維完全看不到。
         #   sh_proj_k > 0：SH 升到最高階後，每步 optimizer 更新完把 SH 係數投影到這塊訓練相機幾何算出的 k 維可觀測子空間（DC＋高階前 k−1 維，保留 DC 版）
         #   （基底＝M̄＝mean_i M_i/tr(M_i) 的特徵向量，M_i＝Σ_可見相機 Y(d)Y(d)^T，只用相機視錐、不渲染；第一次觸發時算）。
@@ -376,6 +381,20 @@ class SepDepthTrim2DGSRenderer(Renderer):
         record_transmittance passes are color-independent — subclasses may skip
         the color computation there."""
         return pc.get_features, None
+
+    @staticmethod
+    def _surf_thick_C(means3D, scales, rotations, cam_center, ratio):
+        """★ 11-29 固定厚度：每顆 (Cu, Cv, Cw, s_w)。旋轉欄＝面元的 u、v 軸與法向（光柵器 quat_to_rotmat 同一套）；
+        尺度用原始 scales（光柵器的 transMat 也不乘 scale_modifier）。ratio 可以是常數或逐顆張量（0＝這顆沒有厚度 => s_w=0、Cw=0）。"""
+        from internal.utils.general_utils import build_rotation
+        R = build_rotation(rotations)                                  # [N, 3, 3]，欄＝軸
+        off = cam_center.to(means3D.dtype)[None, :] - means3D          # 相機 − 中心
+        proj = torch.einsum("nij,ni->nj", R, off)                       # (t_u·off, t_v·off, n·off)
+        su, sv = scales[:, 0], scales[:, 1]
+        sw = torch.minimum(su, sv) * ratio
+        has = sw > 0
+        Cw = torch.where(has, proj[:, 2] / torch.where(has, sw, torch.ones_like(sw)), torch.zeros_like(sw))
+        return torch.stack([proj[:, 0] / su, proj[:, 1] / sv, Cw, sw.detach()], dim=-1).float().contiguous()
 
     def forward(
             self,
@@ -647,6 +666,27 @@ class SepDepthTrim2DGSRenderer(Renderer):
             if not getattr(self, "_tex_announced", False):
                 self._tex_announced = True
                 print(f"[surf-tex] ✅ 首次觸發：面內亮度漸變交給光柵器 tex {tuple(_tex.shape)}，|g| 中位 {float(_tex.detach().norm(dim=-1).median()):.4f}", flush=True)
+        # ★ 2026-11-29 固定厚度：C＝相機在面元正規化座標的位置 (t_u·(c−μ)/s_u, t_v·(c−μ)/s_v, n·(c−μ)/s_w) 與 s_w（可微，梯度經 autograd 回到 μ／旋轉／尺度）
+        _thk = None
+        _thk_r = None
+        if "thick" in getattr(pc, "property_names", ()):
+            _thk_r = pc.get_property("thick").detach().reshape(-1)
+        elif getattr(self, "surf_thick_ratio", 0.0) > 0.0:
+            _thk_r = self.surf_thick_ratio
+        if _thk_r is not None:
+            import diff_trim_surfel_rasterization as _R
+            if not getattr(_R, "SURF_THICK_SUPPORTED", False):
+                raise RuntimeError("設了固定厚度但光柵器不支援 —— 沒重編（rm -rf build 後重裝；lab 用 lab_pull.sh 或 build_rast_alt.sh）")
+            if _tex is not None:
+                raise RuntimeError("面內亮度漸變與固定厚度不能同時開")
+            if isinstance(_thk_r, torch.Tensor) and n_in is not None:
+                _thk_r = torch.cat([_thk_r, torch.zeros(means3D.shape[0] - n_in, device=_thk_r.device, dtype=_thk_r.dtype)], 0)
+            _thk = self._surf_thick_C(means3D, scales, rotations, viewpoint_camera.camera_center, _thk_r)
+            if not getattr(self, "_thk_announced", False):
+                self._thk_announced = True
+                _sw = _thk[:, 3].detach()
+                print(f"[surf-thick] ✅ 首次觸發：固定厚度交給光柵器 {tuple(_thk.shape)}，"
+                      f"有厚度 {int((_sw > 0).sum()):,} 顆、s_w 中位 {float(_sw[_sw > 0].median()) if bool((_sw > 0).any()) else 0.0:.3g}", flush=True)
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
         output = rasterizer(
             means3D=means3D,
@@ -659,6 +699,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             cov3D_precomp=cov3D_precomp,
             **({"shs_rest": shs_rest, "sh_adam": _sh_adam} if shs_rest is not None else {}),
             **({"surf_tex": _tex} if _tex is not None else {}),
+            **({"surf_thick": _thk} if _thk is not None else {}),
         )
 
         if kwargs.get("_audit", False):

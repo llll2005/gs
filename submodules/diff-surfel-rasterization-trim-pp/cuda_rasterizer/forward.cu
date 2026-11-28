@@ -40,6 +40,10 @@ __device__ float* g_cacc_tot = nullptr;
 //   s＝光線與面元交點的局部座標（以尺度為單位；只在 ray-splat 分支，濾波分支 f＝1）。nullptr＝原寫法（逐位元相同）。
 //   呼叫端（Python autograd Function）只在那一次 forward／backward 前後設定與清掉（同 g_cap_inv）。
 __device__ const float2* g_tex = nullptr;
+// ★ 2026-11-29 固定厚度（訓練版；auxiliary.h thickRho）：g_thk＝每顆 (Cu, Cv, Cw, s_w)；g_thk_ext＝preprocess 寫的螢幕外擴 (dx, dy) px
+//   （精確盒、幾何配對遮罩、binning 盒都要加上，否則斜看時變寬的部分被剪掉）。nullptr＝原寫法。
+__device__ const float4* g_thk = nullptr;
+__device__ float2* g_thk_ext = nullptr;
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -538,6 +542,23 @@ __global__ void preprocessCUDA(int P, int D, int M,
 #endif
 
 	uint2 rect_min, rect_max;
+	// ★ 2026-11-29 固定厚度：中心沿法向 ±R·s_w 兩端點投到螢幕的位移（＋1 px）＝盒子要外擴的量（R＝truncated_R）
+	float th_dx = 0.f, th_dy = 0.f;
+	if (g_thk != nullptr && transMat_precomp == nullptr) {
+		const float sw = g_thk[idx].w;
+		if (sw > 0.f) {
+			const float x0 = intrins.x * p_view.x / p_view.z + intrins.z, y0 = intrins.y * p_view.y / p_view.z + intrins.w;
+			for (int sg = -1; sg <= 1; sg += 2) {
+				const float h = sg * truncated_R * sw;
+				const float qx = p_view.x + h * normal.x, qy = p_view.y + h * normal.y, qz = p_view.z + h * normal.z;
+				if (qz <= 0.01f) { th_dx = th_dy = 1e4f; continue; }
+				th_dx = fmaxf(th_dx, fabsf(intrins.x * qx / qz + intrins.z - x0));
+				th_dy = fmaxf(th_dy, fabsf(intrins.y * qy / qz + intrins.w - y0));
+			}
+			th_dx = fminf(th_dx + 1.f, 1e4f); th_dy = fminf(th_dy + 1.f, 1e4f);
+		}
+		g_thk_ext[idx] = make_float2(th_dx, th_dy);
+	}
 	// ⚠⚠ 2026-09-21 量到的一般性事實：**在這個 kernel 裡多加程式碼會擾動基準路徑**。
 	//   把本分支 `if (false)` 讓編譯器消掉，渲染就精確回到 SHA a13583c9b550e9a2；
 	//   留著（即使執行期為 false）就變成 97a14a2de65e4793，最大差 1.8/255、5.9% 像素。
@@ -569,6 +590,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		}
 	}
 #endif
+	bx0 -= th_dx; bx1 += th_dx; by0 -= th_dy; by1 += th_dy;   // ★ 11-29 固定厚度（沒厚度時是 0）
 	getRectMinMax(bx0, bx1, by0, by1, rect_min, rect_max, grid);
 	}
 	else
@@ -578,6 +600,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	//   不對稱盒的覆蓋半徑含「中心位移」，拿去當尺寸會嚴重失真（位移最大 73,491 px）。
 	//   => radii 維持線性化的 3-sigma 對稱半徑（下游行為零變化），rects 只管 binning。
 	//   radius > 0 恆成立（>= ceil(3 * FilterSize) = 3），所以 radii > 0 <=> 走到這裡 <=> 盒子非空。
+		if (th_dx > 0.f || th_dy > 0.f) radius += ceilf(fmaxf(th_dx, th_dy));   // ★ 11-29 固定厚度（radii 跟著變大，只在開厚度時）
 		getRect(center, radius, rect_min, rect_max, grid);
 	}
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
@@ -768,12 +791,14 @@ renderCUDA(
 						                 fminf(cc.y - ce.y, xy0.y - fs) - 1.f, fmaxf(cc.y + ce.y, xy0.y + fs) + 1.f);
 					}
 				}
+				if (g_thk != nullptr) { const float2 e = g_thk_ext[coll_id]; bx.x -= e.x; bx.y += e.x; bx.z -= e.y; bx.w += e.y; }   // ★ 11-29 固定厚度
 				s_box[block.thread_rank()] = bx;
 			}
 		}
 		if (xc && range.x + progress < range.y) {   // ★ 11-21 幾何配對遮罩（每個（tile, 面元）一次）
 			const int cid = collected_id[block.thread_rank()];
 			s_xm[block.thread_rank()] = (unsigned char)aihTileMask(aih + 9 * cid, aihTauLoose(normal_opacity[cid].w), points_xy_image[cid], pix_min);
+			if (g_thk != nullptr && g_thk[cid].w > 0.f) s_xm[block.thread_rank()] = 0xFFu;   // ★ 11-29 固定厚度：遮罩沒算厚度 => 不跳
 		}
 		if (rec_pair) s_used[block.thread_rank()] = 0;
 		if (a3) s_wm[block.thread_rank()] = 0ull;
@@ -835,6 +860,7 @@ renderCUDA(
 					rho3d = (s.x * s.x + s.y * s.y);
 					near_i = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
 					}
+					if (g_thk != nullptr) rho3d = thickRho(s, rho3d, g_thk[collected_id[j]]);   // ★ 11-29 固定厚度
 
 					// Add low pass filter according to Botsch et al. [2005],
 					// see Eq. (11) from 2DGS paper.
@@ -977,6 +1003,7 @@ renderCUDA(
 			rho3d = (s.x * s.x + s.y * s.y);
 			near_i = (s.x * Tw.x + s.y * Tw.y) + Tw.z;
 			}
+			if (g_thk != nullptr) rho3d = thickRho(s, rho3d, g_thk[collected_id[j]]);   // ★ 11-29 固定厚度
 
 			// Add low pass filter according to Botsch et al. [2005],
 			// see Eq. (11) from 2DGS paper.
@@ -1309,6 +1336,7 @@ recordReduceCUDA(
 				{
 					float2 s = {p.x / p.z, p.y / p.z};
 					float rho3d = (s.x * s.x + s.y * s.y);
+					if (g_thk != nullptr) rho3d = thickRho(s, rho3d, g_thk[collected_id[j]]);   // ★ 11-29 固定厚度（trim record 同一個 alpha）
 					float2 xy = collected_xy[j];
 					float2 d = {xy.x - pixf.x, xy.y - pixf.y};
 					float rho2d = FILTER_INV_SQ_C * (d.x * d.x + d.y * d.y);
@@ -1364,6 +1392,14 @@ void FORWARD::setDepthCap(const float* cap_inv, int n)
 }
 
 // ★ 2026-11-11 逐顆累加「落在上限後面的 T·α」與「有上限像素上的 T·α」（見 g_cacc_*）；nullptr＝關
+void FORWARD::setSurfThick(const float* thk, float* ext)
+{
+	const float4* t = reinterpret_cast<const float4*>(thk);
+	float2* e = reinterpret_cast<float2*>(ext);
+	cudaMemcpyToSymbol(g_thk, &t, sizeof(const float4*));
+	cudaMemcpyToSymbol(g_thk_ext, &e, sizeof(float2*));
+}
+
 void FORWARD::setSurfTex(const float* tex)
 {
 	const float2* t = reinterpret_cast<const float2*>(tex);

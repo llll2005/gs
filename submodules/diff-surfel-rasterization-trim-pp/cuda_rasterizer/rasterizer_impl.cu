@@ -317,6 +317,13 @@ void CudaRasterizer::Rasterizer::setDepthCapAcc(float* bh, float* tot)
 }
 
 // ★ 2026-11-28 面內亮度漸變：forward 只讀 tex；backward 讀 tex、寫 dtex
+// ★ 2026-11-29 固定厚度：forward 讀 thk、寫 ext（preprocess）；backward 讀 thk／ext、寫 dthk
+void CudaRasterizer::Rasterizer::setSurfThick(const float* thk, float* dthk, float* ext)
+{
+	FORWARD::setSurfThick(thk, ext);
+	BACKWARD::setSurfThick(thk, dthk, ext);
+}
+
 void CudaRasterizer::Rasterizer::setSurfTex(const float* tex, float* dtex)
 {
 	FORWARD::setSurfTex(tex);

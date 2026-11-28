@@ -407,4 +407,33 @@ __device__ __forceinline__ float aihTauLoose(const float op)
 	return (op > 1.0f / 255.0f) ? (2.f * logf(255.f * op) * 1.01f + 0.02f) : 1e30f;
 }
 
+// ★ 2026-11-29 固定厚度（使用者 11-03 構想、11-29「低角度露縫直接做」；訓練版）：
+//   面元沿法向多一個固定比例的厚度 s_w（= 比例 x 面內較短的尺度，Python 端算），沿射線取 3D 高斯（面內 s_u、s_v、法向 s_w）的
+//   最小 Mahalanobis 距離。C＝(Cu, Cv, Cw, s_w)：相機在面元正規化座標（u/s_u、v/s_v、w/s_w）的位置，Python 端算、可微。
+//   P0＝(s, 0) 是射線與面元平面的交點，射線方向 d＝P0 − C；min_t |C + t d|^2 = |C x P0|^2 / |P0 − C|^2（Lagrange 恆等式，
+//   分子分母都是平方和 => 沒有大數相減）：
+//     rho' = [Cw^2 |s|^2 + (Cu s.y − Cv s.x)^2] / [(s.x − Cu)^2 + (s.y − Cv)^2 + Cw^2]
+//   s_w -> 0（Cw -> inf）退回 |s|^2；正對面元（Cu = Cv = 0）也是 |s|^2；斜看才變小（看起來沿視線方向變寬）。
+//   C.w <= 0（這顆沒有厚度；換塊評測時基準的顆粒）=> 原本的 |s|^2，逐位元相同。s 溢位（側對、p.z≈0）=> NaN => 當作沒有交點（同原本 inf）。
+__device__ __forceinline__ float thickRho(const float2 s, const float rho3d, const float4 C)
+{
+	if (!(C.w > 0.f)) return rho3d;
+	const float X = C.x * s.y - C.y * s.x;
+	const float du = s.x - C.x, dv = s.y - C.y, w2 = C.z * C.z;
+	const float r = (w2 * rho3d + X * X) / (du * du + dv * dv + w2);
+	return (r == r) ? r : INFINITY;
+}
+// d rho' / d s 與 d rho' / d (Cu, Cv, Cw)（rho＝thickRho 的值；只在 C.w > 0 時呼叫）
+__device__ __forceinline__ void thickRhoGrad(const float2 s, const float rho, const float4 C, float2& ds, float3& dC)
+{
+	const float X = C.x * s.y - C.y * s.x;
+	const float du = s.x - C.x, dv = s.y - C.y, w2 = C.z * C.z;
+	const float iD = 1.f / (du * du + dv * dv + w2);
+	ds.x = 2.f * (w2 * s.x - X * C.y - rho * du) * iD;
+	ds.y = 2.f * (w2 * s.y + X * C.x - rho * dv) * iD;
+	dC.x = 2.f * (X * s.y + rho * du) * iD;
+	dC.y = 2.f * (-X * s.x + rho * dv) * iD;
+	dC.z = 2.f * C.z * ((s.x * s.x + s.y * s.y) - rho) * iD;
+}
+
 #endif

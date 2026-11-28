@@ -465,6 +465,24 @@ void SetDepthCapGradMode(int mode)
 
 // ★ 2026-11-28 面內亮度漸變（forward.cu g_tex／backward.cu g_tex_b、g_dtex_b）：tex＝CUDA 上連續 float32 [P, 2]；
 //   dtex＝同形狀（backward 前歸零、累加 dL/dg；forward 時可給空張量）；tex 空張量＝關。
+// ★ 2026-11-29 固定厚度（forward.cu g_thk／backward.cu g_thk_b）：thk＝CUDA 上連續 float32 [P, 4]（Cu, Cv, Cw, s_w）；
+//   dthk＝同形狀（backward 前歸零；forward 時可給空張量）；ext＝[P, 2]（forward 的 preprocess 寫、backward 讀；兩次要同一個張量）。thk 空張量＝關。
+void SetSurfThick(const torch::Tensor& thk, const torch::Tensor& dthk, const torch::Tensor& ext)
+{
+	if (thk.numel() == 0) { CudaRasterizer::Rasterizer::setSurfThick(nullptr, nullptr, nullptr); return; }
+	TORCH_CHECK(thk.is_cuda() && thk.scalar_type() == at::kFloat && thk.is_contiguous() && thk.dim() == 2 && thk.size(1) == 4,
+	            "surf_thick 必須是 CUDA 上連續的 float32 [P, 4]");
+	TORCH_CHECK(ext.is_cuda() && ext.scalar_type() == at::kFloat && ext.is_contiguous() && ext.numel() == thk.size(0) * 2,
+	            "surf_thick 的外擴緩衝必須是 CUDA 上連續的 float32 [P, 2]");
+	float* d = nullptr;
+	if (dthk.numel() > 0) {
+		TORCH_CHECK(dthk.is_cuda() && dthk.scalar_type() == at::kFloat && dthk.is_contiguous() && dthk.numel() == thk.numel(),
+		            "surf_thick 的梯度緩衝必須和 thk 同形狀、CUDA 上連續的 float32");
+		d = dthk.data_ptr<float>();
+	}
+	CudaRasterizer::Rasterizer::setSurfThick(thk.data_ptr<float>(), d, ext.data_ptr<float>());
+}
+
 void SetSurfTex(const torch::Tensor& tex, const torch::Tensor& dtex)
 {
 	if (tex.numel() == 0) { CudaRasterizer::Rasterizer::setSurfTex(nullptr, nullptr); return; }

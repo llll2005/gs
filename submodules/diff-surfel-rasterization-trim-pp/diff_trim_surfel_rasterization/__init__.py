@@ -31,7 +31,9 @@ def rasterize_gaussians(
     sh_rest=None,
     sh_adam=None,
     surf_tex=None,
+    surf_thick=None,
 ):
+    # ★ 2026-11-29 surf_thick＝固定厚度 [N, 4]＝(Cu, Cv, Cw, s_w)（None＝關；見 cuda_rasterizer/auxiliary.h thickRho；renderer 算、可微）
     # ★ 2026-11-28 surf_tex＝面內亮度漸變 [N, 2]（None＝關；見 cuda_rasterizer/forward.cu g_tex）
     # ★ 2026-10-24 sh_rest 非 None => SH 分開存放（sh＝dc (N,1,3)、sh_rest＝(N,M-1,3)，省掉每步的 torch.cat）；
     #   sh_adam＝(m_dc, v_dc, m_rest, v_rest, acc_rest 或 None, hp, 驗證 dict 或 None) => SH 的 Adam 在 backward 裡就地做完
@@ -49,6 +51,7 @@ def rasterize_gaussians(
         sh_rest,
         sh_adam,
         surf_tex,
+        surf_thick,
     )
 
 class _RasterizeGaussians(torch.autograd.Function):
@@ -67,7 +70,10 @@ class _RasterizeGaussians(torch.autograd.Function):
         sh_rest=None,
         sh_adam=None,
         surf_tex=None,
+        surf_thick=None,
     ):
+        if surf_tex is not None and surf_thick is not None:
+            raise ValueError("面內亮度漸變（surf_tex）與固定厚度（surf_thick）不能同時開")
         if sh_rest is None:
             sh_rest = _empty_like_dev(means3D)
 
@@ -145,6 +151,14 @@ class _RasterizeGaussians(torch.autograd.Function):
         if surf_tex is not None:
             surf_tex = surf_tex.contiguous()
             _C.set_surf_tex(surf_tex, _empty_like_dev(means3D))
+        # ★ 2026-11-29 固定厚度：只在這一次 forward 期間設定（backward 用同一個外擴緩衝再設一次）
+        _thk_ext = None
+        if surf_thick is not None:
+            if getattr(raster_settings, "tile_cull", False):
+                raise ValueError("固定厚度不支援 tile_cull（剔除判準沒算厚度）")
+            surf_thick = surf_thick.detach().contiguous().float()
+            _thk_ext = torch.zeros((surf_thick.shape[0], 2), dtype=torch.float32, device=surf_thick.device)
+            _C.set_surf_thick(surf_thick, _empty_like_dev(means3D), _thk_ext)
         try:
             # Invoke C++/CUDA rasterizer
             if raster_settings.debug:
@@ -164,6 +178,8 @@ class _RasterizeGaussians(torch.autograd.Function):
                 _C.set_depth_cap_acc(_empty_like_dev(means3D), _empty_like_dev(means3D))
             if surf_tex is not None:
                 _C.set_surf_tex(_empty_like_dev(means3D), _empty_like_dev(means3D))
+            if surf_thick is not None:
+                _C.set_surf_thick(_empty_like_dev(means3D), _empty_like_dev(means3D), _empty_like_dev(means3D))
 
         if getattr(raster_settings, "audit_tiles", False):
             # audit：transmittance＝reached_tiles、num_covered_pixels＝useful_tiles、depth＝逐像素 [迴圈次數, tile 配對數, 混合次數]
@@ -182,6 +198,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer, sh_rest)
         ctx.sh_adam = sh_adam
         ctx.surf_tex = surf_tex
+        ctx.surf_thick = surf_thick
+        ctx.surf_thick_ext = _thk_ext
         # ★ 2026-09-21：`tiles` = 逐顆 tile 數（精確的 binning 成本）。整數張量、不可微，
         #   明確標記以免 autograd 為它建圖。見 rasterizer.h 的長註解。
         if not getattr(raster_settings, "return_tiles", False):
@@ -292,6 +310,11 @@ class _RasterizeGaussians(torch.autograd.Function):
             _C.set_depth_cap(_cap)
             if _cgm:
                 _C.set_depth_cap_grad_mode(_cgm)
+        _thk = getattr(ctx, "surf_thick", None)
+        grad_thk = None
+        if _thk is not None:                              # ★ 11-29 固定厚度：backward 期間再設一次（同一個外擴緩衝）、累加 dL/dC
+            grad_thk = torch.zeros_like(_thk)
+            _C.set_surf_thick(_thk, grad_thk, ctx.surf_thick_ext)
         _tex = getattr(ctx, "surf_tex", None)
         grad_tex = None
         if _tex is not None:                              # ★ 11-28 面內亮度漸變：backward 期間再設一次、累加 dL/dg
@@ -316,6 +339,8 @@ class _RasterizeGaussians(torch.autograd.Function):
                 _C.set_depth_cap_grad_mode(0)
             if _tex is not None:
                 _C.set_surf_tex(_empty_like_dev(means3D), _empty_like_dev(means3D))
+            if _thk is not None:
+                _C.set_surf_thick(_empty_like_dev(means3D), _empty_like_dev(means3D), _empty_like_dev(means3D))
 
         if sh_adam is not None and len(sh_adam) > 6 and isinstance(sh_adam[6], dict):
             sh_adam[6]["g_dc"], sh_adam[6]["g_rest"] = grad_sh, grad_sh_rest
@@ -332,6 +357,7 @@ class _RasterizeGaussians(torch.autograd.Function):
             (grad_sh_rest if (split and sh_adam is None) else None),
             None,
             grad_tex,
+            grad_thk,
         )
 
         return grads
@@ -429,7 +455,7 @@ class GaussianRasterizer(nn.Module):
         return visible
 
     def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None,
-                shs_rest = None, sh_adam = None, surf_tex = None):
+                shs_rest = None, sh_adam = None, surf_tex = None, surf_thick = None):
 
         raster_settings = self.raster_settings
 
@@ -466,11 +492,14 @@ class GaussianRasterizer(nn.Module):
             shs_rest,
             sh_adam,
             surf_tex,
+            surf_thick,
         )
 
 
 # ★ 2026-11-28 呼叫端用它判斷這份光柵器支不支援面內亮度漸變（surf_tex）
 SURF_TEX_SUPPORTED = True
+# ★ 2026-11-29 固定厚度（surf_thick）
+SURF_THICK_SUPPORTED = True
 # ★ 2026-10-24 呼叫端（renderer）用它判斷這份光柵器支不支援 SH 分開存放／SH Adam 融進 backward（沒重編 => 屬性不存在 => 當場報錯）
 SH_SPLIT_SUPPORTED = True
 _EMPTY_DEV = {}

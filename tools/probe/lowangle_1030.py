@@ -85,8 +85,9 @@ def part_of(ck, run_root):
 def act_props(c):
     """⚠ 10-31 修：載入器預設 pre_activate（scales 取 exp、opacity 取 sigmoid、SH 併成 shs），基準的 model.properties 是激活後的值；
     直接拿 state_dict 原始參數去拼會混用兩種表示（scale 錯 => 光柵器配 14.8 GB／越界）。候選與重組一律走載入器（同 tools/swap_block_eval.py）。"""
-    m, _, ck = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(c, device=torch.device("cpu"), eval_mode=True)
+    m, r, ck = GaussianModelLoader.initialize_model_and_renderer_from_checkpoint_file(c, device=torch.device("cpu"), eval_mode=True)
     pr = {k: v.detach().float() for k, v in m.properties.items()}
+    pr["__thr"] = float(getattr(r, "surf_thick_ratio", 0.0) or 0.0)   # ★ 11-29 固定厚度（renderer 設定；換塊時轉成逐顆 property）
     del m
     return pr, ck
 
@@ -110,6 +111,7 @@ else:
         if c is None:
             continue
         pr, ck = act_props(c)
+        pr.pop("__thr", None)
         if part_pt is None:
             part_pt = part_of(ck, root); first = c
         m = inbox(pr["means"], part_pt, ck["datamodule_hyper_parameters"]["parser"].block_id)
@@ -135,8 +137,15 @@ def build(src):
     if src is None:
         return base
     pr, ck = act_props(src)
+    thr = pr.pop("__thr", 0.0)
     m = inbox(pr["means"], part_of(ck, "."), a.swap_block)
-    return {k: torch.cat([base[k][keep], pr[k][m].float()]) for k in base}
+    out = {k: torch.cat([base[k][keep], pr[k][m].float()]) for k in base}
+    if thr > 0 or "thick" in model._names:   # ★ 11-29 固定厚度：只有換進來的塊有厚度（基準顆粒 0＝原寫法）
+        if "thick" not in model._names:
+            model._names = tuple(model._names) + ("thick",)
+        out["thick"] = torch.cat([torch.zeros(int(keep.sum()), 1), torch.full((int(m.sum()), 1), thr)])
+        print(f"  [固定厚度] 換進來的塊比例 {thr:g}", flush=True)
+    return out
 
 
 # ── 合成相機 ──
