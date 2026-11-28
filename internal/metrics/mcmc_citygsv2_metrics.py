@@ -96,6 +96,9 @@ def vis_gate_off(VS, VW, tau: float, under=None, need_under: bool = False):
 class MCMCCityGSV2Metrics(CityGSV2Metrics):
     opacity_reg: float = 0.01
     scale_reg: float = 0.01
+    scale_reg_res_pow: float = 0.0
+    """★ 11-28 使用者「階段式訓練：低解析度時把壓小面元的機制調低」：> 0 時尺度正則乘上（訓練解析度倍率）^此值
+    （排程的 _res_now；幾何步半解析度不算）。2 => 0.35 倍時 x0.12、0.5 倍 x0.25、0.75 倍 x0.56、全解析度 x1。0＝原行為。"""
     immune_opacity_threshold: float = 0.9
     """Opacity above this -> exempt from opacity_reg (covers alpha=0.99 depth-init)."""
 
@@ -1317,10 +1320,20 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
             _sc = gaussian_model.get_scales().abs()
             scale_reg = (_sc * _rvf[:, None]).sum() / (_rvf.sum().clamp_min(1.0) * _sc.shape[1])
 
+        _srw = float(self.config.scale_reg)
+        _srp = float(getattr(self.config, "scale_reg_res_pow", 0.0) or 0.0)
+        if _srp > 0:
+            _rs = float(getattr(pl_module, "_res_now", 1.0) or 1.0)
+            if _rs < 1.0:
+                _srw = _srw * _rs ** _srp
+            if getattr(self, "_srres_last", None) != _rs:
+                self._srres_last = _rs
+                print(f"[scale-reg-res] {'✅ 首次觸發 ' if not getattr(self, '_srres_announced', False) else ''}step={step}：訓練解析度 x{_rs:g} => 尺度正則 {float(self.config.scale_reg):g} x {_rs:g}^{_srp:g} = {_srw:.6g}", flush=True)
+                self._srres_announced = True
         if not _fr:
             metrics["loss"] = metrics["loss"] \
                 + _oreg_w * opacity_reg \
-                + self.config.scale_reg * scale_reg
+                + _srw * scale_reg
 
         _under = getattr(getattr(pl_module, "density_controller", None), "_sfm_under", None) \
             if bool(getattr(self.config, "vis_gate_need_under", False)) else None
@@ -1356,7 +1369,7 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 if _gate is not None:
                     _m = _m * (~((_x.detach() >= 0) & ~_gate)).to(_x.dtype)
             _H, scale_reg = _FusedPerGaussianReg.apply(_x, gaussian_model.gaussians["scales"], _w.detach(), _m.detach(), bool(_ent_on))
-            metrics["loss"] = metrics["loss"] + self.config.scale_reg * scale_reg
+            metrics["loss"] = metrics["loss"] + _srw * scale_reg
             if _ent_on:
                 metrics["loss"] = metrics["loss"] + _ew * _H
                 metrics["op_ent"] = _H.detach()

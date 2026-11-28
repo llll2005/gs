@@ -781,6 +781,11 @@ class MCMC2DGSDensityController(MCMCDensityController):
     原因：點精靈用「目前訓練解析度的像素」判；x0.5 期一個像素是全解析度的 2 倍 => 第 1,000 步的刪除臂一次判掉 82% 的顆粒（全解析度期每次只有約 1.3%）。"""
     """px_floor_mode＝delete／absorb 時每幾步處理一次。"""
     px_floor_interval: int = 1000
+    cap_res_stage: float = 0.0
+    """★ 11-28 使用者「把一些 cap 額度先不給模型、跟著解析度分段放」（DashGaussian Eq. 4–5 顆數跟著解析度長的改造）：
+    > 0 時，多出來的額度（cap_max − 起點顆數）只放出 min(1, (訓練解析度倍率 / 此值)^2) 的比例（像素數比例）。
+    此值＝放滿額度的解析度；增生在 densify_until（70%）停，三段低解析度的 0.75 倍段（50～75%）涵蓋它 => 0.75。
+    lres3：0.35 倍 => 22%、0.5 倍 => 44%、0.75 倍以上 => 100%。起點顆數＝第一次 after_backward 時的 N。0＝原行為。"""
     """（11-07 晚預設 50 => 1000＝v2 實測用的值）px_floor 的「最近可見深度」每幾步全量重算一次；中間用快取。新增與搬家的顆粒繼承母點的下限（11-07 v2：原本顆數一變就重算，
     增生期每 100 步一次、每次 0.4～0.7 s => 30k 多 9%）；剪枝、排序跟著 _PER_PARTICLE 走；補洞放的顆粒 -inf（不夾）到下次重算。"""
     sfm_dist_voxel: float = 0.01
@@ -1191,6 +1196,19 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
 
     def after_backward(self, outputs: dict, batch, gaussian_model, optimizers, global_step: int, pl_module: LightningModule) -> None:
         self._ip_step = global_step                     # relocate_gs／add_new_gs 的平面錯開要用（漸增係數）
+        _crs = float(getattr(self.config, "cap_res_stage", 0.0) or 0.0)
+        if _crs > 0:
+            if getattr(self, "_stage_n0", None) is None:
+                self._stage_n0 = int(gaussian_model.n_gaussians)
+            _rs = float(getattr(pl_module, "_res_now", 1.0) or 1.0)
+            _fr = min(1.0, (_rs / _crs) ** 2)
+            _extra = max(0, int(self.config.cap_max) - self._stage_n0)
+            _cut = int(round((1.0 - _fr) * _extra))
+            if _cut != getattr(self, "_stage_cut", None):
+                print(f"[cap-res-stage] {'✅ 首次觸發 ' if getattr(self, '_stage_cut', None) is None else ''}step {global_step}：訓練解析度 x{_rs:g}"
+                      f" => 多出的額度放 {_fr * 100:.0f}%｜起點 {self._stage_n0:,}、cap {int(self.config.cap_max):,}"
+                      f" => 現在上限 {int(self.config.cap_max) - _cut:,}（現有 {gaussian_model.n_gaussians:,}）", flush=True)
+            self._stage_cut = _cut
         if (float(getattr(self.config, "sh_narrow_kappa", 0.0) or 0.0) > 0 or bool(getattr(self.config, "sh_narrow_track", False))) \
                 and global_step % max(1, int(getattr(self.config, "sh_narrow_every", 4) or 1)) == 0:
             self._sh_narrow_step(outputs, batch, gaussian_model, global_step, pl_module)   # optimizer step 之前（梯度已算好）收縮
