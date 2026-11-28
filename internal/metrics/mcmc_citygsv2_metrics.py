@@ -166,6 +166,9 @@ class MCMCCityGSV2Metrics(CityGSV2Metrics):
     """另學逐影像偏移 b_k（加法）。預設關：量到的現象是乘法性的（三通道同倍增益），偏移是多餘自由度，
     本機功能測試 300 步就長到 std 0.076（顏色單位），有吸收模型本身顏色誤差的風險。"""
 
+    block_mask_b_as_c: bool = False
+    """★ 2026-11-28 使用者「排」（同類方法對照）：B 區（塊外且空、要求透明）當成 C（不計分）＝只遮掉塊外、不要求塊外透明
+    （Mega-NeRF／HUG 式的塊外遮罩）。在讀遮罩時就把 2 改成 0，所有用遮罩的地方一致。預設關＝原行為。"""
     block_mask_dir: str = ""
     """★ 2026-10-17 使用者「作」：塊外遮罩（`tools/block_mask44.py` 產的三值 PNG，以影像名命名；0=C 不計分、1=A 塊內、2=B 塊外且空）。
     動機：單塊模型 73~81% 顆粒在分區盒外、合併時全丟（研究總覽 資源表）。深度＝Depth Anything（只當前處理）。
@@ -484,6 +487,11 @@ class MCMCCityGSV2MetricsModule(CityGSV2MetricsModule):
                 return None
             t = torch.from_numpy(np.array(Image.open(p)))[None, None].float()
             m = torch.nn.functional.interpolate(t, size=tuple(hw), mode="nearest")[0, 0].to(torch.uint8)
+            if bool(getattr(self.config, "block_mask_b_as_c", False)):
+                if not getattr(self, "_bm_bc_announced", False):
+                    self._bm_bc_announced = True
+                    print(f"[block-mask] ✅ 首次觸發 B 區當成不計分（block_mask_b_as_c）：{os.path.basename(str(name))} B 佔 {float((m == 2).float().mean()):.3f} -> 0", flush=True)
+                m = torch.where(m == 2, torch.zeros_like(m), m)
             cache[key] = m
         m = m.to(device, non_blocking=True)
         self._bm_dev = (key, m)
