@@ -2082,6 +2082,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
                         g["shs_dc"][frows[okm]] = g["shs_dc"][rsrc[okm]]
                     if "shs_rest" in g:
                         g["shs_rest"][frows[okm]] = 0
+                    if "tex" in g:                                   # ★ 11-28 面內亮度漸變：海面磚不帶漸變
+                        g["tex"][frows[okm]] = 0
                 fnb = getattr(self, "_sea_fnb", None)
                 if fnb is not None and t2r is not None and global_step % 8 == 0:
                     nf0 = self._sea_ntile - fnb.shape[0]
@@ -3269,6 +3271,8 @@ class MCMC2DGSDensityControllerImpl(MCMCDensityControllerImpl):
             g["opacities"][slots] = torch.log(op / (1 - op)).reshape(-1, *g["opacities"].shape[1:]).to(g["opacities"].dtype)
             g["shs_dc"][slots] = ((rgb - 0.5) / _C0).reshape(K, *g["shs_dc"].shape[1:]).to(g["shs_dc"].dtype)
             g["shs_rest"][slots] = 0
+            if "tex" in g:                                                         # ★ 11-28 面內亮度漸變：新放的顆粒不帶漸變
+                g["tex"][slots] = 0
             _nz = getattr(self, "_noup_z", None)                                  # 補洞放的＝新位置 => 高度上限解除（sfm_vis_noup）
             if _nz is not None and _nz.shape[0] == g["means"].shape[0]:
                 _nz[slots] = float("inf")

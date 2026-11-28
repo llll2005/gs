@@ -635,6 +635,18 @@ class SepDepthTrim2DGSRenderer(Renderer):
                 print(f"[outside-pool] ✅ 首次串接：可訓練 {n_in:,} 顆＋塊外池 {_pool.n:,} 顆"
                       f"（{'可訓練 SH0' if _pool.trainable else '凍結 SH0'}，{_pool.bytes_per_point()} B／顆）", flush=True)
 
+        # ★ 2026-11-28 面內亮度漸變（模型 surf_tex＝True 時的 property `tex` [N, 2]；見 internal/models/gaussian_2d.py）
+        _tex = None
+        if "tex" in getattr(pc, "property_names", ()):
+            import diff_trim_surfel_rasterization as _R
+            if not getattr(_R, "SURF_TEX_SUPPORTED", False):
+                raise RuntimeError("模型有 surf_tex 但光柵器不支援 —— 沒重編（rm -rf build 後重裝；lab 用 lab_pull.sh 或 build_rast_alt.sh）")
+            _tex = pc.get_property("tex")
+            if n_in is not None:
+                _tex = torch.cat([_tex, torch.zeros((means3D.shape[0] - n_in, 2), device=_tex.device, dtype=_tex.dtype)], 0)
+            if not getattr(self, "_tex_announced", False):
+                self._tex_announced = True
+                print(f"[surf-tex] ✅ 首次觸發：面內亮度漸變交給光柵器 tex {tuple(_tex.shape)}，|g| 中位 {float(_tex.detach().norm(dim=-1).median()):.4f}", flush=True)
         # Rasterize visible Gaussians to image, obtain their radii (on screen).
         output = rasterizer(
             means3D=means3D,
@@ -646,6 +658,7 @@ class SepDepthTrim2DGSRenderer(Renderer):
             rotations=rotations,
             cov3D_precomp=cov3D_precomp,
             **({"shs_rest": shs_rest, "sh_adam": _sh_adam} if shs_rest is not None else {}),
+            **({"surf_tex": _tex} if _tex is not None else {}),
         )
 
         if kwargs.get("_audit", False):

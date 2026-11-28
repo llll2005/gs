@@ -30,6 +30,7 @@ namespace CudaRasterizer
 		static void setDepthCapGradMode(int mode);   // ★ 2026-11-13 規格 3 §4-3
 		// ★ 2026-11-11 逐顆累加落在上限後面的 T·α／有上限像素上的 T·α（float P 的裝置端指標；nullptr＝關）
 		static void setDepthCapAcc(float* bh, float* tot);
+		static void setSurfTex(const float* tex, float* dtex);   // ★ 2026-11-28 面內亮度漸變（tex float2 x P、dtex 同形狀；nullptr＝關）
 
 		static void markVisible(
 			int P,

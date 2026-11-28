@@ -36,6 +36,10 @@ __device__ int g_cap_n = 0;
 //   nullptr＝不累加（預設；渲染與所有輸出通道逐位元不變）。呼叫端只在那一次 forward 前後設定與清掉。
 __device__ float* g_cacc_bh = nullptr;
 __device__ float* g_cacc_tot = nullptr;
+// ★ 2026-11-28 面內亮度漸變（使用者「面元記主要顏色＋漸變範式」）：每顆 2 個數 g，像素顏色＝顏色 x max(0, 1 + g·s)，
+//   s＝光線與面元交點的局部座標（以尺度為單位；只在 ray-splat 分支，濾波分支 f＝1）。nullptr＝原寫法（逐位元相同）。
+//   呼叫端（Python autograd Function）只在那一次 forward／backward 前後設定與清掉（同 g_cap_inv）。
+__device__ const float2* g_tex = nullptr;
 namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
@@ -906,9 +910,17 @@ renderCUDA(
 		#endif
 
 					// Eq. (3) from 3D Gaussian splatting paper.
-					if (MODE != 2)
+					if (MODE != 2) {
+					if (g_tex == nullptr) {
 					for (int ch = 0; ch < CHANNELS; ch++)
 						C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+					} else {   // ★ 11-28 面內亮度漸變
+					float tf = 1.f;
+					if (rho3d <= rho2d) { const float2 tg = g_tex[collected_id[j]]; tf = fmaxf(0.f, 1.f + tg.x * s.x + tg.y * s.y); }
+					for (int ch = 0; ch < CHANNELS; ch++)
+						C[ch] += features[collected_id[j] * CHANNELS + ch] * tf * alpha * T;
+					}
+					}
 					T = test_T;
 
 					// Keep track of last range entry to update this
@@ -1040,9 +1052,17 @@ renderCUDA(
 #endif
 
 			// Eq. (3) from 3D Gaussian splatting paper.
-			if (MODE != 2)
+			if (MODE != 2) {
+			if (g_tex == nullptr) {
 			for (int ch = 0; ch < CHANNELS; ch++)
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * alpha * T;
+			} else {   // ★ 11-28 面內亮度漸變
+			float tf = 1.f;
+			if (rho3d <= rho2d) { const float2 tg = g_tex[collected_id[j]]; tf = fmaxf(0.f, 1.f + tg.x * s.x + tg.y * s.y); }
+			for (int ch = 0; ch < CHANNELS; ch++)
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * tf * alpha * T;
+			}
+			}
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -1344,6 +1364,12 @@ void FORWARD::setDepthCap(const float* cap_inv, int n)
 }
 
 // ★ 2026-11-11 逐顆累加「落在上限後面的 T·α」與「有上限像素上的 T·α」（見 g_cacc_*）；nullptr＝關
+void FORWARD::setSurfTex(const float* tex)
+{
+	const float2* t = reinterpret_cast<const float2*>(tex);
+	cudaMemcpyToSymbol(g_tex, &t, sizeof(const float2*));
+}
+
 void FORWARD::setDepthCapAcc(float* bh, float* tot)
 {
 	cudaMemcpyToSymbol(g_cacc_bh, &bh, sizeof(float*));

@@ -49,6 +49,12 @@ __device__ int g_cap_n_b = 0;
 //   B 的梯度只給在上限前面的貢獻（z·icap <= 1），而且只經由 α（前面變更不透明 => 後面分到的 T 變小 => B 變小）；
 //   落在上限後面的貢獻收不到 B 的任何梯度（不經 α 變透明、也不經 z 往前推）。其他通道的梯度一律不動。
 __device__ int g_cap_grad_mode_b = 0;
+// ★ 2026-11-28 面內亮度漸變（forward.cu g_tex 的 backward 版）：g_tex_b＝每顆 g（float2）、g_dtex_b＝dL/dg（呼叫端歸零）。
+//   像素顏色 c·f、f = max(0, 1 + g·s)：dL/dc 乘 f；dL/dg = Σ T·α (c·dL/dpix) s；交點位置多一項 dL/ds += T·α (c·dL/dpix) g（顏色斜率推面元）。
+//   nullptr＝原寫法（逐位元相同）。
+__device__ const float2* g_tex_b = nullptr;
+__device__ float2* g_dtex_b = nullptr;
+static bool s_tex_on_b = false;
 namespace cg = cooperative_groups;
 
 // Backward pass for conversion of spherical harmonics to RGB for
@@ -576,6 +582,14 @@ renderCUDA(
 			// pair).
 			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
+			// ★ 11-28 面內亮度漸變
+			float tf = 1.f, dL_dtf = 0.f; float2 tg = {0.f, 0.f}; bool tex_grad = false;
+			if (g_tex_b != nullptr && rho3d <= rho2d) {
+				tg = g_tex_b[global_id];
+				const float u = 1.f + tg.x * s.x + tg.y * s.y;
+				tf = fmaxf(0.f, u); tex_grad = (u > 0.f);
+			}
+			if (g_tex_b == nullptr) {
 			for (int ch = 0; ch < C; ch++)
 			{
 				const float c = collected_colors[ch * BLOCK_SIZE + j];
@@ -589,6 +603,20 @@ renderCUDA(
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+			}
+			} else {
+			for (int ch = 0; ch < C; ch++)
+			{
+				const float c = collected_colors[ch * BLOCK_SIZE + j];
+				const float cp = c * tf;
+				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+				last_color[ch] = cp;
+				const float dL_dchannel = dL_dpixel[ch];
+				dL_dalpha += (cp - accum_rec[ch]) * dL_dchannel;
+				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * tf * dL_dchannel);
+				dL_dtf += c * dL_dchannel;
+			}
+			dL_dtf *= dchannel_dcolor;
 			}
 
 			float dL_dz = 0.0f;
@@ -681,6 +709,11 @@ renderCUDA(
 #if ABSGRAD
 				if (ABS) atomicAdd(&dL_dmean2D[global_id].z, fabsf(dL_ds.x) + fabsf(dL_ds.y));
 #endif
+				if (tex_grad) {   // ★ 11-28 面內亮度漸變：顏色斜率推交點（|g| 累加器照舊不含這項）
+					dL_ds.x += dL_dtf * tg.x; dL_ds.y += dL_dtf * tg.y;
+					atomicAdd(&g_dtex_b[global_id].x, dL_dtf * s.x);
+					atomicAdd(&g_dtex_b[global_id].y, dL_dtf * s.y);
+				}
 				float3 dz_dTw = {s.x, s.y, 1.0};
 				float dsx_pz = dL_ds.x / p.z;
 				float dsy_pz = dL_ds.y / p.z;
@@ -731,7 +764,7 @@ renderCUDA(
 //        （dL_dweight／last_dL_dT 回傳到 alpha、dL_dmd -> dL_dz 經交點深度到 transMat；次像素分支加到 transMat[8]）；
 //        法線／深度／alpha 累積／中位深度的梯度照樣不算（呼叫端保證那些通道沒進 loss）。DST=false 時程式路徑與舊版相同。
 #define OPT_NG 16
-template <uint32_t C, bool ABS, bool SAT, bool RED, bool DST>
+template <uint32_t C, bool ABS, bool SAT, bool RED, bool DST, bool TEX = false>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA_opt(
 	const uint2* __restrict__ ranges,
@@ -765,6 +798,7 @@ renderCUDA_opt(
 	// ★ 2026-10-16 PB（pair_used != nullptr）：配對貢獻 bit。forward 記下「這個 (tile,顆粒) 配對有沒有被任一像素混合」；
 	//   沒被混合的配對對每個像素都是 valid=false（條件逐條相同：contributor<last、NEAR_PLANE、power、alpha>=1/255）=> 梯度恆 0。
 	//   每批載入時用 warp ballot＋前綴和把 bit=1 的依原順序擠到 shared 前段，只迭代這些 => 處理的有效配對與順序完全相同。
+	constexpr int NG = TEX ? OPT_NG + 2 : OPT_NG;   // ★ 11-28 面內亮度漸變：g[16]、g[17]＝dL/dg
 	auto block = cg::this_thread_block();
 	auto warp = cg::tiled_partition<32>(block);
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
@@ -802,7 +836,7 @@ renderCUDA_opt(
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
-	__shared__ float s_g[RED ? OPT_NG : 1][RED ? BLOCK_SIZE : 1];
+	__shared__ float s_g[RED ? NG : 1][RED ? BLOCK_SIZE : 1];
 	__shared__ int s_cnt[RED ? BLOCK_SIZE : 1];
 	__shared__ int collected_q[BLOCK_SIZE];        // 擠壓後每個槽位的原始序號（＝原本的 contributor）
 	__shared__ int s_wcnt[BLOCK_SIZE / 32];
@@ -896,7 +930,7 @@ renderCUDA_opt(
 			}
 		}
 		if (RED) {
-			for (int k = 0; k < OPT_NG; k++) s_g[k][block.thread_rank()] = 0.f;
+			for (int k = 0; k < NG; k++) s_g[k][block.thread_rank()] = 0.f;
 			s_cnt[block.thread_rank()] = 0;
 		}
 		block.sync();
@@ -911,8 +945,8 @@ renderCUDA_opt(
 			if (a1) { const float4 b = collected_box[j]; if (b.y < sx0 || b.x > sx1 || b.w < sy0 || b.z > sy1) continue; }
 			// 每個 lane 都要走到歸約點（warp 集體操作）=> 用 valid 取代原本的 continue
 			bool valid = inside && (cq < (uint32_t)last_contributor);
-			float g[OPT_NG];
-			for (int k = 0; k < OPT_NG; k++) g[k] = 0.f;
+			float g[NG];
+			for (int k = 0; k < NG; k++) g[k] = 0.f;
 			if (valid) {
 				const float3 Tu = collected_Tu[j], Tv = collected_Tv[j], Tw = collected_Tw[j];
 				float3 k3, l3, p; float dxp = 0.f, dyp = 0.f;
@@ -954,12 +988,32 @@ renderCUDA_opt(
 						T = T / (1.f - alpha);
 						const float dchannel_dcolor = alpha * T;
 						float dL_dalpha = 0.0f;
+						// ★ 11-28 面內亮度漸變（TEX＝false 時這段整個不存在）
+						float tf = 1.f, dL_dtf = 0.f; float2 tg = {0.f, 0.f}; bool tex_grad = false;
+						if (TEX && rho3d <= rho2d) {
+							tg = g_tex_b[collected_id[j]];
+							const float u = 1.f + tg.x * s.x + tg.y * s.y;
+							tf = fmaxf(0.f, u); tex_grad = (u > 0.f);
+						}
+						if (!TEX) {
 						for (int ch = 0; ch < C; ch++) {
 							const float c = collected_colors[ch * BLOCK_SIZE + j];
 							accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 							last_color[ch] = c;
 							dL_dalpha += (c - accum_rec[ch]) * dL_dpixel[ch];
 							g[ch] = dchannel_dcolor * dL_dpixel[ch];
+						}
+						} else {
+						for (int ch = 0; ch < C; ch++) {
+							const float c = collected_colors[ch * BLOCK_SIZE + j];
+							const float cp = c * tf;
+							accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+							last_color[ch] = cp;
+							dL_dalpha += (cp - accum_rec[ch]) * dL_dpixel[ch];
+							g[ch] = dchannel_dcolor * tf * dL_dpixel[ch];
+							dL_dtf += c * dL_dpixel[ch];
+						}
+						dL_dtf *= dchannel_dcolor;
 						}
 						float dL_dz = 0.0f;
 						if (DST) {
@@ -982,9 +1036,13 @@ renderCUDA_opt(
 						dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
 						const float dL_dG = nor_o.w * dL_dalpha;
 						if (rho3d <= rho2d) {
-							const float2 dL_ds = DST ? float2{ dL_dG * -G * s.x + dL_dz * Tw.x, dL_dG * -G * s.y + dL_dz * Tw.y }
-							                         : float2{ dL_dG * -G * s.x, dL_dG * -G * s.y };
+							float2 dL_ds = DST ? float2{ dL_dG * -G * s.x + dL_dz * Tw.x, dL_dG * -G * s.y + dL_dz * Tw.y }
+							                   : float2{ dL_dG * -G * s.x, dL_dG * -G * s.y };
 							if (ABS) g[14] = fabsf(dL_ds.x) + fabsf(dL_ds.y);
+							if (TEX && tex_grad) {   // ★ 11-28 顏色斜率推交點（|g| 照舊不含這項）
+								dL_ds.x += dL_dtf * tg.x; dL_ds.y += dL_dtf * tg.y;
+								g[NG - 2] = dL_dtf * s.x; g[NG - 1] = dL_dtf * s.y;
+							}
 							if (aih_on) {   // ★ 11-21 dL/dp'（同原本 dL_dp 的形式，1/p.z 換成 wz）；9 格＝dx·g、dy·g、g
 								const float gx = dL_ds.x * wz, gy = dL_ds.y * wz;
 								const float gz = -(gx * s.x + gy * s.y);
@@ -1020,14 +1078,14 @@ renderCUDA_opt(
 			// ★ 2026-10-24 純計時（預設 0）：BWD_TIMING_NOR=1 拿掉歸約與 atomic（梯度是錯的），只量「逐配對的計算」本身
 			//   => 與正常版的差＝歸約／atomic 的成本＝逐顆平行 backward 最多能省的上限
 			if (BWD_TIMING_NOR) {
-				if (valid) { float sm = 0.f; for (int k = 0; k < OPT_NG; k++) sm += g[k]; nor_sink += sm; }
+				if (valid) { float sm = 0.f; for (int k = 0; k < NG; k++) sm += g[k]; nor_sink += sm; }
 				continue;
 			}
 			if (RED) {
 				const unsigned m = warp.ballot(valid);
 				if (m == 0) continue;
 				if (__popc(m) >= 3) {
-					for (int k = 0; k < OPT_NG; k++) {
+					for (int k = 0; k < NG; k++) {
 						if (!ABS && k == 14) continue;
 						if (aih_hom && k == 11) continue;   // ★ 11-21 晚 #9
 						const float v = cg::reduce(warp, g[k], cg::plus<float>());
@@ -1035,7 +1093,7 @@ renderCUDA_opt(
 					}
 					if (warp.thread_rank() == 0) atomicAdd(&s_cnt[j], 1);
 				} else if (valid) {
-					for (int k = 0; k < OPT_NG; k++)
+					for (int k = 0; k < NG; k++)
 						if (g[k] != 0.f && !(aih_hom && k == 11)) atomicAdd(&s_g[k][j], g[k]);
 					atomicAdd(&s_cnt[j], 1);
 				}
@@ -1052,6 +1110,7 @@ renderCUDA_opt(
 #endif
 				}
 				atomicAdd(&dL_dopacity[gid], g[15]);
+				if (TEX && (g[NG - 2] != 0.f || g[NG - 1] != 0.f)) { atomicAdd(&g_dtex_b[gid].x, g[NG - 2]); atomicAdd(&g_dtex_b[gid].y, g[NG - 1]); }
 			}
 		}
 		if (RED) {
@@ -1067,6 +1126,10 @@ renderCUDA_opt(
 				if (ABS && s_g[14][t] != 0.f) atomicAdd(&dL_dmean2D[gid].z, s_g[14][t]);
 #endif
 				if (s_g[15][t] != 0.f) atomicAdd(&dL_dopacity[gid], s_g[15][t]);
+				if (TEX) {
+					if (s_g[NG - 2][t] != 0.f) atomicAdd(&g_dtex_b[gid].x, s_g[NG - 2][t]);
+					if (s_g[NG - 1][t] != 0.f) atomicAdd(&g_dtex_b[gid].y, s_g[NG - 1][t]);
+				}
 			}
 		}
 	}
@@ -1541,6 +1604,15 @@ void BACKWARD::setDepthCap(const float* cap_inv, int n)
 }
 
 // ★ 2026-11-13 規格 3 §4-3：B 的梯度模式（0＝現狀、3＝只補前面）
+void BACKWARD::setSurfTex(const float* tex, float* dtex)
+{
+	const float2* t = reinterpret_cast<const float2*>(tex);
+	float2* d = reinterpret_cast<float2*>(dtex);
+	cudaMemcpyToSymbol(g_tex_b, &t, sizeof(const float2*));
+	cudaMemcpyToSymbol(g_dtex_b, &d, sizeof(float2*));
+	s_tex_on_b = (tex != nullptr);
+}
+
 void BACKWARD::setDepthCapGradMode(int mode)
 {
 	cudaMemcpyToSymbol(g_cap_grad_mode_b, &mode, sizeof(int));
@@ -1597,7 +1669,8 @@ void BACKWARD::render(
 	const float* xc_ptr = (flags & 2048) ? aih : nullptr;   // ★ 11-21 幾何配對遮罩（只給 renderCUDA；opt 路徑有配對位元）
 	if (!geom && (sat || red || pbit || dst || zskip)) {
 #define OPT_ARGS ranges, point_list, W, H, bg_color, means2D, normal_opacity, transMats, colors, final_Ts, n_contrib, dL_dpixels, dL_dtransMat, dL_dmean2D, dL_dopacity, dL_dcolors, (pbit ? pair_used : nullptr), (dst ? dL_depths : nullptr), zskip, s_aih_conv
-#define OPT_L(A, S, R, D) renderCUDA_opt<NUM_CHANNELS, A, S, R, D> << <grid, block >> >(OPT_ARGS)
+#define OPT_L(A, S, R, D) do { if (s_tex_on_b) renderCUDA_opt<NUM_CHANNELS, A, S, R, D, true> << <grid, block >> >(OPT_ARGS); \
+                              else renderCUDA_opt<NUM_CHANNELS, A, S, R, D, false> << <grid, block >> >(OPT_ARGS); } while (0)
 #define OPT_SR(A, D) { if (sat && red) OPT_L(A, true, true, D); else if (sat) OPT_L(A, true, false, D); else if (red) OPT_L(A, false, true, D); else OPT_L(A, false, false, D); }
 		if (dst) { if (absg) OPT_SR(true, true) else OPT_SR(false, true) }
 		else     { if (absg) OPT_SR(true, false) else OPT_SR(false, false) }

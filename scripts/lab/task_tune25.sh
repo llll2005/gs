@@ -89,7 +89,7 @@ parse() {
     else
       case "$t" in
         lowres|lres2|lres3|geo50|coarse|coarse5|sbox|pbw|densenf|densepl|densepl2|densedo|densedf|densepl2nd|denserg|pcs|pcsf|sea3d|sea3dg|sea3dh|sea3df|sea3dx|sea3dw|sea3dv|sea3du|sea3dt|seaback|seabackg|seabackh|seabackf|seabackx|seabackw|seabackv|seabacku|seabackt|seafl|seafl2|seaflb|seaflbl|seafront|seanop|np16|lr050|mvu|mvugrow|mvugnd|tri|trihf|trist|trigate|tribh|hfd|vcb|sbp|bpf|dense|sni|trimask|cmflat|r2|r2free|r2ent0|r2w|r2wl) XT+=("$t") ;;
-        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf|nodo|seafl3|notrim|vccx|vcvm|cadr|vwa|mgvc|vcva|srres|capres|lrhold|nob|entsg) XT+=("$t") ;;
+        nogate|nohf|noip|nonm|nonp|nomg|nol2|nopx|nohp|mge1|log0|geo8|capfc|mgtrim|mgl2|mgtex|mgrel|mgline|mgpx|fp16|cskip|pxdel|pxabs|pxdelf|pxabsf|nodo|seafl3|notrim|vccx|vcvm|cadr|vwa|mgvc|vcva|srres|capres|lrhold|nob|entsg|tex) XT+=("$t") ;;
         vpcr[0-9]*) [[ $t =~ ^vpcr[0-9]+$ ]] || { echo "⛔ 寫法：vpcr<k>（每次增生事件把最新 V/C 最低的 k% 搬走）"; return 2; }; XT+=("$t") ;;
         noev[0-9]*|sink[0-9]*) [[ $t =~ ^(noev|sink)[0-9]+$ ]] || { echo "⛔ 寫法：noev<k>／sink<p>"; return 2; }; XT+=("$t") ;;
         sinkh[0-9]*) [[ $t =~ ^sinkh[0-9]+$ ]] || { echo "⛔ 寫法：sinkh<H>"; return 2; }; XT+=("$t") ;;
@@ -131,7 +131,7 @@ parse() {
       dense) LBL+="稠密初始化" ;; sni) LBL+="SfM法向起點" ;; trimask) LBL+="校正深度遮罩" ;; cmflat) LBL+="上限只罰躺平" ;; r2) LBL+="兩輪" ;; r2c*) LBL+="第一輪名額${t#r2c}" ;;
       r2s*) LBL+="S1佔${t#r2s}" ;; r2free) LBL+="不限出身" ;; r2ent0) LBL+="第二輪熵關" ;; r2w) LBL+="只留窗口不開第二輪" ;; r2wl) LBL+="只關第二輪增生留後段弱熵" ;;
       nogate) LBL+="拿掉閘門" ;; nohf) LBL+="拿掉補洞" ;; noip) LBL+="拿掉面內增生" ;; nonm) LBL+="拿掉法向" ;; nonp) LBL+="拿掉鄰域平面" ;;
-      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; fp16) LBL+="完整路徑每16步" ;; cskip) LBL+="C區不跑" ;; notrim) LBL+="拿掉V/C剪枝" ;; vccx) LBL+="V/C成本只算實際評估配對" ;; vcvm) LBL+="V/C價值只算計分像素" ;; cadr) LBL+="依最新成本往便宜處增生" ;; vwa) LBL+="視角依塊內計分比例加權" ;; srres) LBL+="尺度正則隨解析度平方" ;; capres) LBL+="cap隨解析度分段放" ;; lrhold) LBL+="位置lr保持到全解析度" ;; nob) LBL+="B區當不計分(Mega-NeRF/HUG式)" ;; entsg) LBL+="二元熵一開始就雙向(SuGaR式)" ;; mgvc) LBL+="合併優先低V/C" ;; vcva) LBL+="V/C價值只算A區" ;; vpcr*) LBL+="搬走V/C最低${t#vpcr}%" ;; pxdel) LBL+="點精靈刪除" ;; pxabs) LBL+="點精靈吸收" ;; pxdelf) LBL+="點精靈全解析度才刪" ;; pxabsf) LBL+="點精靈全解析度才吸收" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sinkh*) LBL+="只沉離下方${t#sinkh}px以上" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; v4f) LBL+="v4只投浮塊票" ;; v5) LBL+="v5每步累積浮塊票" ;; v5e*) LBL+="v5每${t#v5e}步累積浮塊票" ;; v5s*) LBL+="v5軟化k${t#v5s}" ;; ncs*) LBL+="無約束往下沉${t#ncs}px" ;; rs[0-9]) LBL+="校正深度斜率級放寬到${t#rs}" ;; dsf) LBL+="閘門SfM備援" ;; esac
+      nomg) LBL+="拿掉合併" ;; nol2) LBL+="拿掉L2" ;; nopx) LBL+="拿掉點精靈下限" ;; nohp) LBL+="拿掉刪死顆粒" ;; mge1) LBL+="合併只併誤差0.1" ;; log0) LBL+="不記log" ;; geo8) LBL+="dist每8步" ;; capfc) LBL+="只補前面" ;; mgtrim) LBL+="合併配對只刪不併" ;; mgl2) LBL+="合併L2不透明度" ;; mgtex) LBL+="合併只在平滑區" ;; mgrel) LBL+="合併名額交給搬家" ;; mgline) LBL+="線狀合併" ;; mgpx) LBL+="合併像素門檻" ;; fp16) LBL+="完整路徑每16步" ;; cskip) LBL+="C區不跑" ;; notrim) LBL+="拿掉V/C剪枝" ;; vccx) LBL+="V/C成本只算實際評估配對" ;; vcvm) LBL+="V/C價值只算計分像素" ;; cadr) LBL+="依最新成本往便宜處增生" ;; vwa) LBL+="視角依塊內計分比例加權" ;; srres) LBL+="尺度正則隨解析度平方" ;; capres) LBL+="cap隨解析度分段放" ;; lrhold) LBL+="位置lr保持到全解析度" ;; nob) LBL+="B區當不計分(Mega-NeRF/HUG式)" ;; tex) LBL+="面內亮度漸變" ;; entsg) LBL+="二元熵一開始就雙向(SuGaR式)" ;; mgvc) LBL+="合併優先低V/C" ;; vcva) LBL+="V/C價值只算A區" ;; vpcr*) LBL+="搬走V/C最低${t#vpcr}%" ;; pxdel) LBL+="點精靈刪除" ;; pxabs) LBL+="點精靈吸收" ;; pxdelf) LBL+="點精靈全解析度才刪" ;; pxabsf) LBL+="點精靈全解析度才吸收" ;; noev*) LBL+="不准往上每${t#noev}步投票" ;; sinkh*) LBL+="只沉離下方${t#sinkh}px以上" ;; sink*) LBL+="沒證據往下沉${t#sink}px" ;; v4f) LBL+="v4只投浮塊票" ;; v5) LBL+="v5每步累積浮塊票" ;; v5e*) LBL+="v5每${t#v5e}步累積浮塊票" ;; v5s*) LBL+="v5軟化k${t#v5s}" ;; ncs*) LBL+="無約束往下沉${t#ncs}px" ;; rs[0-9]) LBL+="校正深度斜率級放寬到${t#rs}" ;; dsf) LBL+="閘門SfM備援" ;; esac
   done
 }
 
@@ -442,6 +442,8 @@ for t in "${XT[@]:-}"; do
     # ★ 11-28 同類方法對照（使用者「排」）：nob＝塊外遮罩的 B 區（要求透明）當成不計分＝Mega-NeRF／HUG 式只遮掉塊外；
     #   entsg＝二元熵一開始就雙向、權重固定 0.002（SuGaR §5.1 式；現行＝前 1/3 只往 0 推、之後雙向 x4）
     nob)    XA+=(--model.metric.init_args.block_mask_b_as_c true) ;;
+    # ★ 11-28 tex：面內亮度漸變（每顆 2 個參數 g，像素顏色 x max(0, 1 + g·s)；需要 11-28 之後重編的光柵器，lab 用 build_rast_alt.sh 的另編版）
+    tex)    XA+=(--model.gaussian.init_args.surf_tex true) ;;
     entsg)  XA+=(--model.metric.init_args.opacity_entropy_side both) ;;
     lrhold) if   [[ " ${XT[*]} " =~ \ lres3\  ]]; then _HS=$((ST * 3 / 4))
             elif [[ " ${XT[*]} " =~ \ lres2\  ]]; then _HS=$((ST * 7 / 10))

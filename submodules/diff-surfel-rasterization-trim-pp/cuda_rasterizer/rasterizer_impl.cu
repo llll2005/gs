@@ -316,6 +316,13 @@ void CudaRasterizer::Rasterizer::setDepthCapAcc(float* bh, float* tot)
 	FORWARD::setDepthCapAcc(bh, tot);
 }
 
+// ★ 2026-11-28 面內亮度漸變：forward 只讀 tex；backward 讀 tex、寫 dtex
+void CudaRasterizer::Rasterizer::setSurfTex(const float* tex, float* dtex)
+{
+	FORWARD::setSurfTex(tex);
+	BACKWARD::setSurfTex(tex, dtex);
+}
+
 CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, size_t N)
 {
 	ImageState img;

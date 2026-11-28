@@ -27,7 +27,8 @@ namespace BACKWARD
 	void setShBasis(const float* U, int K);   // ★ 2026-11-21 晚 SH 可觀測子空間基底（forward.h 同名）
 	// ★ 2026-11-11 逐像素深度上限圖（裝置端指標＋像素數；nullptr／0＝清掉）
 	void setDepthCap(const float* cap_inv, int n);
-	void setDepthCapGradMode(int mode);   // ★ 2026-11-13 規格 3 §4-3（0＝現狀、3＝只補前面）
+	void setDepthCapGradMode(int mode);
+	void setSurfTex(const float* tex, float* dtex);   // ★ 2026-11-28 面內亮度漸變（nullptr＝關）   // ★ 2026-11-13 規格 3 §4-3（0＝現狀、3＝只補前面）
 
 	void render(
 		const dim3 grid, dim3 block,

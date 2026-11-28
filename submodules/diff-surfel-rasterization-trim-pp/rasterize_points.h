@@ -84,6 +84,7 @@ void SetShBasis(const torch::Tensor& U);   // ★ 2026-11-21 晚 SH 可觀測子
 void SetDepthCapGradMode(int mode);   // ★ 2026-11-13 規格 3 §4-3
 
 void SetDepthCapAcc(const torch::Tensor& bh, const torch::Tensor& tot);
+void SetSurfTex(const torch::Tensor& tex, const torch::Tensor& dtex);   // ★ 2026-11-28 面內亮度漸變
 
 torch::Tensor markVisible(
 		torch::Tensor& means3D,

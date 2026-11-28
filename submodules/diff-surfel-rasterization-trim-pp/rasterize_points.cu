@@ -463,6 +463,22 @@ void SetDepthCapGradMode(int mode)
 }
 
 
+// ★ 2026-11-28 面內亮度漸變（forward.cu g_tex／backward.cu g_tex_b、g_dtex_b）：tex＝CUDA 上連續 float32 [P, 2]；
+//   dtex＝同形狀（backward 前歸零、累加 dL/dg；forward 時可給空張量）；tex 空張量＝關。
+void SetSurfTex(const torch::Tensor& tex, const torch::Tensor& dtex)
+{
+	if (tex.numel() == 0) { CudaRasterizer::Rasterizer::setSurfTex(nullptr, nullptr); return; }
+	TORCH_CHECK(tex.is_cuda() && tex.scalar_type() == at::kFloat && tex.is_contiguous() && tex.dim() == 2 && tex.size(1) == 2,
+	            "surf_tex 必須是 CUDA 上連續的 float32 [P, 2]");
+	float* d = nullptr;
+	if (dtex.numel() > 0) {
+		TORCH_CHECK(dtex.is_cuda() && dtex.scalar_type() == at::kFloat && dtex.is_contiguous() && dtex.numel() == tex.numel(),
+		            "surf_tex 的梯度緩衝必須和 tex 同形狀、CUDA 上連續的 float32");
+		d = dtex.data_ptr<float>();
+	}
+	CudaRasterizer::Rasterizer::setSurfTex(tex.data_ptr<float>(), d);
+}
+
 // ★ 2026-11-11 逐顆累加（forward.cu g_cacc_*）：bh／tot＝CUDA 上連續的 float32、元素數＝顆數 P（呼叫端歸零、自己保證活到 forward 結束）；空張量＝清掉。
 void SetDepthCapAcc(const torch::Tensor& bh, const torch::Tensor& tot)
 {

@@ -110,6 +110,15 @@ def main():
                 r = cp[_k]
                 cp[_k] = torch.cat([r, torch.zeros((r.shape[0], base[_k].shape[1] - r.shape[1], r.shape[2]), dtype=r.dtype, device=r.device)], 1)
                 print(f"[{nm}] SH 較低：{_k} {r.shape[1]} -> {cp[_k].shape[1]} 補 0")
+        if "tex" in cp and "tex" not in base:            # ★ 11-28 面內亮度漸變：基準沒有 => 補 0（渲染與沒有 tex 逐位元相同），renderer 才會交給光柵器
+            base["tex"] = torch.zeros((base["means"].shape[0], 2), dtype=base["means"].dtype)
+            model._names = tuple(model._names) + ("tex",)
+            for _vn, _vc in variants:
+                if _vc is not None and "tex" not in _vc:
+                    _vc["tex"] = torch.zeros((_vc["means"].shape[0], 2), dtype=_vc["means"].dtype)
+            print(f"[{nm}] 有面內亮度漸變（tex）：基準與其他變體補 0", flush=True)
+        if "tex" in base and "tex" not in cp:
+            cp["tex"] = torch.zeros((cp["means"].shape[0], 2), dtype=cp["means"].dtype, device=cp["means"].device)
         assert set(cp) == set(base) and all(cp[k].shape[1:] == base[k].shape[1:] for k in base), f"{nm}：屬性與基準不同（SH 階數？）"
         cmask = block_mask(cp["means"], pc)[B].to(cp["means"].device)
         variants.append((nm, {k: cp[k][cmask].detach().cpu().clone() for k in base}))
